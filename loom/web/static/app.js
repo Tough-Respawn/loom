@@ -320,7 +320,7 @@ function App() {
 // Client SSE
 // ----------------------------------------------------------------------------
 async function streamSSE(url, fd, onEvent, signal) {
-  const resp = await fetch(url, { method: "POST", body: fd, signal });
+  const resp = await fetch(url, { method: fd ? "POST" : "GET", body: fd || undefined, signal });
   if (resp.status === 429) {
     onEvent({ type: "error", message: "Occupé : un échange est déjà en cours." });
     return;
@@ -428,10 +428,10 @@ async function sendChat(text, image) {
 // ----------------------------------------------------------------------------
 // Pipeline multi-agent
 // ----------------------------------------------------------------------------
-async function runPipeline(task, workspace) {
-  state.pin = true;
-  push({ kind: "user", content: task });
-
+// Fabrique le consommateur d'événements d'un run (état des agents + switch de
+// rendu). Réutilisé par `runPipeline` (run live) ET par la réattache au reload
+// (rejoue `/run/replay` à travers la même logique de rendu).
+function makeRunConsumer() {
   const agents = {}; // agent -> { stepId, thinkId, asstId }
   const tools = {};
   let curVerifyId = null;
@@ -450,11 +450,6 @@ async function runPipeline(task, workspace) {
     agents[agent] = { stepId, thinkId: null, asstId: null, role };
     return agents[agent];
   };
-
-  const fd = new FormData();
-  fd.append("task", task);
-  fd.append("mode", "build");
-  if (workspace) fd.append("workspace", workspace);
 
   const onEvent = (evt) => {
     const a = evt.agent ? agents[evt.agent] : null;
@@ -523,12 +518,26 @@ async function runPipeline(task, workspace) {
     }
   };
 
+  return { onEvent, finish: () => Object.values(agents).forEach((ag) => endStep(get(ag.stepId))) };
+}
+
+async function runPipeline(task, workspace) {
+  state.pin = true;
+  push({ kind: "user", content: task });
+
+  const { onEvent, finish } = makeRunConsumer();
+
+  const fd = new FormData();
+  fd.append("task", task);
+  fd.append("mode", "build");
+  if (workspace) fd.append("workspace", workspace);
+
   try {
     await streamSSE("/run", fd, onEvent);
   } catch (err) {
     push({ kind: "error", message: "Erreur : " + err.message });
   } finally {
-    Object.values(agents).forEach((ag) => endStep(get(ag.stepId)));
+    finish();
   }
 }
 
@@ -761,3 +770,14 @@ if (resetBtn) {
     scheduleRender();
   });
 }
+
+// Réattache un run lancé précédemment (survit au reload) : on rejoue son flux.
+fetch("/run/active")
+  .then((r) => r.json())
+  .then((s) => {
+    if (s && s.has) {
+      const { onEvent, finish } = makeRunConsumer();
+      streamSSE("/run/replay", null, onEvent).finally(finish);
+    }
+  })
+  .catch(() => {});
