@@ -398,6 +398,23 @@ def create_app(
         conversation.save(history_path)
         return Response(str(int(conversation.thinking)), mimetype="text/plain")
 
+    @app.route("/classify", methods=["POST"])
+    def classify():
+        message = (request.form.get("message") or "").strip()
+        if not message:
+            return {"mode": "chat"}
+        if not chat_lock.acquire(blocking=False):
+            return {"mode": "chat"}  # occupé -> défaut sûr
+        try:
+            from loom.classify import classify_intent
+
+            mode = classify_intent(
+                client, message, model=(models[0] if models else None)
+            )
+        finally:
+            chat_lock.release()
+        return {"mode": mode}
+
     @app.post("/model")
     def model_update():
         conversation.set_model(request.form.get("model", ""))
