@@ -24,12 +24,12 @@ class ToolError(Exception):
 # Univers des outils proposés dans l'UI (activables par conversation). `danger`
 # marque ceux qui modifient le système (gardés par le mode permission).
 AVAILABLE_TOOLS = [
-    {"name": "read_file", "label": "📄 read_file", "danger": False},
-    {"name": "web_search", "label": "🌐 web_search", "danger": False},
-    {"name": "verify", "label": "✅ verify", "danger": False},
-    {"name": "write_file", "label": "✏️ write_file", "danger": True},
-    {"name": "edit_file", "label": "✏️ edit_file", "danger": True},
-    {"name": "run_shell", "label": "⚡ run_shell", "danger": True},
+    {"name": "read_file", "label": "read_file", "danger": False},
+    {"name": "web_search", "label": "web_search", "danger": False},
+    {"name": "verify", "label": "verify", "danger": False},
+    {"name": "write_file", "label": "write_file", "danger": True},
+    {"name": "edit_file", "label": "edit_file", "danger": True},
+    {"name": "run_shell", "label": "run_shell", "danger": True},
 ]
 
 
