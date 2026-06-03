@@ -175,6 +175,7 @@ def run_build(
     *,
     model: str | None,
     write,
+    workspace: str = ".",
     verifier=None,
     max_tokens: int = 2048,
     context: int = 8192,
@@ -202,7 +203,15 @@ def run_build(
 
     from openai import APIConnectionError, APITimeoutError
 
-    from loom.parallel import compute_budget, fix_one, generate_one, plan_files
+    from loom.parallel import (
+        cap_rewrites,
+        compute_budget,
+        derive_modes,
+        edit_one,
+        fix_one,
+        generate_one,
+        plan_files,
+    )
 
     # Transitoires = ré-essayables (le serveur a brièvement lâché/saturé) ; un APIError
     # 500 (overflow contexte) ne l'est PAS (ré-essayer ne change rien → on garde l'ancien).
@@ -321,18 +330,45 @@ def run_build(
         context, n_parallel, len(specs)
     )
 
+    # Mode par fichier (déterministe) : absent->create, existant+verify KO->rewrite,
+    # existant+verify OK->patch ; rewrite d'un gros fichier dégradé en patch.
+    _verifier_for_modes = verifier or (lambda paths: None)
+    planned = cap_rewrites(
+        derive_modes(specs, workspace, _verifier_for_modes), workspace
+    )
+    mode_by_path = {pf.spec.path: pf.mode for pf in planned}
+
     def _incomplete() -> bool:
         # Un fichier planifié totalement absent de l'état (génération jamais réussie) =
         # app incomplète : on continue à le retenter même si le verify des présents passe.
         return any(p not in state for p in all_paths)
 
     # 2) GÉNÉRATION PARALLÈLE
+    def _gen_dispatch(s):
+        if mode_by_path.get(s.path) == "patch":
+            return edit_one(
+                client,
+                design,
+                s,
+                workspace,
+                model=model,
+                max_tokens=gen_max_tokens,
+                file_char_cap=file_char_cap,
+            )
+        return generate_one(
+            client,
+            design,
+            s,
+            all_paths,
+            model=model,
+            max_tokens=gen_max_tokens,
+            file_char_cap=file_char_cap,
+        )
+
     yield from _gen_phase(
         "build",
         "Développeur (parallèle)",
-        lambda s: generate_one(
-            client, design, s, all_paths, model=model, max_tokens=gen_max_tokens
-        ),
+        _gen_dispatch,
         specs,
         max_workers,
     )
@@ -350,10 +386,20 @@ def run_build(
             format_report(report) if report is not None else "Fichier(s) manquant(s)."
         )
         current = [(p, state[p]["content"]) for p in all_paths if p in state]
-        yield from _gen_phase(
-            f"fix{rounds}",
-            f"Correction {rounds} (parallèle)",
-            lambda s, _c=current, _d=diag: fix_one(
+
+        def _fix_dispatch(s, _c=current, _d=diag):
+            if mode_by_path.get(s.path) == "patch":
+                return edit_one(
+                    client,
+                    design,
+                    s,
+                    workspace,
+                    model=model,
+                    max_tokens=gen_max_tokens,
+                    file_char_cap=file_char_cap,
+                    defects=_d,
+                )
+            return fix_one(
                 client,
                 design,
                 s,
@@ -362,7 +408,12 @@ def run_build(
                 model=model,
                 max_tokens=gen_max_tokens,
                 file_char_cap=file_char_cap,
-            ),
+            )
+
+        yield from _gen_phase(
+            f"fix{rounds}",
+            f"Correction {rounds} (parallèle)",
+            _fix_dispatch,
             specs,
             max_workers,
         )
