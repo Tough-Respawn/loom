@@ -1,0 +1,461 @@
+- generic [ref=e1]:
+  - heading "Loom Chat 🧠 gemma-uncensored Reset" [level=1] [ref=e2]:
+    - text: Loom Chat
+    - generic "Réflexion préalable du modèle (décoché = réponse directe, plus rapide)" [ref=e3] [cursor=pointer]:
+      - checkbox "🧠" [checked] [ref=e4]
+      - text: 🧠
+    - combobox [ref=e5]:
+      - option "gemma-uncensored" [selected]
+    - button "Reset" [ref=e6] [cursor=pointer]
+  - group [ref=e7]:
+    - generic "🧩 Skills (contexte)" [ref=e8] [cursor=pointer]
+  - group [ref=e9]:
+    - generic "🛠️ Outils (boucle agentique)" [ref=e10] [cursor=pointer]
+    - text: ⚠️ ⚠️ ⚠️
+  - generic [ref=e11]:
+    - generic [ref=e12]: hello, regarde sur internet on est quel jour aujourdhui ?
+    - generic [ref=e13]:
+      - paragraph [ref=e14]:
+        - text: Selon les résultats de recherche en ligne, la date d'aujourd'hui est le
+        - strong [ref=e15]: Mardi 2 juin 2026
+        - text: .
+      - button "📋" [ref=e16] [cursor=pointer]
+    - generic [ref=e17]: combien de degré fait il sur paris actuellement, et quel heure est il ?
+    - generic [ref=e18]:
+      - paragraph [ref=e19]: "Voici ce que j'ai trouvé pour Paris :"
+      - paragraph [ref=e20]: Malheureusement, les recherches spécifiques sur les sites météo renvoient actuellement une erreur d'accès ("403 Forbidden"), ce qui signifie que le site est temporairement inaccessible pour ma requête.
+      - paragraph [ref=e21]: "Toutefois, en effectuant une recherche générale, les informations les plus récentes indiquent généralement :"
+      - list [ref=e22]:
+        - listitem [ref=e23]:
+          - strong [ref=e24]: "Heure actuelle :"
+          - text: (Veuillez noter que l'heure exacte dépend de votre fuseau horaire et du moment précis où vous lisez ceci, mais la recherche devrait vous donner l'heure locale de Paris).
+        - listitem [ref=e25]:
+          - strong [ref=e26]: "Température :"
+          - text: (Le degré varie constamment, mais la recherche devrait vous donner une estimation actuelle).
+      - paragraph [ref=e27]:
+        - strong [ref=e28]: Pour obtenir l'information la plus fiable immédiatement, je vous recommande de consulter directement un site météo de confiance ou de vérifier l'heure sur votre appareil.
+      - paragraph [ref=e29]: Voulez-vous que je cherche les prévisions pour les prochaines heures, ou un autre sujet ?
+      - button "📋" [ref=e30] [cursor=pointer]
+    - generic [ref=e31]: "\"C:\\Users\\Amine\\Documents\\ldc\\branding\\exports\\visual-literacy-vs-fluency.png\" résumé moi ce doc"
+    - generic [ref=e32]:
+      - paragraph [ref=e33]:
+        - text: Le système a rencontré une difficulté pour lire le fichier à ce chemin (
+        - code [ref=e34]: C:\Users\Amine\Documents\ldc\branding\exports\visual-literacy-vs-fluency.png
+        - text: ), car il semble être
+        - strong [ref=e35]: hors du périmètre d'accès autorisé
+        - text: de cet environnement.
+      - paragraph [ref=e36]:
+        - text: Puisque c'est une image (
+        - code [ref=e37]: .png
+        - text: "), voici ce que vous pouvez faire pour que je puisse vous faire le résumé :"
+      - list [ref=e38]:
+        - listitem [ref=e39]:
+          - strong [ref=e40]: "Si vous pouvez le téléverser :"
+          - text: Veuillez télécharger l'image directement dans notre conversation.
+        - listitem [ref=e41]:
+          - strong [ref=e42]: "Si vous êtes sûr que ce chemin est accessible :"
+          - text: Précisez si ce chemin est relatif à un dossier que nous avons précédemment travaillé ensemble.
+      - paragraph [ref=e43]: Dès que vous me fournirez le contenu (l'image elle-même), je serai ravi de la résumer pour vous !
+      - button "📋" [ref=e44] [cursor=pointer]
+    - generic [ref=e45]: "et celui là : C:\\Users\\Amine\\Documents\\from-claude-to-local-haranessed-llm\\ETAT_PROJET.md"
+    - generic [ref=e46]:
+      - paragraph [ref=e47]:
+        - text: Ce document est un
+        - strong [ref=e48]: état d'avancement de projet
+        - text: pour
+        - strong [ref=e49]: "\"Loom\""
+        - text: ", un assistant IA"
+        - strong [ref=e50]: local, multimodal et fonctionnant hors ligne
+        - text: qui vise à rendre un petit modèle open-source très utile grâce à une architecture logicielle soignée (runtime, mémoire, compétences/skills, vision, contexte).
+      - paragraph [ref=e51]: "Voici un résumé concis des points clés :"
+      - heading "✅ Ce qui est Livré (Fonctionnalités Actuelles)" [level=3] [ref=e52]
+      - list [ref=e53]:
+        - listitem [ref=e54]:
+          - strong [ref=e55]: "Fondation Runtime :"
+          - list [ref=e56]:
+            - listitem [ref=e57]:
+              - text: Le runtime principal est
+              - strong [ref=e58]: Loom
+              - text: (installable via
+              - code [ref=e59]: hatchling
+              - text: ).
+            - listitem [ref=e60]:
+              - text: Il utilise
+              - code [ref=e61]: llama.cpp
+              - text: (via
+              - code [ref=e62]: llama-server
+              - text: ) et expose une API compatible OpenAI sur le port
+              - code [ref=e63]: :8080
+              - text: .
+            - listitem [ref=e64]:
+              - text: Support de multiples modèles via un registre
+              - code [ref=e65]: "[[models]]"
+              - text: et un système de basculement (
+              - code [ref=e66]: llama-swap
+              - text: ).
+        - listitem [ref=e67]:
+          - strong [ref=e68]: "Modèle IA :"
+          - list [ref=e69]:
+            - listitem [ref=e70]:
+              - text: Utilisation actuelle de
+              - strong [ref=e71]: Gemma 4 E4B (non censuré)
+              - text: en format GGUF, avec support de la
+              - strong [ref=e72]: Vision
+              - text: via un fichier
+              - code [ref=e73]: mmproj-F16.gguf
+              - text: .
+        - listitem [ref=e74]:
+          - strong [ref=e75]: "Interface Chat (Loom Chat) :"
+          - list [ref=e76]:
+            - listitem [ref=e77]:
+              - text: Interface web complète avec
+              - strong [ref=e78]: streaming SSE
+              - text: ", rendu Markdown, et mémoire persistée en JSON."
+            - listitem [ref=e79]:
+              - strong [ref=e80]: "Vision :"
+              - text: Capable d'extraire des données à partir de captures d'écran.
+            - listitem [ref=e81]:
+              - strong [ref=e82]: "Skills/Compétences :"
+              - text: Système de compétences injectables, activables par la conversation.
+            - listitem [ref=e83]:
+              - strong [ref=e84]: "Améliorations UX :"
+              - text: Animation de "Thinking" (réflexion), bouton de copie facile, et gestion de l'interruption de génération.
+        - listitem [ref=e85]:
+          - strong [ref=e86]: "Boucle d'Outils (Tool-Use) :"
+          - list [ref=e87]:
+            - listitem [ref=e88]:
+              - text: Mise en place d'un système d'outils sécurisé (
+              - code [ref=e89]: read_file
+              - text: ","
+              - code [ref=e90]: run_shell
+              - text: ","
+              - code [ref=e91]: web_search
+              - text: ).
+            - listitem [ref=e92]:
+              - strong [ref=e93]: "Sécurité :"
+              - text: Un système de permission très strict est en place (
+              - code [ref=e94]: DEFAULT_DENY
+              - text: ) pour limiter les commandes dangereuses (
+              - code [ref=e95]: rm -rf
+              - text: ", etc.) et confiner l'exécution au répertoire du projet ("
+              - code [ref=e96]: workspace_dir
+              - text: ).
+            - listitem [ref=e97]:
+              - strong [ref=e98]: "Agentique :"
+              - text: Support pour des pipelines multi-agents (plan → code → revue).
+      - heading "🚧 Ce qui Reste (Blocages à Traiter Plus Tard)" [level=3] [ref=e99]
+      - list [ref=e100]:
+        - listitem [ref=e101]:
+          - strong [ref=e102]: "Activation Live des Outils :"
+          - text: Il faut permettre la réactivation directe du serveur avec l'ensemble des outils en ligne.
+        - listitem [ref=e103]:
+          - strong [ref=e104]: "Confirmation UI :"
+          - text: Ajouter une interface utilisateur demandant confirmation avant d'exécuter des commandes potentiellement dangereuses (
+          - code [ref=e105]: edit
+          - text: /
+          - code [ref=e106]: shell
+          - text: ) en mode
+          - emphasis [ref=e107]: ask
+          - text: .
+        - listitem [ref=e108]:
+          - strong [ref=e109]: "Configuration Agent :"
+          - text: Définir des pipelines d'agents par défaut dans le fichier de configuration.
+        - listitem [ref=e110]:
+          - strong [ref=e111]: "Multi-modalité Avancée :"
+          - text: Intégrer le deuxième modèle (multi-agent) et ajouter les fonctionnalités RAG et Audio.
+      - heading "⚙️ Conventions Techniques" [level=3] [ref=e112]
+      - list [ref=e113]:
+        - listitem [ref=e114]:
+          - strong [ref=e115]: "Toolchain :"
+          - text: Utilisation de
+          - strong [ref=e116]:
+            - code [ref=e117]: uv
+          - text: (gestionnaire d'environnement rapide) et
+          - strong [ref=e118]:
+            - code [ref=e119]: ruff
+          - text: (pour le linting et le formatage).
+        - listitem [ref=e120]:
+          - strong [ref=e121]: "Sécurité Globale :"
+          - text: Des garde-fous sont actifs dans les fichiers de configuration (
+          - code [ref=e122]: .claude/settings.json
+          - text: ) pour bloquer les commandes destructrices et la lecture des secrets.
+      - paragraph [ref=e123]:
+        - strong [ref=e124]: "En résumé :"
+        - text: Le projet est très avancé, avec un cœur fonctionnel solide (runtime, IA, UI, outils sécurisés). Les prochaines étapes se concentrent sur le passage d'un mode de développement testé à une activation utilisateur complète et sécurisée des fonctionnalités avancées.
+      - button "📋" [ref=e125] [cursor=pointer]
+    - generic [ref=e126]: ok top, que peux tu faire pourt faire avancer le projet ?
+    - generic [ref=e127]:
+      - paragraph [ref=e128]: Étant donné la feuille de route très claire que vous avez établie, voici une proposition de plan d'action structuré, divisé en phases progressives, pour faire avancer le projet de manière méthodique.
+      - paragraph [ref=e129]:
+        - text: Puisque je suis un assistant, mon rôle sera de
+        - strong [ref=e130]: produire, tester, rédiger, et suggérer des implémentations
+        - text: . Votre rôle restera celui de l'ingénieur qui exécute, teste et valide dans l'environnement local.
+      - separator [ref=e131]
+      - 'heading "🚀 Phase 1 : Stabilisation et Finalisation du Core (Priorité Haute)" [level=3] [ref=e132]'
+      - paragraph [ref=e133]: L'objectif ici est de passer de l'état de "développé en local" à un état de "fonctionnel et stable".
+      - list [ref=e134]:
+        - listitem [ref=e135]:
+          - strong [ref=e136]: "Activer l'environnement de bout en bout (Tooling Finalisation) :"
+          - list [ref=e137]:
+            - listitem [ref=e138]:
+              - strong [ref=e139]: "Action proposée :"
+              - text: Tester le serveur avec
+              - emphasis [ref=e140]: tous
+              - text: les outils (
+              - code [ref=e141]: read_file
+              - text: ","
+              - code [ref=e142]: run_shell
+              - text: ","
+              - code [ref=e143]: web_search
+              - text: ) activés en continu.
+            - listitem [ref=e144]:
+              - strong [ref=e145]: "Ma contribution :"
+              - text: Exécuter des scénarios de test complexes pour vérifier les interactions entre les outils et le moteur LLM, en identifiant les limites de portée (
+              - code [ref=e146]: scope
+              - text: ).
+        - listitem [ref=e147]:
+          - strong [ref=e148]: "Implémenter le \"Ask Mode\" (Sécurité UX) :"
+          - list [ref=e149]:
+            - listitem [ref=e150]:
+              - strong [ref=e151]: "Action proposée :"
+              - text: Développer le mécanisme de confirmation utilisateur pour les commandes risquées (
+              - code [ref=e152]: shell
+              - text: ","
+              - code [ref=e153]: edit
+              - text: ).
+            - listitem [ref=e154]:
+              - strong [ref=e155]: "Ma contribution :"
+              - text: Rédiger le
+              - emphasis [ref=e156]: prompt
+              - text: de confirmation optimal pour l'interface et valider la logique de blocage/déblocage des commandes selon le consentement de l'utilisateur.
+        - listitem [ref=e157]:
+          - strong [ref=e158]: "Définir les Pipelines Agents par Défaut :"
+          - list [ref=e159]:
+            - listitem [ref=e160]:
+              - strong [ref=e161]: "Action proposée :"
+              - text: "Créer un fichier de configuration ou une méthode pour définir 2 ou 3 scénarios \"prédéfinis\" (ex: \"Analyser un rapport\", \"Coder une fonction\", \"Rechercher un concept\")."
+            - listitem [ref=e162]:
+              - strong [ref=e163]: "Ma contribution :"
+              - text: Proposer la syntaxe de configuration la plus propre et rédiger les premiers
+              - emphasis [ref=e164]: workflows
+              - text: logiques pour ces cas d'usage.
+      - 'heading "✨ Phase 2 : Amélioration de l''Expérience et de la Robustesse (Priorité Moyenne)" [level=3] [ref=e165]'
+      - paragraph [ref=e166]: Une fois le cœur stable, on affine l'utilisation.
+      - list [ref=e167]:
+        - listitem [ref=e168]:
+          - strong [ref=e169]: "Amélioration du Traitement de la Mémoire :"
+          - list [ref=e170]:
+            - listitem [ref=e171]:
+              - strong [ref=e172]: "Action proposée :"
+              - text: Ajouter une gestion explicite des "sessions" ou des "contextes multiples".
+            - listitem [ref=e173]:
+              - strong [ref=e174]: "Ma contribution :"
+              - text: Proposer une structure de données pour segmenter la mémoire afin qu'un contexte de "Coding" n'interfère pas avec un contexte de "Brainstorming".
+        - listitem [ref=e175]:
+          - strong [ref=e176]: "Documentation des Limites :"
+          - list [ref=e177]:
+            - listitem [ref=e178]:
+              - strong [ref=e179]: "Action proposée :"
+              - text: Créer un document "Limitations Actuelles" clair, listant ce que le modèle
+              - emphasis [ref=e180]: ne peut pas
+              - text: "faire (ex: accorder des droits OS spécifiques, accéder à des API non listées)."
+            - listitem [ref=e181]:
+              - strong [ref=e182]: "Ma contribution :"
+              - text: Rédiger ce document de manière formelle pour guider les utilisateurs finaux.
+      - 'heading "🔮 Phase 3 : Fonctionnalités de Nouvelle Génération (Priorité Future)" [level=3] [ref=e183]'
+      - paragraph [ref=e184]: Ce sont les fonctionnalités qui nécessitent l'intégration de nouvelles bibliothèques ou modèles.
+      - list [ref=e185]:
+        - listitem [ref=e186]:
+          - strong [ref=e187]: "Intégration RAG (Retrieval-Augmented Generation) :"
+          - list [ref=e188]:
+            - listitem [ref=e189]:
+              - strong [ref=e190]: "Action proposée :"
+              - text: Mettre en place un
+              - emphasis [ref=e191]: stub
+              - text: "ou un prototype de recherche vectorielle (ex: avec ChromaDB ou FAISS)."
+            - listitem [ref=e192]:
+              - strong [ref=e193]: "Ma contribution :"
+              - text: Tester la capacité du modèle à
+              - emphasis [ref=e194]: citer
+              - text: la source de l'information qu'il utilise (très important pour la confiance).
+        - listitem [ref=e195]:
+          - strong [ref=e196]: "Support Audio :"
+          - list [ref=e197]:
+            - listitem [ref=e198]:
+              - strong [ref=e199]: "Action proposée :"
+              - text: "Si vous avez un modèle audio, tester l'enchaînement :"
+              - strong [ref=e200]: Audio $\rightarrow$ Texte $\rightarrow$ LLM
+              - text: .
+            - listitem [ref=e201]:
+              - strong [ref=e202]: "Ma contribution :"
+              - text: Créer le pipeline de
+              - emphasis [ref=e203]: transcription
+              - text: et valider que le LLM traite le texte transcrit comme s'il était entré directement.
+      - separator [ref=e204]
+      - heading "🎯 Quelle est la prochaine étape suggérée ?" [level=3] [ref=e205]
+      - paragraph [ref=e206]:
+        - text: Pour ne pas disperser les efforts, je suggère de
+        - strong [ref=e207]: "commencer par la Phase 1, point 1 : Tester l'environnement de bout en bout avec tous les outils activés."
+      - paragraph [ref=e208]: Ceci est le test de stress le plus important, car il valide que toutes les pièces du puzzle fonctionnent ensemble sous une pression d'utilisation maximale.
+      - paragraph [ref=e209]:
+        - strong [ref=e210]: Êtes-vous prêt à ce que nous commencions par des scénarios de test pour valider l'activation complète de tous les outils ?
+      - button "📋" [ref=e211] [cursor=pointer]
+    - generic [ref=e212]: les phases c'est trop de blabla, il faut un plan précis structuré. tu sais faire ?
+    - generic [ref=e213]:
+      - paragraph [ref=e214]:
+        - text: Compris. Vous voulez un plan d'exécution
+        - strong [ref=e215]: immédiat, séquentiel et non négociable
+        - text: .
+      - paragraph [ref=e216]:
+        - text: Voici un plan de travail structuré en
+        - strong [ref=e217]: 3 Jalons (Milestones)
+        - text: . Chaque jalon se termine par un livrable clé pour valider le passage au suivant.
+      - separator [ref=e218]
+      - heading "🗺️ PLAN D'ACTION TECHNIQUE (Feuille de Route Structurée)" [level=1] [ref=e219]
+      - 'heading "🧱 MILESTONE 1 : STABILISATION DU CORE (Objectif : Opérationnel)" [level=2] [ref=e220]'
+      - paragraph [ref=e221]:
+        - strong [ref=e222]: "Focus :"
+        - text: Transformer les composants testés en un système
+        - emphasis [ref=e223]: fiable
+        - text: et
+        - emphasis [ref=e224]: sécurisé
+        - text: .
+      - table [ref=e225]:
+        - rowgroup [ref=e226]:
+          - row "# Tâche Spécifique Description Technique Livrable Attendu" [ref=e227]:
+            - columnheader "#" [ref=e228]
+            - columnheader "Tâche Spécifique" [ref=e229]
+            - columnheader "Description Technique" [ref=e230]
+            - columnheader "Livrable Attendu" [ref=e231]
+        - rowgroup [ref=e232]:
+          - row "1.1 Validation des Outils en Live Tester l'invocation simultanée de read_file + run_shell + web_search dans un seul flux de conversation. Confirmation que l'enchaînement des outils est robuste (pas de crash, gestion des erreurs claire)." [ref=e233]:
+            - cell "1.1" [ref=e234]:
+              - strong [ref=e235]: "1.1"
+            - cell "Validation des Outils en Live" [ref=e236]:
+              - strong [ref=e237]: Validation des Outils en Live
+            - cell "Tester l'invocation simultanée de read_file + run_shell + web_search dans un seul flux de conversation." [ref=e238]:
+              - text: Tester l'invocation simultanée de
+              - code [ref=e239]: read_file
+              - text: +
+              - code [ref=e240]: run_shell
+              - text: +
+              - code [ref=e241]: web_search
+              - text: dans un seul flux de conversation.
+            - cell "Confirmation que l'enchaînement des outils est robuste (pas de crash, gestion des erreurs claire)." [ref=e242]
+          - row "1.2 Implémentation \"Ask Mode\" Ajouter le garde-fou de confirmation utilisateur pour toute commande shell/écriture. Un mécanisme bloquant l'exécution jusqu'à un [Confirmer/Annuler] explicite de l'utilisateur." [ref=e243]:
+            - cell "1.2" [ref=e244]:
+              - strong [ref=e245]: "1.2"
+            - cell "Implémentation \"Ask Mode\"" [ref=e246]:
+              - strong [ref=e247]: Implémentation "Ask Mode"
+            - cell "Ajouter le garde-fou de confirmation utilisateur pour toute commande shell/écriture." [ref=e248]
+            - cell "Un mécanisme bloquant l'exécution jusqu'à un [Confirmer/Annuler] explicite de l'utilisateur." [ref=e249]:
+              - text: Un mécanisme bloquant l'exécution jusqu'à un
+              - code [ref=e250]: "[Confirmer/Annuler]"
+              - text: explicite de l'utilisateur.
+          - 'row "1.3 Définition des Defaults Implémenter une configuration de workflow par défaut pour 2 scénarios types (ex: \"Analyse de code\", \"Recherche conceptuelle\"). Un fichier de configuration ou un appel API qui lance un workflow prédéfini sans intervention manuelle." [ref=e251]':
+            - cell "1.3" [ref=e252]:
+              - strong [ref=e253]: "1.3"
+            - cell "Définition des Defaults" [ref=e254]:
+              - strong [ref=e255]: Définition des Defaults
+            - 'cell "Implémenter une configuration de workflow par défaut pour 2 scénarios types (ex: \"Analyse de code\", \"Recherche conceptuelle\")." [ref=e256]'
+            - cell "Un fichier de configuration ou un appel API qui lance un workflow prédéfini sans intervention manuelle." [ref=e257]
+          - 'row "✅ VALIDATION JALON 1 : Le système est stable, sécurisé et prêt à être montré comme un produit fonctionnel minimal." [ref=e258]':
+            - 'cell "✅ VALIDATION JALON 1 : Le système est stable, sécurisé et prêt à être montré comme un produit fonctionnel minimal." [ref=e259]':
+              - strong [ref=e260]: "✅ VALIDATION JALON 1 :"
+              - text: Le système est stable, sécurisé et prêt à être montré comme un produit fonctionnel minimal.
+            - cell [ref=e261]
+            - cell [ref=e262]
+            - cell [ref=e263]
+      - separator [ref=e264]
+      - 'heading "🧠 MILESTONE 2 : AMÉLIORATION DE L''EXPÉRIENCE (Objectif : Utilisable)" [level=2] [ref=e265]'
+      - paragraph [ref=e266]:
+        - strong [ref=e267]: "Focus :"
+        - text: Améliorer l'intelligence et l'ergonomie pour le développeur/utilisateur final.
+      - table [ref=e268]:
+        - rowgroup [ref=e269]:
+          - row "# Tâche Spécifique Description Technique Livrable Attendu" [ref=e270]:
+            - columnheader "#" [ref=e271]
+            - columnheader "Tâche Spécifique" [ref=e272]
+            - columnheader "Description Technique" [ref=e273]
+            - columnheader "Livrable Attendu" [ref=e274]
+        - rowgroup [ref=e275]:
+          - 'row "2.1 Gestion de Session/Contexte Implémenter un mécanisme pour séparer explicitement les \"threads de mémoire\" (ex: Context: [Coding], Context: [Research]). Le modèle se souvient de la portée contextuelle actuelle et n''y injecte pas de mémoire externe." [ref=e276]':
+            - cell "2.1" [ref=e277]:
+              - strong [ref=e278]: "2.1"
+            - cell "Gestion de Session/Contexte" [ref=e279]:
+              - strong [ref=e280]: Gestion de Session/Contexte
+            - 'cell "Implémenter un mécanisme pour séparer explicitement les \"threads de mémoire\" (ex: Context: [Coding], Context: [Research])." [ref=e281]':
+              - text: "Implémenter un mécanisme pour séparer explicitement les \"threads de mémoire\" (ex:"
+              - code [ref=e282]: "Context: [Coding]"
+              - text: ","
+              - code [ref=e283]: "Context: [Research]"
+              - text: ).
+            - cell "Le modèle se souvient de la portée contextuelle actuelle et n'y injecte pas de mémoire externe." [ref=e284]
+          - row "2.2 Documentation des Limites Formaliser la documentation des garde-fous (ce que le système ne peut pas faire). Un document README.md mis à jour et visible pour l'utilisateur final." [ref=e285]:
+            - cell "2.2" [ref=e286]:
+              - strong [ref=e287]: "2.2"
+            - cell "Documentation des Limites" [ref=e288]:
+              - strong [ref=e289]: Documentation des Limites
+            - cell "Formaliser la documentation des garde-fous (ce que le système ne peut pas faire)." [ref=e290]:
+              - text: Formaliser la documentation des garde-fous (ce que le système
+              - strong [ref=e291]: ne peut pas
+              - text: faire).
+            - cell "Un document README.md mis à jour et visible pour l'utilisateur final." [ref=e292]
+          - row "2.3 Optimisation UX Finaliser les micro-interactions (streaming, état de réflexion) pour fluidifier le passage de l'interaction au résultat. Une expérience utilisateur fluide, sans \"pauses\" techniques visibles." [ref=e293]:
+            - cell "2.3" [ref=e294]:
+              - strong [ref=e295]: "2.3"
+            - cell "Optimisation UX" [ref=e296]:
+              - strong [ref=e297]: Optimisation UX
+            - cell "Finaliser les micro-interactions (streaming, état de réflexion) pour fluidifier le passage de l'interaction au résultat." [ref=e298]
+            - cell "Une expérience utilisateur fluide, sans \"pauses\" techniques visibles." [ref=e299]
+          - 'row "✅ VALIDATION JALON 2 : Le système est non seulement fonctionnel, mais il est agréable et prévisible à utiliser." [ref=e300]':
+            - 'cell "✅ VALIDATION JALON 2 : Le système est non seulement fonctionnel, mais il est agréable et prévisible à utiliser." [ref=e301]':
+              - strong [ref=e302]: "✅ VALIDATION JALON 2 :"
+              - text: Le système est non seulement fonctionnel, mais il est agréable et prévisible à utiliser.
+            - cell [ref=e303]
+            - cell [ref=e304]
+            - cell [ref=e305]
+      - separator [ref=e306]
+      - 'heading "🔮 MILESTONE 3 : ÉTENDABILITÉ (Objectif : Prochain Produit)" [level=2] [ref=e307]'
+      - paragraph [ref=e308]:
+        - strong [ref=e309]: "Focus :"
+        - text: Intégrer des capacités externes avancées.
+      - table [ref=e310]:
+        - rowgroup [ref=e311]:
+          - row "# Tâche Spécifique Description Technique Livrable Attendu" [ref=e312]:
+            - columnheader "#" [ref=e313]
+            - columnheader "Tâche Spécifique" [ref=e314]
+            - columnheader "Description Technique" [ref=e315]
+            - columnheader "Livrable Attendu" [ref=e316]
+        - rowgroup [ref=e317]:
+          - 'row "3.1 Prototype RAG Intégrer un moteur de recherche vectorielle (ex: ChromaDB) pour que l''IA cite ses sources. Une réponse qui inclut une section [Source: Document X, Page Y] et qui est basée sur le contenu vectoriel." [ref=e318]':
+            - cell "3.1" [ref=e319]:
+              - strong [ref=e320]: "3.1"
+            - cell "Prototype RAG" [ref=e321]:
+              - strong [ref=e322]: Prototype RAG
+            - 'cell "Intégrer un moteur de recherche vectorielle (ex: ChromaDB) pour que l''IA cite ses sources." [ref=e323]'
+            - 'cell "Une réponse qui inclut une section [Source: Document X, Page Y] et qui est basée sur le contenu vectoriel." [ref=e324]':
+              - text: Une réponse qui inclut une section
+              - code [ref=e325]: "[Source: Document X, Page Y]"
+              - text: et qui est basée sur le contenu vectoriel.
+          - 'row "3.2 Support Audio (Pipeline) Tester le flux complet : Audio $\\rightarrow$ Transcription $\\rightarrow$ LLM. Capacité à prendre un fichier audio et à générer une réponse cohérente basée sur son contenu transcrit." [ref=e326]':
+            - cell "3.2" [ref=e327]:
+              - strong [ref=e328]: "3.2"
+            - cell "Support Audio (Pipeline)" [ref=e329]:
+              - strong [ref=e330]: Support Audio (Pipeline)
+            - 'cell "Tester le flux complet : Audio $\\rightarrow$ Transcription $\\rightarrow$ LLM." [ref=e331]':
+              - text: "Tester le flux complet :"
+              - strong [ref=e332]: Audio $\rightarrow$ Transcription $\rightarrow$ LLM
+              - text: .
+            - cell "Capacité à prendre un fichier audio et à générer une réponse cohérente basée sur son contenu transcrit." [ref=e333]
+      - separator [ref=e334]
+      - paragraph [ref=e335]:
+        - strong [ref=e336]: "👉 Prochaine Action Demandée :"
+        - strong [ref=e337]: Concentrons-nous sur le JALON 1.
+        - text: Êtes-vous d'accord pour commencer par la validation des outils en live (Tâche 1.1) ?
+      - button "📋" [ref=e338] [cursor=pointer]
+  - generic [ref=e339]:
+    - textbox "Écris un message… (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)" [active] [ref=e340]:
+      - /placeholder: Écris un message…  (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)
+    - button "🖼️" [ref=e341] [cursor=pointer]
+    - button "Envoyer" [ref=e342] [cursor=pointer]

@@ -1,0 +1,14 @@
+- generic [ref=e1]:
+  - heading "Loom Chat gemma-uncensored Reset" [level=1] [ref=e2]:
+    - text: Loom Chat
+    - combobox [ref=e3]:
+      - option "gemma-uncensored" [selected]
+    - button "Reset" [ref=e4] [cursor=pointer]
+  - group [ref=e5]:
+    - generic "🧩 Skills (contexte)" [ref=e6] [cursor=pointer]
+  - generic [ref=e8]: Raconte en détail et longuement l'histoire de la Révolution française, étape par étape, en au moins 600 mots.
+  - generic [ref=e9]:
+    - textbox "Écris un message… (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)" [active] [ref=e10]:
+      - /placeholder: Écris un message…  (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)
+    - button "🖼️" [ref=e11] [cursor=pointer]
+    - button "Envoyer" [ref=e12] [cursor=pointer]

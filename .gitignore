@@ -1,0 +1,11 @@
+# Modèles (trop lourds)
+loom/models/
+loom/data/
+# Surcharges machine
+*.local.toml
+# Python / uv
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc

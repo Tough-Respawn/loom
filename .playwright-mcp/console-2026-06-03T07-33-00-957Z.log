@@ -1,0 +1,2 @@
+[      58ms] [LOG] Jeu réinitialisé. X commence. @ http://127.0.0.1:8078/game.js:149
+[      65ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://127.0.0.1:8078/favicon.ico:0

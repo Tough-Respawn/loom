@@ -1,0 +1,31 @@
+- generic [active] [ref=e1]:
+  - heading "Loom Chat 🧠 gemma-uncensored Reset" [level=1] [ref=e2]:
+    - text: Loom Chat
+    - generic "Réflexion préalable du modèle (décoché = réponse directe, plus rapide)" [ref=e3] [cursor=pointer]:
+      - checkbox "🧠" [checked] [ref=e4]
+      - text: 🧠
+    - combobox [ref=e5]:
+      - option "gemma-uncensored" [selected]
+    - button "Reset" [ref=e6] [cursor=pointer]
+  - group [ref=e7]:
+    - generic "🧩 Skills (contexte)" [ref=e8] [cursor=pointer]
+  - group [ref=e9]:
+    - generic "🛠️ Outils (boucle agentique)" [ref=e10] [cursor=pointer]
+    - text: ⚠️ ⚠️ ⚠️
+  - group [ref=e11]:
+    - generic "🤖 Multi-agent (Planificateur → Développeur → Relecteur)" [ref=e12] [cursor=pointer]
+    - generic [ref=e18]:
+      - textbox "Tâche pour le pipeline multi-agent…" [ref=e19]
+      - button "…" [disabled] [ref=e21]
+  - generic [ref=e13]:
+    - generic [ref=e22]: Tu connais le jeu du démineur ? Crée-le pour que je puisse y jouer sur une page web. Mets tous les fichiers dans le sous-dossier loom-demineur-v2/. Utilise HTML, CSS et JavaScript, en découpant le JS en plusieurs petits fichiers.
+    - group [ref=e23]:
+      - generic "🧠 réflexion Planificateur ..." [ref=e24] [cursor=pointer]
+    - generic [ref=e25]:
+      - generic [ref=e26]: Planificateur (gemma-uncensored)
+      - text: ▋
+  - generic [ref=e14]:
+    - textbox "Écris un message… (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)" [ref=e15]:
+      - /placeholder: Écris un message…  (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)
+    - button "🖼️" [ref=e16] [cursor=pointer]
+    - button "Envoyer" [ref=e17] [cursor=pointer]

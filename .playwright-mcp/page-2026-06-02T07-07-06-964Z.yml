@@ -1,0 +1,72 @@
+- generic [active] [ref=e1]:
+  - heading "Loom Chat 🧠 gemma-uncensored Reset" [level=1] [ref=e2]:
+    - text: Loom Chat
+    - generic "Réflexion préalable du modèle (décoché = réponse directe, plus rapide)" [ref=e3] [cursor=pointer]:
+      - checkbox "🧠" [checked] [ref=e4]
+      - text: 🧠
+    - combobox [ref=e5]:
+      - option "gemma-uncensored" [selected]
+    - button "Reset" [ref=e6] [cursor=pointer]
+  - group [ref=e7]:
+    - generic "🧩 Skills (contexte)" [ref=e8] [cursor=pointer]
+  - group [ref=e9]:
+    - generic "🛠️ Outils (boucle agentique)" [ref=e10] [cursor=pointer]
+    - text: ⚠️ ⚠️ ⚠️
+  - group [ref=e11]:
+    - generic "🤖 Multi-agent (Planificateur → Développeur → Relecteur)" [ref=e12] [cursor=pointer]
+    - generic [ref=e18]:
+      - textbox "Tâche pour le pipeline multi-agent…" [ref=e19]
+      - button "…" [disabled] [ref=e21]
+  - generic [ref=e13]:
+    - generic [ref=e22]: Tu connais le jeu du démineur ? Crée-le pour que je puisse y jouer sur une page web. Mets tous les fichiers dans le sous-dossier loom-demineur/. Utilise HTML, CSS et JavaScript, en découpant le JS en plusieurs petits fichiers.
+    - group [ref=e23]:
+      - generic "🧠 réflexion Planificateur" [ref=e27] [cursor=pointer]
+    - generic [ref=e25]:
+      - generic [ref=e26]: Planificateur (gemma-uncensored)
+      - generic [ref=e28]:
+        - paragraph [ref=e29]:
+          - text: Voici le plan d'implémentation structuré dans le sous-dossier
+          - code [ref=e30]: loom-demineur/
+          - text: . Le JavaScript est découpé en trois fichiers spécialisés pour une meilleure séparation des préoccupations (MVC léger).
+        - list [ref=e31]:
+          - listitem [ref=e32]:
+            - strong [ref=e33]:
+              - code [ref=e34]: loom-demineur/index.html
+            - text: ": Structure HTML principale ; charge"
+            - code [ref=e35]: style.css
+            - text: et les scripts JavaScript (
+            - code [ref=e36]: board.js
+            - text: ","
+            - code [ref=e37]: renderer.js
+            - text: ","
+            - code [ref=e38]: game.js
+            - text: ).
+          - listitem [ref=e39]:
+            - strong [ref=e40]:
+              - code [ref=e41]: loom-demineur/style.css
+            - text: ": Styles visuels pour la grille, les cellules (démasquées, minées, etc.) et l'interface utilisateur."
+          - listitem [ref=e42]:
+            - strong [ref=e43]:
+              - code [ref=e44]: loom-demineur/board.js
+            - text: ": Gère l'état interne du jeu : la génération du plateau (placement des mines), le stockage des valeurs des cellules et l'état de chaque cellule (caché/révélé)."
+          - listitem [ref=e45]:
+            - strong [ref=e46]:
+              - code [ref=e47]: loom-demineur/renderer.js
+            - text: ": Responsable de la synchronisation de l'état ("
+            - code [ref=e48]: board.js
+            - text: ") avec le DOM : créer/mettre à jour les éléments de la grille et appliquer les classes CSS appropriées."
+          - listitem [ref=e49]:
+            - strong [ref=e50]:
+              - code [ref=e51]: loom-demineur/game.js
+            - text: ": Contient la logique métier : écouter les clics de l'utilisateur, gérer les événements (clic gauche/droit), déclencher la propagation (révéler les voisins) et vérifier les conditions de victoire/défaite."
+        - button "📋" [ref=e52] [cursor=pointer]
+    - group [ref=e53]:
+      - generic "🧠 réflexion Développeur ..." [ref=e54] [cursor=pointer]
+    - generic [ref=e55]:
+      - generic [ref=e56]: Développeur (gemma-uncensored)
+      - text: ▋
+  - generic [ref=e14]:
+    - textbox "Écris un message… (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)" [ref=e15]:
+      - /placeholder: Écris un message…  (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)
+    - button "🖼️" [ref=e16] [cursor=pointer]
+    - button "Envoyer" [ref=e17] [cursor=pointer]

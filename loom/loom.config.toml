@@ -1,0 +1,131 @@
+# Config Loom — paramètres NON liés au hardware.
+# Les valeurs hardware (n_gpu_layers, threads) sont auto-détectées par serve.py ;
+# on ne les met ici (section [override]) que pour forcer/plafonner.
+# Le chemin du binaire spécifique à une machine va dans loom.config.local.toml.
+
+[[models]]
+# Gemma 4 E4B *ablitéré* (non censuré) — même archi que le Gemma officiel,
+# poids décensurés (mradermacher). Q4_K_M ~5.34 Go. Garde la vision via notre mmproj.
+id = "gemma-uncensored"
+repo = "mradermacher/gemma-4-E4B-it-uncensored-GGUF"
+filename = "gemma-4-E4B-it-uncensored.Q4_K_M.gguf"
+# mmproj du repo unsloth officiel, déjà présent localement (même archi -> compatible).
+mmproj_filename = "mmproj-F16.gguf"   # "" pour désactiver la vision
+n_layers = 35
+size_mb = 5340
+
+[server]
+# Contexte 24576 : le fan-out génère/corrige PLUSIEURS fichiers EN PARALLÈLE (n_parallel=4,
+# KV unifié => le pool -c est PARTAGÉ entre slots concurrents). 8192 saturait dès 2 gros
+# fichiers (2×4100 tok). Gemma supporte 131072 ; avec sliding-window (n_swa=512) + KV q8_0
+# le KV reste léger -> 24576 tient sur 6 Go. cf. docs/perf-gpu.md.
+context = 24576
+# Slots de batching continu (--parallel). SOURCE DE VÉRITÉ du parallélisme : serve.py
+# l'épingle au lancement ET le fan-out (compute_budget) en dérive sa concurrence + ses
+# tailles de génération → impossible de déborder le pool KV partagé (kv_unified), quelle
+# que soit la taille/le nombre de fichiers. cf. docs/plan-harness-robustesse.md.
+n_parallel = 4
+port = 8080
+# Binaire llama-server : "llama-server" si dans le PATH, sinon override en local.
+bin = "llama-server"
+# Binaire llama-swap (routeur multi-modèles) : "llama-swap" si dans le PATH.
+swap_bin = "llama-swap"
+
+[override]
+# n_gpu_layers = 35   # décommenter pour forcer l'offload total si le modèle tient
+# threads = 8
+
+[chat]
+default_model = "gemma-uncensored"
+system_prompt = "Tu es un assistant utile, concis et factuel. Réponds en français."
+history_path = "loom/data/conversation.json"
+web_port = 8000
+skills_dir = "loom/skills"
+max_tokens = 2048
+request_timeout = 120
+max_retries = 6
+context_token_budget = 5000
+keep_recent_messages = 6
+# Pipeline multi-agent par défaut (route /run). Voir [[agents]] plus bas.
+default_pipeline = ["planner", "coder", "reviewer"]
+# Passes review->fix max : le développeur repasse tant que le relecteur bloque
+# (borné). 4 => récupère les fichiers manquants quand un batch tronque.
+max_revisions = 4
+
+[tools]
+# Boucle tool-use. `enabled` vide => chat classique (aucun outil exposé au modèle).
+# Pour activer la lecture de fichiers : enabled = ["read_file"].
+# PRÉREQUIS live : relancer llama-server (serve.py inclut déjà --jinja) pour que
+# Gemma émette des tool_calls structurés.
+enabled = []
+# Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
+# loom.config.local.toml pour pointer la vraie racine de la machine.
+workspace_dir = "."
+read_file_max_bytes = 200000
+
+[web_search]
+# snippet-first : on utilise les extraits des résultats au lieu de scraper les
+# pages (évite les 403/rate-limit, plus rapide). Passe à true pour du contenu
+# complet (recherche approfondie) quand un backend fiable (SearXNG/Tavily) est en place.
+fetch_pages = false
+
+[permissions]
+# mode = "allow" : write_file/edit_file/run_shell s'exécutent SANS confirmation
+# (pipeline multi-agent autonome, plus de blocage sur les bulles Autoriser).
+# La deny-list DURE (rm -rf, Remove-Item -Recurse -Force, format, dd if=…) reste
+# incontournable même en allow. Repasser à "ask" pour ré-activer la confirmation.
+mode = "allow"
+
+# === Pipeline multi-agent (route /run) : plan -> code -> review, avec outils ===
+# Chaque agent a son propre jeu d'outils (gardés par le mode permission). Tous sur
+# gemma-uncensored pour l'instant (1 modèle) ; llama-swap permettra des modèles distincts.
+
+[[agents]]
+id = "planner"
+role = "Planificateur"
+model = "gemma-uncensored"
+tools = ["read_file", "web_search"]
+max_tokens = 3072
+system_prompt = """Tu es le PLANIFICATEUR. Analyse la tâche et produis un plan d'implémentation \
+concis et numéroté : pour chaque fichier à créer, donne son nom et son rôle en une ligne. \
+DÉCOUPE en PETITS fichiers (vise ~120 lignes max chacun) : un gros module doit être éclaté en \
+plusieurs fichiers focalisés. Pour du JavaScript volumineux, prévois explicitement plusieurs \
+fichiers (ex. board.js pour la grille, render.js pour l'affichage, game.js pour la logique/les \
+événements) chargés par la page, JAMAIS un seul script.js monolithique. Tu peux lire les fichiers \
+existants (read_file) et chercher en ligne (web_search). NE CODE PAS, ne modifie aucun fichier : \
+tu produis seulement le plan. Va droit au but, pas de remplissage."""
+
+[[agents]]
+id = "coder"
+role = "Développeur"
+model = "gemma-uncensored"
+tools = ["read_file", "write_file", "edit_file", "run_shell"]
+max_tokens = 4096
+thinking = true
+system_prompt = """Tu es le DÉVELOPPEUR. Tu IMPLÉMENTES le plan en AGISSANT, pas en parlant.
+
+RÈGLES ABSOLUES :
+- N'demande JAMAIS la permission, ne dis JAMAIS « veux-tu que je… » ni « je vais créer… » : \
+APPELLE directement l'outil write_file pour CHAQUE fichier du plan, l'un après l'autre.
+- Tu DOIS produire du code complet et fonctionnel dans write_file — jamais de « … » ni de TODO.
+- DÉCOUPE en PETITS fichiers focalisés (vise ~120 lignes max par fichier). Un gros module \
+JavaScript se découpe en plusieurs fichiers (ex. board.js, render.js, game.js) chargés par la page : \
+un seul write_file peut être tronqué s'il est trop long. Un appel write_file = un fichier court.
+- Utilise edit_file pour modifier un fichier existant, read_file pour le lire avant de le changer, \
+run_shell pour exécuter si besoin. La confirmation éventuelle est gérée HORS de toi : ne la mentionne pas.
+- Commence IMMÉDIATEMENT par le premier write_file. Quand tous les fichiers sont écrits, termine par \
+un résumé d'une ligne de ce que tu as créé."""
+
+[[agents]]
+id = "reviewer"
+role = "Relecteur"
+model = "gemma-uncensored"
+tools = ["read_file", "verify", "run_shell"]
+system_prompt = """Tu es le RELECTEUR. Tu valides sur PREUVE, pas sur lecture. \
+APPELLE D'ABORD l'outil verify sur le dossier de travail : il vérifie déterministiquement la \
+syntaxe (JS via node --check, Python, JSON) et renvoie les défauts réels (file:ligne). \
+Si verify signale des défauts, c'est BLOQUANT. Lis aussi les fichiers (read_file) pour juger la \
+complétude (pas de « … » ni de placeholder, tous les fichiers du plan présents). Ne demande pas au \
+développeur de travailler : constate. Termine IMPÉRATIVEMENT par une ligne de verdict, RIEN après : \
+« VERDICT: OK » seulement si verify est propre ET le plan complet, sinon « VERDICT: BLOQUANT » suivi \
+de la liste précise des corrections (reprends les file:ligne de verify). Sans cette ligne, c'est bloquant."""

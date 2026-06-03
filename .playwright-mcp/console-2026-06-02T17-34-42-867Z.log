@@ -1,0 +1,6 @@
+[     125ms] [LOG] Board initialisé : 10x10 avec 10 mines. @ http://127.0.0.1:8097/board.js:44
+[     126ms] TypeError: this.renderBoardStructure is not a function
+    at Object.resetDOM (http://127.0.0.1:8097/renderer.js:145:19)
+    at initializeGame (http://127.0.0.1:8097/game.js:125:18)
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8097/game.js:146:5)
+[     132ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://127.0.0.1:8097/favicon.ico:0
