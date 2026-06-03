@@ -199,3 +199,90 @@ def test_derive_modes_patch_when_verifier_returns_none(tmp_path):
     specs = [FileSpec("style.css", "styles")]
     planned = derive_modes(specs, str(tmp_path), verifier=lambda paths: None)
     assert planned[0].mode == "patch"
+
+
+def test_edit_one_applies_targeted_edit_and_returns_full_content(tmp_path):
+    from loom.parallel import FileSpec, edit_one
+
+    (tmp_path / "app.js").write_text("let x = 1;\nlet y = 2;\n", encoding="utf-8")
+    client = FakeClient(
+        default='{"old_string": "let x = 1;", "new_string": "let x = 9;"}'
+    )
+    path, content = edit_one(
+        client,
+        "design",
+        FileSpec("app.js", "logique"),
+        str(tmp_path),
+        model="m",
+        max_tokens=512,
+        file_char_cap=8192,
+    )
+    assert path == "app.js"
+    assert content == "let x = 9;\nlet y = 2;\n"
+    assert (tmp_path / "app.js").read_text(
+        encoding="utf-8"
+    ) == "let x = 9;\nlet y = 2;\n"
+
+
+def test_edit_one_falls_back_to_rewrite_when_old_string_absent(tmp_path):
+    from loom.parallel import FileSpec, edit_one
+
+    (tmp_path / "app.js").write_text("let x = 1;\n", encoding="utf-8")
+    client = FakeClient(
+        by_keyword={
+            "JSON": '{"old_string": "ABSENT", "new_string": "z"}',
+            "COMPLET et FINAL": "let x = 1;\nlet z = 3;\n",
+        }
+    )
+    path, content = edit_one(
+        client,
+        "design",
+        FileSpec("app.js", "logique"),
+        str(tmp_path),
+        model="m",
+        max_tokens=512,
+        file_char_cap=8192,
+    )
+    assert path == "app.js"
+    assert content.strip() == "let x = 1;\nlet z = 3;"
+
+
+def test_edit_one_falls_back_on_invalid_json(tmp_path):
+    from loom.parallel import FileSpec, edit_one
+
+    (tmp_path / "app.js").write_text("let x = 1;\n", encoding="utf-8")
+    client = FakeClient(
+        by_keyword={
+            "JSON": "ceci n'est pas du json",
+            "COMPLET et FINAL": "REWRITTEN\n",
+        }
+    )
+    _, content = edit_one(
+        client,
+        "design",
+        FileSpec("app.js", "logique"),
+        str(tmp_path),
+        model="m",
+        max_tokens=512,
+        file_char_cap=8192,
+    )
+    assert content.strip() == "REWRITTEN"
+
+
+def test_edit_one_caps_injected_content_to_half_file_char_cap(tmp_path):
+    from loom.parallel import FileSpec, edit_one
+
+    (tmp_path / "big.js").write_text("X" * 50_000, encoding="utf-8")
+    client = FakeClient(default='{"old_string": "XX", "new_string": "Y"}')
+    edit_one(
+        client,
+        "design",
+        FileSpec("big.js", "logique"),
+        str(tmp_path),
+        model="m",
+        max_tokens=512,
+        file_char_cap=8192,
+    )
+    injected = client.calls[0]["prompt"]
+    assert "…[tronqué]" in injected
+    assert len(injected) < 8192

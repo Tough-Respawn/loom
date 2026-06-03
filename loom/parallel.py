@@ -17,6 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from loom.tools.base import ToolError
+from loom.tools.fs import make_edit_file
+
 
 @dataclass
 class FileSpec:
@@ -246,6 +249,87 @@ def generate_one(
         thinking=False,
     )
     return spec.path, extract_code(raw)
+
+
+_EDIT_SYS = (
+    "Tu modifies un fichier EXISTANT par UN remplacement ciblé. Tu réponds UNIQUEMENT "
+    'un objet JSON {"old_string": "...", "new_string": "..."} où old_string est un '
+    "extrait EXACT et UNIQUE du fichier (copié au caractère près, mêmes espaces/retours) "
+    "à remplacer par new_string. Pas de markdown, pas d'explication."
+)
+
+
+def _edit_prompt(spec: FileSpec, design: str, content: str, defects: str = "") -> str:
+    head = (
+        f"Architecture PARTAGÉE :\n{design}\n\n"
+        f"Fichier `{spec.path}` ({spec.role}). Contenu ACTUEL (copie old_string À "
+        f"L'IDENTIQUE depuis ce texte) :\n-----\n{content}\n-----\n\n"
+    )
+    if defects:
+        head += f"DÉFAUTS à corriger :\n{defects}\n\n"
+    return head + "Renvoie le JSON {old_string, new_string} du remplacement ciblé."
+
+
+def edit_one(
+    client,
+    design: str,
+    spec: FileSpec,
+    workspace: str,
+    *,
+    model: str | None,
+    max_tokens: int,
+    file_char_cap: int,
+    defects: str = "",
+) -> tuple[str, str]:
+    """PATCH ciblé en 2 temps DANS le harness (cf. spec §5) :
+    1) read déterministe du fichier (borné file_char_cap/2, byte-exact pour le match) ;
+    2) le modèle renvoie {old_string, new_string} ;
+    3) application via make_edit_file (erreurs exploitables) ;
+    4) FALLBACK generate_one borné si JSON invalide / introuvable / ambigu.
+    Renvoie (path, CONTENU COMPLET relu) — contrat d'état identique à generate_one.
+    """
+    root = Path(workspace)
+    abspath = root / spec.path
+    content = abspath.read_bytes().decode("utf-8")  # byte-exact (match edit_file)
+    cap = max(256, file_char_cap // 2)
+    injected = content if len(content) <= cap else content[:cap] + "\n…[tronqué]"
+    raw = client.complete(
+        [{"role": "user", "content": _edit_prompt(spec, design, injected, defects)}],
+        _EDIT_SYS,
+        max_tokens=max_tokens,
+        model=model,
+        thinking=False,
+    )
+
+    def _fallback() -> tuple[str, str]:
+        return generate_one(
+            client, design, spec, [spec.path], model=model, max_tokens=max_tokens
+        )
+
+    try:
+        data = _extract_json(raw)
+        old_string = data["old_string"]
+        new_string = data["new_string"]
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return _fallback()
+    if (
+        not isinstance(old_string, str)
+        or not isinstance(new_string, str)
+        or not old_string
+    ):
+        return _fallback()
+    editor = make_edit_file(str(root))
+    try:
+        editor.run(
+            {"path": spec.path, "old_string": old_string, "new_string": new_string}
+        )
+    except ToolError:
+        return _fallback()
+    # Relit byte-exact puis normalise les fins de ligne en \n : contrat d'état
+    # identique à generate_one (qui renvoie du \n via extract_code), indépendant du
+    # CRLF que l'OS/Git a pu introduire sur le fichier existant.
+    final = abspath.read_bytes().decode("utf-8").replace("\r\n", "\n")
+    return spec.path, final
 
 
 def generate_files(
