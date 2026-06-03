@@ -1,6 +1,6 @@
 # État du projet — Loom
 
-> Dernière mise à jour : 2026-06-01
+> Dernière mise à jour : 2026-06-03
 
 Assistant IA **local, multimodal et offline** : rendre un petit modèle open-source réellement utile
 par de la plomberie (runtime, mémoire, skills, vision, contexte). Voir [README.md](README.md) pour le
@@ -52,13 +52,37 @@ pitch et le démarrage.
   route `/run` (streaming live). Les agents ont leurs **propres outils** (le développeur écrit
   via `stream_chat_tools` + confirmation ; le relecteur lit/teste) et une **boucle review→fix**
   bornée (verdict `BLOQUANT`/`OK`). `[[agents]]` définis dans le config.
-- **214 tests verts**, ruff clean.
+
+### Moteur unique fan-out (branche `feat/moteur-unique`, à valider sur le vrai modèle)
+> Fusion de `run_pipeline` (séquentiel) et `run_build` (fan-out) en **un seul moteur bâti sur le
+> fan-out**. Spec : `docs/superpowers/specs/2026-06-03-loom-moteur-unique-design.md`. Plan :
+> `docs/superpowers/plans/2026-06-03-loom-moteur-unique.md`. **346 tests verts**, ruff clean.
+
+- **Mode par fichier déterministe** (`derive_modes`/`cap_rewrites`, `loom/parallel.py`) : fichier
+  absent → `create` (génération complète) ; existant + verify KO → `rewrite` (borné > 200 lignes →
+  dégradé en `patch`) ; existant + verify OK → `patch`. Aucun jugement confié au modèle.
+- **`edit_one`** : patch ciblé en 2 temps (read déterministe → `{old_string,new_string}` → application
+  via `make_edit_file` → **fallback** réécriture complète si introuvable/ambigu/JSON invalide).
+- **`explore()`** (`loom/explore.py`) : ground-truth brownfield déterministe (lecture bornée des
+  fichiers cités), injectée dans le PLAN via `plan_files(explore_summary=…)`.
+- **best-of-N en réparation** (`best_of`, N=2) : garde le 1er candidat qui passe `verify_syntax_file`.
+- **Stop anti-divergence** : la boucle FIX s'arrête si l'ensemble des `location` de défauts ne
+  décroît pas (un 4B oscille sinon). `max_rounds` borné.
+- **`review_semantic`** (advisory, non bloquant, **off par défaut**) : signale les défauts
+  comportementaux que le verify déterministe ne voit pas. Activable via le flag form `semantic`.
+- **`run_pipeline` conservé deprecated** sous `mode=='pipeline'` ; son retrait (PR9) attend la preuve
+  de parité du moteur fusionné sur 3 tâches réelles avec le vrai Gemma 4B.
+- **214 → 346 tests verts**, ruff clean.
 
 ## Reste
-1. `llama-swap` installé + 2ᵉ modèle (agents du pipeline sur des modèles distincts).
-2. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite — `fetch_pages=false`
+1. **Valider le moteur fusionné sur le vrai Gemma 4B** (greenfield Démineur + brownfield/patch sur
+   projet existant). Si parité OK → PR9 : retrait de `run_pipeline` + mapping des 11 tests
+   `test_run_pipeline_*`. Brancher `semantic_review` dans l'UI si souhaité. Boucle outillée
+   d'EXPLORE (différée).
+2. `llama-swap` installé + 2ᵉ modèle (agents du pipeline sur des modèles distincts).
+3. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite — `fetch_pages=false`
    en attendant).
-3. Persister/rejouer les runs multi-agent (aujourd'hui éphémères). RAG (skills volumineux), audio.
+4. Persister/rejouer les runs multi-agent (aujourd'hui éphémères). RAG (skills volumineux), audio.
 
 ## Conventions
 - Toolchain : **`uv`** (`uv run` / `uvx`) + **`ruff`** (hook PostToolUse lint+format PEP8).
