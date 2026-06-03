@@ -204,6 +204,7 @@ def run_build(
     from openai import APIConnectionError, APITimeoutError
 
     from loom.parallel import (
+        best_of,
         cap_rewrites,
         compute_budget,
         derive_modes,
@@ -389,27 +390,30 @@ def run_build(
         current = [(p, state[p]["content"]) for p in all_paths if p in state]
 
         def _fix_dispatch(s, _c=current, _d=diag):
-            if mode_by_path.get(s.path) == "patch":
-                return edit_one(
+            def _make():
+                if mode_by_path.get(s.path) == "patch":
+                    return edit_one(
+                        client,
+                        design,
+                        s,
+                        workspace,
+                        model=model,
+                        max_tokens=gen_max_tokens,
+                        file_char_cap=file_char_cap,
+                        defects=_d,
+                    )
+                return fix_one(
                     client,
                     design,
                     s,
-                    workspace,
+                    _c,
+                    _d,
                     model=model,
                     max_tokens=gen_max_tokens,
                     file_char_cap=file_char_cap,
-                    defects=_d,
                 )
-            return fix_one(
-                client,
-                design,
-                s,
-                _c,
-                _d,
-                model=model,
-                max_tokens=gen_max_tokens,
-                file_char_cap=file_char_cap,
-            )
+
+            return best_of(_make, 2)
 
         yield from _gen_phase(
             f"fix{rounds}",
