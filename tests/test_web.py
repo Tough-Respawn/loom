@@ -631,3 +631,49 @@ def test_run_releases_lock_after_completion(tmp_path):
     app.test_client().post("/run", data={"task": "x", "mode": "pipeline"}).get_data()
     assert app.config["_chat_lock"].acquire(blocking=False) is True
     app.config["_chat_lock"].release()
+
+
+class _ClassifyClient:
+    """Client minimal exposant complete() pour /classify (et /pick-folder)."""
+
+    def __init__(self, reply="BUILD"):
+        self.reply = reply
+
+    def complete(
+        self,
+        messages,
+        system_prompt,
+        max_tokens=8,
+        model=None,
+        thinking=False,
+        temperature=None,
+    ):
+        return self.reply
+
+
+def _make_classify(tmp_path, reply="BUILD"):
+    conv = Conversation(system_prompt="sys", model="m")
+    history = tmp_path / "conv.json"
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir(parents=True)
+    return create_app(
+        conv,
+        _ClassifyClient(reply),
+        history,
+        skills_dir,
+        models=["m"],
+        interrupt_wait=0.3,
+    )
+
+
+def test_classify_endpoint_returns_mode(tmp_path):
+    app = _make_classify(tmp_path, reply="BUILD")
+    resp = app.test_client().post("/classify", data={"message": "crée un jeu"})
+    assert resp.status_code == 200
+    assert resp.get_json()["mode"] == "build"
+
+
+def test_classify_empty_message_is_chat(tmp_path):
+    app = _make_classify(tmp_path, reply="BUILD")
+    resp = app.test_client().post("/classify", data={"message": "  "})
+    assert resp.get_json()["mode"] == "chat"
