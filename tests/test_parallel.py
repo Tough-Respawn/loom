@@ -316,3 +316,50 @@ def test_cap_rewrites_ignores_non_rewrite_modes(tmp_path):
     ]
     out = cap_rewrites(planned, str(tmp_path), max_lines=200)
     assert [p.mode for p in out] == ["create", "patch"]
+
+
+def test_file_prompt_clips_design_to_file_char_cap():
+    from loom.parallel import FileSpec, _file_prompt
+
+    spec = FileSpec("app.js", "logique")
+    big_design = "D" * 50_000
+    prompt = _file_prompt(spec, big_design, ["app.js"], file_char_cap=8192)
+    assert "…[tronqué]" in prompt
+    assert len(prompt) < 8192 * 2  # borné, pas 50k
+
+
+def test_file_prompt_no_clip_by_default():
+    from loom.parallel import FileSpec, _file_prompt
+
+    spec = FileSpec("app.js", "logique")
+    big_design = "D" * 50_000
+    prompt = _file_prompt(spec, big_design, ["app.js"])  # pas de cap -> pas de clip
+    assert "…[tronqué]" not in prompt
+    assert big_design in prompt
+
+
+def test_generate_one_passes_file_char_cap_to_prompt():
+    from loom.parallel import FileSpec, generate_one
+
+    spec = FileSpec("app.js", "logique")
+    client = FakeClient(default="let x=1;")
+    generate_one(
+        client,
+        "D" * 50_000,
+        spec,
+        ["app.js"],
+        model="m",
+        max_tokens=512,
+        file_char_cap=8192,
+    )
+    assert "…[tronqué]" in client.calls[0]["prompt"]
+
+
+def test_compute_budget_measured_reserve_shrinks_gen():
+    from loom.parallel import compute_budget
+
+    _, gen_small, _ = compute_budget(8192, 1, 1, reserve_prompt_tokens=1024)
+    _, gen_big, _ = compute_budget(8192, 1, 1, reserve_prompt_tokens=4096)
+    assert (
+        gen_big < gen_small
+    )  # un prompt mesuré plus gros laisse moins pour la génération
