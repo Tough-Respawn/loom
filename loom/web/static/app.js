@@ -207,6 +207,26 @@ function PermAsk({ it }) {
   </div>`;
 }
 
+// Badge de routage (auto) : « → Build/Chat » + bouton pour forcer l'autre mode.
+function RouteBadge({ it }) {
+  const other = it.mode === "build" ? "chat" : "build";
+  return html`<div class="run-info" style="align-self:center">
+    ${it.mode === "build" ? "→ Build" : "→ Chat"}
+    ${!it.overridden
+      ? html`<button
+          type="button"
+          style="font-size:11px;padding:2px 8px;margin-left:8px;background:#1d2a22"
+          onClick=${() => {
+            patch(it.id, { overridden: true });
+            dispatch(it.text, it.img, other);
+          }}
+        >
+          plutôt ${other}
+        </button>`
+      : null}
+  </div>`;
+}
+
 function UserMsg({ it }) {
   const parts = Array.isArray(it.content) ? it.content : null;
   if (!parts) {
@@ -283,6 +303,8 @@ function Item({ it }) {
       return html`<${Verify} it=${it} />`;
     case "perm":
       return html`<${PermAsk} it=${it} />`;
+    case "route":
+      return html`<${RouteBadge} it=${it} />`;
     case "runinfo":
       return html`<div class="run-info">📁 dossier de travail : ${it.workspace}</div>`;
     case "revision":
@@ -297,7 +319,7 @@ function Item({ it }) {
 function App() {
   if (!state.timeline.length) {
     return html`<div class="empty-state">
-      Démarre une conversation, ou lance le pipeline multi-agent ci-dessus.
+      Écris ci-dessous — Auto choisit chat ou build (ou force le mode).
     </div>`;
   }
   return state.timeline.map((it) => html`<${Item} key=${it.id} it=${it} />`);
@@ -440,6 +462,7 @@ async function runPipeline(task, workspace) {
 
   const fd = new FormData();
   fd.append("task", task);
+  fd.append("mode", "build");
   if (workspace) fd.append("workspace", workspace);
 
   const onEvent = (evt) => {
@@ -543,6 +566,88 @@ let pendingImage = null;
 const preview = document.getElementById("preview");
 const previewWrap = document.getElementById("previewWrap");
 
+// ----------------------------------------------------------------------------
+// Mode (auto/chat/build) + dossier de travail (persistés en localStorage)
+// ----------------------------------------------------------------------------
+const modeSeg = document.getElementById("mode-seg");
+const workdirPath = document.getElementById("workdir-path");
+const workdirChip = document.getElementById("workdir-chip");
+
+let loomMode = localStorage.loomMode || "auto";
+// Défaut = workspace_dir rendu par le serveur dans #workdir-path (sinon init_json).
+let loomWorkdir =
+  localStorage.loomWorkdir ||
+  INIT.workspace_dir ||
+  (workdirPath && workdirPath.textContent.trim()) ||
+  "";
+
+function reflectMode() {
+  if (!modeSeg) return;
+  modeSeg.querySelectorAll("button[data-mode]").forEach((b) =>
+    b.classList.toggle("on", b.dataset.mode === loomMode),
+  );
+}
+function reflectWorkdir() {
+  if (workdirPath) workdirPath.textContent = loomWorkdir;
+}
+reflectMode();
+reflectWorkdir();
+
+// segmented control : clic → mode actif persisté
+if (modeSeg) {
+  modeSeg.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-mode]");
+    if (!btn) return;
+    loomMode = btn.dataset.mode;
+    localStorage.loomMode = loomMode;
+    reflectMode();
+  });
+}
+
+// --- drawer réglages ---
+const settingsBtn = document.getElementById("settings-btn");
+const drawer = document.getElementById("settings-drawer");
+const drawerScrim = document.getElementById("drawer-scrim");
+const drawerClose = document.getElementById("drawer-close");
+function openDrawer() {
+  if (drawer) drawer.hidden = false;
+  if (drawerScrim) drawerScrim.hidden = false;
+}
+function closeDrawer() {
+  if (drawer) drawer.hidden = true;
+  if (drawerScrim) drawerScrim.hidden = true;
+}
+if (settingsBtn) settingsBtn.addEventListener("click", openDrawer);
+if (drawerClose) drawerClose.addEventListener("click", closeDrawer);
+if (drawerScrim) drawerScrim.addEventListener("click", closeDrawer);
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && drawer && !drawer.hidden) closeDrawer();
+});
+
+// --- sélecteur de dossier natif ---
+const pickFolderBtn = document.getElementById("pick-folder-btn");
+if (pickFolderBtn) {
+  pickFolderBtn.addEventListener("click", async () => {
+    try {
+      const r = await fetch("/pick-folder", { method: "POST" });
+      const j = await r.json();
+      if (j.path) {
+        loomWorkdir = j.path;
+        localStorage.loomWorkdir = loomWorkdir;
+        reflectWorkdir();
+      } else if (j.error) {
+        console.warn("pick-folder:", j.error);
+        if (workdirChip) {
+          workdirChip.classList.add("err");
+          setTimeout(() => workdirChip.classList.remove("err"), 1500);
+        }
+      }
+    } catch (err) {
+      console.warn("pick-folder:", err);
+    }
+  });
+}
+
 function setImage(file) {
   if (!file || !file.type.startsWith("image/")) return;
   pendingImage = file;
@@ -560,8 +665,33 @@ function nearBottom() {
 }
 window.addEventListener("scroll", () => (state.pin = nearBottom()), { passive: true });
 
-// --- formulaire chat ---
+// --- formulaire unifié (auto-route chat vs build) ---
 const chatForm = document.getElementById("chat");
+
+// Route un message déjà lu vers /run (build) ou /chat (chat).
+// `forced` non nul court-circuite le classifieur (boutons segmented / « plutôt … »).
+async function dispatch(text, img, forced) {
+  let mode = forced || loomMode;
+  if (mode === "auto") {
+    try {
+      const r = await fetch("/classify", {
+        method: "POST",
+        body: new URLSearchParams({ message: text }),
+      });
+      mode = (await r.json()).mode;
+    } catch {
+      mode = "chat"; // défaut sûr si le classifieur échoue
+    }
+    // Badge déclaratif (item timeline) : « → mode » + « plutôt {autre} ».
+    push({ kind: "route", mode, text, img });
+  }
+  if (mode === "build") {
+    await runPipeline(text, loomWorkdir);
+  } else {
+    await sendChat(text, img);
+  }
+}
+
 async function submitChat() {
   const text = input.value.trim();
   if (!text) return;
@@ -572,7 +702,7 @@ async function submitChat() {
   clearImage();
   sendBtn.textContent = "…";
   try {
-    await sendChat(text, img);
+    await dispatch(text, img);
   } finally {
     sendBtn.textContent = "Envoyer";
     input.focus();
@@ -620,28 +750,6 @@ window.addEventListener("paste", (e) => {
     if (item.type.startsWith("image/")) setImage(item.getAsFile());
   }
 });
-
-// --- formulaire run multi-agent ---
-const runForm = document.getElementById("run-form");
-if (runForm) {
-  const runBtn = document.getElementById("run-btn");
-  runForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const taskEl = document.getElementById("run-task");
-    const wsEl = document.getElementById("run-workspace");
-    const task = taskEl.value.trim();
-    if (!task) return;
-    taskEl.value = "";
-    runBtn.disabled = true;
-    runBtn.textContent = "…";
-    try {
-      await runPipeline(task, wsEl && wsEl.value.trim());
-    } finally {
-      runBtn.disabled = false;
-      runBtn.textContent = "Run multi-agent";
-    }
-  });
-}
 
 // --- toggle réflexion ---
 const thinkingCb = document.getElementById("thinking-cb");
