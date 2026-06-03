@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from loom.config import load_config
 from loom.client import LoomClient
+from loom.config import load_config
 from loom.context import effective_context_budget
 from loom.conversation import Conversation
 from loom.permissions import evaluate
@@ -18,8 +18,9 @@ CONFIG_PATH = RUNTIME_DIR / "loom.config.toml"
 LOCAL_CONFIG_PATH = RUNTIME_DIR / "loom.config.local.toml"
 
 
-def main() -> None:
-    cfg = load_config(CONFIG_PATH, LOCAL_CONFIG_PATH)
+def build_app(cfg):
+    """Construit l'app Flask depuis la config (sans la servir). Séparé de `main` pour
+    être testable / lançable sur un port arbitraire (vérif UI, tests d'intégration)."""
     base_url = f"http://127.0.0.1:{cfg.port}/v1"
     conversation = Conversation.load(cfg.chat.history_path, cfg.chat.system_prompt)
     if not conversation.model:
@@ -80,7 +81,15 @@ def main() -> None:
         server_context=cfg.context,
         n_parallel=cfg.n_parallel,
     )
-    print(f"[loom-chat] http://127.0.0.1:{cfg.chat.web_port}  (modèle: {base_url})")
+    return app
+
+
+def main() -> None:
+    cfg = load_config(CONFIG_PATH, LOCAL_CONFIG_PATH)
+    app = build_app(cfg)
+    print(
+        f"[loom-chat] http://127.0.0.1:{cfg.chat.web_port}  (modèle: http://127.0.0.1:{cfg.port}/v1)"
+    )
     # threaded=True : permet de détecter rapidement la déconnexion client
     # (interruption d'une génération par une nouvelle soumission) et de servir
     # la requête suivante pendant que l'ancien flux se ferme.
