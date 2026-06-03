@@ -1,0 +1,6 @@
+- generic [active] [ref=e1]:
+  - heading "Démineur" [level=1] [ref=e2]
+  - generic [ref=e5]:
+    - generic [ref=e6]: "Mines : 10"
+    - generic [ref=e7]: Prêt à jouer !
+  - button "Nouvelle Partie" [ref=e8] [cursor=pointer]

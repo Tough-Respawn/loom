@@ -1,0 +1,5 @@
+- generic [active] [ref=e1]:
+  - heading "Démineur" [level=1] [ref=e2]
+  - generic [ref=e4]:
+    - paragraph [ref=e5]: "Mine détectée : 10"
+    - button "Nouvelle Partie" [ref=e6] [cursor=pointer]

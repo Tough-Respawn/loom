@@ -1,0 +1,50 @@
+- generic [ref=e1]:
+  - heading "Loom Chat 🧠 gemma-uncensored Reset" [level=1] [ref=e2]:
+    - text: Loom Chat
+    - generic "Réflexion préalable du modèle (décoché = réponse directe, plus rapide)" [ref=e3] [cursor=pointer]:
+      - checkbox "🧠" [checked] [ref=e4]
+      - text: 🧠
+    - combobox [ref=e5]:
+      - option "gemma-uncensored" [selected]
+    - button "Reset" [ref=e6] [cursor=pointer]
+  - group [ref=e7]:
+    - generic "🧩 Skills (contexte)" [ref=e8] [cursor=pointer]
+  - group [ref=e9]:
+    - generic "🛠️ Outils (boucle agentique)" [ref=e10] [cursor=pointer]
+    - text: ⚠️ ⚠️ ⚠️
+  - group [ref=e11]:
+    - generic "🤖 Multi-agent (Planificateur → Développeur → Relecteur)" [ref=e12] [cursor=pointer]
+  - generic [ref=e13]:
+    - generic [ref=e14]: "exécute la cmd : echo hello"
+    - generic [ref=e15]:
+      - paragraph [ref=e16]:
+        - text: L'exécution de la commande
+        - code [ref=e17]: echo hello
+        - text: "a retourné le message suivant :"
+      - generic [ref=e18]:
+        - code [ref=e19]: hello
+        - button "copier" [ref=e20] [cursor=pointer]
+      - button "📋" [ref=e21] [cursor=pointer]
+    - generic [ref=e22]: "exécute : rm -f C:\\Users\\Amine\\Documents\\from-claude-to-local-haranessed-llm\\loom-e2e-markdown.png"
+    - generic [ref=e23]:
+      - paragraph [ref=e24]:
+        - text: L'exécution de la commande
+        - code [ref=e25]: rm -f C:\Users\Amine\Documents\from-claude-to-local-haranessed-llm\loom-e2e-markdown.png
+        - text: a été
+        - strong [ref=e26]: refusée par la politique de sécurité
+        - text: ", indiquant que cette commande est considérée comme interdite par la politique de sécurité actuelle."
+      - button "📋" [ref=e27] [cursor=pointer]
+    - generic [ref=e28]: "supprime ce fichier : C:\\Users\\Amine\\Documents\\from-claude-to-local-haranessed-llm\\loom-e2e-markdown.png"
+    - generic [ref=e29]:
+      - paragraph [ref=e30]:
+        - text: Le fichier
+        - code [ref=e31]: C:\Users\Amine\Documents\from-claude-to-local-haranessed-llm\loom-e2e-markdown.png
+        - text: a été
+        - strong [ref=e32]: supprimé avec succès
+        - text: .
+      - button "📋" [ref=e33] [cursor=pointer]
+  - generic [ref=e34]:
+    - textbox "Écris un message… (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)" [active] [ref=e35]:
+      - /placeholder: Écris un message…  (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)
+    - button "🖼️" [ref=e36] [cursor=pointer]
+    - button "Envoyer" [ref=e37] [cursor=pointer]

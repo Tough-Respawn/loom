@@ -1,0 +1,86 @@
+- generic [ref=e1]:
+  - heading "Loom Chat 🧠 gemma-uncensored Reset" [level=1] [ref=e2]:
+    - text: Loom Chat
+    - generic "Réflexion préalable du modèle (décoché = réponse directe, plus rapide)" [ref=e3] [cursor=pointer]:
+      - checkbox "🧠" [checked] [ref=e4]
+      - text: 🧠
+    - combobox [ref=e5]:
+      - option "gemma-uncensored" [selected]
+    - button "Reset" [ref=e6] [cursor=pointer]
+  - group [ref=e7]:
+    - generic "🧩 Skills (contexte)" [ref=e8] [cursor=pointer]
+  - generic [ref=e9]:
+    - generic [ref=e10]: Raconte en détail et longuement l'histoire de la Révolution française, étape par étape, en au moins 600 mots.
+    - generic [ref=e11]:
+      - paragraph [ref=e12]: La Révolution française (1789-1799) n'est pas un événement unique, mais une période complexe, tumultueuse et fascinante de transformation sociale, politique et culturelle radicale. Elle marque le passage de l'Ancien Régime, fondé sur la monarchie absolue et la société d'ordres, à l'ère moderne des nations-États et des droits
+      - button "📋" [ref=e13] [cursor=pointer]
+    - generic [ref=e14]: en fait, que la partie avec danton
+    - generic [ref=e15]:
+      - paragraph [ref=e16]: Georges Danton est une figure centrale, dramatique et charismatique, dont l'histoire personnelle est inextricablement liée aux hauts et aux bas de la Terreur révolutionnaire. Sa carrière est celle de l'orateur brillant, du militant passionné, mais aussi de l'homme qui, au moment critique, a voulu faire appel à la clémence humaine au cœur de la fureur révolutionnaire.
+      - paragraph [ref=e17]: Voici un récit détaillé de son parcours et de son rôle dans les événements les plus sombres de la Révolution.
+      - separator [ref=e18]
+      - heading "1. L'Émergence de l'Orateur (Pré-1792)" [level=3] [ref=e19]
+      - paragraph [ref=e20]:
+        - text: Georges Danton est avant tout un homme de rhétorique. Son éloquence, empreinte de simplicité populaire et de passion, faisait de lui un orateur incontournable dans les tribunes du Palais-Royal et devant les assemblées révolutionnaires. Au début de la Révolution, il s'impose comme une voix puissante, capable de galvaniser les masses, notamment la
+        - emphasis [ref=e21]: sans-culotte
+        - text: parisienne.
+      - paragraph [ref=e22]: Il n'était pas un théoricien froid ; il était un militant pragmatique, profondément ancré dans la volonté de justice immédiate et de changement social. Lorsque la monarchie de droit divin s'effondre, Danton est parmi ceux qui poussent vers l'action radicale.
+      - heading "2. Le" [level=3] [ref=e23]
+      - button "📋" [ref=e24] [cursor=pointer]
+    - generic [ref=e25]: qui ets camille demoulins ?
+    - generic [ref=e26]:
+      - paragraph [ref=e27]:
+        - text: Camille Desmoulins (1760-1842) est une figure emblématique et essentielle de la Révolution française. Il n'était pas un grand stratège militaire ni un législateur en chef, mais plutôt un
+        - strong [ref=e28]: journaliste, un pamphlétaire et un orateur
+        - text: dont le rôle principal fut de
+        - strong [ref=e29]: façonner l'opinion publique
+        - text: et de cristalliser les aspirations populaires en paroles enflammées.
+      - paragraph [ref=e30]: Il est considéré comme l'un des premiers voix médiatiques de la Révolution, un catalyseur idéologique dont les écrits et les interventions ont contribué à faire passer la France de l'insatisfaction monarchique à l'effervescence révolutionnaire.
+      - paragraph [ref=e31]: "Voici un aperçu détaillé de qui il était et de son rôle :"
+      - heading "1. Le Journaliste Agitateur" [level=3] [ref=e32]
+      - paragraph [ref=e33]: Demoulins vivait dans une époque de transition où le pouvoir intellectuel était en train de se déplacer de la cour royale (le centre traditionnel) vers les cafés, les librairies et surtout la presse.
+      - list [ref=e34]:
+        - listitem [ref=e35]:
+          - strong [ref=e36]: "La Presse comme Arme :"
+          - text: Son véritable outil n'était pas l'épée, mais l'encre. À travers ses journaux et ses pamphlets, il publiait des critiques acerbes de l'absolutisme, des injustices sociales et des privilèges de la noblesse et du clergé.
+        - listitem [ref=e37]:
+          - strong [ref=e38]: "L'Écho du Peuple :"
+          - text: Il avait un don remarquable pour transformer le langage académique en un discours direct, accessible et passionné que le peuple pouvait comprendre et adhérer.
+      - 'heading "2. L''Acte Symbolique : Le Déclencheur de la Révolution" [level=3] [ref=e39]'
+      - paragraph [ref=e40]:
+        - text: Son acte le plus célèbre, et qui le consacre dans la mémoire collective, est son apparition sur le balcon du
+        - strong [ref=e41]: Palais-Royal
+        - text: à Paris, en avril 1789.
+      - paragraph [ref=e42]: À ce moment-là, la bourgeoisie éclairée et les intellectuels débattaient des réformes nécessaires, mais la revendication de changement total n'était pas encore éclatée. Desmoulins, dans un élan de patriotisme passionné, prend la parole publiquement, appelant le Roi Louis XVI à convoquer immédiatement les États généraux.
+      - paragraph [ref=e43]:
+        - text: Cette intervention est considérée comme un
+        - strong [ref=e44]: signal sonore
+        - text: ". Elle marque un point de non-retour : le peuple parisien, réveillé par cet appel, comprend que le temps des simples réformes est révolu ; le temps de la révolution est arrivé."
+      - heading "3. L'Idéologue Libéral et le Militant Passionné" [level=3] [ref=e45]
+      - paragraph [ref=e46]:
+        - text: Au début, Desmoulins est souvent associé aux
+        - strong [ref=e47]: libéraux modérés
+        - text: . Il croit fermement en les droits de l'homme, en la souveraineté nationale et dans une monarchie constitutionnelle, où le pouvoir du roi serait limité par une loi votée par les représentants du peuple.
+      - paragraph [ref=e48]: Cependant, son engagement est tellement total qu'il le conduit inéluctablement vers les courants plus radicaux. Il est un fervent défenseur des idées des Lumières et de l'égalité.
+      - heading "4. Sa Signification Historique" [level=3] [ref=e49]
+      - paragraph [ref=e50]:
+        - text: Sa contribution n'est pas tant de faire passer des lois que de
+        - strong [ref=e51]: créer l'atmosphère révolutionnaire
+        - text: .
+      - list [ref=e52]:
+        - listitem [ref=e53]:
+          - strong [ref=e54]: "Le Miroir du Peuple :"
+          - text: Il est le reflet des attentes, des espoirs et de la colère de la bourgeoisie éclairée et des classes populaires qui se retrouvent soudainement connectées par un langage commun de revendication.
+        - listitem [ref=e55]:
+          - strong [ref=e56]: "Le Prix de la Parole :"
+          - text: Sa carrière illustre le danger de la liberté de la presse et de l'éloquence en période de crise politique. Il est constamment en lutte contre l'autorité, que ce soit la censure royale ou, plus tard, les excès des factions révolutionnaires.
+      - paragraph [ref=e57]:
+        - text: En résumé, Camille Desmoulins est moins un acteur politique qu'un
+        - strong [ref=e58]: catalyseur moral
+        - text: . Il est l'homme qui, par la force de sa plume et de sa voix, a réussi à transformer un mécontentement latent en un mouvement social irréversible.
+      - button "📋" [ref=e59] [cursor=pointer]
+  - generic [ref=e60]:
+    - textbox "Écris un message… (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)" [active] [ref=e61]:
+      - /placeholder: Écris un message…  (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)
+    - button "🖼️" [ref=e62] [cursor=pointer]
+    - button "Envoyer" [ref=e63] [cursor=pointer]

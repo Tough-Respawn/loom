@@ -1,0 +1,157 @@
+# tests/test_parallel.py
+from loom.parallel import (
+    FileSpec,
+    compute_budget,
+    extract_code,
+    fix_files,
+    generate_files,
+    plan_files,
+)
+
+
+class FakeClient:
+    """complete() renvoie une réponse scriptée par mot-clé du prompt."""
+
+    def __init__(self, by_keyword=None, default="contenu"):
+        self.by_keyword = by_keyword or {}
+        self.default = default
+        self.calls = []
+
+    def complete(
+        self,
+        messages,
+        system_prompt,
+        max_tokens=2048,
+        model=None,
+        thinking=False,
+        temperature=None,
+    ):
+        prompt = messages[0]["content"]
+        self.calls.append({"prompt": prompt, "thinking": thinking, "model": model})
+        for kw, resp in self.by_keyword.items():
+            if kw in prompt:
+                return resp
+        return self.default
+
+
+def test_extract_code_strips_markdown_fence():
+    assert extract_code("```js\nconst a = 1;\n```").strip() == "const a = 1;"
+    assert extract_code("```\nplain\n```").strip() == "plain"
+
+
+def test_extract_code_passthrough_without_fence():
+    assert extract_code("body{}\n").strip() == "body{}"
+    assert extract_code("") == ""
+
+
+def test_plan_files_parses_json_with_surrounding_text():
+    raw = (
+        'Voici le plan:\n{"design": "ids: #board", "files": '
+        '[{"path": "index.html", "role": "structure"}, '
+        '{"path": "app.js", "role": "logique"}]} merci'
+    )
+    client = FakeClient(default=raw)
+    design, specs = plan_files(client, "fais un jeu", model="m")
+    assert design == "ids: #board"
+    assert [s.path for s in specs] == ["index.html", "app.js"]
+    assert client.calls[0]["thinking"] is False  # pas de reasoning au plan
+
+
+def test_parse_plan_delimited_tolerates_code_snippets():
+    from loom.parallel import _parse_plan
+
+    # format délimité : le design contient du code (accolades) qui CASSERAIT du JSON
+    raw = (
+        "===DESIGN===\n"
+        "ETAT: snake=[{x:5,y:5}]; snippet: function tick(){ snake.unshift({x:0,y:0}); }\n"
+        "===FILES===\n"
+        "- index.html | structure\n"
+        "game.js | boucle + etat\n"
+        "style.css | styles\n"
+    )
+    design, specs = _parse_plan(raw)
+    assert "snake=[{x:5,y:5}]" in design and "function tick()" in design
+    assert [s.path for s in specs] == ["index.html", "game.js", "style.css"]
+    assert specs[1].role == "boucle + etat"
+
+
+def test_parse_plan_regex_fallback_on_malformed():
+    from loom.parallel import _parse_plan
+
+    # ni format délimité ni JSON valide -> extraction des noms de fichiers du texte
+    raw = "Le projet contient index.html, puis style.css et game.js (boucle {x,y})."
+    design, specs = _parse_plan(raw)
+    assert [s.path for s in specs] == ["index.html", "style.css", "game.js"]
+
+
+def test_generate_files_runs_each_spec_with_brut_output():
+    specs = [FileSpec("index.html", "structure"), FileSpec("app.js", "logique")]
+    # clé = le path ENTRE BACKTICKS (cible unique du prompt ; all_paths est en clair)
+    client = FakeClient(
+        by_keyword={"`index.html`": "```html\n<h1>hi</h1>\n```", "`app.js`": "let x=1;"}
+    )
+    out = dict(generate_files(client, "design", specs, model="m"))
+    assert "<h1>hi</h1>" in out["index.html"]
+    assert "let x=1;" in out["app.js"]
+    # thinking OFF pour la génération de code (pas de sur-raisonnement)
+    assert all(c["thinking"] is False for c in client.calls)
+
+
+def test_generate_files_empty_specs():
+    assert generate_files(FakeClient(), "d", [], model="m") == []
+
+
+# --- compute_budget : tailles DÉRIVÉES du budget serveur (P1, anti-overflow) --------
+
+
+def test_compute_budget_derives_safe_values_for_shared_pool():
+    # contexte serveur 24576 partagé entre 4 slots (kv_unified), 5 fichiers à générer.
+    workers, gen, cap = compute_budget(24576, 4, 5)
+    assert (workers, gen, cap) == (3, 4096, 8192)
+    # invariant clé : workers × (reserve + gen) <= 0.9 · context (jamais de débordement)
+    assert workers * (2048 + gen) <= int(24576 * 0.9)
+
+
+def test_compute_budget_single_slot_serializes():
+    workers, gen, cap = compute_budget(8192, 1, 2)
+    assert (workers, gen, cap) == (1, 4096, 8192)
+
+
+def test_compute_budget_never_exceeds_parallel_or_files():
+    # quelle que soit la combinaison, workers <= n_parallel ET <= n_files, gen >= 1024
+    for ctx in (2048, 8192, 24576, 65536):
+        for npar in (1, 2, 4, 8):
+            for nf in (1, 3, 7):
+                w, g, _ = compute_budget(ctx, npar, nf)
+                assert 1 <= w <= min(npar, nf)
+                assert g >= 1024
+                assert w * (2048 + g) <= int(ctx * 0.9) or w == 1
+
+
+def test_compute_budget_guards_degenerate_inputs():
+    # entrées nulles/None -> valeurs plancher sûres, jamais d'exception ni de 0.
+    w, g, cap = compute_budget(0, 0, 0)
+    assert w == 1 and g >= 1024 and cap > 0
+
+
+def test_fix_prompt_clips_to_file_char_cap():
+    from loom.parallel import _fix_prompt
+
+    spec = FileSpec("app.js", "logique")
+    big_design = "D" * 50_000
+    current = [("app.js", "T" * 50_000), ("other.js", "S" * 50_000)]
+    prompt = _fix_prompt(spec, big_design, current, "VERIFY: bug", file_char_cap=8192)
+    # le contexte embarqué est BORNÉ (sinon N fichiers entiers × N requêtes saturent -c)
+    assert "…[tronqué]" in prompt
+    assert prompt.count("S" * 1000) <= 1  # le voisin est clippé court
+    assert len(prompt) < 8192 * 2  # ordre de grandeur du budget, pas 150k
+
+
+def test_fix_files_injects_current_files_and_defects():
+    specs = [FileSpec("app.js", "logique")]
+    current = [("app.js", "OLD"), ("index.html", "<html>")]
+    client = FakeClient(default="NEW")
+    out = fix_files(client, "design", specs, current, "VERIFY: bug X", model="m")
+    assert len(out) == 1 and out[0][0] == "app.js" and out[0][1].strip() == "NEW"
+    p = client.calls[0]["prompt"]
+    assert "OLD" in p and "<html>" in p and "VERIFY: bug X" in p  # contexte + défauts

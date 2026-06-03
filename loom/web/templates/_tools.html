@@ -1,0 +1,14 @@
+<div id="tools-panel">
+  {% for t in available_tools %}
+    <label class="skill{% if t.danger %} tool-danger{% endif %}"
+           title="{{ t.name }}{% if t.danger %} — modifie le système (gardé par le mode permission){% endif %}">
+      <input type="checkbox" name="tool" value="{{ t.name }}"
+             hx-post="/tools" hx-target="#tools-panel" hx-swap="outerHTML"
+             hx-include="#tools-panel"
+             {% if t.name in active_tools %}checked{% endif %}>
+      {{ t.label }}
+    </label>
+  {% else %}
+    <span class="muted">Aucun outil disponible.</span>
+  {% endfor %}
+</div>

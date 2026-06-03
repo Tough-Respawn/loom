@@ -1,0 +1,3 @@
+[     114ms] [ERROR] Impossible d'initialiser le jeu : board.js n'a pas fourni de données. @ http://127.0.0.1:8098/game.js:179
+[     122ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://127.0.0.1:8098/favicon.ico:0
+[  756573ms] [LOG] Logique de jeu initialisée avec succès. @ http://127.0.0.1:8098/game.js:193

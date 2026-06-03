@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loom Chat</title>
+  <script src="{{ url_for('static', filename='htmx.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='marked.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='purify.min.js') }}"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 0 auto;
+           padding: 16px; background: #0f1117; color: #e6e6e6; }
+    h1 { font-size: 18px; display: flex; justify-content: space-between; align-items: center; }
+    #messages { display: flex; flex-direction: column; gap: 12px; margin: 16px 0; min-height: 50vh; }
+    .empty-state { align-self: center; margin: auto; color: #5b6172; font-size: 13px; text-align: center; }
+    .msg { padding: 10px 14px; border-radius: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+    .msg.user { background: #1e2230; align-self: flex-end; max-width: 80%; white-space: pre-wrap; }
+    .msg.assistant { background: #14241c; align-self: flex-start; max-width: 85%; position: relative; }
+    .msg.assistant.streaming { white-space: pre-wrap; }
+    /* curseur de frappe pendant le streaming (montre que ça génère) */
+    .msg.assistant.streaming::after {
+      content: '▋'; margin-left: 1px; color: #6fbf9a;
+      animation: blink 1s steps(2, start) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    /* bouton copier toute la réponse (apparaît au survol de la bulle) */
+    .msg-copy { position: absolute; top: 4px; right: 4px; padding: 1px 7px; font-size: 12px;
+                background: #1d2a22; color: #9fd9bd; border-radius: 6px; cursor: pointer;
+                opacity: 0; transition: opacity .15s; border: 0; }
+    .msg.assistant:hover .msg-copy { opacity: 0.9; }
+    .msg img { max-width: 220px; border-radius: 8px; margin-top: 6px; display: block; }
+    /* markdown */
+    .msg.assistant p { margin: 0 0 8px; }
+    .msg.assistant p:last-child { margin-bottom: 0; }
+    .msg.assistant ul, .msg.assistant ol { margin: 4px 0 8px; padding-left: 22px; }
+    .msg.assistant code { background: #0c1410; padding: 1px 5px; border-radius: 4px;
+                          font-family: ui-monospace, monospace; font-size: 0.92em; }
+    .msg.assistant pre { position: relative; background: #0a0e0b; border: 1px solid #1d2a22;
+                         border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
+    .msg.assistant pre code { background: none; padding: 0; }
+    .msg.assistant h1, .msg.assistant h2, .msg.assistant h3 { font-size: 1.05em; margin: 10px 0 6px; }
+    .msg.assistant a { color: #6fbf9a; }
+    .copy-btn { position: absolute; top: 6px; right: 6px; padding: 2px 8px; font-size: 11px;
+                background: #1d2a22; color: #9fd9bd; border-radius: 6px; cursor: pointer; border: 0; }
+    details.think { align-self: flex-start; max-width: 85%; font-size: 13px; color: #9aa0b4;
+                    background: #11141d; border: 1px dashed #2a2d3e; border-radius: 10px;
+                    padding: 6px 10px; white-space: pre-wrap; }
+    details.think summary { cursor: pointer; }
+    /* puce d'outil dépliable */
+    .tool-chip { align-self: flex-start; max-width: 85%; font-size: 12px; color: #9fd9bd;
+                 background: #11201a; border: 1px solid #1d3a2c; border-radius: 8px;
+                 padding: 3px 10px; transition: border-color .15s; }
+    .tool-chip.ko { color: #f0c2a8; background: #20140f; border-color: #5a3a2a; }
+    .tool-chip.rev { color: #f0d9a0; background: #1f1a10; border-color: #5a4520; }
+    .tool-row { display: flex; align-items: center; gap: 8px; }
+    .tool-chip.has-detail .tool-row { cursor: pointer; }
+    .tool-chip.has-detail:hover { border-color: #2f6f4f; }
+    .tool-chip .tool-main { font-weight: 600; white-space: nowrap; }
+    .tool-chip .tool-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                              opacity: .9; }
+    .tool-chip .tool-caret { margin-left: auto; color: #6f8f7f; }
+    .tool-detail { margin: 6px 0 1px; padding: 8px 10px; background: #0a120d;
+                   border: 1px solid #1d3a2c; border-radius: 6px; max-height: 320px;
+                   overflow: auto; white-space: pre-wrap; font-family: ui-monospace, monospace;
+                   font-size: 11px; color: #b8d6c8; }
+    /* Panneau Vérificateur (hard-gate déterministe) */
+    .verify-panel { align-self: flex-start; max-width: 85%; font-size: 12.5px;
+                    border-radius: 10px; padding: 8px 12px; }
+    .verify-panel.pending { background: #15171f; border: 1px dashed #3a6f5a; color: #9fd9bd;
+                            animation: thinkpulse 1.6s ease-in-out infinite; }
+    .verify-panel.ok { background: #11241a; border: 1px solid #2f6f4f; color: #b6e8cf; }
+    .verify-panel.ko { background: #211013; border: 1px solid #6f2f3a; color: #f0b9c0; }
+    .verify-head { font-weight: 600; }
+    .verify-list { margin: 6px 0 0; padding-left: 18px; }
+    .verify-list li { margin: 2px 0; }
+    .verify-list code { background: #0c0a06; color: #ffd98a; padding: 0 5px; border-radius: 4px; }
+    .verify-list .vk { color: #d0a060; }
+    /* En-tête d'étape : signale chaque phase + timer live + tokens réels */
+    .step-hdr { align-self: flex-start; font-size: 12px; color: #cfe6da;
+                background: #131a22; border: 1px solid #28323e; border-radius: 8px;
+                padding: 3px 10px; display: flex; gap: 10px; align-items: baseline; }
+    .step-hdr .step-name { font-weight: 600; }
+    .step-hdr .step-meta { color: #8a93a6; font-variant-numeric: tabular-nums; }
+    .step-hdr.active { border-color: #3a6f5a; animation: thinkpulse 1.6s ease-in-out infinite; }
+    .step-hdr.active .step-name::before { content: '▶ '; color: #6fbf9a; }
+    .step-hdr:not(.active) .step-name::before { content: '✓ '; color: #6fbf9a; }
+    .perm-ask { align-self: flex-start; max-width: 85%; font-size: 13px; color: #f0d9a0;
+                background: #211b10; border: 1px solid #5a4520; border-radius: 10px;
+                padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+    .perm-ask code { background: #0c0a06; color: #ffd98a; padding: 1px 6px;
+                     border-radius: 4px; font-family: ui-monospace, monospace; }
+    .perm-btns { display: flex; gap: 8px; }
+    .perm-btns button { padding: 4px 12px; font-size: 13px; border-radius: 8px; }
+    .perm-btns button:first-child { background: #2f6f4f; }
+    .perm-btns button:last-child { background: #6f2f3a; }
+    .perm-ask.decided { opacity: 0.65; }
+    /* réflexion en cours : points animés + bordure qui pulse */
+    details.think.active { animation: thinkpulse 1.6s ease-in-out infinite; }
+    details.think.active summary::after { content: ' .'; animation: dots 1.4s steps(1) infinite; }
+    @keyframes dots { 0%{content:' .'} 33%{content:' ..'} 66%{content:' ...'} }
+    @keyframes thinkpulse { 0%,100%{ border-color:#2a2d3e } 50%{ border-color:#3a6f5a } }
+    form#chat { display: flex; gap: 8px; position: sticky; bottom: 0; padding: 8px 0; background: #0f1117; }
+    textarea { flex: 1; resize: none; padding: 10px; border-radius: 10px;
+               border: 1px solid #2a2d3e; background: #161922; color: #e6e6e6; }
+    button { padding: 10px 16px; border-radius: 10px; border: 0; background: #2f6f4f; color: #fff; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .reset { background: #3a2030; }
+    .err { color: #ff8585; }
+    #preview { max-height: 60px; border-radius: 6px; }
+    #previewWrap { display: none; align-items: center; gap: 8px; margin: 4px 0; }
+    .skills-box { margin: 8px 0; font-size: 13px; }
+    .skills-box summary { cursor: pointer; color: #9aa0b4; }
+    #skills-panel { display: flex; flex-wrap: wrap; gap: 10px; padding: 8px 0; }
+    .skill { display: inline-flex; align-items: center; gap: 4px; background: #161922;
+             border: 1px solid #2a2d3e; border-radius: 8px; padding: 4px 8px; }
+    .skill.tool-danger { border-color: #5a3a2a; }
+    .skill.tool-danger::after { content: '⚠️'; font-size: 11px; }
+    .hint { font-size: 11px; color: #5b6172; margin-top: 4px; }
+    #model-select { background:#161922; color:#e6e6e6; border:1px solid #2a2d3e;
+                    border-radius:8px; padding:4px 8px; font-size:13px; }
+    #thinking-toggle { display:inline-flex; align-items:center; gap:4px; font-size:13px;
+                       color:#9aa0b4; cursor:pointer; user-select:none; }
+    #thinking-toggle input { accent-color:#2f6f4f; }
+    /* multi-agent */
+    .agents-box { margin: 8px 0; font-size: 13px; }
+    .agents-box summary { cursor: pointer; color: #9aa0b4; }
+    #run-form { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; }
+    #run-task { resize: none; padding: 10px; border-radius: 10px;
+                border: 1px solid #2a2d3e; background: #161922; color: #e6e6e6; }
+    #run-workspace { padding: 8px 10px; border-radius: 8px; border: 1px solid #2a2d3e;
+                     background: #161922; color: #cfe6da; font-family: ui-monospace, monospace;
+                     font-size: 12px; }
+    .run-info { align-self: flex-start; font-size: 12px; color: #cfe6da;
+                background: #131a22; border: 1px solid #28323e; border-radius: 8px;
+                padding: 3px 10px; font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1>Loom Chat
+    <label id="thinking-toggle" title="Réflexion préalable du modèle (décoché = réponse directe, plus rapide)">
+      <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> 🧠
+    </label>
+    {% include "_models.html" %}
+    <button class="reset" id="reset-btn" type="button">Reset</button>
+  </h1>
+
+  <details class="skills-box">
+    <summary>🧩 Skills (contexte)</summary>
+    {% include "_skills.html" %}
+  </details>
+
+  <details class="skills-box">
+    <summary>🛠️ Outils (boucle agentique)</summary>
+    {% include "_tools.html" %}
+    <div class="hint">Les outils ⚠️ (écriture/shell) modifient ton système — gardés par le mode permission.</div>
+  </details>
+
+  {% if pipeline %}
+  <details class="agents-box">
+    <summary>🤖 Multi-agent ({{ pipeline | map(attribute='role') | join(' → ') }})</summary>
+    <form id="run-form">
+      <textarea id="run-task" rows="2" placeholder="Tâche pour le pipeline multi-agent…"></textarea>
+      <input id="run-workspace" type="text" spellcheck="false"
+             placeholder="📁 Dossier cible (laisser vide = {{ workspace_dir }})"
+             title="Où les agents écrivent les fichiers pour ce run (workspace).">
+      <button id="run-btn" type="submit">Run multi-agent</button>
+    </form>
+  </details>
+  {% endif %}
+
+  <!-- Monté par Preact (loom/web/static/app.js) -->
+  <div id="messages"></div>
+
+  <div id="previewWrap"><img id="preview" alt="aperçu"><button type="button" id="clearImgBtn">✕</button></div>
+
+  <form id="chat">
+    <textarea id="input" rows="2" placeholder="Écris un message…  (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)" autofocus></textarea>
+    <input type="file" id="file" accept="image/*" style="display:none">
+    <button type="button" id="fileBtn" title="Joindre une image">🖼️</button>
+    <button id="sendBtn" type="submit">Envoyer</button>
+  </form>
+
+  <script id="loom-init" type="application/json">{{ init_json | safe }}</script>
+  <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

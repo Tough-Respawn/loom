@@ -1,0 +1,4 @@
+- generic [active] [ref=e1]:
+  - heading "Morpion" [level=1] [ref=e2]
+  - generic [ref=e13]: "C'est au tour du joueur : X"
+  - button "Recommencer la partie" [ref=e14] [cursor=pointer]

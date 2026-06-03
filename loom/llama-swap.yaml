@@ -1,0 +1,3 @@
+models:
+  "gemma-uncensored":
+    cmd: "C:/tools/llama/llama-server.exe -m C:/Users/Amine/Documents/from-claude-to-local-haranessed-llm/loom/models/gemma-4-E4B-it-uncensored.Q4_K_M.gguf --host 127.0.0.1 --port ${PORT} -c 8192 -ngl 8 -t 12 --mmproj C:/Users/Amine/Documents/from-claude-to-local-haranessed-llm/loom/models/mmproj-F16.gguf --no-mmproj-offload"

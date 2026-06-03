@@ -1,0 +1,11 @@
+- generic [ref=e1]:
+  - heading "Loom Chat Reset" [level=1] [ref=e2]:
+    - text: Loom Chat
+    - button "Reset" [ref=e3] [cursor=pointer]
+  - group [ref=e4]:
+    - generic "🧩 Skills (contexte)" [ref=e5] [cursor=pointer]
+  - generic [ref=e7]:
+    - textbox "Écris un message… (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)" [active] [ref=e8]:
+      - /placeholder: Écris un message…  (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)
+    - button "🖼️" [ref=e9] [cursor=pointer]
+    - button "Envoyer" [ref=e10] [cursor=pointer]

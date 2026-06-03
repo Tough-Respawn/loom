@@ -1,0 +1,6 @@
+<select id="model-select" name="model" hx-post="/model" hx-target="#model-select"
+        hx-swap="outerHTML">
+  {% for mid in models %}
+    <option value="{{ mid }}"{% if mid == current_model %} selected{% endif %}>{{ mid }}</option>
+  {% endfor %}
+</select>
