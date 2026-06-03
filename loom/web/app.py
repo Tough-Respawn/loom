@@ -112,6 +112,62 @@ def create_app(
         finally:
             pending.pop(tool_id, None)
 
+    # Run exécuté EN TÂCHE DE FOND (thread) qui pousse ses events dans un buffer. Le
+    # client se (re)branche dessus via /run/replay : un reload ne perd plus le run et le
+    # voit continuer en direct. Un seul run à la fois (chat_lock sérialise déjà).
+    run_buffer = {"id": 0, "events": [], "done": True}
+    run_cv = threading.Condition()
+
+    def _tail(rid: int, from_idx: int = 0):
+        """Streame les events du run `rid` depuis `from_idx`, puis suit les nouveaux en
+        direct jusqu'à la fin. Réutilisé par /run (live) ET /run/replay (reload)."""
+        i = from_idx
+        while True:
+            with run_cv:
+                while (
+                    i >= len(run_buffer["events"])
+                    and not run_buffer["done"]
+                    and run_buffer["id"] == rid
+                ):
+                    run_cv.wait(timeout=1.0)
+                if run_buffer["id"] != rid:
+                    return  # un run plus récent a pris la place
+                evs = run_buffer["events"][i:]
+                i = len(run_buffer["events"])
+                done = run_buffer["done"]
+            for ev in evs:
+                if ev["type"] != "run_done":
+                    yield _sse(
+                        ev["type"], **{k: v for k, v in ev.items() if k != "type"}
+                    )
+            if done:
+                yield _sse("done")
+                return
+
+    def _run_worker(rid: int, gen):
+        """Consomme le générateur de run EN ARRIÈRE-PLAN (indépendant du client) et pousse
+        chaque event dans le buffer. Libère chat_lock à la fin (run_done/erreur)."""
+        try:
+            for ev in gen:
+                if cancel_event.is_set():
+                    break
+                with run_cv:
+                    if run_buffer["id"] != rid:
+                        return
+                    run_buffer["events"].append(ev)
+                    run_cv.notify_all()
+        except Exception as exc:  # noqa: BLE001 - relaie au client via le buffer
+            with run_cv:
+                if run_buffer["id"] == rid:
+                    run_buffer["events"].append({"type": "error", "message": str(exc)})
+                    run_cv.notify_all()
+        finally:
+            with run_cv:
+                if run_buffer["id"] == rid:
+                    run_buffer["done"] = True
+                    run_cv.notify_all()
+            chat_lock.release()
+
     def _index_context() -> dict:
         return {
             "messages": conversation.messages,
@@ -322,53 +378,61 @@ def create_app(
             _atomic_write(p, content)
             return str(p)
 
-        def generate():
-            try:
-                yield _sse("run_info", workspace=target)
-                if mode == "pipeline":
-                    if not selected:
-                        yield _sse("error", message="aucun agent configuré")
-                        return
-                    events = run_pipeline(
-                        selected,
-                        task,
-                        client,
-                        skills_dir,
-                        max_tokens=max_tokens,
-                        tool_factory=run_factory,
-                        permission=permission,
-                        confirm=_confirm,
-                        max_revisions=max_revisions,
-                        verifier=run_verifier,
-                    )
-                else:
-                    events = run_build(
-                        task,
-                        client,
-                        model=build_model,
-                        write=_write_to_target,
-                        workspace=target,
-                        verifier=run_verifier,
-                        max_tokens=max_tokens,
-                        context=server_context,
-                        n_parallel=n_parallel,
-                        semantic_review=semantic_review,
-                    )
-                for ev in events:
-                    if cancel_event.is_set():
-                        return
-                    if ev["type"] == "run_done":
-                        continue  # interne : pas d'event SSE
-                    yield _sse(
-                        ev["type"], **{k: v for k, v in ev.items() if k != "type"}
-                    )
-                yield _sse("done")
-            except Exception as exc:  # noqa: BLE001 - relaie au client SSE
-                yield _sse("error", message=str(exc))
-            finally:
+        if mode == "pipeline":
+            if not selected:
                 chat_lock.release()
+                return Response("aucun agent configuré", status=400)
+            gen = run_pipeline(
+                selected,
+                task,
+                client,
+                skills_dir,
+                max_tokens=max_tokens,
+                tool_factory=run_factory,
+                permission=permission,
+                confirm=_confirm,
+                max_revisions=max_revisions,
+                verifier=run_verifier,
+            )
+        else:
+            gen = run_build(
+                task,
+                client,
+                model=build_model,
+                write=_write_to_target,
+                workspace=target,
+                verifier=run_verifier,
+                max_tokens=max_tokens,
+                context=server_context,
+                n_parallel=n_parallel,
+                semantic_review=semantic_review,
+            )
+        # Démarre le run en arrière-plan (survit au reload) et renvoie son flux live.
+        with run_cv:
+            run_buffer["id"] += 1
+            rid = run_buffer["id"]
+            run_buffer["events"] = [{"type": "run_info", "workspace": target}]
+            run_buffer["done"] = False
+        threading.Thread(target=_run_worker, args=(rid, gen), daemon=True).start()
+        return Response(_tail(rid, 0), mimetype="text/event-stream")
 
-        return Response(generate(), mimetype="text/event-stream")
+    @app.get("/run/active")
+    def run_active():
+        with run_cv:
+            return {
+                "id": run_buffer["id"],
+                "running": not run_buffer["done"],
+                "has": len(run_buffer["events"]) > 0,
+            }
+
+    @app.get("/run/replay")
+    def run_replay():
+        with run_cv:
+            rid = run_buffer["id"]
+            has = len(run_buffer["events"]) > 0
+        if not has:
+            return Response(_sse("done"), mimetype="text/event-stream")
+        return Response(_tail(rid, 0), mimetype="text/event-stream")
 
     @app.post("/skills")
     def skills_update():
