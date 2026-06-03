@@ -437,6 +437,110 @@ def test_run_build_fix_loop_on_defect(tmp_path):
     assert seen["fix"] is True  # le fix a bien reçu le rapport de défauts
 
 
+def test_run_build_stops_when_defects_do_not_shrink(tmp_path):
+    """Anti-divergence : si l'ensemble des défauts ne décroît pas d'un round à l'autre,
+    on arrête tôt (un 4B oscille : corrige A, casse B, à len égal indéfiniment)."""
+    from loom.orchestrator import run_build
+    from loom.verify import Defect, VerifyReport
+
+    plan = '{"design": "x", "files": [{"path": "app.js", "role": "y"}]}'
+
+    class StatefulVerifier:
+        """Renvoie TOUJOURS le même défaut non vide : aucun rétrécissement → stop tôt."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, paths):
+            self.calls += 1
+            return VerifyReport(ok=False, defects=[Defect("a.js:1", "syntax", "x")])
+
+    class C:
+        def complete(
+            self,
+            messages,
+            system_prompt,
+            max_tokens=2048,
+            model=None,
+            thinking=False,
+            temperature=None,
+        ):
+            p = messages[0]["content"]
+            if "PLAN D'IMPLEMENTATION" in p:
+                return plan
+            return "ok();"  # contenu non vide → fichier peuplé, _incomplete() False
+
+    def write(path, content):
+        return str(tmp_path / path)
+
+    events, _run = _drive(
+        run_build(
+            "t", C(), model="m", write=write, verifier=StatefulVerifier(), max_rounds=3
+        )
+    )
+    revisions = [e for e in events if e["type"] == "revision"]
+    # Round 1 établit la baseline, round 2 détecte le non-rétrécissement → stop.
+    # On s'arrête TÔT (2 < max_rounds=3) au lieu d'osciller jusqu'au bout.
+    assert len(revisions) == 2
+    assert len(revisions) < 3
+
+
+def test_run_build_keeps_fixing_while_defects_shrink(tmp_path):
+    """Tant que l'ensemble des défauts DÉCROÎT strictement, la boucle continue jusqu'à
+    convergence (ok=True)."""
+    from loom.orchestrator import run_build
+    from loom.verify import Defect, VerifyReport
+
+    plan = '{"design": "x", "files": [{"path": "app.js", "role": "y"}]}'
+
+    class StatefulVerifier:
+        """Trajectoire scriptée décroissante : 2 défauts → 1 défaut → ok."""
+
+        def __init__(self):
+            self.reports = [
+                VerifyReport(
+                    ok=False,
+                    defects=[
+                        Defect("a.js:1", "syntax", "x"),
+                        Defect("b.js:2", "syntax", "y"),
+                    ],
+                ),
+                VerifyReport(ok=False, defects=[Defect("a.js:1", "syntax", "x")]),
+                VerifyReport(ok=True),
+            ]
+
+        def __call__(self, paths):
+            return self.reports.pop(0) if self.reports else VerifyReport(ok=True)
+
+    class C:
+        def complete(
+            self,
+            messages,
+            system_prompt,
+            max_tokens=2048,
+            model=None,
+            thinking=False,
+            temperature=None,
+        ):
+            p = messages[0]["content"]
+            if "PLAN D'IMPLEMENTATION" in p:
+                return plan
+            return "ok();"
+
+    def write(path, content):
+        return str(tmp_path / path)
+
+    events, _run = _drive(
+        run_build(
+            "t", C(), model="m", write=write, verifier=StatefulVerifier(), max_rounds=3
+        )
+    )
+    revisions = [e for e in events if e["type"] == "revision"]
+    assert len(revisions) >= 2  # la boucle a continué tant que ça rétrécissait
+    verifs = [e for e in events if e["type"] == "verify"]
+    assert verifs[-1]["ok"] is True  # terminé sur un succès
+
+
 def test_run_build_retries_transient_then_succeeds(tmp_path):
     """Une erreur TRANSITOIRE (timeout) sur la génération d'un fichier est ré-essayée
     (borné) ; le fichier finit écrit et le run converge (P3)."""

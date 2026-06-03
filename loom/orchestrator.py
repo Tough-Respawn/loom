@@ -377,6 +377,7 @@ def run_build(
     # 3) FIX (boucle fermée) : régénère en parallèle avec l'union des fichiers + les défauts.
     # On boucle tant qu'il reste des défauts OU qu'un fichier planifié manque (borné).
     rounds = 0
+    prev_locations: set[str] | None = None
     while rounds < max_rounds and (
         (report is not None and not report.ok) or (verifier and _incomplete())
     ):
@@ -418,5 +419,18 @@ def run_build(
             max_workers,
         )
         report = yield from _verify_phase(all_paths)
+
+        # Stop anti-divergence : si l'ensemble des défauts ne DÉCROÎT pas (et qu'aucun
+        # fichier ne manque), inutile de boucler — un 4B oscille (corrige A, casse B).
+        cur_locations = (
+            {d.location for d in report.defects} if report is not None else set()
+        )
+        if (
+            not _incomplete()
+            and prev_locations is not None
+            and not cur_locations < prev_locations  # pas un sous-ensemble STRICT
+        ):
+            break
+        prev_locations = cur_locations
 
     yield {"type": "run_done", "run": run}
