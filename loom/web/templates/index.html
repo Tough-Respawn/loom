@@ -134,40 +134,50 @@
     .run-info { align-self: flex-start; font-size: 12px; color: #cfe6da;
                 background: #131a22; border: 1px solid #28323e; border-radius: 8px;
                 padding: 3px 10px; font-family: ui-monospace, monospace; }
+    /* header minimal + drawer réglages + barre unifiée */
+    .topbar { display:flex; justify-content:space-between; align-items:center; }
+    .brand { font-size:18px; font-weight:600; }
+    .gear { background:#1b1f2b; padding:6px 10px; }
+    .drawer-scrim { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9; }
+    .drawer { position:fixed; top:0; right:0; height:100vh; width:320px; max-width:88vw;
+              background:#11141d; border-left:1px solid #2a2d3e; z-index:10; padding:16px;
+              overflow:auto; display:flex; flex-direction:column; gap:12px;
+              box-shadow:-8px 0 24px rgba(0,0,0,.4); }
+    .drawer[hidden], .drawer-scrim[hidden] { display:none; }
+    .drawer-head { display:flex; justify-content:space-between; align-items:center; }
+    .drawer-section { display:flex; flex-direction:column; gap:4px; }
+    .drawer-label { font-size:12px; color:#8a93a6; }
+    .bar-controls { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+    .seg { display:inline-flex; border:1px solid #2a2d3e; border-radius:8px; overflow:hidden; }
+    .seg button { background:#161922; color:#9aa0b4; padding:4px 12px; border-radius:0; }
+    .seg button.on { background:#2f6f4f; color:#fff; }
+    .workdir-chip { display:inline-flex; align-items:center; gap:6px; font-size:12px;
+                    color:#cfe6da; background:#131a22; border:1px solid #28323e;
+                    border-radius:8px; padding:3px 8px; font-family:ui-monospace,monospace; }
+    .workdir-chip #workdir-path { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .workdir-chip button { background:#1d2a22; color:#9fd9bd; padding:2px 8px; font-size:11px; }
+    .workdir-chip.err { border-color:#6f2f3a; }
+    .bar-input { display:flex; gap:8px; }
   </style>
 </head>
 <body>
-  <h1>Loom Chat
-    <label id="thinking-toggle" title="Réflexion préalable du modèle (décoché = réponse directe, plus rapide)">
-      <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> 🧠
-    </label>
-    {% include "_models.html" %}
-    <button class="reset" id="reset-btn" type="button">Reset</button>
-  </h1>
+  <header class="topbar">
+    <span class="brand">Loom</span>
+    <button class="gear" id="settings-btn" type="button" title="Réglages">⚙️</button>
+  </header>
 
-  <details class="skills-box">
-    <summary>🧩 Skills (contexte)</summary>
-    {% include "_skills.html" %}
-  </details>
-
-  <details class="skills-box">
-    <summary>🛠️ Outils (boucle agentique)</summary>
-    {% include "_tools.html" %}
-    <div class="hint">Les outils ⚠️ (écriture/shell) modifient ton système — gardés par le mode permission.</div>
-  </details>
-
-  {% if pipeline %}
-  <details class="agents-box">
-    <summary>🤖 Multi-agent ({{ pipeline | map(attribute='role') | join(' → ') }})</summary>
-    <form id="run-form">
-      <textarea id="run-task" rows="2" placeholder="Tâche pour le pipeline multi-agent…"></textarea>
-      <input id="run-workspace" type="text" spellcheck="false"
-             placeholder="📁 Dossier cible (laisser vide = {{ workspace_dir }})"
-             title="Où les agents écrivent les fichiers pour ce run (workspace).">
-      <button id="run-btn" type="submit">Run multi-agent</button>
-    </form>
-  </details>
-  {% endif %}
+  <div class="drawer-scrim" id="drawer-scrim" hidden></div>
+  <aside class="drawer" id="settings-drawer" hidden aria-label="Réglages">
+    <div class="drawer-head"><strong>Réglages</strong>
+      <button class="gear" id="drawer-close" type="button" title="Fermer">✕</button></div>
+    <label id="thinking-toggle" title="Réflexion préalable (décoché = réponse directe)">
+      <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> 🧠 Réflexion</label>
+    <div class="drawer-section"><span class="drawer-label">Modèle</span>{% include "_models.html" %}</div>
+    <details class="skills-box" open><summary>🧩 Skills (contexte)</summary>{% include "_skills.html" %}</details>
+    <details class="skills-box" open><summary>🛠️ Outils & permissions</summary>{% include "_tools.html" %}
+      <div class="hint">Les outils ⚠️ (écriture/shell) modifient ton système — gardés par le mode permission.</div></details>
+    <button class="reset" id="reset-btn" type="button">Reset conversation</button>
+  </aside>
 
   <!-- Monté par Preact (loom/web/static/app.js) -->
   <div id="messages"></div>
@@ -175,10 +185,23 @@
   <div id="previewWrap"><img id="preview" alt="aperçu"><button type="button" id="clearImgBtn">✕</button></div>
 
   <form id="chat">
-    <textarea id="input" rows="2" placeholder="Écris un message…  (Entrée = envoyer, Maj+Entrée = ligne, Ctrl+V = coller une image, ↑ = historique)" autofocus></textarea>
-    <input type="file" id="file" accept="image/*" style="display:none">
-    <button type="button" id="fileBtn" title="Joindre une image">🖼️</button>
-    <button id="sendBtn" type="submit">Envoyer</button>
+    <div class="bar-controls">
+      <div class="seg" id="mode-seg" role="group" aria-label="Mode">
+        <button type="button" data-mode="auto" class="on">Auto</button>
+        <button type="button" data-mode="chat">Chat</button>
+        <button type="button" data-mode="build">Build</button>
+      </div>
+      <span class="workdir-chip" id="workdir-chip" title="Dossier cible des runs build">
+        📁 <span id="workdir-path">{{ workspace_dir }}</span>
+        <button type="button" id="pick-folder-btn">Choisir…</button>
+      </span>
+    </div>
+    <div class="bar-input">
+      <textarea id="input" rows="2" placeholder="Écris… (Entrée = envoyer, Maj+Entrée = ligne)" autofocus></textarea>
+      <input type="file" id="file" accept="image/*" style="display:none">
+      <button type="button" id="fileBtn" title="Joindre une image">🖼️</button>
+      <button id="sendBtn" type="submit">Envoyer</button>
+    </div>
   </form>
 
   <script id="loom-init" type="application/json">{{ init_json | safe }}</script>
