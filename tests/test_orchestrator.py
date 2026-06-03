@@ -823,3 +823,50 @@ def test_run_pipeline_revision_bounded_to_one(tmp_path):
         "coder",
         "reviewer",
     ]
+
+
+def test_run_build_streams_plan_live(tmp_path):
+    """Le PLAN doit être STREAMÉ (plusieurs events content + reasoning agent=plan), pas un
+    bloc unique opaque : l'UI montre le planificateur générer en direct."""
+    from loom.orchestrator import run_build
+    from loom.verify import VerifyReport
+
+    plan = '{"design": "ids #board", "files": [{"path": "app.js", "role": "x"}]}'
+
+    class StreamPlanClient:
+        def stream_chat(
+            self, messages, system_prompt, max_tokens=2048, model=None, thinking=True
+        ):
+            yield ("reasoning", "je réfléchis au plan")
+            yield ("content", plan[:15])  # le plan arrive en MORCEAUX
+            yield ("content", plan[15:])
+
+        def complete(
+            self,
+            messages,
+            system_prompt,
+            max_tokens=2048,
+            model=None,
+            thinking=False,
+            temperature=None,
+        ):
+            return "let x = 1;\n"  # génération de fichier
+
+    def write(path, content):
+        return str(tmp_path / path)
+
+    events, _run = _drive(
+        run_build(
+            "fais un jeu",
+            StreamPlanClient(),
+            model="m",
+            write=write,
+            verifier=lambda paths: VerifyReport(ok=True),
+        )
+    )
+    plan_content = [
+        e for e in events if e["type"] == "content" and e.get("agent") == "plan"
+    ]
+    assert len(plan_content) >= 2  # streamé en deltas, pas un seul bloc
+    assert any(e["type"] == "reasoning" and e.get("agent") == "plan" for e in events)
+    assert "ids #board" in "".join(e["text"] for e in plan_content)

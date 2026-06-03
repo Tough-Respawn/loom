@@ -212,7 +212,6 @@ def run_build(
         edit_one,
         fix_one,
         generate_one,
-        plan_files,
     )
 
     # Transitoires = ré-essayables (le serveur a brièvement lâché/saturé) ; un APIError
@@ -309,15 +308,31 @@ def run_build(
     }
     try:
         from loom.explore import explore
+        from loom.parallel import _PLAN_SYS, _parse_plan, _plan_prompt
 
         ground = explore(task, workspace, context=context)
-        design, specs = plan_files(
-            client,
-            task,
-            model=model,
-            max_tokens=max_tokens,
-            explore_summary=ground.summary,
-        )
+        messages = [{"role": "user", "content": _plan_prompt(task, ground.summary)}]
+        raw = ""
+        if hasattr(client, "stream_chat"):
+            # Streame le plan EN DIRECT : l'UI voit la réflexion ET le contrat se générer,
+            # au lieu d'un appel bloquant opaque. thinking=True pour montrer la pensée.
+            # Fallback `complete` pour les clients minimalistes (tests) sans stream_chat.
+            for kind, payload in client.stream_chat(
+                messages, _PLAN_SYS, max_tokens, model=model, thinking=True
+            ):
+                if kind == "reasoning":
+                    yield {"type": "reasoning", "agent": "plan", "text": payload}
+                elif kind == "content":
+                    raw += payload
+                    yield {"type": "content", "agent": "plan", "text": payload}
+                elif kind == "usage":
+                    yield {"type": "usage", "agent": "plan", **payload}
+        else:
+            raw = client.complete(
+                messages, _PLAN_SYS, max_tokens=max_tokens, model=model, thinking=False
+            )
+            yield {"type": "content", "agent": "plan", "text": raw}
+        design, specs = _parse_plan(raw)
     except Exception as exc:  # noqa: BLE001
         yield {
             "type": "content",
@@ -330,7 +345,7 @@ def run_build(
     yield {
         "type": "content",
         "agent": "plan",
-        "text": design + "\n\n**Fichiers :** " + ", ".join(s.path for s in specs),
+        "text": "\n\n**Fichiers :** " + ", ".join(s.path for s in specs),
     }
     yield {"type": "agent_done", "agent": "plan"}
     if not specs:

@@ -185,22 +185,9 @@ def _parse_plan(raw: str):
     return design, [FileSpec(path=p, role="") for p in seen]
 
 
-def plan_files(
-    client,
-    task: str,
-    *,
-    model: str | None,
-    max_tokens: int = 2048,
-    explore_summary: str = "",
-):
-    """Un appel : produit un CONTRAT D'IMPLÉMENTATION détaillé + la liste de fichiers.
-
-    Renvoie (design: str, specs: list[FileSpec]). `design` n'est PAS quelques lignes :
-    c'est le contrat complet (state, signatures, snippets, boucle, clavier, rendu DOM,
-    sélecteurs) qui permet de générer chaque fichier SÉPARÉMENT sans qu'ils divergent.
-    Format DÉLIMITÉ (pas JSON) pour pouvoir inclure des snippets de code sans casser le
-    parsing (cf. échec Snake : JSON invalide dès qu'on met du code dans le champ design).
-    """
+def _plan_prompt(task: str, explore_summary: str = "") -> str:
+    """Construit le prompt du PLAN (réutilisé par `plan_files` ET par le streaming du
+    moteur, qui veut le même contrat mais appelé via stream_chat pour l'afficher live)."""
     prompt = (
         "Tu produis le PLAN D'IMPLEMENTATION d'une petite application web. Les fichiers "
         "seront ensuite generes SEPAREMENT (un appel isole par fichier), donc le plan "
@@ -239,11 +226,30 @@ def plan_files(
     )
     if explore_summary:
         prompt += (
-            "\n\nCODE EXISTANT (à MODIFIER de façon ciblée — ne réécris PAS ce qui "
+            "\n\nCODE EXISTANT (à MODIFIER de façon ciblée, ne réécris PAS ce qui "
             f"marche) :\n{explore_summary}\n"
         )
+    return prompt
+
+
+def plan_files(
+    client,
+    task: str,
+    *,
+    model: str | None,
+    max_tokens: int = 2048,
+    explore_summary: str = "",
+):
+    """Un appel : produit un CONTRAT D'IMPLÉMENTATION détaillé + la liste de fichiers.
+
+    Renvoie (design: str, specs: list[FileSpec]). `design` n'est PAS quelques lignes :
+    c'est le contrat complet (state, signatures, snippets, boucle, clavier, rendu DOM,
+    sélecteurs) qui permet de générer chaque fichier SÉPARÉMENT sans qu'ils divergent.
+    Format DÉLIMITÉ (pas JSON) pour pouvoir inclure des snippets de code sans casser le
+    parsing (cf. échec Snake : JSON invalide dès qu'on met du code dans le champ design).
+    """
     raw = client.complete(
-        [{"role": "user", "content": prompt}],
+        [{"role": "user", "content": _plan_prompt(task, explore_summary)}],
         _PLAN_SYS,
         max_tokens=max_tokens,
         model=model,
