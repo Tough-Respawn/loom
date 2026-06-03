@@ -72,6 +72,10 @@ def create_app(
     n_parallel=1,
 ) -> Flask:
     app = Flask(__name__)
+    # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
+    # redémarrer le serveur (sinon Jinja sert la version compilée au démarrage).
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
+    app.jinja_env.auto_reload = True
     history_path = str(history_path)
     skills_dir = str(skills_dir)
     workspace_dir = str(workspace_dir)
