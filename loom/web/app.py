@@ -335,6 +335,7 @@ def create_app(
                         client,
                         model=build_model,
                         write=_write_to_target,
+                        workspace=target,
                         verifier=run_verifier,
                         max_tokens=max_tokens,
                         context=server_context,
