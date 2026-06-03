@@ -12,7 +12,9 @@ inter-fichiers vient de notes d'architecture partagées (`design`).
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -548,3 +550,28 @@ def review_semantic(
                 Defect(str(it["location"]), "semantic", str(it.get("evidence", "")))
             )
     return defects
+
+
+def _content_valid(path: str, content: str) -> bool:
+    """True si `content` passe le check syntaxique déterministe pour ce type de fichier.
+    Pour un type sans checker (.html/.css) -> verify_syntax_file renvoie ok=True."""
+    from loom.verify import verify_syntax_file
+
+    fd, tmp = tempfile.mkstemp(suffix=Path(path).suffix)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(content)
+        return verify_syntax_file(tmp).ok
+    finally:
+        os.unlink(tmp)
+
+
+def best_of(make_fn, n: int) -> tuple[str, str]:
+    """Joue make_fn() jusqu'à n fois (SÉQUENTIEL), garde le 1er candidat valide, sinon
+    le dernier. n=1 => un seul appel. Cf. spec §8 : best-of-N en réparation."""
+    last: tuple[str, str] | None = None
+    for _ in range(max(1, n)):
+        last = make_fn()
+        if _content_valid(last[0], last[1]):
+            return last
+    return last
