@@ -548,6 +548,65 @@ def test_run_build_keeps_last_good_on_fix_failure(tmp_path):
     assert fix_results and "version précédente conservée" in fix_results[0]["preview"]
 
 
+def test_run_build_patch_mode_routes_to_edit_one(tmp_path):
+    """Brownfield : un fichier EXISTANT dont le verify passe => mode 'patch' => il est
+    ÉDITÉ par edit_one (remplacement ciblé old/new), PAS régénéré intégralement.
+    Stratégie : test d'intégration de bout en bout via run_build (le routage est
+    interne). On prouve l'édition par (a) le prompt d'édition émis ("Renvoie le JSON")
+    et (b) le fichier final identique sauf la ligne ciblée."""
+    from loom.orchestrator import run_build
+    from loom.verify import VerifyReport
+
+    original = "const a = 1;\nlet x = 1;\nconst b = 2;\n"
+    (tmp_path / "app.js").write_text(original, encoding="utf-8")
+
+    plan = '{"design": "x", "files": [{"path": "app.js", "role": "logique"}]}'
+    edit_json = '{"old_string": "let x = 1;", "new_string": "let x = 42;"}'
+    seen = {"edit": False, "regen": False}
+
+    class C:
+        def complete(
+            self,
+            messages,
+            system_prompt,
+            max_tokens=2048,
+            model=None,
+            thinking=False,
+            temperature=None,
+        ):
+            p = messages[0]["content"]
+            if "PLAN D'IMPLEMENTATION" in p:
+                return plan
+            if "Renvoie le JSON" in p:  # prompt d'ÉDITION (edit_one)
+                seen["edit"] = True
+                return edit_json
+            seen["regen"] = True  # prompt de génération complète (generate_one)
+            return "// REGENERATED\n"
+
+    def write(path, content):
+        fp = tmp_path / path
+        fp.write_text(content, encoding="utf-8")
+        return str(fp)
+
+    events, _run = _drive(
+        run_build(
+            "t",
+            C(),
+            model="m",
+            write=write,
+            workspace=str(tmp_path),
+            verifier=lambda paths: VerifyReport(ok=True),
+        )
+    )
+
+    assert seen["edit"] is True  # edit_one a bien été utilisé pour le fichier existant
+    assert seen["regen"] is False  # PAS de régénération complète
+    final = (tmp_path / "app.js").read_text(encoding="utf-8")
+    # remplacement ciblé : seule la ligne x change, les autres lignes sont intactes
+    assert final == "const a = 1;\nlet x = 42;\nconst b = 2;\n"
+    assert any(e["type"] == "verify" and e["ok"] for e in events)
+
+
 def test_run_pipeline_revision_bounded_to_one(tmp_path):
     agents = [
         _agent("planner", "plan", "m"),
