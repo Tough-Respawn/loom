@@ -410,3 +410,62 @@ def test_review_semantic_runs_thinking_off():
     client = FakeClient(default='{"defects": []}')
     review_semantic(client, "design", [("a.js", "x")], model="m")
     assert client.calls[0]["thinking"] is False
+
+
+# --- best_of : best-of-N en réparation (garde le 1er candidat valide) ----------------
+
+
+def test_best_of_keeps_first_valid_candidate(tmp_path):
+    from loom.parallel import best_of
+
+    calls = {"n": 0}
+
+    def make():
+        calls["n"] += 1
+        # 1er candidat: Python invalide ; 2e: valide
+        return ("m.py", "x = " if calls["n"] == 1 else "x = 1\n")
+
+    path, content = best_of(make, 3)
+    assert path == "m.py"
+    assert content == "x = 1\n"
+    assert calls["n"] == 2  # s'est arrêté dès le 1er valide
+
+
+def test_best_of_returns_last_when_none_valid():
+    from loom.parallel import best_of
+
+    calls = {"n": 0}
+
+    def make():
+        calls["n"] += 1
+        return ("m.py", "x = (")  # toujours invalide
+
+    path, content = best_of(make, 3)
+    assert calls["n"] == 3
+    assert content == "x = ("  # le dernier candidat (faute de mieux)
+
+
+def test_best_of_n1_single_call_even_if_invalid():
+    from loom.parallel import best_of
+
+    calls = {"n": 0}
+
+    def make():
+        calls["n"] += 1
+        return ("m.py", "x = (")
+
+    best_of(make, 1)
+    assert calls["n"] == 1
+
+
+def test_best_of_no_checker_extension_keeps_first(tmp_path):
+    from loom.parallel import best_of
+
+    calls = {"n": 0}
+
+    def make():
+        calls["n"] += 1
+        return ("page.html", "<html>")  # .html n'a pas de checker -> ok -> 1 seul appel
+
+    best_of(make, 3)
+    assert calls["n"] == 1
