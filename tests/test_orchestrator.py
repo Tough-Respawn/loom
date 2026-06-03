@@ -711,6 +711,94 @@ def test_run_build_patch_mode_routes_to_edit_one(tmp_path):
     assert any(e["type"] == "verify" and e["ok"] for e in events)
 
 
+def test_run_build_semantic_review_emits_advisory_when_enabled(tmp_path):
+    """review_semantic activé + verify vert -> un event content "review" est émis
+    avec le défaut sémantique (advisory, non bloquant, aucune correction)."""
+    from loom.orchestrator import run_build
+    from loom.verify import VerifyReport
+
+    plan = '{"design": "x", "files": [{"path": "app.js", "role": "logique"}]}'
+    review = '{"defects": [{"location": "app.js", "evidence": "compteur jamais incrémenté"}]}'
+
+    class C:
+        def complete(
+            self,
+            messages,
+            system_prompt,
+            max_tokens=2048,
+            model=None,
+            thinking=False,
+            temperature=None,
+        ):
+            p = messages[0]["content"]
+            if "PLAN D'IMPLEMENTATION" in p:
+                return plan
+            if "SÉMANTIQUES" in p:  # prompt de relecture sémantique
+                return review
+            return "let x = 1;\n"
+
+    def write(path, content):
+        return str(tmp_path / path)
+
+    events, _run = _drive(
+        run_build(
+            "t",
+            C(),
+            model="m",
+            write=write,
+            workspace=str(tmp_path),
+            verifier=lambda paths: VerifyReport(ok=True),
+            semantic_review=True,
+        )
+    )
+    review_contents = [
+        e for e in events if e["type"] == "content" and e.get("agent") == "review"
+    ]
+    assert len(review_contents) == 1
+    assert "compteur jamais incrémenté" in review_contents[0]["text"]
+    assert any(
+        e["type"] == "agent_start" and e.get("agent") == "review" for e in events
+    )
+
+
+def test_run_build_no_semantic_review_by_default(tmp_path):
+    """Sans semantic_review (défaut off) -> aucun agent "review" : no-op total."""
+    from loom.orchestrator import run_build
+    from loom.verify import VerifyReport
+
+    plan = '{"design": "x", "files": [{"path": "app.js", "role": "logique"}]}'
+
+    class C:
+        def complete(
+            self,
+            messages,
+            system_prompt,
+            max_tokens=2048,
+            model=None,
+            thinking=False,
+            temperature=None,
+        ):
+            p = messages[0]["content"]
+            if "PLAN D'IMPLEMENTATION" in p:
+                return plan
+            return "let x = 1;\n"
+
+    def write(path, content):
+        return str(tmp_path / path)
+
+    events, _run = _drive(
+        run_build(
+            "t",
+            C(),
+            model="m",
+            write=write,
+            workspace=str(tmp_path),
+            verifier=lambda paths: VerifyReport(ok=True),
+        )
+    )
+    assert not any(e.get("agent") == "review" for e in events)
+
+
 def test_run_pipeline_revision_bounded_to_one(tmp_path):
     agents = [
         _agent("planner", "plan", "m"),
