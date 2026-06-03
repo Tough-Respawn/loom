@@ -119,29 +119,20 @@ function Step({ it }) {
 function Think({ it }) {
   if (!it.text) return null;
   return html`<details class=${"think" + (it.active ? " active" : "")} open=${it.active}>
-    <summary>🧠 réflexion${it.role ? " " + it.role : ""}</summary>
+    <summary>réflexion${it.role ? " " + it.role : ""}</summary>
     <div>${it.text}</div>
   </details>`;
 }
 
-const TOOL_ICON = {
-  verify: "🔎",
-  read_file: "📖",
-  run_shell: "💻",
-  web_search: "🌐",
-  write_file: "✏️",
-  edit_file: "✏️",
-};
 function ToolPill({ it }) {
   const [open, setOpen] = useState(false);
-  const icon = TOOL_ICON[it.name] || "🔧";
   const hasDetail = !!it.detail;
   const status = it.pending
     ? "…"
     : (it.ok ? "✓ " : "✕ ") + (it.preview || "").split("\n")[0];
   return html`<div class=${"tool-chip" + (it.pending ? "" : it.ok ? " ok" : " ko") + (hasDetail ? " has-detail" : "")}>
     <div class="tool-row" onClick=${() => hasDetail && setOpen(!open)}>
-      <span class="tool-main">${icon} ${it.name || "outil"}${it.path ? " → " + it.path : ""}</span>
+      <span class="tool-main">${it.name || "outil"}${it.path ? " → " + it.path : ""}</span>
       <span class="tool-status">${status}</span>
       <span class="tool-caret">${hasDetail ? (open ? "▾" : "▸") : ""}</span>
     </div>
@@ -154,7 +145,7 @@ function ToolPill({ it }) {
 function Verify({ it }) {
   if (it.status === "pending") {
     return html`<div class="verify-panel pending">
-      <span class="verify-head">🔎 Vérification en cours…</span>
+      <span class="verify-head">Vérification en cours…</span>
       <span class="vtimer"> ${fmtSecs(Date.now() - it.t0)}</span>
     </div>`;
   }
@@ -190,7 +181,7 @@ function PermAsk({ it }) {
   };
   return html`<div class=${"perm-ask" + (it.decided ? " decided" : "")}>
     <div>
-      ⚠️ <b>${it.name || "outil"}</b> veut s'exécuter${it.summary
+      <b>${it.name || "outil"}</b> veut s'exécuter${it.summary
         ? html` : <code>${it.summary}</code>`
         : ""}${it.decided
         ? it.approved
@@ -200,8 +191,8 @@ function PermAsk({ it }) {
     </div>
     ${!it.decided
       ? html`<div class="perm-btns">
-          <button onClick=${() => decide(true)}>✅ Autoriser</button>
-          <button onClick=${() => decide(false)}>🚫 Refuser</button>
+          <button onClick=${() => decide(true)}>Autoriser</button>
+          <button onClick=${() => decide(false)}>Refuser</button>
         </div>`
       : null}
   </div>`;
@@ -276,12 +267,12 @@ function enhance(el, raw) {
     const btn = document.createElement("button");
     btn.className = "msg-copy";
     btn.type = "button";
-    btn.textContent = "📋";
+    btn.textContent = "copier";
     btn.title = "Copier la réponse";
     btn.onclick = () => {
       navigator.clipboard.writeText(raw);
       btn.textContent = "✓";
-      setTimeout(() => (btn.textContent = "📋"), 1200);
+      setTimeout(() => (btn.textContent = "copier"), 1200);
     };
     el.appendChild(btn);
   }
@@ -306,9 +297,9 @@ function Item({ it }) {
     case "route":
       return html`<${RouteBadge} it=${it} />`;
     case "runinfo":
-      return html`<div class="run-info">📁 dossier de travail : ${it.workspace}</div>`;
+      return html`<div class="run-info">dossier de travail : ${it.workspace}</div>`;
     case "revision":
-      return html`<div class="tool-chip rev">🔁 Révision ${it.n} — le développeur corrige</div>`;
+      return html`<div class="tool-chip rev">Révision ${it.n}, correction en cours</div>`;
     case "error":
       return html`<div class="msg assistant err">${it.message}</div>`;
     default:
@@ -319,7 +310,7 @@ function Item({ it }) {
 function App() {
   if (!state.timeline.length) {
     return html`<div class="empty-state">
-      Écris ci-dessous — Auto choisit chat ou build (ou force le mode).
+      Écris ci-dessous. En Auto, Loom route vers chat ou build (ou force le mode).
     </div>`;
   }
   return state.timeline.map((it) => html`<${Item} key=${it.id} it=${it} />`);
@@ -413,7 +404,7 @@ async function sendChat(text, image) {
         addUsage(step, evt);
         break;
       case "error":
-        push({ kind: "error", message: "Erreur : " + evt.message + " — Loom est-il lancé ?" });
+        push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancé ?)" });
         break;
     }
   };
@@ -425,7 +416,7 @@ async function sendChat(text, image) {
     if (err.name === "AbortError") {
       if (asstId) patch(asstId, { done: true });
     } else {
-      push({ kind: "error", message: "Erreur : " + err.message + " — Loom est-il lancé ?" });
+      push({ kind: "error", message: "Erreur : " + err.message + " (Loom est-il lancé ?)" });
     }
   } finally {
     if (thinkId) patch(thinkId, { active: false });
