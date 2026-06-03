@@ -92,6 +92,16 @@ def test_index_lists_models(tmp_path):
     assert "gemma" in body and "qwen" in body
 
 
+def test_run_active_and_replay_without_run(tmp_path):
+    # Contrat de reattach : sans run en cours, /run/active dit has=False et /run/replay
+    # se termine immédiatement (un "done"), sans bloquer.
+    app, _, _ = _make(tmp_path)
+    c = app.test_client()
+    st = c.get("/run/active").get_json()
+    assert st["has"] is False and st["running"] is False
+    assert "done" in c.get("/run/replay").get_data(as_text=True)
+
+
 def test_post_model_updates_conversation(tmp_path):
     app, conv, _ = _make(tmp_path)
     resp = app.test_client().post("/model", data={"model": "qwen"})
