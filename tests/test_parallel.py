@@ -84,6 +84,30 @@ def test_parse_plan_regex_fallback_on_malformed():
     assert [s.path for s in specs] == ["index.html", "style.css", "game.js"]
 
 
+def test_plan_files_includes_explore_summary_when_provided():
+    from loom.parallel import plan_files
+
+    raw = '{"design": "d", "files": [{"path": "app.js", "role": "x"}]}'
+    client = FakeClient(default=raw)
+    plan_files(
+        client,
+        "corrige app.js",
+        model="m",
+        explore_summary="----- app.js -----\nlet x=1;\n",
+    )
+    assert "CODE EXISTANT" in client.calls[0]["prompt"]
+    assert "let x=1;" in client.calls[0]["prompt"]
+
+
+def test_plan_files_greenfield_prompt_unchanged_without_summary():
+    from loom.parallel import plan_files
+
+    raw = '{"design": "d", "files": [{"path": "a.js", "role": "x"}]}'
+    client = FakeClient(default=raw)
+    plan_files(client, "fais un jeu", model="m")
+    assert "CODE EXISTANT" not in client.calls[0]["prompt"]
+
+
 def test_generate_files_runs_each_spec_with_brut_output():
     specs = [FileSpec("index.html", "structure"), FileSpec("app.js", "logique")]
     # clé = le path ENTRE BACKTICKS (cible unique du prompt ; all_paths est en clair)

@@ -181,6 +181,7 @@ def run_build(
     context: int = 8192,
     n_parallel: int = 1,
     max_rounds: int = 3,
+    semantic_review: bool = False,
 ) -> Iterator[dict]:
     """Pipeline FAN-OUT (mode /run par défaut) : PLAN détaillé → génération PARALLÈLE
     isolée par fichier (1 appel non-streamé/fichier → pas de tool-call géant tronqué, pas
@@ -305,7 +306,16 @@ def run_build(
         "model": model,
     }
     try:
-        design, specs = plan_files(client, task, model=model, max_tokens=max_tokens)
+        from loom.explore import explore
+
+        ground = explore(task, workspace, context=context)
+        design, specs = plan_files(
+            client,
+            task,
+            model=model,
+            max_tokens=max_tokens,
+            explore_summary=ground.summary,
+        )
     except Exception as exc:  # noqa: BLE001
         yield {
             "type": "content",
@@ -436,5 +446,26 @@ def run_build(
         ):
             break
         prev_locations = cur_locations
+
+    if semantic_review and report is not None and report.ok:
+        from loom.parallel import review_semantic
+
+        current = [(p, state[p]["content"]) for p in all_paths if p in state]
+        sem = review_semantic(client, design, current, model=model)
+        yield {
+            "type": "agent_start",
+            "agent": "review",
+            "role": "Relecture sémantique",
+            "model": model,
+        }
+        if sem:
+            body = (
+                "Défauts SÉMANTIQUES possibles (à vérifier — non bloquant) :\n"
+                + "\n".join(f"- {d.location} : {d.evidence}" for d in sem)
+            )
+        else:
+            body = "Relecture sémantique : aucun défaut comportemental détecté."
+        yield {"type": "content", "agent": "review", "text": body}
+        yield {"type": "agent_done", "agent": "review"}
 
     yield {"type": "run_done", "run": run}
