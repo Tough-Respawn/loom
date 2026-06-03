@@ -312,6 +312,27 @@ def test_edit_one_caps_injected_content_to_half_file_char_cap(tmp_path):
     assert len(injected) < 8192
 
 
+def test_edit_one_crlf_file_patch_normalizes_eol_and_keeps_regions(tmp_path):
+    from loom.parallel import FileSpec, edit_one
+
+    (tmp_path / "app.js").write_bytes(b"let a = 1;\r\nlet b = 2;\r\nlet c = 3;\r\n")
+    client = FakeClient(
+        default='{"old_string": "let b = 2;", "new_string": "let b = 9;"}'
+    )
+    path, content = edit_one(
+        client,
+        "design",
+        FileSpec("app.js", "x"),
+        str(tmp_path),
+        model="m",
+        max_tokens=512,
+        file_char_cap=8192,
+    )
+    # contenu retourné = LF-normalisé, la zone non touchée préservée, le patch appliqué
+    assert content == "let a = 1;\nlet b = 9;\nlet c = 3;\n"
+    assert path == "app.js"
+
+
 def test_cap_rewrites_downgrades_large_files_to_patch(tmp_path):
     from loom.parallel import FileSpec, PlannedFile, cap_rewrites
 
