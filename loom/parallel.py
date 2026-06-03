@@ -15,12 +15,43 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
 class FileSpec:
     path: str
     role: str
+
+
+@dataclass
+class PlannedFile:
+    """Un fichier planifié + son mode de génération (dérivé, jamais parsé du plan)."""
+
+    spec: FileSpec
+    mode: str  # 'create' | 'patch' | 'rewrite'
+
+
+def derive_modes(specs: list[FileSpec], workspace: str, verifier) -> list[PlannedFile]:
+    """Dérive le mode de chaque fichier SANS LLM (cf. spec §5) :
+    - absent du disque                 -> create
+    - présent et verify échoue déjà    -> rewrite (déclencheur OBJECTIF)
+    - présent et verify OK (ou None)    -> patch  (le moins destructeur)
+
+    `verifier(list[str_abspath]) -> VerifyReport | None`. N'est appelé que pour un
+    fichier EXISTANT (un fichier absent est create sans vérification).
+    """
+    root = Path(workspace)
+    planned: list[PlannedFile] = []
+    for spec in specs:
+        abspath = root / spec.path
+        if not abspath.exists():
+            mode = "create"
+        else:
+            report = verifier([str(abspath)])
+            mode = "rewrite" if (report is not None and not report.ok) else "patch"
+        planned.append(PlannedFile(spec=spec, mode=mode))
+    return planned
 
 
 def compute_budget(
