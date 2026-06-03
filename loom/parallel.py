@@ -57,6 +57,30 @@ def derive_modes(specs: list[FileSpec], workspace: str, verifier) -> list[Planne
     return planned
 
 
+def cap_rewrites(
+    planned: list[PlannedFile], workspace: str, *, max_lines: int = 200
+) -> list[PlannedFile]:
+    """Dégrade rewrite -> patch pour les fichiers existants > max_lines (cf. spec §5) :
+    réécrire intégralement un gros fichier sur un 4B risque la troncature."""
+    root = Path(workspace)
+    out: list[PlannedFile] = []
+    for pf in planned:
+        if pf.mode == "rewrite":
+            abspath = root / pf.spec.path
+            try:
+                n_lines = (
+                    abspath.read_text(encoding="utf-8", errors="replace").count("\n")
+                    + 1
+                )
+            except OSError:
+                n_lines = 0
+            if n_lines > max_lines:
+                out.append(PlannedFile(pf.spec, "patch"))
+                continue
+        out.append(pf)
+    return out
+
+
 def compute_budget(
     context: int, n_parallel: int, n_files: int, *, reserve_prompt_tokens: int = 2048
 ):
