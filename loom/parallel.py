@@ -96,7 +96,11 @@ def compute_budget(
     n_parallel = max(1, int(n_parallel or 1))
     n_files = max(1, int(n_files or 1))
     slot = max(1536, context // n_parallel)  # part de contexte par slot serveur
-    gen_max_tokens = max(1024, min(4096, slot - reserve_prompt_tokens))
+    # Fenêtre de génération = part de slot RESTANTE après la réserve prompt MESURÉE :
+    # une réserve plus grande (prompt plus gros) laisse mécaniquement moins pour la gen.
+    # On borne la part exploitée du slot à 6144 (plafond de fenêtre) AVANT de soustraire
+    # la réserve, pour que la réserve influence toujours gen (cf. budget mesuré).
+    gen_max_tokens = max(1024, min(slot, 6144) - reserve_prompt_tokens)
     per_req = reserve_prompt_tokens + gen_max_tokens
     fit = max(1, int(context * 0.9) // per_req)  # combien tiennent ensemble (marge 10%)
     max_workers = max(1, min(n_parallel, n_files, fit))
@@ -244,7 +248,11 @@ _GEN_SYS = (
 )
 
 
-def _file_prompt(spec: FileSpec, design: str, all_paths: list[str]) -> str:
+def _file_prompt(
+    spec: FileSpec, design: str, all_paths: list[str], file_char_cap: int | None = None
+) -> str:
+    if file_char_cap is not None and len(design) > file_char_cap:
+        design = design[:file_char_cap] + "\n…[tronqué]"
     return (
         f"Projet web. Architecture PARTAGÉE (à respecter STRICTEMENT pour la cohérence "
         f"entre fichiers) :\n{design}\n\n"
@@ -262,11 +270,18 @@ def generate_one(
     *,
     model: str | None,
     max_tokens: int = 2048,
+    file_char_cap: int | None = None,
 ) -> tuple[str, str]:
     """Génère UN fichier (appel isolé, non-streamé, thinking off). Brique unitaire
-    réutilisée par le batch ET par l'orchestrateur (events live par fichier)."""
+    réutilisée par le batch ET par l'orchestrateur (events live par fichier).
+    `file_char_cap` (optionnel) borne le `design` injecté (anti-overflow KV en fan-out)."""
     raw = client.complete(
-        [{"role": "user", "content": _file_prompt(spec, design, all_paths)}],
+        [
+            {
+                "role": "user",
+                "content": _file_prompt(spec, design, all_paths, file_char_cap),
+            }
+        ],
         _GEN_SYS,
         max_tokens=max_tokens,
         model=model,
