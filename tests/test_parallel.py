@@ -155,3 +155,47 @@ def test_fix_files_injects_current_files_and_defects():
     assert len(out) == 1 and out[0][0] == "app.js" and out[0][1].strip() == "NEW"
     p = client.calls[0]["prompt"]
     assert "OLD" in p and "<html>" in p and "VERIFY: bug X" in p  # contexte + défauts
+
+
+def test_derive_modes_create_when_file_absent(tmp_path):
+    from loom.parallel import FileSpec, derive_modes
+
+    specs = [FileSpec("new.js", "logique")]
+    # verifier ne devrait même pas être appelé pour un fichier absent
+    planned = derive_modes(specs, str(tmp_path), verifier=lambda paths: 1 / 0)
+    assert [(p.spec.path, p.mode) for p in planned] == [("new.js", "create")]
+
+
+def test_derive_modes_patch_when_existing_and_verify_ok(tmp_path):
+    from loom.parallel import FileSpec, derive_modes
+    from loom.verify import VerifyReport
+
+    (tmp_path / "ok.js").write_text("let x = 1;\n", encoding="utf-8")
+    specs = [FileSpec("ok.js", "logique")]
+    planned = derive_modes(
+        specs, str(tmp_path), verifier=lambda paths: VerifyReport(ok=True)
+    )
+    assert planned[0].mode == "patch"
+
+
+def test_derive_modes_rewrite_when_existing_and_verify_fails(tmp_path):
+    from loom.parallel import FileSpec, derive_modes
+    from loom.verify import Defect, VerifyReport
+
+    (tmp_path / "broken.js").write_text("let x = ;\n", encoding="utf-8")
+    specs = [FileSpec("broken.js", "logique")]
+    report = VerifyReport(
+        ok=False, defects=[Defect("broken.js:1", "syntax", "Unexpected")]
+    )
+    planned = derive_modes(specs, str(tmp_path), verifier=lambda paths: report)
+    assert planned[0].mode == "rewrite"
+
+
+def test_derive_modes_patch_when_verifier_returns_none(tmp_path):
+    # fichier non-vérifiable (ex. .css) -> verifier renvoie None -> patch (sûr)
+    from loom.parallel import FileSpec, derive_modes
+
+    (tmp_path / "style.css").write_text("body{}\n", encoding="utf-8")
+    specs = [FileSpec("style.css", "styles")]
+    planned = derive_modes(specs, str(tmp_path), verifier=lambda paths: None)
+    assert planned[0].mode == "patch"
