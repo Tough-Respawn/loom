@@ -185,7 +185,14 @@ def _parse_plan(raw: str):
     return design, [FileSpec(path=p, role="") for p in seen]
 
 
-def plan_files(client, task: str, *, model: str | None, max_tokens: int = 2048):
+def plan_files(
+    client,
+    task: str,
+    *,
+    model: str | None,
+    max_tokens: int = 2048,
+    explore_summary: str = "",
+):
     """Un appel : produit un CONTRAT D'IMPLÉMENTATION détaillé + la liste de fichiers.
 
     Renvoie (design: str, specs: list[FileSpec]). `design` n'est PAS quelques lignes :
@@ -230,6 +237,11 @@ def plan_files(client, task: str, *, model: str | None, max_tokens: int = 2048):
         "index.html reference les autres par leur path EXACT.\n\n"
         f"Tache : {task}"
     )
+    if explore_summary:
+        prompt += (
+            "\n\nCODE EXISTANT (à MODIFIER de façon ciblée — ne réécris PAS ce qui "
+            f"marche) :\n{explore_summary}\n"
+        )
     raw = client.complete(
         [{"role": "user", "content": prompt}],
         _PLAN_SYS,
