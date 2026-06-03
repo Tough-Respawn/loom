@@ -328,6 +328,7 @@ def edit_one(
     design: str,
     spec: FileSpec,
     workspace: str,
+    all_paths: list[str] | None = None,
     *,
     model: str | None,
     max_tokens: int,
@@ -343,7 +344,22 @@ def edit_one(
     """
     root = Path(workspace)
     abspath = root / spec.path
-    content = abspath.read_bytes().decode("utf-8")  # byte-exact (match edit_file)
+
+    def _fallback() -> tuple[str, str]:
+        return generate_one(
+            client,
+            design,
+            spec,
+            all_paths or [spec.path],
+            model=model,
+            max_tokens=max_tokens,
+            file_char_cap=file_char_cap,
+        )
+
+    try:
+        content = abspath.read_bytes().decode("utf-8")  # byte-exact (match edit_file)
+    except (OSError, UnicodeDecodeError):
+        return _fallback()
     cap = max(256, file_char_cap // 2)
     injected = content if len(content) <= cap else content[:cap] + "\n…[tronqué]"
     raw = client.complete(
@@ -353,11 +369,6 @@ def edit_one(
         model=model,
         thinking=False,
     )
-
-    def _fallback() -> tuple[str, str]:
-        return generate_one(
-            client, design, spec, [spec.path], model=model, max_tokens=max_tokens
-        )
 
     try:
         data = _extract_json(raw)

@@ -252,6 +252,8 @@ def run_build(
                 s = futs[fut]
                 try:
                     path, content = fut.result()
+                    # NB: pour un patch, edit_one a déjà écrit via make_edit_file ; cette
+                    # ré-écriture (atomique) normalise juste les fins de ligne en \n.
                     abspath = write(path, content)
                 except Exception as exc:  # noqa: BLE001 - un fichier raté ne casse pas le run
                     kept = " (version précédente conservée)" if s.path in state else ""
@@ -362,6 +364,7 @@ def run_build(
                 design,
                 s,
                 workspace,
+                all_paths,
                 model=model,
                 max_tokens=gen_max_tokens,
                 file_char_cap=file_char_cap,
@@ -407,6 +410,7 @@ def run_build(
                         design,
                         s,
                         workspace,
+                        all_paths,
                         model=model,
                         max_tokens=gen_max_tokens,
                         file_char_cap=file_char_cap,

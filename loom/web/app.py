@@ -286,6 +286,12 @@ def create_app(
         # mode="build" (défaut) = fan-out (plan détaillé + génération parallèle isolée :
         # pas d'overflow de tool-call, GPU batché). mode="pipeline" = ancien tool-loop.
         mode = (request.form.get("mode") or "build").strip()
+        semantic_review = (request.form.get("semantic") or "").strip() in (
+            "1",
+            "true",
+            "on",
+            "yes",
+        )
         build_model = (selected[0].model if selected else None) or (
             models[0] if models else None
         )
@@ -340,6 +346,7 @@ def create_app(
                         max_tokens=max_tokens,
                         context=server_context,
                         n_parallel=n_parallel,
+                        semantic_review=semantic_review,
                     )
                 for ev in events:
                     if cancel_event.is_set():
