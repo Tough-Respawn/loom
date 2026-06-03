@@ -677,3 +677,31 @@ def test_classify_empty_message_is_chat(tmp_path):
     app = _make_classify(tmp_path, reply="BUILD")
     resp = app.test_client().post("/classify", data={"message": "  "})
     assert resp.get_json()["mode"] == "chat"
+
+
+def test_pick_folder_returns_selected_path(tmp_path, monkeypatch):
+    import loom.web.app as appmod
+
+    class _Proc:
+        returncode = 0
+        stdout = "C:/Users/Amine/projet\n"
+        stderr = ""
+
+    monkeypatch.setattr(appmod.subprocess, "run", lambda *a, **k: _Proc())
+    app = _make_classify(tmp_path)
+    resp = app.test_client().post("/pick-folder")
+    assert resp.get_json()["path"] == "C:/Users/Amine/projet"
+
+
+def test_pick_folder_cancel_returns_empty(tmp_path, monkeypatch):
+    import loom.web.app as appmod
+
+    class _Proc:
+        returncode = 0
+        stdout = "\n"
+        stderr = ""
+
+    monkeypatch.setattr(appmod.subprocess, "run", lambda *a, **k: _Proc())
+    app = _make_classify(tmp_path)
+    resp = app.test_client().post("/pick-folder")
+    assert resp.get_json()["path"] == ""

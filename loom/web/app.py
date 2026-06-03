@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -414,6 +416,31 @@ def create_app(
         finally:
             chat_lock.release()
         return {"mode": mode}
+
+    @app.route("/pick-folder", methods=["POST"])
+    def pick_folder():
+        # Sous-processus : évite les soucis tkinter hors du thread principal de Flask.
+        script = (
+            "import tkinter, tkinter.filedialog as fd;"
+            "r=tkinter.Tk(); r.withdraw(); r.attributes('-topmost', True);"
+            "p=fd.askdirectory(); print(p if p else '')"
+        )
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except Exception as exc:  # noqa: BLE001 - tkinter absent / timeout
+            return {"path": "", "error": str(exc)[:200]}
+        path = (proc.stdout or "").strip()
+        if proc.returncode != 0 and not path:
+            return {
+                "path": "",
+                "error": (proc.stderr or "sélecteur indisponible")[:200],
+            }
+        return {"path": path}
 
     @app.post("/model")
     def model_update():
