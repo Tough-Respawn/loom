@@ -286,3 +286,33 @@ def test_edit_one_caps_injected_content_to_half_file_char_cap(tmp_path):
     injected = client.calls[0]["prompt"]
     assert "…[tronqué]" in injected
     assert len(injected) < 8192
+
+
+def test_cap_rewrites_downgrades_large_files_to_patch(tmp_path):
+    from loom.parallel import FileSpec, PlannedFile, cap_rewrites
+
+    (tmp_path / "huge.js").write_text("x\n" * 300, encoding="utf-8")  # 300 lignes
+    planned = [PlannedFile(FileSpec("huge.js", "logique"), "rewrite")]
+    out = cap_rewrites(planned, str(tmp_path), max_lines=200)
+    assert out[0].mode == "patch"
+
+
+def test_cap_rewrites_keeps_small_rewrites(tmp_path):
+    from loom.parallel import FileSpec, PlannedFile, cap_rewrites
+
+    (tmp_path / "small.js").write_text("x\n" * 50, encoding="utf-8")
+    planned = [PlannedFile(FileSpec("small.js", "logique"), "rewrite")]
+    out = cap_rewrites(planned, str(tmp_path), max_lines=200)
+    assert out[0].mode == "rewrite"
+
+
+def test_cap_rewrites_ignores_non_rewrite_modes(tmp_path):
+    from loom.parallel import FileSpec, PlannedFile, cap_rewrites
+
+    (tmp_path / "huge.js").write_text("x\n" * 300, encoding="utf-8")
+    planned = [
+        PlannedFile(FileSpec("huge.js", "logique"), "create"),
+        PlannedFile(FileSpec("huge.js", "logique"), "patch"),
+    ]
+    out = cap_rewrites(planned, str(tmp_path), max_lines=200)
+    assert [p.mode for p in out] == ["create", "patch"]
