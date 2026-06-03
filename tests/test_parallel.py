@@ -363,3 +363,50 @@ def test_compute_budget_measured_reserve_shrinks_gen():
     assert (
         gen_big < gen_small
     )  # un prompt mesuré plus gros laisse moins pour la génération
+
+
+def test_review_semantic_returns_semantic_defects():
+    from loom.parallel import review_semantic
+
+    raw = '{"defects": [{"location": "game.js", "evidence": "cliquer une mine ne fait rien"}]}'
+    client = FakeClient(default=raw)
+    defects = review_semantic(client, "design", [("game.js", "code")], model="m")
+    assert len(defects) == 1
+    assert defects[0].location == "game.js"
+    assert defects[0].kind == "semantic"
+    assert "mine" in defects[0].evidence
+
+
+def test_review_semantic_empty_when_no_defects():
+    from loom.parallel import review_semantic
+
+    client = FakeClient(default='{"defects": []}')
+    assert review_semantic(client, "design", [("a.js", "x")], model="m") == []
+
+
+def test_review_semantic_empty_on_invalid_json():
+    from loom.parallel import review_semantic
+
+    client = FakeClient(default="pas du json du tout")
+    assert review_semantic(client, "design", [("a.js", "x")], model="m") == []
+
+
+def test_review_semantic_skips_malformed_items():
+    from loom.parallel import review_semantic
+
+    # un item sans 'location' est ignoré ; l'autre est gardé
+    raw = (
+        '{"defects": [{"evidence": "no loc"}, {"location": "b.js", "evidence": "bug"}]}'
+    )
+    client = FakeClient(default=raw)
+    defects = review_semantic(client, "design", [("b.js", "x")], model="m")
+    assert [d.location for d in defects] == ["b.js"]
+    assert all(d.kind == "semantic" for d in defects)
+
+
+def test_review_semantic_runs_thinking_off():
+    from loom.parallel import review_semantic
+
+    client = FakeClient(default='{"defects": []}')
+    review_semantic(client, "design", [("a.js", "x")], model="m")
+    assert client.calls[0]["thinking"] is False

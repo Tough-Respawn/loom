@@ -500,3 +500,51 @@ def fix_files(
         return []
     with ThreadPoolExecutor(max_workers=min(max_workers, len(specs))) as ex:
         return list(ex.map(one, specs))
+
+
+_REVIEW_SYS = (
+    "Tu es un relecteur. Tu vérifies si le code fait VRAIMENT ce que demande la spec "
+    "(comportement, règles du jeu, interactions), PAS la syntaxe. Tu réponds UNIQUEMENT "
+    'un objet JSON {"defects": [{"location": "fichier", "evidence": "ce qui ne fait pas '
+    'le bon comportement"}]}. Liste VIDE si tout est conforme. Pas de markdown.'
+)
+
+
+def review_semantic(
+    client,
+    design: str,
+    current_files: list[tuple[str, str]],
+    *,
+    model: str | None,
+    max_tokens: int = 1024,
+) -> list:
+    """Défauts SÉMANTIQUES (comportement), que le verify déterministe ne voit pas.
+    Renvoie list[Defect] (kind='semantic'). Robuste : [] si JSON invalide / aucun défaut
+    (cf. spec §7 — ne bloque jamais, alimente au plus une passe de fix)."""
+    from loom.verify import Defect
+
+    files_txt = "\n\n".join(f"----- {p} -----\n{c}" for p, c in current_files)
+    prompt = (
+        f"Spec / architecture attendue :\n{design}\n\n"
+        f"Fichiers produits :\n{files_txt}\n\n"
+        "Le code fait-il VRAIMENT ce qui est demandé ? Renvoie le JSON des défauts SÉMANTIQUES."
+    )
+    raw = client.complete(
+        [{"role": "user", "content": prompt}],
+        _REVIEW_SYS,
+        max_tokens=max_tokens,
+        model=model,
+        thinking=False,
+    )
+    try:
+        data = _extract_json(raw)
+    except (ValueError, json.JSONDecodeError, TypeError):
+        return []
+    items = data.get("defects", []) if isinstance(data, dict) else []
+    defects = []
+    for it in items:
+        if isinstance(it, dict) and it.get("location"):
+            defects.append(
+                Defect(str(it["location"]), "semantic", str(it.get("evidence", "")))
+            )
+    return defects
