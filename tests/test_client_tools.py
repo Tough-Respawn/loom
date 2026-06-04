@@ -400,6 +400,55 @@ def test_stream_chat_tools_default_iter_cap_is_not_eight():
     assert sig.parameters["max_iters"].default >= 15
 
 
+def test_stream_chat_tools_relays_streaming_tool_activity():
+    """Un outil STREAMANT (run_stream) voit son activité relayée en direct via
+    'tool_stream', et sa synthèse (content) devient le résultat renvoyé au modèle."""
+
+    def run_stream(args):
+        yield ("tool_call", {"id": "s1", "name": "read_file"})
+        yield (
+            "tool_result",
+            {"id": "s1", "name": "read_file", "ok": True, "preview": "contenu"},
+        )
+        yield ("content", "synthèse du sous-agent")
+
+    spec = ToolSpec(
+        "dispatch_agent",
+        "délègue",
+        {"type": "object"},
+        run=lambda a: "x",
+        run_stream=run_stream,
+    )
+    registry = ToolRegistry([spec])
+    stream1 = [
+        _chunk(
+            _delta(
+                tool_calls=[
+                    _tc(0, id="c1", name="dispatch_agent", arguments='{"task":"t"}')
+                ]
+            ),
+            finish_reason="tool_calls",
+        )
+    ]
+    stream2 = [_chunk(_delta(content="ok"), finish_reason="stop")]
+    client, fake = _client([stream1, stream2])
+    events = list(
+        client.stream_chat_tools(
+            [{"role": "user", "content": "x"}], "s", 50, None, registry
+        )
+    )
+    streams = [p for k, p in events if k == "tool_stream"]
+    assert streams and all(s["id"] == "c1" for s in streams)
+    joined = "".join(s["text"] for s in streams)
+    assert "read_file" in joined and "synthèse du sous-agent" in joined
+    # la synthèse est réinjectée comme résultat d'outil (role=tool) au 2e appel
+    second_msgs = fake.calls[1]["messages"]
+    assert any(
+        m.get("role") == "tool" and "synthèse du sous-agent" in m["content"]
+        for m in second_msgs
+    )
+
+
 def test_stream_chat_tools_permission_deny_blocks_execution():
     calls_seen = []
 
