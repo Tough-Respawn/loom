@@ -9,6 +9,7 @@ from loom.client import LoomClient
 from loom.config import load_config
 from loom.context import effective_context_budget
 from loom.conversation import Conversation
+from loom.lessons import LessonStore
 from loom.permissions import evaluate
 from loom.session import SessionStore
 from loom.tools import AVAILABLE_TOOLS, build_registry
@@ -64,8 +65,11 @@ def build_app(cfg):
     # Sessions first-class : un fil persistant par projet (chat + runs agentic partagés).
     # Migration douce : si aucune session n'existe mais qu'une ancienne conversation est
     # là, on l'importe comme première session pour ne pas perdre l'historique.
-    sessions_root = Path(cfg.chat.history_path).resolve().parent / "sessions"
+    data_root = Path(cfg.chat.history_path).resolve().parent
+    sessions_root = data_root / "sessions"
     store = SessionStore(sessions_root, cfg.chat.system_prompt)
+    # Mémoire d'auto-amélioration : leçons globales réinjectées dans les futurs runs.
+    lesson_store = LessonStore(data_root / "lessons.json")
     if not store.list() and conversation.messages:
         seed = store.create(workspace=cfg.chat.workspace_dir, title="Session importée")
         seed.conversation = conversation
@@ -92,6 +96,7 @@ def build_app(cfg):
         server_context=cfg.context,
         n_parallel=cfg.n_parallel,
         session_store=store,
+        lesson_store=lesson_store,
     )
     return app
 

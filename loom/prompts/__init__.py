@@ -42,6 +42,7 @@ EDIT_SYSTEM = _load("edit.system.md")
 REVIEW_SYSTEM = _load("review.system.md")
 CRITIQUE_SYSTEM = _load("critique.system.md")
 DECOMPOSE_SYSTEM = _load("decompose.system.md")
+LESSON_SYSTEM = _load("lesson.system.md")
 
 
 # --- Gabarits (assemblés + bornés en Python) ---
@@ -68,24 +69,36 @@ def plan_prompt(
 
 
 def file_prompt(
-    spec, design: str, all_paths: list[str], file_char_cap=None, stories_text: str = ""
+    spec,
+    design: str,
+    all_paths: list[str],
+    file_char_cap=None,
+    stories_text: str = "",
+    lessons_text: str = "",
 ) -> str:
     """Prompt de génération d'UN fichier. `file_char_cap` borne le design injecté.
-    `stories_text` (optionnel) : les user stories qui touchent ce fichier, pour que le dev
-    travaille depuis des US concrètes (critères d'acceptation) sans casser le parallélisme."""
+    `stories_text` : les US qui touchent ce fichier (dev guidé). `lessons_text` : leçons
+    apprises de runs passés (auto-amélioration), à ne plus refaire."""
     if file_char_cap is not None:
         design = clip(design, file_char_cap)
-    block = (
+    stories_block = (
         f"\nUSER STORIES concernant ce fichier (déroule-les, respecte leurs critères "
         f"d'acceptation) :\n{stories_text}\n"
         if stories_text
+        else ""
+    )
+    lessons_block = (
+        f"\nLEÇONS APPRISES (erreurs déjà rencontrées sur d'autres projets, à NE PAS "
+        f"refaire) :\n{lessons_text}\n"
+        if lessons_text
         else ""
     )
     return _fill(
         _load("gen.file.md"),
         {
             "__ALL_PATHS__": ", ".join(all_paths),
-            "__STORIES__": block,
+            "__STORIES__": stories_block,
+            "__LESSONS__": lessons_block,
             "__PATH__": spec.path,
             "__ROLE__": spec.role,
             "__DESIGN__": design,
@@ -158,3 +171,8 @@ def decompose_prompt(design: str, task: str, files: list[str]) -> str:
         _load("decompose.user.md"),
         {"__DESIGN__": design, "__TASK__": task, "__FILES__": ", ".join(files)},
     )
+
+
+def lesson_prompt(defects: str, task: str) -> str:
+    """Prompt de distillation d'UNE leçon générale à partir des défauts rencontrés."""
+    return _fill(_load("lesson.user.md"), {"__DEFECTS__": defects, "__TASK__": task})
