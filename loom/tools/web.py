@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import httpx
 
 from loom.tools.base import ToolError, ToolSpec
+from loom.tools.trust import untrusted
 
 
 def _blocked_host_reason(url: str) -> str | None:
@@ -249,7 +250,9 @@ def make_web_search(cfg: WebSearchConfig) -> ToolSpec:
         results = web_search(query, cfg)
         if not results:
             return "recherche indisponible (hors-ligne) ou aucun résultat"
-        return _format_results(query, results, cfg)
+        return untrusted(
+            _format_results(query, results, cfg), f"recherche web : {query}"
+        )
 
     return ToolSpec(
         name="web_search",
@@ -287,7 +290,7 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
         text = fetch_page(url, cfg)
         if not text:
             return "page indisponible (hors-ligne) ou sans contenu extractible"
-        return text
+        return untrusted(text, f"page web {url}")
 
     return ToolSpec(
         name="fetch_url",
