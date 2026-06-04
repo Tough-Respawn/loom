@@ -365,7 +365,7 @@ def test_run_build_fanout_plan_generate_verify(tmp_path):
             temperature=None,
         ):
             p = messages[0]["content"]
-            if "PLAN D'IMPLEMENTATION" in p:
+            if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
             if "`index.html`" in p:
                 return "<div id='board'></div>"
@@ -416,9 +416,9 @@ def test_run_build_fix_loop_on_defect(tmp_path):
             temperature=None,
         ):
             p = messages[0]["content"]
-            if "PLAN D'IMPLEMENTATION" in p:
+            if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
-            if "DEFAUTS detectes" in p:  # prompt de correction (boucle fermée)
+            if "DÉFAUTS détectés" in p:  # prompt de correction (boucle fermée)
                 seen["fix"] = True
             return "ok();"
 
@@ -466,7 +466,7 @@ def test_run_build_stops_when_defects_do_not_shrink(tmp_path):
             temperature=None,
         ):
             p = messages[0]["content"]
-            if "PLAN D'IMPLEMENTATION" in p:
+            if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
             return "ok();"  # contenu non vide → fichier peuplé, _incomplete() False
 
@@ -523,7 +523,7 @@ def test_run_build_keeps_fixing_while_defects_shrink(tmp_path):
             temperature=None,
         ):
             p = messages[0]["content"]
-            if "PLAN D'IMPLEMENTATION" in p:
+            if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
             return "ok();"
 
@@ -564,7 +564,7 @@ def test_run_build_retries_transient_then_succeeds(tmp_path):
             temperature=None,
         ):
             p = messages[0]["content"]
-            if "PLAN D'IMPLEMENTATION" in p:
+            if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
             attempts["app.js"] += 1
             if attempts["app.js"] == 1:  # 1er essai : transitoire -> doit ré-essayer
@@ -617,9 +617,9 @@ def test_run_build_keeps_last_good_on_fix_failure(tmp_path):
             temperature=None,
         ):
             p = messages[0]["content"]
-            if "PLAN D'IMPLEMENTATION" in p:
+            if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
-            if "DEFAUTS detectes" in p:  # phase de fix : échec dur (overflow simulé)
+            if "DÉFAUTS détectés" in p:  # phase de fix : échec dur (overflow simulé)
                 raise APIError(
                     "context overflow",
                     request=httpx.Request("POST", "http://loom"),
@@ -679,7 +679,7 @@ def test_run_build_patch_mode_routes_to_edit_one(tmp_path):
             temperature=None,
         ):
             p = messages[0]["content"]
-            if "PLAN D'IMPLEMENTATION" in p:
+            if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
             if "Renvoie le JSON" in p:  # prompt d'ÉDITION (edit_one)
                 seen["edit"] = True
@@ -731,7 +731,7 @@ def test_run_build_semantic_review_emits_advisory_when_enabled(tmp_path):
             temperature=None,
         ):
             p = messages[0]["content"]
-            if "PLAN D'IMPLEMENTATION" in p:
+            if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
             if "SÉMANTIQUES" in p:  # prompt de relecture sémantique
                 return review
@@ -779,7 +779,7 @@ def test_run_build_no_semantic_review_by_default(tmp_path):
             temperature=None,
         ):
             p = messages[0]["content"]
-            if "PLAN D'IMPLEMENTATION" in p:
+            if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
             return "let x = 1;\n"
 

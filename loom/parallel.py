@@ -19,8 +19,30 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from loom.prompts import (
+    EDIT_SYSTEM,
+    GEN_SYSTEM,
+    PLAN_SYSTEM,
+    REVIEW_SYSTEM,
+    edit_prompt,
+    file_prompt,
+    fix_prompt,
+    plan_prompt,
+    review_prompt,
+)
 from loom.tools.base import ToolError
 from loom.tools.fs import make_edit_file
+
+# Compat : les prompts vivent dans loom/prompts/ (source de vérité). On ré-expose les
+# anciens noms privés pour l'orchestrateur et les tests qui les importent d'ici.
+_PLAN_SYS = PLAN_SYSTEM
+_GEN_SYS = GEN_SYSTEM
+_EDIT_SYS = EDIT_SYSTEM
+_REVIEW_SYS = REVIEW_SYSTEM
+_plan_prompt = plan_prompt
+_file_prompt = file_prompt
+_fix_prompt = fix_prompt
+_edit_prompt = edit_prompt
 
 
 @dataclass
@@ -133,12 +155,6 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
-_PLAN_SYS = (
-    "Tu es un architecte logiciel. Tu produis un plan d'implementation precis dans le "
-    "format EXACT demande, sans texte superflu autour."
-)
-
-
 _FILENAME_RE = re.compile(r"[\w\-/]+\.(?:html|css|js|mjs|json)\b")
 
 
@@ -185,52 +201,6 @@ def _parse_plan(raw: str):
     return design, [FileSpec(path=p, role="") for p in seen]
 
 
-def _plan_prompt(task: str, explore_summary: str = "") -> str:
-    """Construit le prompt du PLAN (réutilisé par `plan_files` ET par le streaming du
-    moteur, qui veut le même contrat mais appelé via stream_chat pour l'afficher live)."""
-    prompt = (
-        "Tu produis le PLAN D'IMPLEMENTATION d'une petite application web. Les fichiers "
-        "seront ensuite generes SEPAREMENT (un appel isole par fichier), donc le plan "
-        "est un CONTRAT assez precis pour qu'un developpeur deroule sans rien deviner.\n\n"
-        "Reponds EXACTEMENT dans ce format (rien d'autre) :\n"
-        "===DESIGN===\n"
-        "<le contrat detaille ci-dessous ; tu PEUX inclure des snippets de code JS>\n"
-        "===FILES===\n"
-        "index.html | role de ce fichier\n"
-        "style.css | role\n"
-        "app.js | role\n"
-        "(un fichier par ligne, format 'chemin | role')\n\n"
-        "Le DESIGN doit contenir ces sections :\n"
-        "1. ETAT PARTAGE : les variables d'etat EXACTES, le type/structure de chacune, "
-        "et leurs valeurs initiales.\n"
-        "2. MODULES : pour chaque JS, sa responsabilite, la SIGNATURE EXACTE des "
-        "fonctions/objets globaux exposes, et QUI appelle quoi (par ex. un module expose "
-        "une fonction d'initialisation appelee au chargement par un autre).\n"
-        "   IMPORTANT : SCRIPTS CLASSIQUES uniquement, PAS d'ES modules (interdit "
-        "import/export, pas de type=module). Chaque JS expose des fonctions/objets "
-        "GLOBaux (sur window). index.html les charge via <script src> classiques, dans "
-        "le BON ORDRE (les dependances avant). Le code s'execute au DOMContentLoaded.\n"
-        "3. RENDU (DOM) : les elements visibles = ELEMENTS DOM (PAS un canvas, pour "
-        "rester verifiable). id/classes EXACTS des conteneurs et elements, TYPE de balise, "
-        "le selecteur (ex: querySelectorAll('.item') sous #liste), et QUI cree ces "
-        "elements (HTML en dur ou JS).\n"
-        "4. INTERACTIONS : evenements EXACTS. Clics (quel element -> quel effet) ET/OU "
-        "clavier (keydown sur document, quelle touche -> quel effet). Si l'app est "
-        "TEMPORELLE, decris la BOUCLE : setInterval(fn, N ms), demarree au chargement.\n"
-        "5. REGLES + SNIPPETS : la logique cle de la demande, avec des snippets de code "
-        "JS pour les parties delicates.\n\n"
-        "Dans ===FILES===, liste TOUS les fichiers (index.html, le CSS, le(s) JS). "
-        "index.html reference les autres par leur path EXACT.\n\n"
-        f"Tache : {task}"
-    )
-    if explore_summary:
-        prompt += (
-            "\n\nCODE EXISTANT (à MODIFIER de façon ciblée, ne réécris PAS ce qui "
-            f"marche) :\n{explore_summary}\n"
-        )
-    return prompt
-
-
 def plan_files(
     client,
     task: str,
@@ -256,29 +226,6 @@ def plan_files(
         temperature=0.2,  # format strict -> peu de variance
     )
     return _parse_plan(raw)
-
-
-_GEN_SYS = (
-    "Tu es un développeur. Tu écris UNIQUEMENT le contenu brut et complet du fichier "
-    "demandé : pas d'explication, pas de commentaire d'introduction, pas de balise "
-    "markdown. Le fichier doit être directement fonctionnel. Pour le JS : SCRIPTS "
-    "CLASSIQUES uniquement — JAMAIS import/export ni type=module ; expose les fonctions "
-    "sur window (globales) et charge-les via <script src> classiques."
-)
-
-
-def _file_prompt(
-    spec: FileSpec, design: str, all_paths: list[str], file_char_cap: int | None = None
-) -> str:
-    if file_char_cap is not None and len(design) > file_char_cap:
-        design = design[:file_char_cap] + "\n…[tronqué]"
-    return (
-        f"Projet web. Architecture PARTAGÉE (à respecter STRICTEMENT pour la cohérence "
-        f"entre fichiers) :\n{design}\n\n"
-        f"Fichiers du projet : {', '.join(all_paths)}.\n\n"
-        f"Génère le contenu COMPLET et FINAL du fichier `{spec.path}` "
-        f"({spec.role}).\nSORTIE : uniquement le contenu du fichier."
-    )
 
 
 def generate_one(
@@ -307,25 +254,6 @@ def generate_one(
         thinking=False,
     )
     return spec.path, extract_code(raw)
-
-
-_EDIT_SYS = (
-    "Tu modifies un fichier EXISTANT par UN remplacement ciblé. Tu réponds UNIQUEMENT "
-    'un objet JSON {"old_string": "...", "new_string": "..."} où old_string est un '
-    "extrait EXACT et UNIQUE du fichier (copié au caractère près, mêmes espaces/retours) "
-    "à remplacer par new_string. Pas de markdown, pas d'explication."
-)
-
-
-def _edit_prompt(spec: FileSpec, design: str, content: str, defects: str = "") -> str:
-    head = (
-        f"Architecture PARTAGÉE :\n{design}\n\n"
-        f"Fichier `{spec.path}` ({spec.role}). Contenu ACTUEL (copie old_string À "
-        f"L'IDENTIQUE depuis ce texte) :\n-----\n{content}\n-----\n\n"
-    )
-    if defects:
-        head += f"DÉFAUTS à corriger :\n{defects}\n\n"
-    return head + "Renvoie le JSON {old_string, new_string} du remplacement ciblé."
 
 
 def edit_one(
@@ -427,48 +355,6 @@ def generate_files(
         )
 
 
-def _clip(text: str, cap: int) -> str:
-    """Tronque `text` à `cap` caractères (marqueur explicite) — borne le prompt."""
-    return text if len(text) <= cap else text[:cap] + "\n…[tronqué]"
-
-
-def _fix_prompt(
-    spec: FileSpec,
-    design: str,
-    current: list[tuple[str, str]],
-    defects: str,
-    *,
-    file_char_cap: int = 4000,
-) -> str:
-    # Le prompt de fix est le terme qui DÉBORDE : en parallèle le pool KV (-c) est
-    # PARTAGÉ entre les requêtes concurrentes (kv_unified) — design + N fichiers entiers
-    # × N requêtes saturent le contexte (cf. F4/F5, docs/plan-harness-robustesse). On
-    # borne TOUT le contexte du prompt à ~file_char_cap (dérivé du budget serveur par
-    # compute_budget). Le design (contrat) porte la cohérence, donc on peut clipper dur
-    # les fichiers VOISINS ; le fichier ciblé garde la plus grosse part.
-    design_cap = file_char_cap // 2
-    target_cap = file_char_cap // 2
-    sib_cap = max(
-        200, file_char_cap // 16
-    )  # voisins : juste la structure/les signatures
-    defects_cap = file_char_cap // 4
-
-    others = "\n\n".join(
-        f"----- {p} -----\n{_clip(c, target_cap if p == spec.path else sib_cap)}"
-        for p, c in current
-    )
-    design = _clip(design, design_cap)
-    defects = _clip(defects, defects_cap)
-    return (
-        f"Projet web. Architecture PARTAGEE :\n{design}\n\n"
-        f"Fichiers ACTUELS du projet :\n{others}\n\n"
-        f"DEFAUTS detectes par le verificateur deterministe (a corriger) :\n{defects}\n\n"
-        f"Reecris le fichier `{spec.path}` CORRIGE, complet, et COHERENT avec les autres "
-        f"fichiers ci-dessus (memes id/classes/selecteurs).\n"
-        f"SORTIE : uniquement le contenu du fichier."
-    )
-
-
 def fix_one(
     client,
     design: str,
@@ -532,14 +418,6 @@ def fix_files(
         return list(ex.map(one, specs))
 
 
-_REVIEW_SYS = (
-    "Tu es un relecteur. Tu vérifies si le code fait VRAIMENT ce que demande la spec "
-    "(comportement, règles du jeu, interactions), PAS la syntaxe. Tu réponds UNIQUEMENT "
-    'un objet JSON {"defects": [{"location": "fichier", "evidence": "ce qui ne fait pas '
-    'le bon comportement"}]}. Liste VIDE si tout est conforme. Pas de markdown.'
-)
-
-
 def review_semantic(
     client,
     design: str,
@@ -554,13 +432,8 @@ def review_semantic(
     from loom.verify import Defect
 
     files_txt = "\n\n".join(f"----- {p} -----\n{c}" for p, c in current_files)
-    prompt = (
-        f"Spec / architecture attendue :\n{design}\n\n"
-        f"Fichiers produits :\n{files_txt}\n\n"
-        "Le code fait-il VRAIMENT ce qui est demandé ? Renvoie le JSON des défauts SÉMANTIQUES."
-    )
     raw = client.complete(
-        [{"role": "user", "content": prompt}],
+        [{"role": "user", "content": review_prompt(design, files_txt)}],
         _REVIEW_SYS,
         max_tokens=max_tokens,
         model=model,
