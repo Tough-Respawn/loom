@@ -46,18 +46,13 @@ request_timeout = 120
 max_retries = 6
 context_token_budget = 5000
 keep_recent_messages = 6
-# Pipeline multi-agent par défaut (route /run). Voir [[agents]] plus bas.
-default_pipeline = ["planner", "coder", "reviewer"]
-# Passes review->fix max : le développeur repasse tant que le relecteur bloque
-# (borné). 4 => récupère les fichiers manquants quand un batch tronque.
-max_revisions = 4
 
 [tools]
-# Boucle tool-use. `enabled` vide => chat classique (aucun outil exposé au modèle).
-# Pour activer la lecture de fichiers : enabled = ["read_file"].
-# PRÉREQUIS live : relancer llama-server (serve.py inclut déjà --jinja) pour que
-# Gemma émette des tool_calls structurés.
-enabled = []
+# Boucle tool-use : les outils exposés au modèle. C'est LE harness — le modèle agit
+# en appelant le bon outil au bon moment. Vide => aucun outil (le modèle ne peut qu'écrire
+# du texte). PRÉREQUIS live : llama-server avec --jinja (serve.py l'inclut) pour que le
+# modèle émette des tool_calls structurés.
+enabled = ["read_file", "write_file", "edit_file", "run_shell", "web_search"]
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
 # loom.config.local.toml pour pointer la vraie racine de la machine.
 workspace_dir = "."
@@ -75,57 +70,3 @@ fetch_pages = false
 # La deny-list DURE (rm -rf, Remove-Item -Recurse -Force, format, dd if=…) reste
 # incontournable même en allow. Repasser à "ask" pour ré-activer la confirmation.
 mode = "allow"
-
-# === Pipeline multi-agent (route /run) : plan -> code -> review, avec outils ===
-# Chaque agent a son propre jeu d'outils (gardés par le mode permission). Tous sur
-# gemma-uncensored pour l'instant (1 modèle) ; llama-swap permettra des modèles distincts.
-
-[[agents]]
-id = "planner"
-role = "Planificateur"
-model = "gemma-uncensored"
-tools = ["read_file", "web_search"]
-max_tokens = 3072
-system_prompt = """Tu es le PLANIFICATEUR. Analyse la tâche et produis un plan d'implémentation \
-concis et numéroté : pour chaque fichier à créer, donne son nom et son rôle en une ligne. \
-DÉCOUPE en PETITS fichiers (vise ~120 lignes max chacun) : un gros module doit être éclaté en \
-plusieurs fichiers focalisés. Pour du JavaScript volumineux, prévois explicitement plusieurs \
-fichiers (ex. board.js pour la grille, render.js pour l'affichage, game.js pour la logique/les \
-événements) chargés par la page, JAMAIS un seul script.js monolithique. Tu peux lire les fichiers \
-existants (read_file) et chercher en ligne (web_search). NE CODE PAS, ne modifie aucun fichier : \
-tu produis seulement le plan. Va droit au but, pas de remplissage."""
-
-[[agents]]
-id = "coder"
-role = "Développeur"
-model = "gemma-uncensored"
-tools = ["read_file", "write_file", "edit_file", "run_shell"]
-max_tokens = 4096
-thinking = true
-system_prompt = """Tu es le DÉVELOPPEUR. Tu IMPLÉMENTES le plan en AGISSANT, pas en parlant.
-
-RÈGLES ABSOLUES :
-- N'demande JAMAIS la permission, ne dis JAMAIS « veux-tu que je… » ni « je vais créer… » : \
-APPELLE directement l'outil write_file pour CHAQUE fichier du plan, l'un après l'autre.
-- Tu DOIS produire du code complet et fonctionnel dans write_file — jamais de « … » ni de TODO.
-- DÉCOUPE en PETITS fichiers focalisés (vise ~120 lignes max par fichier). Un gros module \
-JavaScript se découpe en plusieurs fichiers (ex. board.js, render.js, game.js) chargés par la page : \
-un seul write_file peut être tronqué s'il est trop long. Un appel write_file = un fichier court.
-- Utilise edit_file pour modifier un fichier existant, read_file pour le lire avant de le changer, \
-run_shell pour exécuter si besoin. La confirmation éventuelle est gérée HORS de toi : ne la mentionne pas.
-- Commence IMMÉDIATEMENT par le premier write_file. Quand tous les fichiers sont écrits, termine par \
-un résumé d'une ligne de ce que tu as créé."""
-
-[[agents]]
-id = "reviewer"
-role = "Relecteur"
-model = "gemma-uncensored"
-tools = ["read_file", "verify", "run_shell"]
-system_prompt = """Tu es le RELECTEUR. Tu valides sur PREUVE, pas sur lecture. \
-APPELLE D'ABORD l'outil verify sur le dossier de travail : il vérifie déterministiquement la \
-syntaxe (JS via node --check, Python, JSON) et renvoie les défauts réels (file:ligne). \
-Si verify signale des défauts, c'est BLOQUANT. Lis aussi les fichiers (read_file) pour juger la \
-complétude (pas de « … » ni de placeholder, tous les fichiers du plan présents). Ne demande pas au \
-développeur de travailler : constate. Termine IMPÉRATIVEMENT par une ligne de verdict, RIEN après : \
-« VERDICT: OK » seulement si verify est propre ET le plan complet, sinon « VERDICT: BLOQUANT » suivi \
-de la liste précise des corrections (reprends les file:ligne de verify). Sans cette ligne, c'est bloquant."""

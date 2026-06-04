@@ -259,19 +259,14 @@
   <form id="chat">
     <div class="composer">
       <div class="bar-controls">
-        <div class="seg" id="mode-seg" role="group" aria-label="Mode">
-          <button type="button" data-mode="auto" class="on">Auto</button>
-          <button type="button" data-mode="chat">Chat</button>
-          <button type="button" data-mode="build">Build</button>
-        </div>
-        <span class="workdir-chip" id="workdir-chip" title="Dossier cible des runs build">
+        <span class="workdir-chip" id="workdir-chip" title="Dossier de travail des outils">
           <svg class="wd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5a2 2 0 0 1 2-2h3.2l1.6 2H19a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
           <span id="workdir-path">{{ workspace_dir }}</span>
           <button type="button" id="pick-folder-btn">Choisir</button>
         </span>
       </div>
       <div class="bar-input">
-        <textarea id="input" rows="1" placeholder="Écris un message, ou décris une app à construire…" autofocus></textarea>
+        <textarea id="input" rows="1" placeholder="Écris une demande — Loom agit avec ses outils…" autofocus></textarea>
         <input type="file" id="file" accept="image/*" style="display:none">
         <button type="button" id="fileBtn" title="Joindre une image" aria-label="Joindre une image">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-4.5-4.5L5 21"/></svg></button>
