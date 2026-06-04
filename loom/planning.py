@@ -127,6 +127,18 @@ def story_md(story: UserStory) -> str:
     )
 
 
+def stories_for_file(stories: list[UserStory], path: str) -> str:
+    """Texte compact des US touchant `path` (id, titre, détail, critères), pour le prompt
+    de génération de ce fichier. Vide si aucune US ne le concerne."""
+    lines: list[str] = []
+    for s in stories:
+        if path in s.files:
+            crit = " ; ".join(s.acceptance)
+            crit = f" Acceptation : {crit}." if crit else ""
+            lines.append(f"- {s.id} {s.title} : {s.detail}.{crit}")
+    return "\n".join(lines)
+
+
 def plan_md(design: str, stories: list[UserStory]) -> str:
     """Rendu .md du PLAN global (design + index des US)."""
     index = "\n".join(f"- {s.id} — {s.title}" for s in stories)
