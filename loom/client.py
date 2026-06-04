@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 
 from openai import APIError, OpenAI
@@ -190,22 +191,43 @@ class LoomClient:
         model: str | None = None,
         registry=None,
         thinking: bool = True,
-        max_iters: int = 8,
+        max_iters: int = 15,
         permission=None,
         confirm=None,
         max_overflow_retries: int = 2,
+        max_seconds: float = 300.0,
+        repeat_limit: int = 3,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
 
         Yield les mêmes tuples que stream_chat — ('reasoning'|'content', str) —
         plus ('tool_call', {id,name,arguments}) et ('tool_result', {id,name,ok,
-        preview}). S'arrête quand le modèle ne demande plus d'outil, ou au bout de
-        `max_iters` (garde-fou anti-boucle).
+        preview}).
+
+        L'ARRÊT est piloté par le modèle (stop naturel) : dès qu'il répond SANS
+        tool_call, on sort. Par-dessus, trois garde-fous non-négociables (best
+        practice agentic : le modèle, surtout petit, ne sait pas toujours s'arrêter) :
+        - `max_iters` : plafond dur de tours d'outils (anti-runaway) ;
+        - `max_seconds` : mur de temps global de la boucle ;
+        - `repeat_limit` : non-progrès — si le modèle réémet `repeat_limit` fois de
+          suite EXACTEMENT le même jeu d'appels (mêmes outils + mêmes args), il
+          tourne en rond, on coupe. Chaque garde-fou émet un message d'arrêt EXPLICITE
+          (on sait que c'est la sécurité, pas une fin normale).
         """
         convo = list(messages)
         tools = registry.openai_tools() if registry else None
         overflow_retries = 0
+        deadline = time.monotonic() + max_seconds
+        prev_sig_set = None  # jeu d'appels du tour précédent (détecteur de non-progrès)
+        repeat_streak = 0
         for _ in range(max_iters):
+            if time.monotonic() >= deadline:
+                yield (
+                    "content",
+                    f"\n(arrêt : garde-fou de temps après {int(max_seconds)}s — "
+                    "la tâche n'est peut-être pas terminée).",
+                )
+                return
             kwargs = build_create_kwargs(
                 model or self.model,
                 convo,
@@ -253,7 +275,20 @@ class LoomClient:
 
             tool_calls = collector["tool_calls"]
             if not tool_calls:
-                return  # réponse finale déjà streamée
+                return  # réponse finale déjà streamée (stop naturel du modèle)
+
+            # Non-progrès : même jeu d'appels (outils+args) que le tour précédent ?
+            sig_set = frozenset(
+                f"{tc['name']}\x00{tc['arguments']}" for tc in tool_calls
+            )
+            repeat_streak = repeat_streak + 1 if sig_set == prev_sig_set else 0
+            prev_sig_set = sig_set
+            if repeat_streak >= repeat_limit - 1:
+                yield (
+                    "content",
+                    "\n(arrêt : le modèle réémet les mêmes appels sans progresser).",
+                )
+                return
 
             convo.append(
                 {
@@ -385,7 +420,11 @@ class LoomClient:
                 if name in _SERIAL_WRITE:
                     wrote_this_turn = True
             convo.extend(image_followups)  # images vues au tour suivant
-        yield ("content", "\n(arrêt : trop d'appels d'outils successifs)")
+        yield (
+            "content",
+            f"\n(arrêt : garde-fou anti-boucle après {max_iters} tours d'outils — "
+            "la tâche n'est peut-être pas terminée).",
+        )
 
 
 def _close(stream) -> None:
