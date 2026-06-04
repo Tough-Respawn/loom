@@ -241,6 +241,20 @@ def test_web_missing_asset_referenced_is_defect(tmp_path):
 
 
 @pytest.mark.skipif(not _RUNTIME_OK, reason="node/jsdom absent")
+def test_web_css_loaded_as_script_is_precise_defect(tmp_path):
+    # <script src="style.css"> exécute le CSS comme du JS -> SyntaxError cryptique. On veut
+    # un défaut PRÉCIS et actionnable (utiliser <link>), pas seulement "Unexpected token".
+    _w(tmp_path / "style.css", "body{margin:0}")
+    _w(tmp_path / "index.html", '<p>Page.</p><script src="style.css"></script>')
+    r = verify_path(str(tmp_path))
+    assert r.ok is False
+    assert any(
+        d.kind == "asset" and "<link" in d.evidence and "style.css" in d.evidence
+        for d in r.defects
+    )
+
+
+@pytest.mark.skipif(not _RUNTIME_OK, reason="node/jsdom absent")
 def test_web_nav_links_between_pages_no_false_positive(tmp_path):
     # Site multi-pages : des liens <a> vers d'autres pages NE doivent PAS produire de faux
     # défaut 'Not implemented: navigation' (limite jsdom, pas un bug de la page).

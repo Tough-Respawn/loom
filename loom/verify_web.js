@@ -117,6 +117,24 @@ function checkLocalRefs(doc) {
     const u = (el.getAttribute("href") || el.getAttribute("src") || "").trim();
     if (!u || /^(https?:|data:|blob:|\/\/|#|mailto:)/.test(u)) return;
     const rel = u.split(/[?#]/)[0];
+    const tag = el.tagName.toLowerCase();
+    const ext = (rel.split(".").pop() || "").toLowerCase();
+    // MAUVAISE BALISE pour le type de fichier (cause des SyntaxError cryptiques). Un CSS
+    // chargé via <script> est EXÉCUTÉ comme du JS -> "Unexpected token ':'". Un JS chargé
+    // via <link> n'est jamais exécuté. On donne le défaut PRÉCIS (≠ message jsdom obscur).
+    if (tag === "script" && ext === "css") {
+      defects.push({
+        location: path.basename(htmlPath),
+        kind: "asset",
+        evidence: `${rel} chargé via <script> : un CSS se charge avec <link rel="stylesheet" href="${rel}">, jamais via <script> (sinon il est exécuté comme du JS -> SyntaxError).`,
+      });
+    } else if (tag === "link" && (ext === "js" || ext === "mjs")) {
+      defects.push({
+        location: path.basename(htmlPath),
+        kind: "asset",
+        evidence: `${rel} chargé via <link> : un script JS se charge avec <script src="${rel}"></script>, pas via <link>.`,
+      });
+    }
     if (seen.has(rel)) return;
     seen.add(rel);
     if (!fs.existsSync(path.resolve(dir, rel))) {
