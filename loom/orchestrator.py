@@ -407,13 +407,19 @@ def run_build(
                 "content": _plan_prompt(task, ground.summary, existing_files=existing),
             }
         ]
+        # Le plan est UN appel séquentiel (pas le fan-out parallèle) : il a droit à une
+        # fenêtre GÉNÉREUSE. Le bridage à max_tokens (2048) tronquait le plan verbeux et
+        # COUPAIT la liste ===FILES=== (placée après le design) -> moins de fichiers que
+        # demandé (site mono-page au lieu de multi-pages). On dérive un budget large du
+        # contexte, borné pour rester sûr et ne pas exploser le temps.
+        plan_max_tokens = max(max_tokens, min(8192, max(2048, context - 4096)))
         raw = ""
         if hasattr(client, "stream_chat"):
             # Streame le plan EN DIRECT : l'UI voit la réflexion ET le contrat se générer,
             # au lieu d'un appel bloquant opaque. thinking=True pour montrer la pensée.
             # Fallback `complete` pour les clients minimalistes (tests) sans stream_chat.
             for kind, payload in client.stream_chat(
-                messages, _PLAN_SYS, max_tokens, model=model, thinking=True
+                messages, _PLAN_SYS, plan_max_tokens, model=model, thinking=True
             ):
                 if kind == "reasoning":
                     yield {"type": "reasoning", "agent": "plan", "text": payload}
@@ -424,7 +430,11 @@ def run_build(
                     yield {"type": "usage", "agent": "plan", **payload}
         else:
             raw = client.complete(
-                messages, _PLAN_SYS, max_tokens=max_tokens, model=model, thinking=False
+                messages,
+                _PLAN_SYS,
+                max_tokens=plan_max_tokens,
+                model=model,
+                thinking=False,
             )
             yield {"type": "content", "agent": "plan", "text": raw}
         design, specs = _parse_plan(raw)
