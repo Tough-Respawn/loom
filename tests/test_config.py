@@ -115,7 +115,8 @@ def test_chat_config_defaults_when_absent(tmp_path):
     cfg = load_config(cfg_path)
     assert cfg.chat.web_port == 8000
     assert cfg.chat.history_path.endswith("conversation.json")
-    assert "assistant" in cfg.chat.system_prompt.lower()
+    low = cfg.chat.system_prompt.lower()
+    assert "agent" in low and "outil" in low  # prompt agentic par défaut
 
 
 def test_chat_config_read_from_file(tmp_path):
