@@ -119,15 +119,25 @@ def compute_budget(
     context = max(2048, int(context or 8192))
     n_parallel = max(1, int(n_parallel or 1))
     n_files = max(1, int(n_files or 1))
-    slot = max(1536, context // n_parallel)  # part de contexte par slot serveur
+    # Concurrence RÉELLE, pas le n_parallel statique : générer UN seul fichier ne doit pas
+    # partager le contexte en 4 (l'ancien bug — un fichier de 11 KB tronqué à 4096 tokens
+    # alors que tout le contexte était libre). On divise par ce qui tourne VRAIMENT.
+    concurrency = min(n_parallel, n_files)
+    slot = max(
+        1536, context // concurrency
+    )  # part de contexte par génération concurrente
     # Fenêtre de génération = part de slot RESTANTE après la réserve prompt MESURÉE :
     # une réserve plus grande (prompt plus gros) laisse mécaniquement moins pour la gen.
-    # On borne la part exploitée du slot à 6144 (plafond de fenêtre) AVANT de soustraire
-    # la réserve, pour que la réserve influence toujours gen (cf. budget mesuré).
-    gen_max_tokens = max(1024, min(slot, 6144) - reserve_prompt_tokens)
+    # Plafond de slot relevé à 12288 (~34 KB de code) : avec peu de concurrence, un slot
+    # élargi se traduit enfin en une vraie fenêtre, au lieu d'être bridé en dur à 6144.
+    gen_max_tokens = max(1024, min(slot, 12288) - reserve_prompt_tokens)
+    # Garde-fou KV : une SEULE requête ne mange jamais plus de 90% du contexte total.
+    gen_max_tokens = min(
+        gen_max_tokens, max(1024, int(context * 0.9) - reserve_prompt_tokens)
+    )
     per_req = reserve_prompt_tokens + gen_max_tokens
     fit = max(1, int(context * 0.9) // per_req)  # combien tiennent ensemble (marge 10%)
-    max_workers = max(1, min(n_parallel, n_files, fit))
+    max_workers = max(1, min(concurrency, fit))
     file_char_cap = reserve_prompt_tokens * 4  # budget prompt en chars (~4 chars/token)
     return max_workers, gen_max_tokens, file_char_cap
 

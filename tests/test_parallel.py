@@ -137,8 +137,20 @@ def test_compute_budget_derives_safe_values_for_shared_pool():
 
 
 def test_compute_budget_single_slot_serializes():
+    # Un seul slot serveur : la génération exploite la part de slot disponible (bornée
+    # à 90% du contexte par le garde-fou KV), au lieu du plafond figé d'avant.
     workers, gen, cap = compute_budget(8192, 1, 2)
-    assert (workers, gen, cap) == (1, 4096, 8192)
+    assert (workers, gen, cap) == (1, 5324, 8192)
+
+
+def test_compute_budget_single_file_gets_wide_window():
+    # Le coeur du fix : générer UN seul fichier ne divise plus le contexte par n_parallel.
+    # Le fichier obtient une fenêtre BEAUCOUP plus large que dans un fan-out multi-fichiers,
+    # ce qui évite la troncature silencieuse d'un gros fichier (ex. app.js de 11 KB).
+    _, gen_one, _ = compute_budget(24576, 4, 1)
+    _, gen_many, _ = compute_budget(24576, 4, 5)
+    assert gen_one >= 2 * gen_many  # un fichier seul : fenêtre au moins doublée
+    assert gen_one == 10240
 
 
 def test_compute_budget_never_exceeds_parallel_or_files():
