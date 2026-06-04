@@ -7,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
+from loom.tools.trust import untrusted
 
 
 def make_read_file(
@@ -128,7 +129,7 @@ def make_read_document(workspace_dir: str, max_chars: int = 20000) -> ToolSpec:
             return f"(document sans texte extractible : {rel})"
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n...[tronqué à {max_chars} caractères]"
-        return text
+        return untrusted(text, f"document {rel}")
 
     return ToolSpec(
         name="read_document",
