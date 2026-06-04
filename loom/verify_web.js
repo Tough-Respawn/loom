@@ -1,7 +1,7 @@
 // loom/verify_web.js
 // Vérificateur RUNTIME DOM (offline, via jsdom) : charge une page HTML + ses scripts,
-// capture les erreurs d'exécution (TypeError, ReferenceError…) ET vérifie que le
-// plateau se rend réellement (conteneur de grille non vide). C'est l'œil "ça tourne"
+// capture les erreurs d'exécution (TypeError, ReferenceError…) ET vérifie que
+// l'interface se rend réellement (conteneur principal non vide). C'est l'œil "ça tourne"
 // qui manque à `node --check` (lequel ne voit que la syntaxe).
 //
 // Usage  : node verify_web.js <chemin/index.html>
@@ -66,8 +66,9 @@ function checkRenderAndExit() {
   if (done) return;
   const doc = win.document;
   const selectors = [
+    "#app", "#root", "#main", "main",
     "#board", "#game-board", "#game-board-container", "#grid",
-    ".board", ".grid", "[data-board]",
+    ".board", ".grid", ".container", "[data-board]",
   ];
   let board = null;
   let sel = null;
@@ -79,7 +80,7 @@ function checkRenderAndExit() {
     defects.push({
       location: path.basename(htmlPath),
       kind: "render",
-      evidence: "aucun conteneur de plateau trouvé (#board/#game-board/.board)",
+      evidence: "aucun conteneur principal trouvé (#app/#root/#board/.container...)",
     });
     return emit();
   }
@@ -87,13 +88,13 @@ function checkRenderAndExit() {
     defects.push({
       location: sel,
       kind: "render",
-      evidence: `le conteneur du plateau ${sel} est VIDE (0 cellule rendue) — le jeu ne s'affiche pas`,
+      evidence: `le conteneur ${sel} est VIDE (0 élément rendu) — l'interface ne s'affiche pas`,
     });
     return emit();
   }
-  // INTERACTION : le rendu ne suffit pas — cliquer une case doit produire un effet
-  // (marque posée, statut mis à jour). Sinon le jeu n'est pas JOUABLE (ex: sélecteur
-  // de cases incohérent entre HTML et JS -> aucun écouteur attaché).
+  // INTERACTION : le rendu ne suffit pas — interagir (clic/clavier) doit produire un
+  // effet (élément mis à jour, statut changé). Sinon l'interface n'est pas FONCTIONNELLE
+  // (ex: sélecteur incohérent entre HTML et JS -> aucun écouteur attaché).
   const cellSel =
     ".cell, [data-index], [data-cell], " + sel + " > div, " + sel + " > button";
   const getCells = () => doc.querySelectorAll(cellSel);
@@ -117,7 +118,7 @@ function checkRenderAndExit() {
       }
     }
   };
-  // Tentative 1 : un CLIC (jeux réactifs type morpion).
+  // Tentative 1 : un CLIC (interfaces réactives au clic).
   try {
     getCells()[0].click();
   } catch (e) {
@@ -125,8 +126,8 @@ function checkRenderAndExit() {
   }
   setTimeout(() => {
     if (sig() !== s0) {
-      // jeu au clic : un 2e coup (autre case vide, re-query) doit AUSSI prendre —
-      // distingue "1er coup OK puis figé" d'un vrai jeu.
+      // réactif au clic : une 2e interaction (autre élément vide, re-query) doit AUSSI
+      // prendre — distingue "1re interaction OK puis figé" d'une vraie interface.
       const s1 = sig();
       const cells2 = getCells();
       let target = null;
@@ -145,16 +146,16 @@ function checkRenderAndExit() {
             location: sel,
             kind: "interaction",
             evidence:
-              "le jeu se FIGE après le 1er coup (les clics suivants sont ignorés) — " +
-              "ré-attache les écouteurs après chaque re-rendu, OU délègue les événements " +
-              "sur le conteneur " + sel,
+              "l'interface se FIGE après la 1re interaction (les clics suivants sont " +
+              "ignorés) — ré-attache les écouteurs après chaque re-rendu, OU délègue les " +
+              "événements sur le conteneur " + sel,
           });
         }
         emit();
       }, 150);
     }
-    // Tentative 2 : CLAVIER + TEMPS (jeux type Snake : la boucle déplace le plateau,
-    // les flèches changent la direction). On presse puis on laisse tourner ~0.8s.
+    // Tentative 2 : CLAVIER + TEMPS (interfaces pilotées au clavier et/ou par une boucle
+    // temporelle). On presse quelques touches puis on laisse tourner ~0.8s.
     pressKey("ArrowRight", 39);
     pressKey("ArrowDown", 40);
     setTimeout(() => {
@@ -163,9 +164,9 @@ function checkRenderAndExit() {
           location: sel,
           kind: "interaction",
           evidence:
-            "ni un clic ni une flèche (sur ~0.8s) ne changent le plateau — le jeu n'est " +
-            "pas JOUABLE (vérifie les écouteurs clic/keydown ET la boucle setInterval(tick) " +
-            "qui doit démarrer au chargement)",
+            "ni un clic ni une touche (sur ~0.8s) ne changent l'interface — elle ne " +
+            "RÉAGIT pas (vérifie les écouteurs clic/keydown ET, si l'app est temporelle, " +
+            "la boucle setInterval qui doit démarrer au chargement)",
         });
       }
       emit();
