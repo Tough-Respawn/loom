@@ -201,7 +201,8 @@ def run_build(
     tool_result/verify_start/verify/revision/run_done) → l'UI Preact les rend sans
     modification. `write(path, content) -> chemin absolu`. `verifier(abs_paths)->Report`.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import queue
+    from concurrent.futures import ThreadPoolExecutor
 
     from openai import APIConnectionError, APITimeoutError
 
@@ -223,19 +224,23 @@ def run_build(
     # État PERSISTANT : dernière bonne version par fichier. Source de vérité du run.
     state: dict[str, dict] = {}
 
-    def _gen_with_retry(gen_fn, spec, attempts: int = 2):
-        """Appelle gen_fn(spec) ; ré-essaie UNIQUEMENT sur erreur transitoire (borné)."""
+    def _gen_with_retry(gen_fn, spec, on_token, attempts: int = 2):
+        """Appelle gen_fn(spec, on_token) ; ré-essaie sur erreur transitoire (borné)."""
         last: Exception | None = None
         for _ in range(max(1, attempts)):
             try:
-                return gen_fn(spec)
+                return gen_fn(spec, on_token)
             except transient as exc:  # noqa: PERF203 - ré-essai borné, pas un hot-loop
                 last = exc
         raise last  # type: ignore[misc]
 
     def _gen_phase(agent_id, role, gen_fn, specs, max_workers):
-        """tool_begin par fichier → génère EN PARALLÈLE (retry transitoire) → écrit et met
-        à jour l'ÉTAT au fil de l'eau. Un échec garde la version précédente (last-good)."""
+        """tool_begin par fichier → génère EN PARALLÈLE et STREAME la pensée/sortie de
+        chaque fichier au fil de l'eau (via une queue thread-safe, events taggés par `id`)
+        → écrit et met à jour l'ÉTAT. Un échec garde la version précédente (last-good).
+
+        Le streaming rend le codeur VISIBLE (comme le planificateur) : chaque worker pousse
+        ses deltas dans la queue, le générateur (seul thread à muter l'état) les relaie."""
         yield {"type": "agent_start", "agent": agent_id, "role": role, "model": model}
         ids = {s.path: f"{agent_id}:{s.path}" for s in specs}
         for s in specs:
@@ -246,32 +251,59 @@ def run_build(
                 "name": "write_file",
             }
         workers = max(1, min(max_workers, len(specs)))
+        q: queue.Queue = queue.Queue()
+
+        def _worker(s):
+            sid = ids[s.path]
+
+            def on_token(kind, text):
+                q.put(("token", sid, kind, text))
+
+            try:
+                q.put(("result", s, _gen_with_retry(gen_fn, s, on_token), None))
+            except Exception as exc:  # noqa: BLE001 - relayé au thread principal
+                q.put(("result", s, None, exc))
+
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(_gen_with_retry, gen_fn, s): s for s in specs}
-            for fut in as_completed(futs):
-                s = futs[fut]
+            for s in specs:
+                ex.submit(_worker, s)
+            remaining = len(specs)
+            while remaining:
+                item = q.get()
+                if item[0] == "token":
+                    _, sid, kind, text = item
+                    if kind in ("reasoning", "content"):
+                        yield {"type": kind, "agent": agent_id, "id": sid, "text": text}
+                    continue
+                # ("result", spec, res, exc) — l'écriture et la MAJ d'état se font ICI
+                # (seul thread), jamais dans un worker.
+                _, s, res, exc = item
+                remaining -= 1
+                sid = ids[s.path]
                 try:
-                    path, content = fut.result()
-                    # NB: pour un patch, edit_one a déjà écrit via make_edit_file ; cette
-                    # ré-écriture (atomique) normalise juste les fins de ligne en \n.
+                    if exc is not None:
+                        raise exc
+                    path, content = res
+                    # NB: pour un patch, edit_one a déjà écrit ; cette ré-écriture
+                    # (atomique) normalise juste les fins de ligne en \n.
                     abspath = write(path, content)
-                except Exception as exc:  # noqa: BLE001 - un fichier raté ne casse pas le run
+                except Exception as exc2:  # noqa: BLE001 - un fichier raté ne casse pas le run
                     kept = " (version précédente conservée)" if s.path in state else ""
                     yield {
                         "type": "tool_result",
                         "agent": agent_id,
-                        "id": ids[s.path],
+                        "id": sid,
                         "name": "write_file",
                         "ok": False,
                         "path": s.path,
-                        "preview": f"erreur: {exc}{kept}",
+                        "preview": f"erreur: {exc2}{kept}",
                     }
                     continue  # last-good : on n'écrase JAMAIS l'état par une erreur
                 state[path] = {"content": content, "abspath": abspath}
                 yield {
                     "type": "tool_result",
                     "agent": agent_id,
-                    "id": ids[path],
+                    "id": sid,
                     "name": "write_file",
                     "ok": True,
                     "path": path,
@@ -418,7 +450,7 @@ def run_build(
         "\n".join(f"- {x}" for x in lesson_store.recent()) if lesson_store else ""
     )
 
-    def _gen_dispatch(s):
+    def _gen_dispatch(s, on_token=None):
         if mode_by_path.get(s.path) == "patch":
             return edit_one(
                 client,
@@ -440,6 +472,7 @@ def run_build(
             file_char_cap=file_char_cap,
             stories_text=stories_for_file(stories, s.path),
             lessons_text=lessons_text,
+            on_token=on_token,
         )
 
     yield from _gen_phase(
@@ -469,7 +502,7 @@ def run_build(
         )
         current = [(p, state[p]["content"]) for p in all_paths if p in state]
 
-        def _fix_dispatch(s, _c=current, _d=diag):
+        def _fix_dispatch(s, on_token=None, _c=current, _d=diag):
             def _make():
                 if mode_by_path.get(s.path) == "patch":
                     return edit_one(
@@ -551,7 +584,7 @@ def run_build(
             diag = "\n".join(f"- {d.location} : {d.evidence}" for d in sem)
             cur = [(p, state[p]["content"]) for p in all_paths if p in state]
 
-            def _intent_fix(s, _c=cur, _d=diag):
+            def _intent_fix(s, on_token=None, _c=cur, _d=diag):
                 return best_of(
                     lambda: fix_one(
                         client,
