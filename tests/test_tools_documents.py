@@ -43,6 +43,8 @@ def test_read_document_missing_file(tmp_path):
 def test_fetch_url_returns_extracted_text(monkeypatch):
     import loom.tools.web as web
 
+    # pas de vrai DNS en test : on neutralise le garde anti-SSRF et le fetch.
+    monkeypatch.setattr(web, "_blocked_host_reason", lambda url: None)
     monkeypatch.setattr(
         web, "fetch_page", lambda url, cfg, snippet="": "Contenu de la page"
     )
@@ -53,3 +55,17 @@ def test_fetch_url_returns_extracted_text(monkeypatch):
 def test_fetch_url_rejects_non_http():
     with pytest.raises(ToolError):
         make_fetch_url(WebSearchConfig()).run({"url": "file:///etc/passwd"})
+
+
+def test_fetch_url_blocks_internal_host_ssrf():
+    # SSRF : une IP loopback/interne doit être refusée AVANT toute requête.
+    with pytest.raises(ToolError, match="interne|interdit"):
+        make_fetch_url(WebSearchConfig()).run({"url": "http://127.0.0.1:8080/admin"})
+
+
+def test_fetch_url_blocks_cloud_metadata_ssrf():
+    # 169.254.169.254 = métadonnées cloud (link-local) : interdit.
+    with pytest.raises(ToolError, match="interne|interdit"):
+        make_fetch_url(WebSearchConfig()).run(
+            {"url": "http://169.254.169.254/latest/meta-data/"}
+        )
