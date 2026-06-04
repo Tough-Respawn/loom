@@ -4,10 +4,22 @@ READ-only, bornés au workspace."""
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
+from loom.inline_image import wrap_image
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.trust import untrusted
+
+# Images servies au modèle multimodal (mmproj). MIME par extension.
+_IMAGE_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
 
 
 def make_read_file(
@@ -145,6 +157,60 @@ def make_read_document(workspace_dir: str, max_chars: int = 20000) -> ToolSpec:
                 "path": {
                     "type": "string",
                     "description": "Chemin du document (.pdf/.xlsx/.docx), relatif au workspace.",
+                }
+            },
+            "required": ["path"],
+        },
+        run=run,
+    )
+
+
+def make_read_image(workspace_dir: str, max_bytes: int = 10 * 1024 * 1024) -> ToolSpec:
+    """Outil read_image : fait VOIR une image du workspace au modèle multimodal.
+
+    Le serveur sert déjà la vision (mmproj). L'image ne peut pas transiter par un
+    message `tool` (texte seul) : l'outil renvoie une chaîne sentinelle (cf.
+    loom.inline_image) que la boucle tool-use convertit en message `user` multimodal.
+    """
+    root = Path(workspace_dir)
+
+    def run(args: dict) -> str:
+        rel = (args.get("path") or "").strip()
+        if not rel:
+            raise ToolError("argument 'path' manquant")
+        path = _resolve_in_root(root, rel)
+        if not path.exists():
+            raise ToolError(f"fichier introuvable : {rel}")
+        if path.is_dir():
+            raise ToolError(f"'{rel}' est un répertoire, pas une image")
+        mime = _IMAGE_MIME.get(path.suffix.lower())
+        if mime is None:
+            raise ToolError(
+                f"format image non géré ({path.suffix or 'aucune extension'}) : "
+                "png/jpg/jpeg/gif/webp/bmp"
+            )
+        data = path.read_bytes()
+        if len(data) > max_bytes:
+            raise ToolError(
+                f"image trop volumineuse ({len(data)} octets > {max_bytes})"
+            )
+        b64 = base64.b64encode(data).decode("ascii")
+        return wrap_image(f"data:{mime};base64,{b64}", rel)
+
+    return ToolSpec(
+        name="read_image",
+        description=(
+            "Charge une IMAGE du workspace (png/jpg/jpeg/gif/webp/bmp) et te la fait "
+            "VOIR directement : capture d'écran, photo, schéma, diagramme. Utilise-le "
+            "pour décrire une image, lire un texte dessus, comparer un rendu. Pour un "
+            "PDF/Excel/Word, utilise read_document ; pour du texte, read_file."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Chemin de l'image, relatif au workspace.",
                 }
             },
             "required": ["path"],
