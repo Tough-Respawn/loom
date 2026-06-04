@@ -136,7 +136,7 @@ function ToolPill({ it }) {
       <span class="tool-status">${status}</span>
       <span class="tool-caret">${hasDetail ? (open ? "▾" : "▸") : ""}</span>
     </div>
-    ${it.pending && it.stream
+    ${it.stream && !open
       ? html`<pre class="tool-stream">${it.stream.slice(-1400)}</pre>`
       : null}
     ${hasDetail && open
