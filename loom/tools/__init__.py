@@ -29,16 +29,22 @@ __all__ = [
     "make_read_image",
 ]
 
-# Outils confiés à un SOUS-AGENT (dispatch_agent) : lecture seule, et SURTOUT pas
-# dispatch_agent lui-même -> aucune récursion possible, aucun effet de bord.
+# Outils confiés à un SOUS-AGENT (dispatch_agent) : TOUT sauf dispatch_agent lui-même
+# (anti-récursion) et manage_todos (le plan reste celui du fil principal). Le sous-agent
+# peut écrire/exécuter — un ouvrier en lecture seule ne sert à rien ; la deny-list dure
+# de run_shell et la politique de permission s'appliquent comme au fil principal.
 _SUBAGENT_TOOLS = [
     "find_files",
     "search_text",
     "list_dir",
     "read_file",
     "read_document",
+    "read_image",
     "web_search",
     "fetch_url",
+    "write_file",
+    "edit_file",
+    "run_shell",
 ]
 
 
@@ -53,10 +59,12 @@ def build_registry(
     todo_store=None,
     model: str | None = None,
     sub_max_tokens: int = 2048,
+    permission=None,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
     `client`/`model` : requis pour dispatch_agent (lance une sous-boucle tool-use).
+    `permission` : politique relayée à la sous-boucle (même sécurité qu'au principal).
     `todo_store` : mémoire partagée requise pour manage_todos (survit aux tours).
     """
     # Imports locaux : les sous-modules d'écriture/shell/web importent `base`,
@@ -101,7 +109,8 @@ def build_registry(
         from loom.tools.agent import make_dispatch_agent
 
         def _build_sub_registry() -> ToolRegistry:
-            # Sous-registre lecture seule, SANS client -> pas de dispatch_agent imbriqué.
+            # Sous-registre complet SANS client -> pas de dispatch_agent imbriqué
+            # (anti-récursion). Écriture/shell inclus : c'est un vrai ouvrier.
             return build_registry(
                 workspace_dir, extensions, max_bytes, _SUBAGENT_TOOLS, web_cfg=web_cfg
             )
@@ -113,6 +122,7 @@ def build_registry(
                 system_prompt=SUBAGENT_SYSTEM,
                 model=model,
                 max_tokens=sub_max_tokens,
+                permission=permission,
             )
         )
     return ToolRegistry(specs)
