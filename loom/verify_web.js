@@ -29,7 +29,14 @@ function emit() {
 // ignore pour ne pas faire échouer à tort un site multi-pages qui fonctionne.
 function isEnvNoise(s) {
   s = String(s);
-  return s.includes("Not implemented:") || s.includes("Could not load");
+  return (
+    s.includes("Not implemented:") ||
+    s.includes("Could not load") ||
+    // jsdom traite file:// comme une origine OPAQUE -> localStorage/sessionStorage y
+    // lèvent une SecurityError, alors qu'ils FONCTIONNENT dans un vrai navigateur (double
+    // -clic ou http). C'est une limite de jsdom, pas un bug de la page.
+    s.includes("opaque origin")
+  );
 }
 
 function addRuntime(evidence) {
@@ -52,6 +59,24 @@ const url = "file://" + path.resolve(htmlPath).replace(/\\/g, "/");
 const vc = new VirtualConsole();
 vc.on("jsdomError", (e) => addRuntime((e && (e.detail && e.detail.stack)) || (e && e.message) || e));
 
+// Polyfill localStorage/sessionStorage : jsdom traite file:// comme une origine OPAQUE et
+// fait LEVER ces API, ce qui INTERROMPT les scripts de la page (puis « rien ne se rend »).
+// Dans un vrai navigateur elles fonctionnent. On fournit un store mémoire conforme pour que
+// la page s'exécute comme en vrai (sans ce faux échec en cascade).
+function makeStorage() {
+  const m = new Map();
+  return {
+    getItem: (k) => (m.has(String(k)) ? m.get(String(k)) : null),
+    setItem: (k, v) => void m.set(String(k), String(v)),
+    removeItem: (k) => void m.delete(String(k)),
+    clear: () => m.clear(),
+    key: (i) => Array.from(m.keys())[i] ?? null,
+    get length() {
+      return m.size;
+    },
+  };
+}
+
 let win;
 try {
   const dom = new JSDOM(html, {
@@ -60,6 +85,18 @@ try {
     resources: "usable",
     pretendToBeVisual: true,
     virtualConsole: vc,
+    beforeParse(window) {
+      for (const name of ["localStorage", "sessionStorage"]) {
+        try {
+          Object.defineProperty(window, name, {
+            value: makeStorage(),
+            configurable: true,
+          });
+        } catch (e) {
+          /* déjà défini sur certaines versions de jsdom — on garde l'existant */
+        }
+      }
+    },
   });
   win = dom.window;
 } catch (e) {

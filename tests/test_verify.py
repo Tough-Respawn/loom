@@ -255,6 +255,21 @@ def test_web_css_loaded_as_script_is_precise_defect(tmp_path):
 
 
 @pytest.mark.skipif(not _RUNTIME_OK, reason="node/jsdom absent")
+def test_web_localstorage_is_not_false_positive(tmp_path):
+    # localStorage marche dans un vrai navigateur ; jsdom (origine opaque file://) le refuse.
+    # Une page qui l'utilise correctement ne doit PAS être marquée en défaut.
+    _w(tmp_path / "index.html", '<div id="box">x</div><script src="app.js"></script>')
+    _w(
+        tmp_path / "app.js",
+        "document.addEventListener('DOMContentLoaded',()=>{"
+        "const box=document.getElementById('box'); if(!box) return;"
+        "localStorage.setItem('n','1'); box.textContent='ok '+localStorage.getItem('n');});",
+    )
+    r = verify_path(str(tmp_path))
+    assert r.ok is True, [(d.kind, d.evidence) for d in r.defects]
+
+
+@pytest.mark.skipif(not _RUNTIME_OK, reason="node/jsdom absent")
 def test_web_nav_links_between_pages_no_false_positive(tmp_path):
     # Site multi-pages : des liens <a> vers d'autres pages NE doivent PAS produire de faux
     # défaut 'Not implemented: navigation' (limite jsdom, pas un bug de la page).
