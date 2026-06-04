@@ -1,8 +1,10 @@
 // loom/verify_web.js
 // Vérificateur RUNTIME DOM (offline, via jsdom) : charge une page HTML + ses scripts,
-// capture les erreurs d'exécution (TypeError, ReferenceError…) ET vérifie que
-// l'interface se rend réellement (conteneur principal non vide). C'est l'œil "ça tourne"
-// qui manque à `node --check` (lequel ne voit que la syntaxe).
+// capture les erreurs d'exécution (TypeError, ReferenceError…), vérifie que l'interface
+// rend RÉELLEMENT quelque chose, et l'EXERCE (clique chaque bouton, tape dans les champs,
+// presse des touches) pour prouver qu'elle RÉAGIT. Générique : aucune hypothèse de domaine
+// (ni #board ni .cell figés). C'est l'œil "ça marche pour de vrai" qui manque à
+// `node --check` (lequel ne voit que la syntaxe).
 //
 // Usage  : node verify_web.js <chemin/index.html>
 // Sortie : JSON { ok: bool, defects: [{location, kind, evidence}] }  (stdout, 1 ligne)
@@ -57,121 +59,113 @@ try {
 
 win.addEventListener("error", (ev) => addRuntime(ev.message || ev.error || ev));
 
-function statusSignature(doc) {
-  const st = doc.querySelector("#status, .status, [data-status], #message, .message");
-  return st ? (st.textContent || "").trim() : "";
+function displaySig(doc) {
+  // Capture l'état "visible" qu'une interaction est censée changer : la VALEUR des champs
+  // (hors innerHTML) et les zones d'affichage/résultat/statut. Complète body.innerHTML.
+  let s = "";
+  doc
+    .querySelectorAll(
+      "input, textarea, select, output, #display, .display, #result, .result, #status, .status",
+    )
+    .forEach((el) => {
+      const v = el.value !== undefined && el.value !== null ? el.value : "";
+      s += "|" + v + "/" + (el.textContent || "").trim();
+    });
+  return s;
+}
+
+function interactiveEls(doc) {
+  // Tout ce qu'un utilisateur peut actionner — AUCUNE hypothèse de domaine (pas de #board).
+  return Array.from(
+    doc.querySelectorAll(
+      "button, [data-action], [data-digit], [data-operator], [data-key], " +
+        "[data-index], [data-cell], .cell, [role='button'], a[href]",
+    ),
+  );
+}
+
+function pressKey(doc, key, kc) {
+  for (const tgt of [doc, win]) {
+    try {
+      tgt.dispatchEvent(
+        new win.KeyboardEvent("keydown", {
+          key, code: key, keyCode: kc, which: kc, bubbles: true, cancelable: true,
+        }),
+      );
+    } catch (e) {
+      /* jsdom limite parfois KeyboardEvent — on ignore */
+    }
+  }
 }
 
 function checkRenderAndExit() {
   if (done) return;
   const doc = win.document;
-  const selectors = [
-    "#app", "#root", "#main", "main",
-    "#board", "#game-board", "#game-board-container", "#grid",
-    ".board", ".grid", ".container", "[data-board]",
-  ];
-  let board = null;
-  let sel = null;
-  for (const s of selectors) {
-    const el = doc.querySelector(s);
-    if (el) { board = el; sel = s; break; }
-  }
-  if (!board) {
+  const body = doc.body;
+  const buttons = body ? interactiveEls(doc) : [];
+  const inputs = body
+    ? Array.from(doc.querySelectorAll("input:not([type='hidden']), textarea, select"))
+    : [];
+  const bodyText = body ? (body.textContent || "").trim() : "";
+
+  // RENDU (générique) : la page ne rend RIEN si elle n'a ni élément interactif, ni champ,
+  // ni texte. On juge le CONTENU réel, plus aucune liste de conteneurs figée (#board…).
+  if (!body || (buttons.length === 0 && inputs.length === 0 && bodyText.length < 3)) {
     defects.push({
       location: path.basename(htmlPath),
       kind: "render",
-      evidence: "aucun conteneur principal trouvé (#app/#root/#board/.container...)",
+      evidence:
+        "la page ne rend rien (aucun élément interactif, aucun champ, aucun texte) — " +
+        "l'interface ne s'affiche pas",
     });
     return emit();
   }
-  if (board.children.length === 0) {
-    defects.push({
-      location: sel,
-      kind: "render",
-      evidence: `le conteneur ${sel} est VIDE (0 élément rendu) — l'interface ne s'affiche pas`,
-    });
-    return emit();
-  }
-  // INTERACTION : le rendu ne suffit pas — interagir (clic/clavier) doit produire un
-  // effet (élément mis à jour, statut changé). Sinon l'interface n'est pas FONCTIONNELLE
-  // (ex: sélecteur incohérent entre HTML et JS -> aucun écouteur attaché).
-  const cellSel =
-    ".cell, [data-index], [data-cell], " + sel + " > div, " + sel + " > button";
-  const getCells = () => doc.querySelectorAll(cellSel);
-  if (!getCells().length) {
-    // pas de cases identifiables : on ne peut pas tester l'interaction sans risque
-    // de faux positif -> on s'abstient (le rendu est OK).
-    return emit();
-  }
-  const sig = () => board.innerHTML + "||" + statusSignature(doc);
+  // Page statique (texte/affichage, sans bouton ni champ) : le rendu suffit, rien à exercer.
+  if (buttons.length === 0 && inputs.length === 0) return emit();
+
+  // EXERCICE : on actionne TOUT (clique les boutons, tape dans les champs, presse des
+  // touches usuelles) et on vérifie qu'AU MOINS une interaction change l'interface. Sinon
+  // les écouteurs ne sont pas branchés (sélecteurs incohérents, fonctions non exposées).
+  const sig = () => (body.innerHTML || "") + "||" + displaySig(doc);
   const s0 = sig();
-  const pressKey = (key, kc) => {
-    for (const tgt of [doc, win]) {
-      try {
-        tgt.dispatchEvent(
-          new win.KeyboardEvent("keydown", {
-            key, code: key, keyCode: kc, which: kc, bubbles: true, cancelable: true,
-          }),
-        );
-      } catch (e) {
-        /* certains builds jsdom limitent KeyboardEvent — on ignore */
-      }
+
+  let clicked = 0;
+  for (const b of buttons) {
+    if (clicked >= 10) break;
+    try {
+      b.click();
+      clicked++;
+    } catch (e) {
+      addRuntime("un clic a levé: " + (e && e.message));
     }
-  };
-  // Tentative 1 : un CLIC (interfaces réactives au clic).
-  try {
-    getCells()[0].click();
-  } catch (e) {
-    addRuntime("clic case 1 a levé: " + (e && e.message));
   }
-  setTimeout(() => {
-    if (sig() !== s0) {
-      // réactif au clic : une 2e interaction (autre élément vide, re-query) doit AUSSI
-      // prendre — distingue "1re interaction OK puis figé" d'une vraie interface.
-      const s1 = sig();
-      const cells2 = getCells();
-      let target = null;
-      for (let i = 1; i < cells2.length; i++) {
-        if (((cells2[i].textContent || "").trim()) === "") { target = cells2[i]; break; }
-      }
-      if (!target) return emit();
-      try {
-        target.click();
-      } catch (e) {
-        addRuntime("clic case 2 a levé: " + (e && e.message));
-      }
-      return setTimeout(() => {
-        if (sig() === s1) {
-          defects.push({
-            location: sel,
-            kind: "interaction",
-            evidence:
-              "l'interface se FIGE après la 1re interaction (les clics suivants sont " +
-              "ignorés) — ré-attache les écouteurs après chaque re-rendu, OU délègue les " +
-              "événements sur le conteneur " + sel,
-          });
-        }
-        emit();
-      }, 150);
+  for (const inp of inputs.slice(0, 3)) {
+    if (inp.readOnly || inp.disabled) continue;
+    try {
+      if (inp.focus) inp.focus();
+      inp.value = (inp.value || "") + "1";
+      inp.dispatchEvent(new win.Event("input", { bubbles: true }));
+      pressKey(doc, "1", 49);
+    } catch (e) {
+      /* champ non éditable — on ignore */
     }
-    // Tentative 2 : CLAVIER + TEMPS (interfaces pilotées au clavier et/ou par une boucle
-    // temporelle). On presse quelques touches puis on laisse tourner ~0.8s.
-    pressKey("ArrowRight", 39);
-    pressKey("ArrowDown", 40);
-    setTimeout(() => {
-      if (sig() === s0) {
-        defects.push({
-          location: sel,
-          kind: "interaction",
-          evidence:
-            "ni un clic ni une touche (sur ~0.8s) ne changent l'interface — elle ne " +
-            "RÉAGIT pas (vérifie les écouteurs clic/keydown ET, si l'app est temporelle, " +
-            "la boucle setInterval qui doit démarrer au chargement)",
-        });
-      }
-      emit();
-    }, 800);
-  }, 150);
+  }
+  // Apps clavier / temporelles : presse quelques touches usuelles, laisse tourner un peu.
+  ["1", "Enter", "ArrowRight", "ArrowDown"].forEach((k, i) => pressKey(doc, k, 49 + i));
+
+  setTimeout(() => {
+    if (sig() === s0) {
+      defects.push({
+        location: path.basename(htmlPath),
+        kind: "interaction",
+        evidence:
+          "aucune interaction (clic sur " + clicked + " bouton(s), saisie, clavier) ne " +
+          "change l'interface — les écouteurs ne sont pas branchés (sélecteurs " +
+          "incohérents entre HTML et JS, ou fonctions non exposées sur window)",
+      });
+    }
+    emit();
+  }, 700);
 }
 
 // Laisser le 'load' (scripts chargés + exécutés) se produire, puis vérifier le rendu.
