@@ -31,13 +31,19 @@ def resolve_n_gpu_layers(
     override: int | None,
     model_size_mb: int,
     total_layers: int,
+    kv_headroom_mb: int = 1024,
 ) -> int:
-    """Override prioritaire ; sinon 0 en CPU, sinon recommandation auto."""
+    """Override prioritaire ; sinon 0 en CPU, sinon recommandation auto.
+
+    `kv_headroom_mb` : marge VRAM réservée au KV + buffers (config gpu_kv_headroom_mb).
+    """
     if override is not None:
         return override
     if not profile.has_gpu:
         return 0
-    return recommend_gpu_layers(profile.vram_free_mb, model_size_mb, total_layers)
+    return recommend_gpu_layers(
+        profile.vram_free_mb, model_size_mb, total_layers, kv_headroom_mb
+    )
 
 
 def resolve_mmproj_path(
@@ -65,7 +71,11 @@ def build_launch(
     mmproj_path: str | None = None,
 ) -> list[str]:
     n_gpu = resolve_n_gpu_layers(
-        profile, cfg.override_n_gpu_layers, cfg.model.size_mb, cfg.model.n_layers
+        profile,
+        cfg.override_n_gpu_layers,
+        cfg.model.size_mb,
+        cfg.model.n_layers,
+        cfg.gpu_kv_headroom_mb,
     )
     # En mode GPU, threads = cœurs PHYSIQUES (≈ logiques/2 si HyperThreading) : au-delà,
     # la contention HT ralentit la passe CPU (PLE de Gemma 3n). En CPU-only, tous les

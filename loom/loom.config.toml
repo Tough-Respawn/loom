@@ -23,6 +23,12 @@ context = 24576
 # (verrou de chat) et le sous-agent tourne en synchrone -> 1 seul slot, qui dispose
 # alors de TOUT le pool KV (-c). Le 4 d'avant venait du fan-out, supprimé.
 n_parallel = 1
+# Marge VRAM (Mo) réservée hors couches GPU (cache KV + buffers de calcul). En mono-flux,
+# plus besoin de réserver pour des slots concurrents -> on l'abaisse pour offloader plus de
+# couches et saturer le GPU. Vise ~99% de la VRAM : descends par paliers (640 -> 512 -> 384)
+# en surveillant `nvidia-smi` (la "Shared GPU memory" doit rester à 0 ; si elle monte, c'est
+# le spill qui écroule les perfs -> remonte la marge). serve.py loggue les couches offloadées.
+gpu_kv_headroom_mb = 640
 port = 8080
 # Binaire llama-server : "llama-server" si dans le PATH, sinon override en local.
 bin = "llama-server"
