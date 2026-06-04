@@ -83,7 +83,19 @@ def test_load_base_config(tmp_path):
     assert cfg.server_bin == "llama-server"
     assert cfg.override_n_gpu_layers is None
     assert cfg.override_threads is None
-    assert cfg.n_parallel == 4  # défaut quand absent du [server]
+    assert cfg.n_parallel == 1  # défaut mono-flux quand absent du [server]
+    assert cfg.gpu_kv_headroom_mb == 1024  # marge VRAM par défaut (sûre)
+
+
+def test_gpu_kv_headroom_read_from_server_section(tmp_path):
+    cfg = load_config(
+        _write(
+            tmp_path,
+            "loom.config.toml",
+            BASE.replace("port = 8080", "port = 8080\ngpu_kv_headroom_mb = 512"),
+        )
+    )
+    assert cfg.gpu_kv_headroom_mb == 512
 
 
 def test_n_parallel_read_from_server_section(tmp_path):

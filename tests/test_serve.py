@@ -82,6 +82,19 @@ def test_resolve_gpu_auto_recommends_all_when_fits():
     )
 
 
+def test_lower_headroom_offloads_more_layers():
+    # Mono-flux : une marge VRAM plus basse doit offloader STRICTEMENT plus de couches
+    # (le modèle ne tient pas entièrement -> offload proportionnel au budget).
+    prof = HardwareProfile(True, "GPU", 6000, 12)
+    conservateur = resolve_n_gpu_layers(
+        prof, None, model_size_mb=5340, total_layers=35, kv_headroom_mb=1024
+    )
+    agressif = resolve_n_gpu_layers(
+        prof, None, model_size_mb=5340, total_layers=35, kv_headroom_mb=512
+    )
+    assert agressif > conservateur
+
+
 def test_resolve_mmproj_path_empty_returns_none():
     assert resolve_mmproj_path("", Path("/models")) is None
 

@@ -80,6 +80,10 @@ class RuntimeConfig:
     chat: ChatConfig
     # Slots de llama-server (--parallel). Loom est mono-flux -> 1 (cf. loom.config.toml).
     n_parallel: int = 1
+    # Marge VRAM (Mo) réservée hors couches offloadées : couvre le cache KV + les buffers
+    # de calcul. Plus elle est BASSE, plus on offloade de couches sur GPU (perf), mais trop
+    # bas -> débordement en mémoire partagée (Windows) qui écroule tout. À régler par machine.
+    gpu_kv_headroom_mb: int = 1024
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
 
     def model_by_id(self, model_id: str) -> ModelConfig:
@@ -172,7 +176,8 @@ def load_config(
         port=int(s["port"]),
         server_bin=s["bin"],
         swap_bin=s.get("swap_bin", "llama-swap"),
-        n_parallel=int(s.get("n_parallel", 4)),
+        n_parallel=int(s.get("n_parallel", 1)),
+        gpu_kv_headroom_mb=int(s.get("gpu_kv_headroom_mb", 1024)),
         override_n_gpu_layers=o.get("n_gpu_layers"),
         override_threads=o.get("threads"),
         chat=chat,
