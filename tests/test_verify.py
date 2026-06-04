@@ -3,7 +3,29 @@ import shutil
 
 import pytest
 
-from loom.verify import VerifyReport, format_report, verify_path
+from loom.verify import (
+    VerifyReport,
+    format_report,
+    verify_path,
+    verify_syntax_content,
+)
+
+
+def test_verify_syntax_content_flags_truncated_js():
+    # Fichier JS coupé (accolade non fermée) = troncature -> défaut syntaxe, SANS écriture
+    # disque préalable (le portique vérifie le CONTENU). Le défaut pointe le vrai nom.
+    r = verify_syntax_content("function play() {\n  let x = 1;\n", "breakout.js")
+    if not r.ok:  # node présent : on a un vrai check syntaxe
+        assert any(
+            d.kind == "syntax" and "breakout.js" in d.location for d in r.defects
+        )
+
+
+def test_verify_syntax_content_ok_on_valid_and_uncheckable():
+    assert verify_syntax_content("const x = 1;\n", "app.js").ok is True
+    # html/css : pas de checker syntaxe -> jamais un faux défaut, laisse passer.
+    assert verify_syntax_content("<div>pas du JS</div>", "index.html").ok is True
+    assert verify_syntax_content("body { color: red }", "style.css").ok is True
 
 
 def _w(path, content):

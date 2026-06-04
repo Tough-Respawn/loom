@@ -22,7 +22,7 @@ from loom.agents import (
     is_blocking,
     is_reviewer,
 )
-from loom.verify import format_report
+from loom.verify import format_report, verify_syntax_content
 
 # Contrat avec verify_web.js : un défaut kind='asset' a pour evidence
 # "référence introuvable: <chemin> (...)". On en extrait le fichier à matérialiser.
@@ -349,14 +349,57 @@ def run_build(
                     }
                     continue  # last-good : on n'écrase JAMAIS l'état par une erreur
                 state[path] = {"content": content, "abspath": abspath}
+                # PORTIQUE SYNTAXE (au fil de l'eau) : un fichier de code invalide — le plus
+                # souvent TRONQUÉ ("Unexpected end of input") — ne doit PAS avancer vers le
+                # runtime ni la boucle globale. On le re-génère TOUT DE SUITE avec un GROS
+                # budget (réessayer au budget parallèle retronque au MÊME endroit) et une
+                # consigne de complétude. Borné. Les fichiers non vérifiables (html/css) :
+                # verify_syntax_file renvoie ok -> le portique les laisse passer.
+                srep = verify_syntax_content(content, path)
+                gate = 0
+                while not srep.ok and gate < 2:
+                    gate += 1
+                    d = srep.defects[0]
+                    yield {
+                        "type": "content",
+                        "agent": agent_id,
+                        "id": sid,
+                        "text": (
+                            f"\n[syntaxe invalide : {d.evidence[:70]} "
+                            f"— régénération complète {gate}/2]\n"
+                        ),
+                    }
+                    diag = (
+                        f"{path}: {d.evidence}\nLe fichier est INCOMPLET ou coupé à la fin "
+                        "(troncature). Réécris-le ENTIER et syntaxiquement VALIDE (toutes "
+                        "accolades, parenthèses et chaînes fermées), plus CONCIS si besoin "
+                        "pour qu'il tienne dans une seule réponse."
+                    )
+                    try:
+                        _, content = fix_one(
+                            client,
+                            design,
+                            s,
+                            [(path, content)],
+                            diag,
+                            model=model,
+                            max_tokens=repair_tokens,
+                            file_char_cap=file_char_cap,
+                        )
+                        abspath = write(path, content)
+                        state[path] = {"content": content, "abspath": abspath}
+                    except Exception:  # noqa: BLE001 - on garde la dernière version écrite
+                        break
+                    srep = verify_syntax_content(content, path)
+                ok_note = "" if srep.ok else " (syntaxe encore invalide)"
                 yield {
                     "type": "tool_result",
                     "agent": agent_id,
                     "id": sid,
                     "name": "write_file",
-                    "ok": True,
+                    "ok": srep.ok,
                     "path": path,
-                    "preview": f"écrit ({len(content)} car.)",
+                    "preview": f"écrit ({len(content)} car.){ok_note}",
                     "detail": content[:4000],
                 }
         yield {"type": "agent_done", "agent": agent_id}
@@ -486,6 +529,10 @@ def run_build(
     max_workers, gen_max_tokens, file_char_cap = compute_budget(
         context, n_parallel, len(specs)
     )
+    # Budget de RÉPARATION syntaxe : un seul fichier à la fois -> fenêtre généreuse (cas
+    # n_files=1). Réessayer une troncature au budget parallèle (4096) la retronque au même
+    # endroit ; le portique syntaxe régénère avec CE budget large pour que le fichier tienne.
+    _, repair_tokens, _ = compute_budget(context, n_parallel, 1)
 
     # Mode par fichier (déterministe) : absent->create, existant+verify KO->rewrite,
     # existant+verify OK->patch ; rewrite d'un gros fichier dégradé en patch.
