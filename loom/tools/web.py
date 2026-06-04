@@ -17,12 +17,41 @@ monkeypatchables sans aucun appel réseau réel.
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 
 from loom.tools.base import ToolError, ToolSpec
+
+
+def _blocked_host_reason(url: str) -> str | None:
+    """Anti-SSRF : refuse une URL dont l'hôte résout vers une adresse INTERNE (loopback,
+    privée, link-local 169.254.x cloud-metadata, réservée, multicast). Renvoie la raison
+    du blocage, ou None si l'hôte est public. Le modèle peut être influencé par un contenu
+    hostile (doc, page) à viser un service interne : on coupe ça à la source."""
+    host = urlparse(url).hostname
+    if not host:
+        return "url sans hôte valide"
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return f"hôte introuvable : {host}"
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return f"hôte interdit (adresse interne/privée : {ip})"
+    return None
 
 
 @dataclass
@@ -41,8 +70,13 @@ class WebSearchConfig:
 
 
 def _http_get(url, params=None, headers=None, timeout=None):
-    """GET via httpx (isolé pour faciliter le monkeypatch en test)."""
-    return httpx.get(url, params=params, headers=headers, timeout=timeout)
+    """GET via httpx (isolé pour faciliter le monkeypatch en test).
+
+    follow_redirects=False : un redirect 30x pourrait renvoyer vers une adresse interne
+    (contournement du garde anti-SSRF). On ne suit aucun saut automatiquement."""
+    return httpx.get(
+        url, params=params, headers=headers, timeout=timeout, follow_redirects=False
+    )
 
 
 def _http_post(url, json=None, headers=None, timeout=None):
@@ -165,6 +199,8 @@ def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
 
 def fetch_page(url: str, cfg: WebSearchConfig, snippet: str = "") -> str:
     """Récupère et extrait le texte principal d'une page ; replie sur snippet."""
+    if _blocked_host_reason(url):  # anti-SSRF : on ne fetch jamais un hôte interne
+        return snippet
     try:
         resp = _http_get(url, timeout=cfg.http_timeout)
         resp.raise_for_status()
@@ -245,6 +281,9 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
             raise ToolError("argument 'url' manquant")
         if not re.match(r"^https?://", url, re.IGNORECASE):
             raise ToolError("l'url doit commencer par http:// ou https://")
+        blocked = _blocked_host_reason(url)  # anti-SSRF (refus explicite et clair)
+        if blocked:
+            raise ToolError(blocked)
         text = fetch_page(url, cfg)
         if not text:
             return "page indisponible (hors-ligne) ou sans contenu extractible"
