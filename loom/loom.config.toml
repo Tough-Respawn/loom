@@ -54,8 +54,9 @@ keep_recent_messages = 6
 # modèle émette des tool_calls structurés.
 enabled = [
     "find_files", "search_text", "list_dir",
-    "read_file", "read_document",
+    "read_file", "read_document", "read_image",
     "web_search", "fetch_url",
+    "dispatch_agent", "manage_todos",
     "write_file", "edit_file", "run_shell",
 ]
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
