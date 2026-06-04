@@ -258,7 +258,6 @@ async function sendChat(text, image) {
   } else {
     push({ kind: "user", content: text });
   }
-  const step = push({ kind: "step", label: "Réponse", t0: Date.now(), tokens: 0, live: 0, done: false });
   const tools = {}; // callId -> item id
   let thinkId = null;
   let asstId = null;
@@ -272,19 +271,25 @@ async function sendChat(text, image) {
       case "reasoning":
         if (!thinkId) thinkId = push({ kind: "think", role: "", text: "", active: true }).id;
         patch(thinkId, { text: get(thinkId).text + evt.text, active: true });
-        bumpLive(step);
         break;
       case "text":
         if (thinkId) patch(thinkId, { active: false });
         if (!asstId) asstId = push({ kind: "assistant", raw: "", done: false }).id;
         patch(asstId, { raw: get(asstId).raw + evt.text });
-        bumpLive(step);
         break;
       case "tool_begin":
       case "tool_call": {
         const tid = "tool:" + (evt.id || evt.name);
         if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name, pending: true });
         tools[evt.id] = tid;
+        break;
+      }
+      case "tool_stream": {
+        // Activité live d'un outil streamant (sous-agent) : on accumule dans `stream`,
+        // affiché dans la pastille tant qu'elle n'est pas dépliée.
+        const tid = "tool:" + (evt.id || evt.name);
+        if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name, pending: true });
+        patch(tid, { stream: (get(tid).stream || "") + evt.text });
         break;
       }
       case "tool_result": {
@@ -295,9 +300,6 @@ async function sendChat(text, image) {
       }
       case "tool_request":
         push({ kind: "perm", callId: evt.id, name: evt.name, summary: evt.summary });
-        break;
-      case "usage":
-        addUsage(step, evt);
         break;
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancé ?)" });
@@ -316,7 +318,6 @@ async function sendChat(text, image) {
     }
   } finally {
     if (thinkId) patch(thinkId, { active: false });
-    endStep(step);
     if (ac === currentAbort) currentAbort = null;
   }
 }

@@ -269,6 +269,8 @@ def create_app(
                         yield _sse("tool_request", **payload)
                     elif kind == "tool_begin":
                         yield _sse("tool_begin", **payload)
+                    elif kind == "tool_stream":
+                        yield _sse("tool_stream", **payload)
                     elif kind == "tool_result":
                         yield _sse("tool_result", **payload)
                     elif kind == "usage":
