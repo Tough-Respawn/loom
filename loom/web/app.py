@@ -85,10 +85,9 @@ def create_app(
     app.config["_cancel_event"] = cancel_event
     app.config["_pending"] = pending
 
-    # Session active : abstraction unique pour chat ET build. Mode session
-    # (session_store fourni) -> conversation/persistance pointent sur la session active
-    # et le build y journalise ses runs (le modèle reprend le fil au tour suivant).
-    # Mode legacy (absent) -> une seule conversation persistée dans history_path (tests).
+    # Session active : un fil persistant par projet. Mode session (session_store fourni)
+    # -> conversation/persistance pointent sur la session active. Mode legacy (absent)
+    # -> une seule conversation persistée dans history_path (tests).
     _cur: dict = {"session": None}
     app.config["_session_holder"] = _cur
 

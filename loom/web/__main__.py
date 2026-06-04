@@ -41,9 +41,9 @@ def build_app(cfg):
     todo_store = TodoStore()
 
     # Factory : le registre est (re)construit selon les outils cochés dans l'UI pour la
-    # conversation courante. `workspace` optionnel : un /run peut cibler un autre dossier
-    # (champ « dossier cible ») ; à défaut, le workspace de la config. `client`/`model`
-    # arment dispatch_agent (sous-boucle tool-use), `todo_store` arme manage_todos.
+    # conversation courante. `workspace` optionnel : à défaut, celui de la config.
+    # `client`/`model` arment dispatch_agent (sous-boucle tool-use), `todo_store` arme
+    # manage_todos.
     def make_registry(active, workspace=None):
         return build_registry(
             workspace_dir=workspace or cfg.chat.workspace_dir,

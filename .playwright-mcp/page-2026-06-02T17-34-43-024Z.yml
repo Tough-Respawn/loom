@@ -1,5 +1,0 @@
-- generic [ref=e2]:
-  - heading "Démineur" [level=1] [ref=e3]
-  - generic [ref=e4]:
-    - generic [ref=e5]: "Mines: 10"
-    - button "Réinitialiser" [ref=e6] [cursor=pointer]

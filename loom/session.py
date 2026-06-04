@@ -1,12 +1,9 @@
 # loom/session.py
-"""Session : le fil de travail persistant qui unifie chat et runs agentic.
+"""Session : le fil de travail persistant d'un projet (un chat par session).
 
-Une session vit sous `root/<id>/session.json` : conversation unifiée (chat ET
-résumés des runs), métadonnées (titre, workspace cible, horodatage) et journal
-des runs. C'est le substrat qui permet au modèle de reprendre où il s'est arrêté :
-un run agentic écrit son résumé DANS la conversation via `add_run`, donc le tour
-suivant (chat ou build) le voit. Un pointeur `root/active` retient la session
-courante (survit au redémarrage du serveur)."""
+Une session vit sous `root/<id>/session.json` : conversation (historique + outils
+actifs), métadonnées (titre, workspace cible, horodatage). Un pointeur `root/active`
+retient la session courante (survit au redémarrage du serveur)."""
 
 from __future__ import annotations
 
@@ -14,38 +11,11 @@ import json
 import os
 import shutil
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from loom.conversation import Conversation
-
-
-@dataclass
-class RunRecord:
-    """Trace persistée d'un run agentic (plan/dev/verif), réinjectable au modèle."""
-
-    task: str
-    summary: str = ""
-    files: list[str] = field(default_factory=list)
-    ok: bool = False
-
-    def to_dict(self) -> dict:
-        return {
-            "task": self.task,
-            "summary": self.summary,
-            "files": list(self.files),
-            "ok": self.ok,
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "RunRecord":
-        return cls(
-            task=d.get("task", ""),
-            summary=d.get("summary", ""),
-            files=list(d.get("files", [])),
-            ok=bool(d.get("ok", False)),
-        )
 
 
 @dataclass
@@ -64,21 +34,8 @@ class Session:
     title: str
     workspace: str
     conversation: Conversation
-    runs: list[RunRecord] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
-
-    def add_run(self, record: RunRecord) -> None:
-        """Journalise un run ET en laisse une trace dans la conversation unifiée, pour
-        que le modèle reprenne le fil au tour suivant (le fondamental de la session)."""
-        self.runs.append(record)
-        verdict = "vérifié OK" if record.ok else "défauts restants / non vérifié"
-        files = ", ".join(record.files) if record.files else "aucun fichier"
-        self.conversation.add(
-            "assistant",
-            f"(Run « {record.task} ») {record.summary} "
-            f"[fichiers : {files} ; {verdict}]",
-        )
 
     def to_dict(self) -> dict:
         return {
@@ -88,7 +45,6 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "conversation": self.conversation.to_dict(),
-            "runs": [r.to_dict() for r in self.runs],
         }
 
     @classmethod
@@ -100,7 +56,6 @@ class Session:
             conversation=Conversation.from_dict(
                 data.get("conversation", {}), default_system_prompt
             ),
-            runs=[RunRecord.from_dict(r) for r in data.get("runs", [])],
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
         )

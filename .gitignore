@@ -9,3 +9,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.pyc
+# Node : aucune dépendance (libs front vendorées dans loom/web/static, zéro build)
+node_modules/
+# Traces de playwright-mcp (debug UI)
+.playwright-mcp/

@@ -15,16 +15,14 @@ n_layers = 35
 size_mb = 5340
 
 [server]
-# Contexte 24576 : le fan-out génère/corrige PLUSIEURS fichiers EN PARALLÈLE (n_parallel=4,
-# KV unifié => le pool -c est PARTAGÉ entre slots concurrents). 8192 saturait dès 2 gros
-# fichiers (2×4100 tok). Gemma supporte 131072 ; avec sliding-window (n_swa=512) + KV q8_0
+# Contexte 24576 : large fenêtre pour une boucle tool-use qui enchaîne lectures et
+# résultats d'outils. Gemma supporte 131072 ; avec sliding-window (n_swa=512) + KV q8_0
 # le KV reste léger -> 24576 tient sur 6 Go. cf. docs/perf-gpu.md.
 context = 24576
-# Slots de batching continu (--parallel). SOURCE DE VÉRITÉ du parallélisme : serve.py
-# l'épingle au lancement ET le fan-out (compute_budget) en dérive sa concurrence + ses
-# tailles de génération → impossible de déborder le pool KV partagé (kv_unified), quelle
-# que soit la taille/le nombre de fichiers. cf. docs/plan-harness-robustesse.md.
-n_parallel = 4
+# Slots de llama-server (--parallel). Loom est mono-flux : un seul échange à la fois
+# (verrou de chat) et le sous-agent tourne en synchrone -> 1 seul slot, qui dispose
+# alors de TOUT le pool KV (-c). Le 4 d'avant venait du fan-out, supprimé.
+n_parallel = 1
 port = 8080
 # Binaire llama-server : "llama-server" si dans le PATH, sinon override en local.
 bin = "llama-server"
@@ -72,7 +70,7 @@ fetch_pages = false
 
 [permissions]
 # mode = "allow" : write_file/edit_file/run_shell s'exécutent SANS confirmation
-# (pipeline multi-agent autonome, plus de blocage sur les bulles Autoriser).
-# La deny-list DURE (rm -rf, Remove-Item -Recurse -Force, format, dd if=…) reste
-# incontournable même en allow. Repasser à "ask" pour ré-activer la confirmation.
+# (agent autonome, plus de blocage sur les bulles Autoriser). La deny-list DURE
+# (rm -rf, Remove-Item -Recurse -Force, format, dd if=…) reste incontournable même
+# en allow. Repasser à "ask" pour ré-activer la confirmation.
 mode = "allow"
