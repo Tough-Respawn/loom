@@ -17,6 +17,7 @@ monkeypatchables sans aucun appel réseau réel.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -230,6 +231,41 @@ def make_web_search(cfg: WebSearchConfig) -> ToolSpec:
                 }
             },
             "required": ["query"],
+        },
+        run=run,
+    )
+
+
+def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
+    """Outil fetch_url : récupère le TEXTE d'une URL précise (page web / doc en ligne)."""
+
+    def run(args: dict) -> str:
+        url = (args.get("url") or "").strip()
+        if not url:
+            raise ToolError("argument 'url' manquant")
+        if not re.match(r"^https?://", url, re.IGNORECASE):
+            raise ToolError("l'url doit commencer par http:// ou https://")
+        text = fetch_page(url, cfg)
+        if not text:
+            return "page indisponible (hors-ligne) ou sans contenu extractible"
+        return text
+
+    return ToolSpec(
+        name="fetch_url",
+        description=(
+            "Récupère le contenu TEXTE d'une URL précise (page web, doc en ligne) et "
+            "le renvoie. Utilise-le quand tu as DÉJÀ l'URL. Si tu n'as pas d'URL, "
+            "lance d'abord web_search."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL complète à lire (http:// ou https://).",
+                }
+            },
+            "required": ["url"],
         },
         run=run,
     )

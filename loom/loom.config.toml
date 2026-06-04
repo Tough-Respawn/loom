@@ -52,7 +52,12 @@ keep_recent_messages = 6
 # en appelant le bon outil au bon moment. Vide => aucun outil (le modèle ne peut qu'écrire
 # du texte). PRÉREQUIS live : llama-server avec --jinja (serve.py l'inclut) pour que le
 # modèle émette des tool_calls structurés.
-enabled = ["read_file", "write_file", "edit_file", "run_shell", "web_search"]
+enabled = [
+    "find_files", "search_text", "list_dir",
+    "read_file", "read_document",
+    "web_search", "fetch_url",
+    "write_file", "edit_file", "run_shell",
+]
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
 # loom.config.local.toml pour pointer la vraie racine de la machine.
 workspace_dir = "."
