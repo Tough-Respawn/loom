@@ -226,3 +226,33 @@ def test_web_empty_board_is_render_defect(tmp_path):
     r = verify_path(str(tmp_path))
     assert r.ok is False
     assert any(d.kind == "render" for d in r.defects)
+
+
+@pytest.mark.skipif(not _RUNTIME_OK, reason="node/jsdom absent")
+def test_web_missing_asset_referenced_is_defect(tmp_path):
+    # Une page qui référence un CSS absent = lien cassé réel -> défaut 'asset' précis.
+    _w(
+        tmp_path / "index.html",
+        '<link rel="stylesheet" href="style.css"><p>Contenu de la page.</p>',
+    )
+    r = verify_path(str(tmp_path))
+    assert r.ok is False
+    assert any(d.kind == "asset" and "style.css" in d.evidence for d in r.defects)
+
+
+@pytest.mark.skipif(not _RUNTIME_OK, reason="node/jsdom absent")
+def test_web_nav_links_between_pages_no_false_positive(tmp_path):
+    # Site multi-pages : des liens <a> vers d'autres pages NE doivent PAS produire de faux
+    # défaut 'Not implemented: navigation' (limite jsdom, pas un bug de la page).
+    nav = '<nav><a href="index.html">Accueil</a><a href="blog.html">Blog</a></nav>'
+    _w(tmp_path / "style.css", "body{margin:0}")
+    _w(
+        tmp_path / "index.html",
+        f'<link rel="stylesheet" href="style.css">{nav}<p>Bienvenue sur le site.</p>',
+    )
+    _w(
+        tmp_path / "blog.html",
+        f'<link rel="stylesheet" href="style.css">{nav}<p>Article de blog.</p>',
+    )
+    r = verify_path(str(tmp_path))
+    assert r.ok is True, [(d.kind, d.evidence) for d in r.defects]

@@ -10,6 +10,7 @@ agent (relecteur) rend un verdict bloquant, le développeur repasse une fois.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 
 from loom.agents import (
@@ -22,6 +23,53 @@ from loom.agents import (
     is_reviewer,
 )
 from loom.verify import format_report
+
+# Contrat avec verify_web.js : un défaut kind='asset' a pour evidence
+# "référence introuvable: <chemin> (...)". On en extrait le fichier à matérialiser.
+_ASSET_REF_RE = re.compile(r"référence introuvable:\s*([\w\-./]+)")
+_SAFE_ASSET_RE = re.compile(
+    r"^[\w\-./]+\.(?:css|js|mjs|json|svg|png|jpg|jpeg|gif|webp)$", re.IGNORECASE
+)
+
+
+def _missing_assets(report, known_paths) -> list[str]:
+    """Assets LOCAUX référencés mais introuvables (défauts kind='asset') à générer.
+    Filtre : extension sûre, chemin relatif sans remontée, pas déjà planifié, borné."""
+    if report is None:
+        return []
+    known = set(known_paths)
+    out: list[str] = []
+    for d in report.defects:
+        if d.kind != "asset":
+            continue
+        m = _ASSET_REF_RE.search(d.evidence)
+        if not m:
+            continue
+        raw = m.group(1)
+        if ".." in raw or raw.startswith("/"):  # remontée de dossier / chemin absolu
+            continue
+        rel = raw.lstrip("./")
+        if not _SAFE_ASSET_RE.match(rel):
+            continue
+        if rel not in known and rel not in out:
+            out.append(rel)
+    return out[:6]  # garde-fou : jamais un déluge de fichiers matérialisés
+
+
+def _asset_role(path: str) -> str:
+    """Rôle injecté au générateur pour un asset que le plan a oublié de spécifier."""
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    if ext == "css":
+        return (
+            "Feuille de style CSS partagée, référencée par les pages via <link>. Style "
+            "sobre et cohérent : barre de navigation, mise en page du contenu, cartes, "
+            "boutons, tableau de bord. Pas de @import ni d'URL externe."
+        )
+    if ext in ("js", "mjs"):
+        return (
+            "Script référencé par une page (fonctions globales, sans import/export ES)."
+        )
+    return f"Asset {ext or '?'} référencé par une page."
 
 
 def run_pipeline(
@@ -207,6 +255,7 @@ def run_build(
     from openai import APIConnectionError, APITimeoutError
 
     from loom.parallel import (
+        FileSpec,
         best_of,
         cap_rewrites,
         compute_budget,
@@ -487,6 +536,26 @@ def run_build(
     initial_defects = (
         list(report.defects) if (report is not None and not report.ok) else []
     )
+
+    # SELF-HEAL : un asset LOCAL référencé mais jamais planifié (typiquement la feuille de
+    # style partagée que le plan a oubliée) ne peut pas être réparé par la boucle de fix —
+    # il n'est PAS dans les specs. On l'AJOUTE et on le génère : le plan sous-spécifié se
+    # répare au lieu de laisser un lien cassé. Une seule passe, bornée.
+    heal = _missing_assets(report, all_paths)
+    if heal:
+        new_specs = [FileSpec(path=p, role=_asset_role(p)) for p in heal]
+        specs.extend(new_specs)
+        all_paths.extend(heal)
+        for p in heal:
+            mode_by_path[p] = "create"
+        yield from _gen_phase(
+            "assets",
+            "Assets manquants (auto-réparation)",
+            _gen_dispatch,
+            new_specs,
+            max_workers,
+        )
+        report = yield from _verify_phase(all_paths)
 
     # 3) FIX (boucle fermée) : régénère en parallèle avec l'union des fichiers + les défauts.
     # On boucle tant qu'il reste des défauts OU qu'un fichier planifié manque (borné).
