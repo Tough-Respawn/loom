@@ -681,6 +681,8 @@ def test_run_build_patch_mode_routes_to_edit_one(tmp_path):
             p = messages[0]["content"]
             if "PLAN D'IMPLÉMENTATION" in p:
                 return plan
+            if "CRITIQUE" in p or "DÉCOUPE" in p:  # planif profonde, pas une régén
+                return ""
             if "Renvoie le JSON" in p:  # prompt d'ÉDITION (edit_one)
                 seen["edit"] = True
                 return edit_json

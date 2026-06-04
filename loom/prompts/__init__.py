@@ -40,6 +40,8 @@ PLAN_SYSTEM = _load("plan.system.md")
 GEN_SYSTEM = _load("gen.system.md")
 EDIT_SYSTEM = _load("edit.system.md")
 REVIEW_SYSTEM = _load("review.system.md")
+CRITIQUE_SYSTEM = _load("critique.system.md")
+DECOMPOSE_SYSTEM = _load("decompose.system.md")
 
 
 # --- Gabarits (assemblés + bornés en Python) ---
@@ -124,4 +126,17 @@ def review_prompt(design: str, files_txt: str) -> str:
     """Prompt de relecture sémantique (renvoie le JSON des défauts comportementaux)."""
     return _fill(
         _load("review.user.md"), {"__DESIGN__": design, "__FILES__": files_txt}
+    )
+
+
+def critique_prompt(design: str, task: str) -> str:
+    """Prompt d'auto-critique du plan (renvoie une liste de trous/risques)."""
+    return _fill(_load("critique.user.md"), {"__DESIGN__": design, "__TASK__": task})
+
+
+def decompose_prompt(design: str, task: str, files: list[str]) -> str:
+    """Prompt de découpe en user stories (renvoie le JSON {stories: [...]})."""
+    return _fill(
+        _load("decompose.user.md"),
+        {"__DESIGN__": design, "__TASK__": task, "__FILES__": ", ".join(files)},
     )

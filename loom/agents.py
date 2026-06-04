@@ -41,6 +41,7 @@ class AgentRun:
 
     task: str
     steps: list[RunStep] = field(default_factory=list)
+    stories: list = field(default_factory=list)  # user stories (planif profonde)
 
 
 def resolve_agents(configs: list[Agent], pipeline: list[str]) -> list[Agent]:
