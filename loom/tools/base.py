@@ -26,7 +26,6 @@ class ToolError(Exception):
 AVAILABLE_TOOLS = [
     {"name": "read_file", "label": "read_file", "danger": False},
     {"name": "web_search", "label": "web_search", "danger": False},
-    {"name": "verify", "label": "verify", "danger": False},
     {"name": "write_file", "label": "write_file", "danger": True},
     {"name": "edit_file", "label": "edit_file", "danger": True},
     {"name": "run_shell", "label": "run_shell", "danger": True},

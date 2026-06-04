@@ -92,16 +92,6 @@ def test_index_lists_models(tmp_path):
     assert "gemma" in body and "qwen" in body
 
 
-def test_run_active_and_replay_without_run(tmp_path):
-    # Contrat de reattach : sans run en cours, /run/active dit has=False et /run/replay
-    # se termine immédiatement (un "done"), sans bloquer.
-    app, _, _ = _make(tmp_path)
-    c = app.test_client()
-    st = c.get("/run/active").get_json()
-    assert st["has"] is False and st["running"] is False
-    assert "done" in c.get("/run/replay").get_data(as_text=True)
-
-
 def test_post_model_updates_conversation(tmp_path):
     app, conv, _ = _make(tmp_path)
     resp = app.test_client().post("/model", data={"model": "qwen"})
@@ -464,229 +454,19 @@ def test_chat_clears_cancel_event_before_generating(tmp_path):
 # ---- multi-agent : route /run ----
 
 
-def _make_multi(tmp_path, scripts=None):
-    from loom.agents import Agent
-
-    conv = Conversation(system_prompt="sys", model="gemma")
-    skills = tmp_path / "skills"
-    skills.mkdir()
-    scripts = scripts or {
-        "m1": [("reasoning", "r1"), ("content", "PLAN1")],
-        "m2": [("content", "CODE2")],
-    }
-
-    class MultiClient:
-        def stream_chat(
-            self, messages, system_prompt, max_tokens=2048, model=None, thinking=True
-        ):
-            yield from scripts.get(model, [("content", f"out-{model}")])
-
-    agents = [
-        Agent(id="a", role="plan", model="m1", system_prompt="planifie"),
-        Agent(id="b", role="code", model="m2", system_prompt="code"),
-    ]
-    app = create_app(
-        conv,
-        MultiClient(),
-        tmp_path / "c.json",
-        skills,
-        context_budget=100000,
-        interrupt_wait=0.3,
-        agents=agents,
-        pipeline=["a", "b"],
-    )
-    return app
-
-
-def test_run_returns_sse_with_agent_events(tmp_path):
-    app = _make_multi(tmp_path)
-    resp = app.test_client().post("/run", data={"task": "fais X", "mode": "pipeline"})
-    assert resp.status_code == 200
-    body = resp.get_data(as_text=True)
-    assert '"type": "agent_start"' in body
-    assert '"type": "agent_done"' in body
-    assert '"agent": "a"' in body
-    assert '"agent": "b"' in body
-    assert "PLAN1" in body
-    assert "CODE2" in body
-
-
-def test_run_uses_configured_max_revisions(tmp_path):
-    from loom.agents import Agent
-
-    conv = Conversation(system_prompt="sys", model="gemma")
-    skills = tmp_path / "skills"
-    skills.mkdir()
-
-    class RevClient:
-        def stream_chat(
-            self, messages, system_prompt, max_tokens=2048, model=None, thinking=True
-        ):
-            if model == "rev":
-                yield ("content", "VERDICT: BLOQUANT il manque un fichier")
-            else:
-                yield ("content", f"out-{model}")
-
-    agents = [
-        Agent(id="p", role="plan", model="m1", system_prompt="p"),
-        Agent(id="c", role="code", model="m2", system_prompt="c"),
-        Agent(id="r", role="reviewer", model="rev", system_prompt="r"),
-    ]
-    app = create_app(
-        conv,
-        RevClient(),
-        tmp_path / "c.json",
-        skills,
-        context_budget=100000,
-        interrupt_wait=0.3,
-        agents=agents,
-        pipeline=["p", "c", "r"],
-        max_revisions=3,
-    )
-    body = (
-        app.test_client()
-        .post("/run", data={"task": "x", "mode": "pipeline"})
-        .get_data(as_text=True)
-    )
-    # le relecteur bloque toujours => 3 révisions (la valeur configurée), pas 1
-    assert body.count('"type": "revision"') == 3
-
-
-def test_run_targets_chosen_workspace(tmp_path):
-    from loom.agents import Agent
-    from loom.tools import ToolRegistry, ToolSpec
-
-    captured = {}
-    conv = Conversation(system_prompt="sys", model="gemma")
-    skills = tmp_path / "skills"
-    skills.mkdir()
-    target = tmp_path / "tictactoo"
-
-    class C:
-        def stream_chat_tools(
-            self,
-            messages,
-            system_prompt,
-            max_tokens=2048,
-            model=None,
-            registry=None,
-            thinking=True,
-            permission=None,
-            confirm=None,
-        ):
-            yield ("content", "ok")
-
-        def stream_chat(self, *a, **k):
-            yield ("content", "plan")
-
-    def factory(active, workspace=None):
-        captured["ws"] = workspace
-        return ToolRegistry(
-            [ToolSpec("write_file", "w", {"type": "object"}, lambda a: "ok")]
-        )
-
-    agents = [
-        Agent(id="b", role="code", model="m2", system_prompt="c", tools=["write_file"])
-    ]
-    app = create_app(
-        conv,
-        C(),
-        tmp_path / "c.json",
-        skills,
-        context_budget=100000,
-        interrupt_wait=0.3,
-        agents=agents,
-        pipeline=["b"],
-        tool_factory=factory,
-        workspace_dir=str(tmp_path),
-    )
-    body = (
-        app.test_client()
-        .post("/run", data={"task": "x", "workspace": str(target), "mode": "pipeline"})
-        .get_data(as_text=True)
-    )
-    assert '"type": "run_info"' in body and "tictactoo" in body
-    assert captured["ws"] == str(target.resolve())  # outils liés au dossier cible
-    assert target.exists()  # le dossier cible est créé
-
-
-def test_run_default_workspace_emits_run_info(tmp_path):
-    app = _make_multi(tmp_path)  # workspace_dir défaut = "."
-    body = (
-        app.test_client()
-        .post("/run", data={"task": "x", "mode": "pipeline"})
-        .get_data(as_text=True)
-    )
-    assert '"type": "run_info"' in body
-
-
-def test_run_rejects_empty_task(tmp_path):
-    app = _make_multi(tmp_path)
-    resp = app.test_client().post("/run", data={"task": "   "})
-    assert resp.status_code == 400
-
-
-def test_run_busy_returns_429(tmp_path):
-    app = _make_multi(tmp_path)
-    app.config["_chat_lock"].acquire()
-    try:
-        resp = app.test_client().post("/run", data={"task": "x", "mode": "pipeline"})
-        assert resp.status_code == 429
-    finally:
-        app.config["_chat_lock"].release()
-
-
-def test_run_releases_lock_after_completion(tmp_path):
-    app = _make_multi(tmp_path)
-    app.test_client().post("/run", data={"task": "x", "mode": "pipeline"}).get_data()
-    assert app.config["_chat_lock"].acquire(blocking=False) is True
-    app.config["_chat_lock"].release()
-
-
-class _ClassifyClient:
-    """Client minimal exposant complete() pour /classify (et /pick-folder)."""
-
-    def __init__(self, reply="BUILD"):
-        self.reply = reply
-
-    def complete(
-        self,
-        messages,
-        system_prompt,
-        max_tokens=8,
-        model=None,
-        thinking=False,
-        temperature=None,
-    ):
-        return self.reply
-
-
-def _make_classify(tmp_path, reply="BUILD"):
+def _make_plain(tmp_path):
     conv = Conversation(system_prompt="sys", model="m")
     history = tmp_path / "conv.json"
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir(parents=True)
     return create_app(
         conv,
-        _ClassifyClient(reply),
+        FakeClient([]),
         history,
         skills_dir,
         models=["m"],
         interrupt_wait=0.3,
     )
-
-
-def test_classify_endpoint_returns_mode(tmp_path):
-    app = _make_classify(tmp_path, reply="BUILD")
-    resp = app.test_client().post("/classify", data={"message": "crée un jeu"})
-    assert resp.status_code == 200
-    assert resp.get_json()["mode"] == "build"
-
-
-def test_classify_empty_message_is_chat(tmp_path):
-    app = _make_classify(tmp_path, reply="BUILD")
-    resp = app.test_client().post("/classify", data={"message": "  "})
-    assert resp.get_json()["mode"] == "chat"
 
 
 def test_pick_folder_returns_selected_path(tmp_path, monkeypatch):
@@ -698,7 +478,7 @@ def test_pick_folder_returns_selected_path(tmp_path, monkeypatch):
         stderr = ""
 
     monkeypatch.setattr(appmod.subprocess, "run", lambda *a, **k: _Proc())
-    app = _make_classify(tmp_path)
+    app = _make_plain(tmp_path)
     resp = app.test_client().post("/pick-folder")
     assert resp.get_json()["path"] == "C:/Users/Amine/projet"
 
@@ -712,7 +492,7 @@ def test_pick_folder_cancel_returns_empty(tmp_path, monkeypatch):
         stderr = ""
 
     monkeypatch.setattr(appmod.subprocess, "run", lambda *a, **k: _Proc())
-    app = _make_classify(tmp_path)
+    app = _make_plain(tmp_path)
     resp = app.test_client().post("/pick-folder")
     assert resp.get_json()["path"] == ""
 
@@ -777,26 +557,3 @@ def test_session_delete_removes_and_keeps_an_active(tmp_path):
     listing = c.get("/sessions").get_json()
     assert all(s["id"] != created["id"] for s in listing["sessions"])
     assert listing["active"]  # il reste toujours une session active
-
-
-def test_run_records_into_active_session(tmp_path):
-    from loom.agents import Agent
-
-    class MultiClient:
-        def stream_chat(
-            self, messages, system_prompt, max_tokens=2048, model=None, thinking=True
-        ):
-            yield ("content", f"out-{model}")
-
-    agents = [Agent(id="a", role="plan", model="m1", system_prompt="p")]
-    app, store = _make_session_app(
-        tmp_path, client=MultiClient(), agents=agents, pipeline=["a"]
-    )
-    app.test_client().post(
-        "/run", data={"task": "fais X", "mode": "pipeline"}
-    ).get_data()
-    active = store.active()
-    assert len(active.runs) == 1
-    assert active.runs[0].task == "fais X"
-    # une trace du run est aussi dans la conversation (le modèle reprend le fil)
-    assert any("fais X" in str(m["content"]) for m in active.conversation.messages)

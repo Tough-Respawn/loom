@@ -2,8 +2,8 @@
 """Package outils de la boucle tool-use : API publique stable + assemblage du registre.
 
 `from loom.tools import …` reste le point d'entrée (ToolError, ToolSpec, ToolRegistry,
-AVAILABLE_TOOLS, build_registry, make_read_file, make_verify). Les implémentations
-vivent dans des sous-modules : base, read, fs, shell, web.
+AVAILABLE_TOOLS, build_registry, make_read_file). Les implémentations vivent dans des
+sous-modules : base, read, fs, shell, web.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from loom.tools.base import (
     ToolSpec,
     _resolve_in_root,
 )
-from loom.tools.read import make_read_file, make_verify
+from loom.tools.read import make_read_file
 
 __all__ = [
     "AVAILABLE_TOOLS",
@@ -25,7 +25,6 @@ __all__ = [
     "_resolve_in_root",
     "build_registry",
     "make_read_file",
-    "make_verify",
 ]
 
 
@@ -45,8 +44,6 @@ def build_registry(
     specs: list[ToolSpec] = []
     if "read_file" in enabled:
         specs.append(make_read_file(workspace_dir, extensions, max_bytes))
-    if "verify" in enabled:
-        specs.append(make_verify(workspace_dir))
     if "write_file" in enabled:
         specs.append(make_write_file(workspace_dir, max_bytes))
     if "edit_file" in enabled:
