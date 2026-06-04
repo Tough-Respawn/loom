@@ -325,6 +325,81 @@ def test_stream_chat_tools_max_iters_guard():
     assert events  # au moins le tool_call/tool_result des itérations
 
 
+def test_stream_chat_tools_stops_on_no_progress():
+    """Non-progrès : le modèle réémet le MÊME appel tour après tour -> on coupe avant
+    d'épuiser le plafond d'itérations (détecteur de répétition)."""
+    registry = ToolRegistry(
+        [ToolSpec("read_file", "lit", {"type": "object"}, lambda a: "toujours pareil")]
+    )
+
+    def same_call():
+        return [
+            _chunk(
+                _delta(
+                    tool_calls=[
+                        _tc(0, id="c", name="read_file", arguments='{"path":"x.md"}')
+                    ]
+                ),
+                finish_reason="tool_calls",
+            )
+        ]
+
+    # 10 tours identiques disponibles, mais le détecteur doit couper bien avant.
+    client, fake = _client([same_call() for _ in range(10)])
+    events = list(
+        client.stream_chat_tools(
+            [{"role": "user", "content": "lis x.md"}],
+            "s",
+            50,
+            None,
+            registry,
+            max_iters=10,
+            repeat_limit=3,
+        )
+    )
+    # coupé au 3e tour identique : 3 appels modèle, pas 10
+    assert len(fake.calls) == 3
+    text = "".join(p for k, p in events if k == "content")
+    assert "progress" in text.lower()
+
+
+def test_stream_chat_tools_stops_on_wall_clock():
+    """Mur de temps : si le budget est dépassé, la boucle s'arrête avec un message."""
+    registry = ToolRegistry(
+        [ToolSpec("loop", "x", {"type": "object"}, lambda a: "encore")]
+    )
+    stream = [
+        _chunk(
+            _delta(tool_calls=[_tc(0, id="c", name="loop", arguments="{}")]),
+            finish_reason="tool_calls",
+        )
+    ]
+    client, fake = _client([stream for _ in range(5)])
+    # max_seconds=0 -> dépassé dès la 1re vérif (en tête de boucle) : aucun appel modèle.
+    events = list(
+        client.stream_chat_tools(
+            [{"role": "user", "content": "x"}],
+            "s",
+            50,
+            None,
+            registry,
+            max_seconds=0.0,
+        )
+    )
+    assert fake.calls == []  # coupé avant le 1er appel
+    text = "".join(p for k, p in events if k == "content")
+    assert "temps" in text.lower()
+
+
+def test_stream_chat_tools_default_iter_cap_is_not_eight():
+    """Garde-fou non déterministe : le plafond par défaut suit la best practice (>= 15),
+    pas l'ancien 8 jugé trop bas."""
+    import inspect
+
+    sig = inspect.signature(LoomClient.stream_chat_tools)
+    assert sig.parameters["max_iters"].default >= 15
+
+
 def test_stream_chat_tools_permission_deny_blocks_execution():
     calls_seen = []
 
