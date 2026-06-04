@@ -33,9 +33,13 @@ function isEnvNoise(s) {
     s.includes("Not implemented:") ||
     s.includes("Could not load") ||
     // jsdom traite file:// comme une origine OPAQUE -> localStorage/sessionStorage y
-    // lèvent une SecurityError, alors qu'ils FONCTIONNENT dans un vrai navigateur (double
-    // -clic ou http). C'est une limite de jsdom, pas un bug de la page.
-    s.includes("opaque origin")
+    // lèvent une SecurityError, et history.pushState(...file://) échoue, alors que tout
+    // ça FONCTIONNE dans un vrai navigateur. Limites de jsdom, pas des bugs de la page.
+    s.includes("opaque origin") ||
+    s.includes("cannot update history") ||
+    // Le parseur CSS de jsdom (cssom) est INCOMPLET : il rejette du CSS moderne pourtant
+    // valide (variables, @media imbriqués...). Un vrai navigateur le parse sans broncher.
+    s.includes("Could not parse CSS stylesheet")
   );
 }
 

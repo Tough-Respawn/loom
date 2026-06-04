@@ -1,0 +1,29 @@
+- generic [active] [ref=e1]:
+  - navigation [ref=e2]:
+    - link "Accueil" [ref=e3] [cursor=pointer]:
+      - /url: index.html
+    - link "Jeu" [ref=e4] [cursor=pointer]:
+      - /url: jeu.html
+    - link "Blog" [ref=e5] [cursor=pointer]:
+      - /url: blog.html
+    - link "Dashboard" [ref=e6] [cursor=pointer]:
+      - /url: dashboard.html
+  - main [ref=e7]:
+    - heading "Tableau de Bord des Statistiques" [level=1] [ref=e8]
+    - paragraph [ref=e9]: Vue d'ensemble des performances système et utilisateurs.
+    - generic [ref=e10]:
+      - generic [ref=e11]:
+        - heading "Tokens Utilisés" [level=3] [ref=e12]
+        - generic [ref=e13]: 45 231
+        - paragraph [ref=e14]: Total des unités de données traitées.
+      - generic [ref=e15]:
+        - heading "Sessions" [level=3] [ref=e16]
+        - generic [ref=e17]: "12"
+        - paragraph [ref=e18]: Nombre de sessions actives enregistrées.
+      - generic [ref=e19]:
+        - heading "Bugs Détectés" [level=3] [ref=e20]
+        - generic [ref=e21]: "5"
+        - paragraph [ref=e22]: Nombre d'incidents signalés par les utilisateurs.
+    - generic [ref=e23]:
+      - heading "Statut Global" [level=2] [ref=e24]
+      - paragraph [ref=e25]: Les données affichées sont mises à jour en direct ou simulées pour cette démonstration.

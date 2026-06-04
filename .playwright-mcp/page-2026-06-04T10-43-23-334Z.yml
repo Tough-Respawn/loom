@@ -1,0 +1,33 @@
+- generic [active] [ref=e1]:
+  - navigation [ref=e2]:
+    - link "Accueil" [ref=e3] [cursor=pointer]:
+      - /url: index.html
+    - link "Jeu" [ref=e4] [cursor=pointer]:
+      - /url: jeu.html
+    - link "Blog" [ref=e5] [cursor=pointer]:
+      - /url: blog.html
+    - link "Dashboard" [ref=e6] [cursor=pointer]:
+      - /url: dashboard.html
+  - main [ref=e7]:
+    - generic [ref=e8]:
+      - heading "Bienvenue sur notre plateforme" [level=1] [ref=e9]
+      - paragraph [ref=e10]: Découvrez nos outils spécialisés pour optimiser votre productivité et analyser vos données en temps réel.
+      - button "Commencer l'expérience" [ref=e11]
+    - generic [ref=e12]:
+      - heading "Ce que nous vous proposons" [level=2] [ref=e13]
+      - generic [ref=e14]:
+        - generic [ref=e15]:
+          - heading "Le Jeu Interactif" [level=3] [ref=e16]
+          - paragraph [ref=e17]: Testez vos réflexes et améliorez votre concentration avec notre mini-jeu entraînant.
+          - link "Jouer maintenant →" [ref=e18] [cursor=pointer]:
+            - /url: jeu.html
+        - generic [ref=e19]:
+          - heading "Le Dashboard Analytique" [level=3] [ref=e20]
+          - paragraph [ref=e21]: Suivez les indicateurs clés de performance en direct et identifiez les tendances majeures.
+          - link "Voir les métriques →" [ref=e22] [cursor=pointer]:
+            - /url: dashboard.html
+        - generic [ref=e23]:
+          - heading "Le Blog des Experts" [level=3] [ref=e24]
+          - paragraph [ref=e25]: Restez informé des dernières mises à jour, tutoriels et bonnes pratiques de l'industrie.
+          - link "Lire les articles →" [ref=e26] [cursor=pointer]:
+            - /url: blog.html
