@@ -1,2 +1,0 @@
-[    1478ms] [ERROR] Failed to load resource: the server responded with a status of 404 (NOT FOUND) @ http://127.0.0.1:8000/favicon.ico:0
-[ 2487097ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_RESET @ http://127.0.0.1:8000/run:0

@@ -17,10 +17,8 @@ def build_server_args(
 ) -> list[str]:
     """Liste d'arguments pour lancer llama-server en API OpenAI-compatible local.
 
-    `n_parallel` ÉPINGLE le nombre de slots de batching continu : c'est la SOURCE DE
-    VÉRITÉ unique du parallélisme. Le harness (compute_budget) dérive sa concurrence et
-    ses tailles de génération de cette même valeur → on ne peut plus déborder le pool KV
-    partagé (cf. docs/plan-harness-robustesse). Auparavant implicite/hand-tuné.
+    `n_parallel` fixe le nombre de slots (--parallel) de llama-server. Loom étant
+    mono-flux, 1 suffit et laisse tout le pool KV (-c) au seul échange en cours.
     """
     args = [
         server_bin,
