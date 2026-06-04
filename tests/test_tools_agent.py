@@ -143,6 +143,28 @@ def test_dispatch_agent_forwards_permission_deny():
     assert ran == []  # refusé par la politique -> jamais exécuté
 
 
+def test_dispatch_agent_run_stream_relays_subloop_events():
+    # run_stream expose l'activité de la sous-boucle EN DIRECT (pour l'UI).
+    def sub_reg():
+        return ToolRegistry(
+            [ToolSpec("read_file", "lit", {"type": "object"}, lambda a: "contenu")]
+        )
+
+    stream1 = [
+        _chunk(
+            _delta(
+                tool_calls=[_tc(0, id="c1", name="read_file", arguments='{"path":"x"}')]
+            ),
+            finish_reason="tool_calls",
+        )
+    ]
+    stream2 = [_chunk(_delta(content="fini"), finish_reason="stop")]
+    client, _ = _client([stream1, stream2])
+    tool = make_dispatch_agent(client, sub_reg, system_prompt="sub")
+    kinds = [k for k, _ in tool.run_stream({"task": "lis x"})]
+    assert "tool_call" in kinds and "content" in kinds
+
+
 def test_dispatch_agent_requires_task():
     client, _ = _client([])
     tool = make_dispatch_agent(client, _read_registry, system_prompt="sub")

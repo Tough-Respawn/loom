@@ -43,13 +43,15 @@ def make_dispatch_agent(
     à la sous-boucle (même politique de sécurité que le fil principal).
     """
 
-    def run(args: dict) -> str:
+    def run_stream(args: dict):
+        """Yield les events de la sous-boucle EN DIRECT (pour que l'UI voie l'ouvrier
+        agir). Validation eagerly : appeler run_stream(args) lève ToolError tout de
+        suite si la tâche manque (le registre la convertit en event d'erreur)."""
         task = (args.get("task") or "").strip()
         if not task:
             raise ToolError("argument 'task' manquant (décris la tâche à déléguer)")
         sub_registry = build_sub_registry()
-        chunks: list[str] = []
-        for kind, payload in client.stream_chat_tools(
+        return client.stream_chat_tools(
             [{"role": "user", "content": task}],
             system_prompt,
             max_tokens,
@@ -58,9 +60,11 @@ def make_dispatch_agent(
             thinking=False,
             max_iters=max_iters,
             permission=permission,
-        ):
-            if kind == "content":
-                chunks.append(payload)
+        )
+
+    def run(args: dict) -> str:
+        # Repli non-streamant : on draine run_stream et on garde la synthèse (content).
+        chunks = [payload for kind, payload in run_stream(args) if kind == "content"]
         return "".join(chunks).strip() or "(le sous-agent n'a rien renvoyé)"
 
     return ToolSpec(
@@ -86,4 +90,5 @@ def make_dispatch_agent(
             "required": ["task"],
         },
         run=run,
+        run_stream=run_stream,
     )

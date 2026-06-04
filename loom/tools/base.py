@@ -12,7 +12,7 @@ C'est le socle commun : read/verify (read.py), write/edit (fs.py), run_shell
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +46,11 @@ class ToolSpec:
     description: str
     parameters: dict  # JSON Schema des arguments
     run: Callable[[dict], str]
+    # Outil STREAMANT (optionnel) : au lieu de rendre une str d'un bloc, il yield les
+    # events de sa propre activité (mêmes tuples que stream_chat_tools). La boucle les
+    # relaie à l'UI EN DIRECT et reconstruit le résultat final. Sert à `dispatch_agent`
+    # pour qu'on VOIE ce que fait le sous-agent. `run` reste le repli (1 bloc).
+    run_stream: Callable[[dict], Iterator[tuple[str, object]]] | None = None
 
     def to_openai(self) -> dict:
         return {
@@ -83,6 +88,26 @@ class ToolRegistry:
             return f"erreur: {exc}"
         except Exception as exc:  # noqa: BLE001 - on ne casse jamais la boucle
             return f"erreur inattendue: {exc}"
+
+    def is_streaming(self, name: str) -> bool:
+        """Vrai si l'outil expose une exécution STREAMANTE (run_stream)."""
+        spec = self._specs.get(name)
+        return bool(spec and spec.run_stream)
+
+    def run_stream(self, name: str, args: dict) -> Iterator[tuple[str, object]]:
+        """Exécute un outil streamant en relayant ses events ; ne lève jamais (toute
+        erreur devient un event ('content', 'erreur: …') que la boucle traite comme
+        un résultat d'outil en échec)."""
+        spec = self._specs.get(name)
+        if spec is None or spec.run_stream is None:
+            yield ("content", f"erreur: outil non streamant '{name}'")
+            return
+        try:
+            yield from spec.run_stream(args)
+        except ToolError as exc:
+            yield ("content", f"erreur: {exc}")
+        except Exception as exc:  # noqa: BLE001 - on ne casse jamais la boucle
+            yield ("content", f"erreur inattendue: {exc}")
 
 
 def _resolve_in_root(root: Path, rel: str) -> Path:

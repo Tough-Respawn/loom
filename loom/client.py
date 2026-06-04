@@ -20,6 +20,22 @@ from loom.inline_image import (
 _SERIAL_WRITE = frozenset({"write_file", "edit_file"})
 
 
+def _sub_activity_line(kind: str, payload) -> str:
+    """Rend un event de sous-agent en ligne lisible pour le flux live de sa pastille.
+    Le détail (synthèse) reste dans le résultat final ; ici on veut juste VOIR l'ouvrier
+    agir : quel outil il appelle, s'il réussit, et sa synthèse au fil de l'eau."""
+    if kind == "tool_call":
+        return f"\n→ {payload.get('name', 'outil')}"
+    if kind == "tool_result":
+        mark = "✓" if payload.get("ok") else "✕"
+        loc = f" {payload['path']}" if payload.get("path") else ""
+        head = (payload.get("preview") or "").split("\n")[0][:80]
+        return f"  {mark}{loc} {head}\n"
+    if kind == "content":
+        return payload if isinstance(payload, str) else ""
+    return ""
+
+
 def _usage_dict(usage) -> dict:
     """Normalise l'usage (tokens réels) renvoyé par le serveur en fin de stream."""
     return {
@@ -378,6 +394,20 @@ class LoomClient:
                     else:
                         result = "refusé par l'utilisateur"
                         ok = False
+                elif registry and registry.is_streaming(name):  # allow + streamant
+                    # Outil streamant (dispatch_agent) : on relaie son activité EN DIRECT
+                    # dans sa pastille (tool_stream) et on reconstruit la synthèse finale.
+                    parts: list[str] = []
+                    for sub_kind, sub_payload in registry.run_stream(name, args):
+                        line = _sub_activity_line(sub_kind, sub_payload)
+                        if line:
+                            yield ("tool_stream", {"id": tc["id"], "text": line})
+                        if sub_kind == "content" and isinstance(sub_payload, str):
+                            parts.append(sub_payload)
+                    result = (
+                        "".join(parts).strip() or "(le sous-agent n'a rien renvoyé)"
+                    )
+                    ok = not result.startswith("erreur")
                 else:  # allow
                     result = (
                         registry.run(name, args) if registry else "erreur: pas d'outils"
