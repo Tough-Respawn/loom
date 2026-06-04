@@ -238,17 +238,18 @@ def generate_one(
     max_tokens: int = 2048,
     file_char_cap: int | None = None,
     stories_text: str = "",
+    lessons_text: str = "",
 ) -> tuple[str, str]:
     """Génère UN fichier (appel isolé, non-streamé, thinking off). Brique unitaire
     réutilisée par le batch ET par l'orchestrateur (events live par fichier).
     `file_char_cap` (optionnel) borne le `design` injecté (anti-overflow KV en fan-out).
-    `stories_text` (optionnel) : les US qui touchent ce fichier, pour un dev guidé."""
+    `stories_text` : les US qui touchent ce fichier. `lessons_text` : leçons apprises."""
     raw = client.complete(
         [
             {
                 "role": "user",
                 "content": _file_prompt(
-                    spec, design, all_paths, file_char_cap, stories_text
+                    spec, design, all_paths, file_char_cap, stories_text, lessons_text
                 ),
             }
         ],

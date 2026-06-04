@@ -72,6 +72,7 @@ def create_app(
     server_context=8192,
     n_parallel=1,
     session_store=None,
+    lesson_store=None,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -474,6 +475,7 @@ def create_app(
                 context=server_context,
                 n_parallel=n_parallel,
                 semantic_review=semantic_review,
+                lesson_store=lesson_store,
             )
         # En mode session, mémorise le dossier choisi sur la session (les prochains runs
         # le reprennent par défaut) et journalise le run sous cette session.

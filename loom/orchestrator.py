@@ -182,6 +182,7 @@ def run_build(
     n_parallel: int = 1,
     max_rounds: int = 3,
     semantic_review: bool = False,
+    lesson_store=None,
 ) -> Iterator[dict]:
     """Pipeline FAN-OUT (mode /run par défaut) : PLAN détaillé → génération PARALLÈLE
     isolée par fichier (1 appel non-streamé/fichier → pas de tool-call géant tronqué, pas
@@ -409,8 +410,13 @@ def run_build(
         return any(p not in state for p in all_paths)
 
     # 2) GÉNÉRATION PARALLÈLE — chaque fichier reçoit les US qui le concernent (le dev
-    # déroule des US concrètes), sans casser le batching (option « US informent la gen »).
+    # déroule des US concrètes) ET les LEÇONS apprises de runs passés (auto-amélioration),
+    # sans casser le batching (option « US informent la gen »).
     from loom.planning import stories_for_file
+
+    lessons_text = (
+        "\n".join(f"- {x}" for x in lesson_store.recent()) if lesson_store else ""
+    )
 
     def _gen_dispatch(s):
         if mode_by_path.get(s.path) == "patch":
@@ -433,6 +439,7 @@ def run_build(
             max_tokens=gen_max_tokens,
             file_char_cap=file_char_cap,
             stories_text=stories_for_file(stories, s.path),
+            lessons_text=lessons_text,
         )
 
     yield from _gen_phase(
@@ -443,6 +450,10 @@ def run_build(
         max_workers,
     )
     report = yield from _verify_phase(all_paths)
+    # Défauts du PREMIER jet = ce que le dev a raté -> matière à apprentissage (task 9).
+    initial_defects = (
+        list(report.defects) if (report is not None and not report.ok) else []
+    )
 
     # 3) FIX (boucle fermée) : régénère en parallèle avec l'union des fichiers + les défauts.
     # On boucle tant qu'il reste des défauts OU qu'un fichier planifié manque (borné).
@@ -560,5 +571,28 @@ def run_build(
                 "fix_intent", "Correction (intention)", _intent_fix, specs, max_workers
             )
             report = yield from _verify_phase(all_paths)
+
+    # AUTO-AMÉLIORATION (task 9) : distille les erreurs du premier jet en UNE leçon
+    # générale et la persiste. Les runs suivants la reçoivent dans le prompt de génération
+    # -> Loom s'augmente de ses erreurs au lieu qu'on code chaque cas. Ne casse jamais.
+    if lesson_store is not None and initial_defects:
+        from loom.lessons import distill_lesson
+
+        defects_text = "\n".join(f"{d.location}: {d.evidence}" for d in initial_defects)
+        lesson = distill_lesson(client, defects_text, task, model=model)
+        if lesson:
+            lesson_store.add(lesson)
+            yield {
+                "type": "agent_start",
+                "agent": "learn",
+                "role": "Apprentissage",
+                "model": model,
+            }
+            yield {
+                "type": "content",
+                "agent": "learn",
+                "text": "Leçon retenue pour les prochains runs : " + lesson,
+            }
+            yield {"type": "agent_done", "agent": "learn"}
 
     yield {"type": "run_done", "run": run}

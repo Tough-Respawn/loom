@@ -870,6 +870,52 @@ def test_run_build_intent_review_drives_one_fix(tmp_path):
     )
 
 
+def test_run_build_distills_and_stores_lesson(tmp_path):
+    """Auto-amélioration : un défaut au premier jet -> une leçon est distillée, persistée
+    dans le LessonStore, et un event "learn" est émis (Loom s'augmente de ses erreurs)."""
+    from loom.lessons import LessonStore
+    from loom.orchestrator import run_build
+    from loom.verify import Defect, VerifyReport
+
+    plan = '{"design": "x", "files": [{"path": "app.js", "role": "r"}]}'
+    reports = [
+        VerifyReport(
+            ok=False, defects=[Defect("app.js", "runtime", "x is not a function")]
+        ),
+        VerifyReport(ok=True),
+    ]
+
+    class C:
+        def complete(self, messages, system_prompt, **kw):
+            p = messages[0]["content"]
+            if "PLAN D'IMPLÉMENTATION" in p:
+                return plan
+            if "leçon générale" in p:
+                return "Expose les fonctions sur window avant de les appeler."
+            if "CRITIQUE" in p or "DÉCOUPE" in p:
+                return ""
+            return "// code\n"
+
+    def write(path, content):
+        return str(tmp_path / path)
+
+    store = LessonStore(tmp_path / "lessons.json")
+    events, _run = _drive(
+        run_build(
+            "t",
+            C(),
+            model="m",
+            write=write,
+            workspace=str(tmp_path),
+            verifier=lambda paths: reports.pop(0),
+            lesson_store=store,
+            max_rounds=2,
+        )
+    )
+    assert store.recent() == ["Expose les fonctions sur window avant de les appeler."]
+    assert any(e["type"] == "content" and e.get("agent") == "learn" for e in events)
+
+
 def test_run_pipeline_revision_bounded_to_one(tmp_path):
     agents = [
         _agent("planner", "plan", "m"),
