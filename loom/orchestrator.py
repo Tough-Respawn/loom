@@ -180,7 +180,7 @@ def run_build(
     max_tokens: int = 2048,
     context: int = 8192,
     n_parallel: int = 1,
-    max_rounds: int = 3,
+    max_rounds: int = 6,
     semantic_review: bool = False,
     lesson_store=None,
 ) -> Iterator[dict]:
@@ -491,7 +491,7 @@ def run_build(
     # 3) FIX (boucle fermée) : régénère en parallèle avec l'union des fichiers + les défauts.
     # On boucle tant qu'il reste des défauts OU qu'un fichier planifié manque (borné).
     rounds = 0
-    prev_locations: set[str] | None = None
+    prev_count: int | None = None
     while rounds < max_rounds and (
         (report is not None and not report.ok) or (verifier and _incomplete())
     ):
@@ -538,18 +538,32 @@ def run_build(
         )
         report = yield from _verify_phase(all_paths)
 
-        # Stop anti-divergence : si l'ensemble des défauts ne DÉCROÎT pas (et qu'aucun
-        # fichier ne manque), inutile de boucler — un 4B oscille (corrige A, casse B).
-        cur_locations = (
-            {d.location for d in report.defects} if report is not None else set()
-        )
+        # Stop sur ABSENCE DE PROGRÈS : on continue tant que le NOMBRE de défauts décroît
+        # strictement (pas les seules locations : tous les défauts d'une page sont sur le
+        # même fichier, donc le set de locations ne rétrécit jamais et coupait à tort dès
+        # le 2e tour). Le 1er tour établit la baseline ; ensuite, si ça ne baisse plus (et
+        # qu'aucun fichier ne manque), on arrête — un 4B oscille sinon indéfiniment.
+        cur_count = len(report.defects) if report is not None else 0
         if (
             not _incomplete()
-            and prev_locations is not None
-            and not cur_locations < prev_locations  # pas un sous-ensemble STRICT
+            and prev_count is not None
+            and cur_count >= prev_count  # pas de rétrécissement strict
         ):
             break
-        prev_locations = cur_locations
+        prev_count = cur_count
+
+    # Si on s'arrête en laissant des défauts, on le DIT clairement (pas de coupe silencieuse).
+    if report is not None and not report.ok:
+        yield {"type": "agent_start", "agent": "bilan", "role": "Bilan", "model": model}
+        yield {
+            "type": "content",
+            "agent": "bilan",
+            "text": (
+                f"Arrêt après {rounds} correction(s) : {len(report.defects)} défaut(s) "
+                "restant(s) (le modèle n'a pas convergé). Voir les défauts ci-dessus."
+            ),
+        }
+        yield {"type": "agent_done", "agent": "bilan"}
 
     # VÉRIFICATION ORIENTÉE INTENTION : le verify déterministe dit « ça tourne », pas
     # « ça fait ce qui était demandé ». On confronte le code aux CRITÈRES D'ACCEPTATION

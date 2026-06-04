@@ -485,6 +485,42 @@ def test_run_build_stops_when_defects_do_not_shrink(tmp_path):
     assert len(revisions) < 3
 
 
+def test_run_build_announces_bilan_when_unresolved(tmp_path):
+    """Quand la boucle s'arrête en laissant des défauts, elle l'ANNONCE (event bilan),
+    au lieu de couper en silence — corrige le 'ça s'arrête à 3 sans rien dire'."""
+    from loom.orchestrator import run_build
+    from loom.verify import Defect, VerifyReport
+
+    plan = '{"design": "x", "files": [{"path": "app.js", "role": "y"}]}'
+
+    class C:
+        def complete(self, messages, system_prompt, **kw):
+            p = messages[0]["content"]
+            if "PLAN D'IMPLÉMENTATION" in p:
+                return plan
+            return "ok();"
+
+    def write(path, content):
+        return str(tmp_path / path)
+
+    events, _run = _drive(
+        run_build(
+            "t",
+            C(),
+            model="m",
+            write=write,
+            verifier=lambda paths: VerifyReport(
+                ok=False, defects=[Defect("app.js", "runtime", "boom")]
+            ),
+            max_rounds=3,
+        )
+    )
+    assert any(e["type"] == "content" and e.get("agent") == "bilan" for e in events)
+    assert any(
+        "restant(s)" in e.get("text", "") for e in events if e["type"] == "content"
+    )
+
+
 def test_run_build_keeps_fixing_while_defects_shrink(tmp_path):
     """Tant que l'ensemble des défauts DÉCROÎT strictement, la boucle continue jusqu'à
     convergence (ok=True)."""
