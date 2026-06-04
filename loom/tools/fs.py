@@ -78,7 +78,7 @@ def _occurrence_lines(text: str, sub: str) -> list[int]:
 def make_edit_file(workspace_dir: str) -> ToolSpec:
     """Outil edit_file : remplace old_string par new_string (1 occurrence, ou toutes
     avec replace_all). Erreurs EXPLOITABLES par le modèle : n° de ligne des occurrences
-    sur ambiguïté, indice CRLF sur 'introuvable' (cf. gap P2.2 docs/harness-strategy.md)."""
+    sur ambiguïté, indice CRLF sur 'introuvable' (erreurs exploitables par un petit modèle)."""
     root = Path(workspace_dir)
 
     def run(args: dict) -> str:
