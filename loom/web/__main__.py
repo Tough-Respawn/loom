@@ -67,7 +67,9 @@ def build_app(cfg):
     # là, on l'importe comme première session pour ne pas perdre l'historique.
     data_root = Path(cfg.chat.history_path).resolve().parent
     sessions_root = data_root / "sessions"
-    store = SessionStore(sessions_root, cfg.chat.system_prompt)
+    store = SessionStore(
+        sessions_root, cfg.chat.system_prompt, default_tools=cfg.chat.tools_enabled
+    )
     # Mémoire d'auto-amélioration : leçons globales réinjectées dans les futurs runs.
     lesson_store = LessonStore(data_root / "lessons.json")
     if not store.list() and conversation.messages:
