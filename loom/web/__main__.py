@@ -10,6 +10,7 @@ from loom.config import load_config
 from loom.context import effective_context_budget
 from loom.conversation import Conversation
 from loom.permissions import evaluate
+from loom.session import SessionStore
 from loom.tools import AVAILABLE_TOOLS, build_registry
 from loom.web.app import create_app
 
@@ -60,6 +61,16 @@ def build_app(cfg):
     if not conversation.active_tools and cfg.chat.tools_enabled:
         conversation.set_tools(cfg.chat.tools_enabled)
 
+    # Sessions first-class : un fil persistant par projet (chat + runs agentic partagés).
+    # Migration douce : si aucune session n'existe mais qu'une ancienne conversation est
+    # là, on l'importe comme première session pour ne pas perdre l'historique.
+    sessions_root = Path(cfg.chat.history_path).resolve().parent / "sessions"
+    store = SessionStore(sessions_root, cfg.chat.system_prompt)
+    if not store.list() and conversation.messages:
+        seed = store.create(workspace=cfg.chat.workspace_dir, title="Session importée")
+        seed.conversation = conversation
+        store.save(seed)
+
     permission = lambda name, args: evaluate(name, args, cfg.permissions)  # noqa: E731
     app = create_app(
         conversation,
@@ -80,6 +91,7 @@ def build_app(cfg):
         workspace_dir=cfg.chat.workspace_dir,
         server_context=cfg.context,
         n_parallel=cfg.n_parallel,
+        session_store=store,
     )
     return app
 
