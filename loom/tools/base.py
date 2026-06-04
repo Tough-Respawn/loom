@@ -6,8 +6,9 @@ Un outil = un `ToolSpec` (nom, description, schéma JSON des arguments, fonction
 exécute un appel par nom en transformant toute erreur en message exploitable par
 le modèle (jamais d'exception qui casserait la boucle de streaming).
 
-C'est le socle commun : read/verify (read.py), write/edit (fs.py), run_shell
-(shell.py), web_search (web.py) s'enregistrent dessus sans toucher au transport.
+C'est le socle commun : read/document/image (read.py), localisation (search.py),
+write/edit (fs.py), run_shell (shell.py), web (web.py), todos (todo.py) et
+dispatch_agent (agent.py) s'enregistrent dessus sans toucher au transport.
 """
 
 from __future__ import annotations

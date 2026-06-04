@@ -1,4 +1,0 @@
-- generic [ref=e2]:
-  - heading "Tic-Tac-Toe" [level=1] [ref=e3]
-  - generic [ref=e14]: Le joueur X commence !
-  - button "Recommencer la partie" [ref=e15] [cursor=pointer]

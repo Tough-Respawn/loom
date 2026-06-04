@@ -78,10 +78,8 @@ class RuntimeConfig:
     override_n_gpu_layers: int | None
     override_threads: int | None
     chat: ChatConfig
-    # Slots de batching continu du serveur (--parallel). Source de vérité partagée :
-    # serve.py l'épingle au lancement ET le harness (compute_budget) en dérive sa
-    # concurrence/ses tailles → pas de débordement du pool KV partagé.
-    n_parallel: int = 4
+    # Slots de llama-server (--parallel). Loom est mono-flux -> 1 (cf. loom.config.toml).
+    n_parallel: int = 1
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
 
     def model_by_id(self, model_id: str) -> ModelConfig:

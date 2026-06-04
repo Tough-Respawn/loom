@@ -1,5 +1,5 @@
 # tests/test_session.py
-from loom.session import RunRecord, SessionStore
+from loom.session import SessionStore
 
 
 def test_create_persists_and_lists(tmp_path):
@@ -35,35 +35,6 @@ def test_conversation_roundtrip_through_session(tmp_path):
     loaded = store.load(s.id)
     assert loaded.conversation.messages == [{"role": "user", "content": "bonjour"}]
     assert loaded.conversation.system_prompt == "sys"
-
-
-def test_run_record_appended_and_persisted(tmp_path):
-    store = SessionStore(tmp_path, default_system_prompt="sys")
-    s = store.create(workspace=".")
-    s.add_run(
-        RunRecord(task="calc", summary="3 fichiers", files=["index.html"], ok=True)
-    )
-    store.save(s)
-    loaded = store.load(s.id)
-    assert len(loaded.runs) == 1
-    assert loaded.runs[0].task == "calc"
-    assert loaded.runs[0].ok is True
-    assert loaded.runs[0].files == ["index.html"]
-
-
-def test_add_run_leaves_trace_in_conversation(tmp_path):
-    # Le run agentic doit laisser une trace dans la conversation unifiée pour que le
-    # modèle reprenne le fil au tour suivant (chat OU build) : c'est le fondamental.
-    store = SessionStore(tmp_path, default_system_prompt="sys")
-    s = store.create(workspace=".")
-    before = len(s.conversation.messages)
-    s.add_run(
-        RunRecord(task="t", summary="plan A,B; verif OK", files=["a.js"], ok=True)
-    )
-    assert len(s.conversation.messages) == before + 1
-    trace = s.conversation.messages[-1]
-    assert trace["role"] == "assistant"
-    assert "a.js" in trace["content"]
 
 
 def test_active_session_tracked(tmp_path):

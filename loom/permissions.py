@@ -13,8 +13,21 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Outils de lecture : toujours autorisés, ils n'ont aucun effet de bord.
-READ_TOOLS = frozenset({"read_file", "web_search", "verify", "list_dir", "list_files"})
+# Outils sans effet de bord destructeur : autorisés d'office (pas de bulle de
+# confirmation), même en mode 'ask'. Lecture/recherche + le bloc-notes de todos.
+READ_TOOLS = frozenset(
+    {
+        "read_file",
+        "read_document",
+        "read_image",
+        "find_files",
+        "search_text",
+        "list_dir",
+        "web_search",
+        "fetch_url",
+        "manage_todos",
+    }
+)
 SHELL_TOOLS = frozenset({"run_shell", "bash"})
 WRITE_TOOLS = frozenset({"write_file", "edit_file"})
 
@@ -131,6 +144,15 @@ def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
                 return Decision("allow")
             return Decision("ask", "chemin non listé")
         return Decision("ask")  # mode 'ask'
+
+    if tool_name == "dispatch_agent":
+        # Orchestration : délègue à un sous-agent dont CHAQUE action est re-soumise à
+        # cette même politique. On ne redemande pas pour l'orchestration, on suit le mode.
+        if cfg.mode == "deny_all":
+            return Decision("deny", "mode deny_all")
+        if cfg.mode == "allow":
+            return Decision("allow")
+        return Decision("ask")
 
     # Outil inconnu : on demande par prudence (sauf deny_all).
     if cfg.mode == "deny_all":

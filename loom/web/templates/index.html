@@ -73,27 +73,6 @@
                    border: 1px dashed #2a4a3a; border-radius: 6px; max-height: 200px;
                    overflow: auto; white-space: pre-wrap; font-family: ui-monospace, monospace;
                    font-size: 11px; color: #8fb3a3; opacity: .85; }
-    /* Panneau Vérificateur (hard-gate déterministe) */
-    .verify-panel { align-self: flex-start; max-width: 85%; font-size: 12.5px;
-                    border-radius: 10px; padding: 8px 12px; }
-    .verify-panel.pending { background: #15171f; border: 1px dashed #3a6f5a; color: #9fd9bd;
-                            animation: thinkpulse 1.6s ease-in-out infinite; }
-    .verify-panel.ok { background: #11241a; border: 1px solid #2f6f4f; color: #b6e8cf; }
-    .verify-panel.ko { background: #211013; border: 1px solid #6f2f3a; color: #f0b9c0; }
-    .verify-head { font-weight: 600; }
-    .verify-list { margin: 6px 0 0; padding-left: 18px; }
-    .verify-list li { margin: 2px 0; }
-    .verify-list code { background: #0c0a06; color: #ffd98a; padding: 0 5px; border-radius: 4px; }
-    .verify-list .vk { color: #d0a060; }
-    /* En-tête d'étape : signale chaque phase + timer live + tokens réels */
-    .step-hdr { align-self: flex-start; font-size: 12px; color: #cfe6da;
-                background: #131a22; border: 1px solid #28323e; border-radius: 8px;
-                padding: 3px 10px; display: flex; gap: 10px; align-items: baseline; }
-    .step-hdr .step-name { font-weight: 600; }
-    .step-hdr .step-meta { color: #8a93a6; font-variant-numeric: tabular-nums; }
-    .step-hdr.active { border-color: #3a6f5a; animation: thinkpulse 1.6s ease-in-out infinite; }
-    .step-hdr.active .step-name::before { content: '▶ '; color: #6fbf9a; }
-    .step-hdr:not(.active) .step-name::before { content: '✓ '; color: #6fbf9a; }
     .perm-ask { align-self: flex-start; max-width: 85%; font-size: 13px; color: #f0d9a0;
                 background: #211b10; border: 1px solid #5a4520; border-radius: 10px;
                 padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -145,10 +124,6 @@
                     border-radius:8px; padding:4px 8px; font-size:13px; }
     #thinking-toggle { display:inline-flex; align-items:center; gap:6px; font-size:13px;
                        color:#c3cad8; cursor:pointer; user-select:none; }
-    /* badge de route (→ Build/Chat) + run-info */
-    .run-info { align-self: flex-start; font-size: 12px; color: #cfe6da;
-                background: #131a22; border: 1px solid #28323e; border-radius: 8px;
-                padding: 3px 10px; font-family: ui-monospace, monospace; }
     /* header minimal + drawer réglages + barre unifiée */
     .topbar { position:sticky; top:0; z-index:8; display:flex; justify-content:space-between;
               align-items:center; padding:14px 0 12px;
