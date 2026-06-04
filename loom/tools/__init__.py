@@ -15,7 +15,7 @@ from loom.tools.base import (
     ToolSpec,
     _resolve_in_root,
 )
-from loom.tools.read import make_read_document, make_read_file
+from loom.tools.read import make_read_document, make_read_file, make_read_image
 
 __all__ = [
     "AVAILABLE_TOOLS",
@@ -26,6 +26,19 @@ __all__ = [
     "build_registry",
     "make_read_document",
     "make_read_file",
+    "make_read_image",
+]
+
+# Outils confiés à un SOUS-AGENT (dispatch_agent) : lecture seule, et SURTOUT pas
+# dispatch_agent lui-même -> aucune récursion possible, aucun effet de bord.
+_SUBAGENT_TOOLS = [
+    "find_files",
+    "search_text",
+    "list_dir",
+    "read_file",
+    "read_document",
+    "web_search",
+    "fetch_url",
 ]
 
 
@@ -35,8 +48,17 @@ def build_registry(
     max_bytes: int,
     enabled: list[str],
     web_cfg=None,
+    *,
+    client=None,
+    todo_store=None,
+    model: str | None = None,
+    sub_max_tokens: int = 2048,
 ) -> ToolRegistry:
-    """Construit le registre selon la liste d'outils activés (config)."""
+    """Construit le registre selon la liste d'outils activés (config).
+
+    `client`/`model` : requis pour dispatch_agent (lance une sous-boucle tool-use).
+    `todo_store` : mémoire partagée requise pour manage_todos (survit aux tours).
+    """
     # Imports locaux : les sous-modules d'écriture/shell/web importent `base`,
     # on les charge à la demande pour garder un graphe d'import simple.
     from loom.tools.fs import make_edit_file, make_write_file
@@ -54,6 +76,8 @@ def build_registry(
         specs.append(make_read_file(workspace_dir, extensions, max_bytes))
     if "read_document" in enabled:
         specs.append(make_read_document(workspace_dir))
+    if "read_image" in enabled:
+        specs.append(make_read_image(workspace_dir))
     if "write_file" in enabled:
         specs.append(make_write_file(workspace_dir, max_bytes))
     if "edit_file" in enabled:
@@ -68,4 +92,27 @@ def build_registry(
             specs.append(make_web_search(wc))
         if "fetch_url" in enabled:
             specs.append(make_fetch_url(wc))
+    if "manage_todos" in enabled and todo_store is not None:
+        from loom.tools.todo import make_manage_todos
+
+        specs.append(make_manage_todos(todo_store))
+    if "dispatch_agent" in enabled and client is not None:
+        from loom.prompts import SUBAGENT_SYSTEM
+        from loom.tools.agent import make_dispatch_agent
+
+        def _build_sub_registry() -> ToolRegistry:
+            # Sous-registre lecture seule, SANS client -> pas de dispatch_agent imbriqué.
+            return build_registry(
+                workspace_dir, extensions, max_bytes, _SUBAGENT_TOOLS, web_cfg=web_cfg
+            )
+
+        specs.append(
+            make_dispatch_agent(
+                client,
+                _build_sub_registry,
+                system_prompt=SUBAGENT_SYSTEM,
+                model=model,
+                max_tokens=sub_max_tokens,
+            )
+        )
     return ToolRegistry(specs)

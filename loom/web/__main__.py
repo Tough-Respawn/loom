@@ -12,6 +12,7 @@ from loom.conversation import Conversation
 from loom.permissions import evaluate
 from loom.session import SessionStore
 from loom.tools import AVAILABLE_TOOLS, build_registry
+from loom.tools.todo import TodoStore
 from loom.web.app import create_app
 
 RUNTIME_DIR = Path(__file__).resolve().parent.parent
@@ -35,9 +36,14 @@ def build_app(cfg):
         cfg.chat.context_token_budget, cfg.context, cfg.chat.max_tokens
     )
 
+    # Mémoire de travail des todos : un SEUL store partagé entre les reconstructions
+    # du registre (une par tour) -> le plan du modèle survit d'un tour au suivant.
+    todo_store = TodoStore()
+
     # Factory : le registre est (re)construit selon les outils cochés dans l'UI pour la
     # conversation courante. `workspace` optionnel : un /run peut cibler un autre dossier
-    # (champ « dossier cible ») ; à défaut, le workspace de la config.
+    # (champ « dossier cible ») ; à défaut, le workspace de la config. `client`/`model`
+    # arment dispatch_agent (sous-boucle tool-use), `todo_store` arme manage_todos.
     def make_registry(active, workspace=None):
         return build_registry(
             workspace_dir=workspace or cfg.chat.workspace_dir,
@@ -45,6 +51,10 @@ def build_app(cfg):
             max_bytes=cfg.chat.read_file_max_bytes,
             enabled=active,
             web_cfg=cfg.chat.web_search,
+            client=client,
+            todo_store=todo_store,
+            model=cfg.default_model,
+            sub_max_tokens=cfg.chat.max_tokens,
         )
 
     # Amorce les outils de la conversation depuis la config au 1er lancement.

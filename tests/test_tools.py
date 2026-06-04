@@ -99,3 +99,29 @@ def test_registry_catches_tool_error_into_message(tmp_path):
     # ne doit jamais lever : renvoie un message d'erreur exploitable par le modèle
     out = reg.run("read_file", {"path": "../../etc/passwd"})
     assert isinstance(out, str) and out.startswith("erreur")
+
+
+def test_build_registry_arms_image_todo_and_agent(tmp_path):
+    from loom.tools.todo import TodoStore
+
+    reg = build_registry(
+        workspace_dir=str(tmp_path),
+        extensions=[".md"],
+        max_bytes=100,
+        enabled=["read_image", "manage_todos", "dispatch_agent"],
+        client=object(),  # présence suffit pour armer dispatch_agent
+        todo_store=TodoStore(),
+    )
+    assert "read_image" in reg and "manage_todos" in reg and "dispatch_agent" in reg
+
+
+def test_build_registry_skips_stateful_tools_without_deps(tmp_path):
+    # sans todo_store ni client, manage_todos/dispatch_agent ne sont PAS montés
+    # (évite un outil cassé exposé au modèle).
+    reg = build_registry(
+        workspace_dir=str(tmp_path),
+        extensions=[".md"],
+        max_bytes=100,
+        enabled=["manage_todos", "dispatch_agent"],
+    )
+    assert "manage_todos" not in reg and "dispatch_agent" not in reg

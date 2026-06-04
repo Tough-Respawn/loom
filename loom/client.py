@@ -8,6 +8,12 @@ from collections.abc import Iterator
 
 from openai import APIError, OpenAI
 
+from loom.inline_image import (
+    image_user_message,
+    is_inline_image,
+    parse_inline_image,
+)
+
 # Outils mutateurs à gros contenu : sérialisés (1/tour) pour qu'un batch de N
 # write_file ne sature pas max_tokens et ne tronque pas les derniers (P1.1).
 _SERIAL_WRITE = frozenset({"write_file", "edit_file"})
@@ -267,6 +273,9 @@ class LoomClient:
                 }
             )
             wrote_this_turn = False  # P1.1 : un seul write/edit par tour (anti-batch)
+            # Images inline (read_image) à faire VOIR au modèle : différées après TOUS
+            # les résultats d'outils (les messages `tool` doivent rester contigus).
+            image_followups: list[dict] = []
             for tc in tool_calls:
                 name = tc["name"]
                 yield ("tool_call", {"id": tc["id"], "name": name})
@@ -340,31 +349,42 @@ class LoomClient:
                     )
                     ok = not result.startswith("erreur")
 
+                # read_image renvoie une image inline encodée : on ne met qu'un accusé
+                # TEXTE dans le message `tool` (pas de base64 géant), et on diffère le
+                # message `user` multimodal qui fera réellement VOIR l'image au modèle.
+                if is_inline_image(result):
+                    caption, data_url = parse_inline_image(result)
+                    tool_content = f"[image « {caption} » chargée — fournie ci-dessous]"
+                    image_followups.append(image_user_message(caption, data_url))
+                    ok = True
+                else:
+                    tool_content = result
                 convo.append(
-                    {"role": "tool", "tool_call_id": tc["id"], "content": result}
+                    {"role": "tool", "tool_call_id": tc["id"], "content": tool_content}
                 )
                 # Détail dépliable côté UI : pour les écritures, le contenu RÉELLEMENT
                 # écrit (et non le message de retour) ; pour edit, le diff old/new ;
-                # sinon le résultat complet de l'outil. Borné pour ne pas gonfler le SSE.
+                # sinon le résultat (l'accusé pour une image, pas son base64). Borné.
                 if name == "write_file":
                     detail = args.get("content") or ""
                 elif name == "edit_file":
                     detail = f"- {args.get('old_string', '')}\n+ {args.get('new_string', '')}"
                 else:
-                    detail = result
+                    detail = tool_content
                 yield (
                     "tool_result",
                     {
                         "id": tc["id"],
                         "name": name,
                         "ok": ok,
-                        "preview": result[:300],
+                        "preview": tool_content[:300],
                         "path": args.get("path"),
                         "detail": detail[:4000] if detail else None,
                     },
                 )
                 if name in _SERIAL_WRITE:
                     wrote_this_turn = True
+            convo.extend(image_followups)  # images vues au tour suivant
         yield ("content", "\n(arrêt : trop d'appels d'outils successifs)")
 
 
