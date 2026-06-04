@@ -133,10 +133,17 @@ def edit_prompt(spec, design: str, content: str, defects: str = "") -> str:
     )
 
 
-def review_prompt(design: str, files_txt: str) -> str:
-    """Prompt de relecture sémantique (renvoie le JSON des défauts comportementaux)."""
+def review_prompt(design: str, files_txt: str, acceptance: str = "") -> str:
+    """Prompt de relecture sémantique. `acceptance` (optionnel) : les critères observables
+    des US, qui ancrent la vérification d'intention (calculatrice qui calcule, etc.)."""
+    block = (
+        f"\nCRITÈRES D'ACCEPTATION à vérifier un par un :\n{acceptance}\n"
+        if acceptance
+        else ""
+    )
     return _fill(
-        _load("review.user.md"), {"__DESIGN__": design, "__FILES__": files_txt}
+        _load("review.user.md"),
+        {"__DESIGN__": design, "__FILES__": files_txt, "__ACCEPTANCE__": block},
     )
 
 

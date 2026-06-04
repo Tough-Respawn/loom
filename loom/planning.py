@@ -139,6 +139,17 @@ def stories_for_file(stories: list[UserStory], path: str) -> str:
     return "\n".join(lines)
 
 
+def acceptance_text(stories: list[UserStory]) -> str:
+    """Concatène les critères d'acceptation de toutes les US (vide si aucune n'en a).
+    Sert d'ancrage au vérificateur orienté-intention."""
+    lines = [
+        f"{s.id} {s.title} : " + " ; ".join(s.acceptance)
+        for s in stories
+        if s.acceptance
+    ]
+    return "\n".join(lines)
+
+
 def plan_md(design: str, stories: list[UserStory]) -> str:
     """Rendu .md du PLAN global (design + index des US)."""
     index = "\n".join(f"- {s.id} — {s.title}" for s in stories)

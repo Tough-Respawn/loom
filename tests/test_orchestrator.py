@@ -801,6 +801,75 @@ def test_run_build_no_semantic_review_by_default(tmp_path):
     assert not any(e.get("agent") == "review" for e in events)
 
 
+def test_run_build_intent_review_drives_one_fix(tmp_path):
+    """US avec critères d'acceptation + vérif d'intention qui trouve un défaut
+    -> une passe de correction d'intention est lancée (le trou est comblé, pas ignoré)."""
+    import json as _json
+
+    from loom.orchestrator import run_build
+    from loom.verify import VerifyReport
+
+    plan = '{"design": "x", "files": [{"path": "app.js", "role": "logique"}]}'
+    stories = _json.dumps(
+        {
+            "stories": [
+                {
+                    "id": "US-01",
+                    "title": "Calc",
+                    "detail": "additionne",
+                    "acceptance": ["1+1 -> 2"],
+                    "files": ["app.js"],
+                }
+            ]
+        }
+    )
+    review = '{"defects": [{"location": "app.js", "evidence": "1+1 ne donne pas 2"}]}'
+
+    class C:
+        def complete(
+            self,
+            messages,
+            system_prompt,
+            max_tokens=2048,
+            model=None,
+            thinking=False,
+            temperature=None,
+        ):
+            p = messages[0]["content"]
+            if "PLAN D'IMPLÉMENTATION" in p:
+                return plan
+            if "DÉCOUPE" in p:
+                return stories
+            if "CRITIQUE" in p:
+                return ""
+            if "SÉMANTIQUES" in p:
+                return review
+            return "// code\n"
+
+    def write(path, content):
+        return str(tmp_path / path)
+
+    events, _run = _drive(
+        run_build(
+            "fais une calculatrice",
+            C(),
+            model="m",
+            write=write,
+            workspace=str(tmp_path),
+            verifier=lambda paths: VerifyReport(ok=True),
+        )
+    )
+    assert any(
+        e["type"] == "agent_start" and e.get("role") == "Correction (intention)"
+        for e in events
+    )
+    assert any(
+        "1+1 ne donne pas 2" in e.get("text", "")
+        for e in events
+        if e["type"] == "content"
+    )
+
+
 def test_run_pipeline_revision_bounded_to_one(tmp_path):
     agents = [
         _agent("planner", "plan", "m"),

@@ -507,25 +507,58 @@ def run_build(
             break
         prev_locations = cur_locations
 
-    if semantic_review and report is not None and report.ok:
+    # VÉRIFICATION ORIENTÉE INTENTION : le verify déterministe dit « ça tourne », pas
+    # « ça fait ce qui était demandé ». On confronte le code aux CRITÈRES D'ACCEPTATION
+    # des US. Activée par défaut dès qu'il y a des critères (ou si semantic_review forcé).
+    # Si des critères existent et sont violés, on lance UNE passe de correction bornée
+    # (un 4B ne doit pas boucler) ; sinon advisory non bloquant.
+    from loom.planning import acceptance_text
+
+    accept = acceptance_text(stories)
+    if report is not None and report.ok and (semantic_review or accept):
         from loom.parallel import review_semantic
 
-        current = [(p, state[p]["content"]) for p in all_paths if p in state]
-        sem = review_semantic(client, design, current, model=model)
         yield {
             "type": "agent_start",
             "agent": "review",
-            "role": "Relecture sémantique",
+            "role": "Vérification d'intention",
             "model": model,
         }
+        current = [(p, state[p]["content"]) for p in all_paths if p in state]
+        sem = review_semantic(client, design, current, model=model, acceptance=accept)
         if sem:
-            body = (
-                "Défauts SÉMANTIQUES possibles (à vérifier — non bloquant) :\n"
-                + "\n".join(f"- {d.location} : {d.evidence}" for d in sem)
+            body = "Défauts d'INTENTION (critères non satisfaits) :\n" + "\n".join(
+                f"- {d.location} : {d.evidence}" for d in sem
             )
         else:
-            body = "Relecture sémantique : aucun défaut comportemental détecté."
+            body = "Vérification d'intention : tous les critères semblent satisfaits."
         yield {"type": "content", "agent": "review", "text": body}
         yield {"type": "agent_done", "agent": "review"}
+
+        # Si des CRITÈRES existent et sont violés : UNE passe de correction ciblée.
+        if sem and accept:
+            diag = "\n".join(f"- {d.location} : {d.evidence}" for d in sem)
+            cur = [(p, state[p]["content"]) for p in all_paths if p in state]
+
+            def _intent_fix(s, _c=cur, _d=diag):
+                return best_of(
+                    lambda: fix_one(
+                        client,
+                        design,
+                        s,
+                        _c,
+                        _d,
+                        model=model,
+                        max_tokens=gen_max_tokens,
+                        file_char_cap=file_char_cap,
+                    ),
+                    2,
+                )
+
+            yield {"type": "revision", "n": rounds + 1}
+            yield from _gen_phase(
+                "fix_intent", "Correction (intention)", _intent_fix, specs, max_workers
+            )
+            report = yield from _verify_phase(all_paths)
 
     yield {"type": "run_done", "run": run}
