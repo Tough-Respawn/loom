@@ -136,6 +136,9 @@ function ToolPill({ it }) {
       <span class="tool-status">${status}</span>
       <span class="tool-caret">${hasDetail ? (open ? "▾" : "▸") : ""}</span>
     </div>
+    ${it.pending && it.stream
+      ? html`<pre class="tool-stream">${it.stream.slice(-1400)}</pre>`
+      : null}
     ${hasDetail && open
       ? html`<pre class="tool-detail">${it.detail}</pre>`
       : null}
@@ -468,6 +471,18 @@ function makeRunConsumer() {
         break;
       }
       case "content": {
+        // Contenu taggé par `id` = sortie d'un FICHIER streamée par le codeur : on
+        // l'append dans la boîte outil du fichier (codeur visible, comme le planif).
+        if (evt.id) {
+          const tid = tools[evt.id] || "tool:" + evt.id;
+          if (!get(tid)) {
+            push({ id: tid, kind: "tool", name: "write_file", pending: true });
+            tools[evt.id] = tid;
+          }
+          patch(tid, { stream: (get(tid).stream || "") + evt.text });
+          bumpLive(stepOf(evt.agent));
+          break;
+        }
         const ag = a || ensure(evt.agent, "?", "?");
         if (ag.thinkId) patch(ag.thinkId, { active: false });
         if (!ag.asstId) ag.asstId = push({ kind: "assistant", raw: "", done: false }).id;
@@ -622,6 +637,37 @@ if (drawerClose) drawerClose.addEventListener("click", closeDrawer);
 if (drawerScrim) drawerScrim.addEventListener("click", closeDrawer);
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && drawer && !drawer.hidden) closeDrawer();
+});
+
+// --- sessions (liste / nouvelle / switch / suppression) ---
+// Changer de session change toute la conversation et la timeline : on recharge la page,
+// qui se re-rend avec la session active côté serveur (KISS et fiable).
+async function postForm(url, data) {
+  const fd = new FormData();
+  for (const k in data) fd.append(k, data[k]);
+  return fetch(url, { method: "POST", body: fd });
+}
+const sessionNew = document.getElementById("session-new");
+if (sessionNew) {
+  sessionNew.addEventListener("click", async () => {
+    const wd = document.getElementById("workdir-path");
+    await postForm("/session/new", { workspace: wd ? wd.textContent.trim() : "" });
+    location.reload();
+  });
+}
+document.querySelectorAll(".sess-pick").forEach((b) => {
+  b.addEventListener("click", async () => {
+    await postForm("/session/activate", { id: b.dataset.id });
+    location.reload();
+  });
+});
+document.querySelectorAll(".sess-del").forEach((b) => {
+  b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm("Supprimer cette session ?")) return;
+    await postForm("/session/delete", { id: b.dataset.id });
+    location.reload();
+  });
 });
 
 // --- sélecteur de dossier natif ---

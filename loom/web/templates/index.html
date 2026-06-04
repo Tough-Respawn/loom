@@ -68,6 +68,11 @@
                    border: 1px solid #1d3a2c; border-radius: 6px; max-height: 320px;
                    overflow: auto; white-space: pre-wrap; font-family: ui-monospace, monospace;
                    font-size: 11px; color: #b8d6c8; }
+    /* Flux live du codeur (sortie du fichier en cours de génération) */
+    .tool-stream { margin: 6px 0 1px; padding: 8px 10px; background: #0a120d;
+                   border: 1px dashed #2a4a3a; border-radius: 6px; max-height: 200px;
+                   overflow: auto; white-space: pre-wrap; font-family: ui-monospace, monospace;
+                   font-size: 11px; color: #8fb3a3; opacity: .85; }
     /* Panneau Vérificateur (hard-gate déterministe) */
     .verify-panel { align-self: flex-start; max-width: 85%; font-size: 12.5px;
                     border-radius: 10px; padding: 8px 12px; }
@@ -164,6 +169,21 @@
     .drawer-head { display:flex; justify-content:space-between; align-items:center; }
     .drawer-section { display:flex; flex-direction:column; gap:4px; }
     .drawer-label { font-size:12px; color:#8a93a6; }
+    .sessions-head { display:flex; justify-content:space-between; align-items:center; }
+    .sess-new { background:#16201a; color:#9fd9bd; border:1px solid #244a37; border-radius:7px;
+                font-size:11.5px; padding:3px 9px; transition:.16s; }
+    .sess-new:hover { background:#1c2b22; border-color:#2f6f4f; }
+    .session-list { list-style:none; margin:2px 0 0; padding:0; display:flex; flex-direction:column; gap:3px;
+                    max-height:180px; overflow:auto; }
+    .session-item { display:flex; align-items:center; gap:4px; border-radius:8px;
+                    border:1px solid #20262f; background:#0f141c; }
+    .session-item.active { border-color:#2f6f4f; background:#121c16; }
+    .session-item .sess-pick { flex:1; text-align:left; background:transparent; color:#c7d6df;
+                    font-size:12.5px; padding:6px 9px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .session-item.active .sess-pick { color:#e6f2ec; }
+    .session-item .sess-pick:hover { color:#fff; }
+    .session-item .sess-del { background:transparent; color:#6f8f7f; padding:4px 8px; font-size:11px; transition:.16s; }
+    .session-item .sess-del:hover { color:#f0a890; }
     .bar-controls { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:9px 10px 0; }
     .bar-input { display:flex; align-items:flex-end; gap:8px; padding:6px 8px 8px; }
     .seg { display:inline-flex; background:#0d1118; border:1px solid #242c3a; border-radius:10px;
@@ -208,6 +228,20 @@
       <button class="gear" id="drawer-close" type="button" title="Fermer" aria-label="Fermer">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
           <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg></button></div>
+    {% if active_session %}
+    <div class="drawer-section" id="sessions-section">
+      <div class="sessions-head"><span class="drawer-label">Sessions</span>
+        <button type="button" id="session-new" class="sess-new">+ Nouvelle</button></div>
+      <ul class="session-list">
+        {% for s in sessions %}
+        <li class="session-item{% if s.id == active_session %} active{% endif %}">
+          <button type="button" class="sess-pick" data-id="{{ s.id }}" title="{{ s.workspace }}">{{ s.title }}</button>
+          <button type="button" class="sess-del" data-id="{{ s.id }}" title="Supprimer" aria-label="Supprimer">✕</button>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
     <label id="thinking-toggle" title="Réflexion préalable (décoché = réponse directe)">
       <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> Réflexion préalable</label>
     <div class="drawer-section"><span class="drawer-label">Modèle</span>{% include "_models.html" %}</div>
