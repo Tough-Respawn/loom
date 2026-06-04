@@ -408,7 +408,10 @@ def run_build(
         # app incomplète : on continue à le retenter même si le verify des présents passe.
         return any(p not in state for p in all_paths)
 
-    # 2) GÉNÉRATION PARALLÈLE
+    # 2) GÉNÉRATION PARALLÈLE — chaque fichier reçoit les US qui le concernent (le dev
+    # déroule des US concrètes), sans casser le batching (option « US informent la gen »).
+    from loom.planning import stories_for_file
+
     def _gen_dispatch(s):
         if mode_by_path.get(s.path) == "patch":
             return edit_one(
@@ -429,6 +432,7 @@ def run_build(
             model=model,
             max_tokens=gen_max_tokens,
             file_char_cap=file_char_cap,
+            stories_text=stories_for_file(stories, s.path),
         )
 
     yield from _gen_phase(

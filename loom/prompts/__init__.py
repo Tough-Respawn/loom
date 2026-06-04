@@ -67,14 +67,25 @@ def plan_prompt(
     return prompt
 
 
-def file_prompt(spec, design: str, all_paths: list[str], file_char_cap=None) -> str:
-    """Prompt de génération d'UN fichier. `file_char_cap` borne le design injecté."""
+def file_prompt(
+    spec, design: str, all_paths: list[str], file_char_cap=None, stories_text: str = ""
+) -> str:
+    """Prompt de génération d'UN fichier. `file_char_cap` borne le design injecté.
+    `stories_text` (optionnel) : les user stories qui touchent ce fichier, pour que le dev
+    travaille depuis des US concrètes (critères d'acceptation) sans casser le parallélisme."""
     if file_char_cap is not None:
         design = clip(design, file_char_cap)
+    block = (
+        f"\nUSER STORIES concernant ce fichier (déroule-les, respecte leurs critères "
+        f"d'acceptation) :\n{stories_text}\n"
+        if stories_text
+        else ""
+    )
     return _fill(
         _load("gen.file.md"),
         {
             "__ALL_PATHS__": ", ".join(all_paths),
+            "__STORIES__": block,
             "__PATH__": spec.path,
             "__ROLE__": spec.role,
             "__DESIGN__": design,
