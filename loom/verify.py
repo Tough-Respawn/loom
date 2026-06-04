@@ -11,9 +11,11 @@ JS) n'est lancé que si `node` est présent. Tous les checks sont READ-ONLY : `-
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -274,6 +276,37 @@ def verify_files(paths: list[str]) -> VerifyReport:
         if h.exists():
             defects.extend(_check_web(h))
     return VerifyReport(ok=not defects, defects=defects)
+
+
+def verify_syntax_content(content: str, filename: str) -> VerifyReport:
+    """Vérifie la SYNTAXE d'un CONTENU sans dépendre d'une écriture disque préalable :
+    écrit un fichier TEMPORAIRE de même extension et applique le checker. Pour le portique
+    syntaxe au fil de l'eau (le contenu peut ne pas encore être sur le disque cible, et le
+    `write` du caller peut être indirect). Les défauts pointent le vrai nom de fichier."""
+    suffix = Path(filename).suffix.lower()
+    checker = _CHECKERS.get(suffix)
+    if checker is None:
+        return VerifyReport(ok=True)
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=suffix)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        defects = checker(Path(tmp))
+        real = Path(filename).name
+        for d in defects:
+            d.location = d.location.replace(Path(tmp).name, real)
+        return VerifyReport(ok=not defects, defects=defects)
+    except Exception as exc:  # noqa: BLE001 - un check ne casse jamais le rapport
+        return VerifyReport(
+            ok=False, defects=[Defect(filename, "error", str(exc)[:200])]
+        )
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def verify_syntax_file(path: str) -> VerifyReport:
