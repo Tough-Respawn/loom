@@ -92,3 +92,38 @@ def test_write_plan_artifacts_externalizes_md(tmp_path):
 def test_story_roundtrip_dict():
     s = UserStory("US-09", "t", "d", ["a", "b"], ["f.js"])
     assert UserStory.from_dict(s.to_dict()) == s
+
+
+def test_stories_for_file_filters_and_formats():
+    from loom.planning import stories_for_file
+
+    stories = [
+        UserStory("US-01", "Saisie", "taper", ["3 -> 3"], ["app.js"]),
+        UserStory("US-02", "Style", "couleurs", [], ["style.css"]),
+    ]
+    txt = stories_for_file(stories, "app.js")
+    assert "US-01" in txt and "Saisie" in txt and "3 -> 3" in txt
+    assert "US-02" not in txt  # ne concerne pas app.js
+
+
+def test_stories_for_file_empty_when_none_match():
+    from loom.planning import stories_for_file
+
+    stories = [UserStory("US-01", "t", "d", [], ["app.js"])]
+    assert stories_for_file(stories, "index.html") == ""
+
+
+def test_file_prompt_includes_stories_block():
+    from loom.parallel import FileSpec, _file_prompt
+
+    spec = FileSpec("app.js", "logique")
+    p = _file_prompt(spec, "DESIGN", ["app.js"], None, "- US-01 Saisie : taper.")
+    assert "USER STORIES" in p and "US-01 Saisie" in p
+
+
+def test_file_prompt_no_stories_block_when_empty():
+    from loom.parallel import FileSpec, _file_prompt
+
+    spec = FileSpec("app.js", "logique")
+    p = _file_prompt(spec, "DESIGN", ["app.js"])
+    assert "USER STORIES" not in p
