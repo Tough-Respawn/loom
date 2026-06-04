@@ -39,10 +39,9 @@ class Conversation:
     def to_messages(self) -> list[dict]:
         return list(self.messages)
 
-    def save(self, path: str | Path) -> None:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
+    def to_dict(self) -> dict:
+        """État sérialisable (réutilisé par Session pour s'inclure sans dupliquer)."""
+        return {
             "system_prompt": self.system_prompt,
             "messages": self.messages,
             "active_skills": self.active_skills,
@@ -50,8 +49,26 @@ class Conversation:
             "model": self.model,
             "thinking": self.thinking,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict, default_system_prompt: str) -> "Conversation":
+        """Reconstruit depuis un dict tolérant aux anciens formats (clés absentes)."""
+        return cls(
+            system_prompt=data.get("system_prompt", default_system_prompt),
+            messages=list(data.get("messages", [])),
+            active_skills=list(data.get("active_skills", [])),
+            active_tools=list(data.get("active_tools", [])),
+            model=data.get("model", ""),
+            thinking=bool(data.get("thinking", True)),
+        )
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(
+            json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         os.replace(tmp, path)
 
     @classmethod
@@ -61,13 +78,6 @@ class Conversation:
             return cls(system_prompt=default_system_prompt)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return cls(
-                system_prompt=data.get("system_prompt", default_system_prompt),
-                messages=list(data.get("messages", [])),
-                active_skills=list(data.get("active_skills", [])),
-                active_tools=list(data.get("active_tools", [])),
-                model=data.get("model", ""),
-                thinking=bool(data.get("thinking", True)),
-            )
+            return cls.from_dict(data, default_system_prompt)
         except (json.JSONDecodeError, OSError):
             return cls(system_prompt=default_system_prompt)
