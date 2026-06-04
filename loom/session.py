@@ -113,9 +113,15 @@ def _now_iso() -> str:
 class SessionStore:
     """Persiste les sessions sous root/<id>/session.json + un pointeur `active`."""
 
-    def __init__(self, root, default_system_prompt: str) -> None:
+    def __init__(
+        self, root, default_system_prompt: str, default_tools: list[str] | None = None
+    ) -> None:
         self.root = Path(root)
         self.default_system_prompt = default_system_prompt
+        # Outils armés sur CHAQUE session neuve. Sans ça, la conversation d'une session
+        # part avec active_tools=[] -> le chat tourne sans `tools=` -> le modèle, sommé
+        # d'agir, crache ses appels d'outil en texte (`<|tool_call|>...`) faute d'interface.
+        self.default_tools = list(default_tools or [])
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _file(self, sid: str) -> Path:
@@ -132,6 +138,8 @@ class SessionStore:
             created_at=now,
             updated_at=now,
         )
+        if self.default_tools:
+            session.conversation.set_tools(self.default_tools)
         self.save(session)
         self.set_active(sid)  # créer une session la focalise
         return session
