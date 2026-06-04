@@ -11,6 +11,22 @@ def test_create_persists_and_lists(tmp_path):
     assert any(m.id == s.id and m.title == "Calc" for m in metas)
 
 
+def test_create_seeds_default_tools(tmp_path):
+    # Sans seeding, la session part avec active_tools=[] -> chat sans `tools=` -> le
+    # modèle crache ses appels d'outil en texte. On vérifie que les outils sont armés.
+    store = SessionStore(
+        tmp_path, default_system_prompt="sys", default_tools=["read_file"]
+    )
+    s = store.create(workspace=".")
+    assert s.conversation.active_tools == ["read_file"]
+    assert store.load(s.id).conversation.active_tools == ["read_file"]
+
+
+def test_create_without_default_tools_stays_empty(tmp_path):
+    store = SessionStore(tmp_path, default_system_prompt="sys")
+    assert store.create(workspace=".").conversation.active_tools == []
+
+
 def test_conversation_roundtrip_through_session(tmp_path):
     store = SessionStore(tmp_path, default_system_prompt="sys")
     s = store.create(workspace=".")
