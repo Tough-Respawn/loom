@@ -715,3 +715,88 @@ def test_pick_folder_cancel_returns_empty(tmp_path, monkeypatch):
     app = _make_classify(tmp_path)
     resp = app.test_client().post("/pick-folder")
     assert resp.get_json()["path"] == ""
+
+
+# ---- sessions first-class (session_store fourni) ----
+
+
+def _make_session_app(tmp_path, client=None, **kw):
+    from loom.session import SessionStore
+
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    store = SessionStore(tmp_path / "sessions", default_system_prompt="sys")
+    conv = Conversation(system_prompt="sys", model="gemma")  # ignoré en mode session
+    app = create_app(
+        conv,
+        client or FakeClient([("content", "ok")]),
+        tmp_path / "c.json",
+        skills,
+        context_budget=100000,
+        interrupt_wait=0.3,
+        models=["gemma"],
+        session_store=store,
+        **kw,
+    )
+    return app, store
+
+
+def test_session_chat_persists_to_active_session(tmp_path):
+    app, store = _make_session_app(tmp_path, client=FakeClient([("content", "Salut")]))
+    app.test_client().post("/chat", data={"message": "coucou"}).get_data()
+    active = store.active()
+    assert active is not None
+    roles = [(m["role"], m["content"]) for m in active.conversation.messages]
+    assert ("user", "coucou") in roles
+    assert ("assistant", "Salut") in roles
+
+
+def test_sessions_list_new_and_activate(tmp_path):
+    app, store = _make_session_app(tmp_path)
+    c = app.test_client()
+    first = c.get("/sessions").get_json()
+    assert first["active"]  # une session active existe d'office
+    created = c.post(
+        "/session/new", data={"workspace": "C:/proj", "title": "Calc"}
+    ).get_json()
+    listing = c.get("/sessions").get_json()
+    assert listing["active"] == created["id"]  # la nouvelle est active
+    assert any(
+        s["id"] == created["id"] and s["title"] == "Calc" for s in listing["sessions"]
+    )
+    # bascule vers la première
+    c.post("/session/activate", data={"id": first["active"]})
+    assert c.get("/sessions").get_json()["active"] == first["active"]
+
+
+def test_session_delete_removes_and_keeps_an_active(tmp_path):
+    app, store = _make_session_app(tmp_path)
+    c = app.test_client()
+    created = c.post("/session/new", data={"title": "jetable"}).get_json()
+    c.post("/session/delete", data={"id": created["id"]})
+    listing = c.get("/sessions").get_json()
+    assert all(s["id"] != created["id"] for s in listing["sessions"])
+    assert listing["active"]  # il reste toujours une session active
+
+
+def test_run_records_into_active_session(tmp_path):
+    from loom.agents import Agent
+
+    class MultiClient:
+        def stream_chat(
+            self, messages, system_prompt, max_tokens=2048, model=None, thinking=True
+        ):
+            yield ("content", f"out-{model}")
+
+    agents = [Agent(id="a", role="plan", model="m1", system_prompt="p")]
+    app, store = _make_session_app(
+        tmp_path, client=MultiClient(), agents=agents, pipeline=["a"]
+    )
+    app.test_client().post(
+        "/run", data={"task": "fais X", "mode": "pipeline"}
+    ).get_data()
+    active = store.active()
+    assert len(active.runs) == 1
+    assert active.runs[0].task == "fais X"
+    # une trace du run est aussi dans la conversation (le modèle reprend le fil)
+    assert any("fais X" in str(m["content"]) for m in active.conversation.messages)

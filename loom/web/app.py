@@ -17,6 +17,7 @@ from flask import Flask, Response, render_template, request
 from loom import context
 from loom.agents import resolve_agents
 from loom.orchestrator import run_build, run_pipeline
+from loom.session import RunRecord
 from loom.skills import compose_system_prompt, list_skills, load_skill
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -70,6 +71,7 @@ def create_app(
     workspace_dir=".",
     server_context=8192,
     n_parallel=1,
+    session_store=None,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -94,6 +96,30 @@ def create_app(
     app.config["_chat_lock"] = chat_lock
     app.config["_cancel_event"] = cancel_event
     app.config["_pending"] = pending
+
+    # Session active : abstraction unique pour chat ET build. Mode session
+    # (session_store fourni) -> conversation/persistance pointent sur la session active
+    # et le build y journalise ses runs (le modèle reprend le fil au tour suivant).
+    # Mode legacy (absent) -> une seule conversation persistée dans history_path (tests).
+    _cur: dict = {"session": None}
+    app.config["_session_holder"] = _cur
+
+    def _session():
+        if _cur["session"] is None:
+            _cur["session"] = session_store.active() or session_store.create(
+                workspace=workspace_dir
+            )
+        return _cur["session"]
+
+    def _ctx():
+        """Renvoie (conversation, save) : la conversation active et sa persistance.
+
+        Un seul point de vérité : les endpoints n'ont pas à savoir s'ils sont en mode
+        session ou legacy, ils manipulent `conv` et appellent `save()`."""
+        if session_store is not None:
+            sess = _session()
+            return sess.conversation, (lambda: session_store.save(sess))
+        return conversation, (lambda: conversation.save(history_path))
 
     def _confirm(tool_id: str, name: str, args: dict) -> bool:
         """Bloque jusqu'à la décision UI (OK/Refuser). Interruptible et borné.
@@ -144,9 +170,28 @@ def create_app(
                 yield _sse("done")
                 return
 
-    def _run_worker(rid: int, gen):
+    def _run_record(task: str, events: list) -> RunRecord:
+        """Résume un run (fichiers écrits + verdict du vérificateur) pour la session."""
+        files: list[str] = []
+        ok = False
+        for ev in events:
+            if (
+                ev.get("type") == "tool_result"
+                and ev.get("ok")
+                and ev.get("name") in ("write_file", "edit_file")
+                and ev.get("path")
+                and ev["path"] not in files
+            ):
+                files.append(ev["path"])
+            if ev.get("type") == "verify":
+                ok = bool(ev.get("ok"))
+        summary = f"{len(files)} fichier(s) généré(s)."
+        return RunRecord(task=task, summary=summary, files=files, ok=ok)
+
+    def _run_worker(rid: int, gen, sess=None, task: str = ""):
         """Consomme le générateur de run EN ARRIÈRE-PLAN (indépendant du client) et pousse
-        chaque event dans le buffer. Libère chat_lock à la fin (run_done/erreur)."""
+        chaque event dans le buffer. Libère chat_lock à la fin (run_done/erreur). En mode
+        session, journalise un RunRecord (le modèle reprend le fil au tour suivant)."""
         try:
             for ev in gen:
                 if cancel_event.is_set():
@@ -162,6 +207,14 @@ def create_app(
                     run_buffer["events"].append({"type": "error", "message": str(exc)})
                     run_cv.notify_all()
         finally:
+            if sess is not None and session_store is not None:
+                try:
+                    with run_cv:
+                        events = list(run_buffer["events"])
+                    sess.add_run(_run_record(task, events))
+                    session_store.save(sess)
+                except Exception:  # noqa: BLE001 - journaliser ne doit pas casser le run
+                    pass
             with run_cv:
                 if run_buffer["id"] == rid:
                     run_buffer["done"] = True
@@ -169,24 +222,38 @@ def create_app(
             chat_lock.release()
 
     def _index_context() -> dict:
+        conv, _ = _ctx()
+        # En mode session, le workspace et la liste des sessions viennent de la session
+        # active ; en legacy, du paramètre et liste vide (l'UI sessions reste inerte).
+        if session_store is not None:
+            sess = _session()
+            ws = sess.workspace
+            sessions = [
+                {"id": m.id, "title": m.title, "workspace": m.workspace}
+                for m in session_store.list()
+            ]
+            active_id = sess.id
+        else:
+            ws = workspace_dir
+            sessions = []
+            active_id = ""
         return {
-            "messages": conversation.messages,
+            "messages": conv.messages,
             "skills": list_skills(skills_dir),
-            "active_skills": conversation.active_skills,
+            "active_skills": conv.active_skills,
             "models": models,
-            "current_model": conversation.model,
-            "thinking": conversation.thinking,
+            "current_model": conv.model,
+            "thinking": conv.thinking,
             "available_tools": available_tools,
-            "active_tools": conversation.active_tools,
+            "active_tools": conv.active_tools,
             "pipeline": resolve_agents(agents, pipeline),
-            "workspace_dir": workspace_dir,
+            "workspace_dir": ws,
+            "sessions": sessions,
+            "active_session": active_id,
             # État initial pour l'hydratation côté client (Preact). On échappe '<'
             # pour ne pas pouvoir fermer la balise <script> depuis le contenu.
             "init_json": json.dumps(
-                {
-                    "messages": conversation.messages,
-                    "thinking": conversation.thinking,
-                },
+                {"messages": conv.messages, "thinking": conv.thinking},
                 ensure_ascii=False,
             ).replace("<", "\\u003c"),
         }
@@ -197,8 +264,9 @@ def create_app(
 
     @app.post("/reset")
     def reset() -> str:
-        conversation.reset()
-        conversation.save(history_path)
+        conv, save = _ctx()
+        conv.reset()
+        save()
         return render_template("index.html", **_index_context())
 
     @app.post("/chat")
@@ -214,22 +282,21 @@ def create_app(
                 return Response("occupé : un échange est déjà en cours", status=429)
         # On tient le verrou : repartir d'un signal d'annulation propre.
         cancel_event.clear()
+        conv, save = _ctx()
 
         try:
             content = _build_user_content(message, request.files.get("image"))
-            conversation.add("user", content)
-            conversation.save(history_path)
+            conv.add("user", content)
+            save()
 
             # Gestion du contexte : résumé auto si trop long
-            if context.summarize(conversation, client, context_budget, keep_recent):
-                conversation.save(history_path)
+            if context.summarize(conv, client, context_budget, keep_recent):
+                save()
 
             active = [
-                s
-                for s in (load_skill(skills_dir, n) for n in conversation.active_skills)
-                if s
+                s for s in (load_skill(skills_dir, n) for n in conv.active_skills) if s
             ]
-            system_prompt = compose_system_prompt(conversation.system_prompt, active)
+            system_prompt = compose_system_prompt(conv.system_prompt, active)
         except ValueError as exc:
             chat_lock.release()
             return Response(str(exc), status=400)
@@ -250,35 +317,33 @@ def create_app(
                 if saved or not answer:
                     return
                 saved = True
-                conversation.add("assistant", answer)
-                conversation.save(history_path)
+                conv.add("assistant", answer)
+                save()
 
             # Registre construit selon les outils activés pour CETTE conversation
             # (toggles UI). À défaut de factory, registre statique (compat tests).
             registry = (
-                tool_factory(conversation.active_tools)
-                if tool_factory
-                else tool_registry
+                tool_factory(conv.active_tools) if tool_factory else tool_registry
             )
             use_tools = registry is not None and len(registry)
             if use_tools:
                 source = client.stream_chat_tools(
-                    conversation.to_messages(),
+                    conv.to_messages(),
                     system_prompt,
                     max_tokens,
-                    model=conversation.model or None,
+                    model=conv.model or None,
                     registry=registry,
-                    thinking=conversation.thinking,
+                    thinking=conv.thinking,
                     permission=permission,
                     confirm=_confirm,
                 )
             else:
                 source = client.stream_chat(
-                    conversation.to_messages(),
+                    conv.to_messages(),
                     system_prompt,
                     max_tokens,
-                    model=conversation.model or None,
-                    thinking=conversation.thinking,
+                    model=conv.model or None,
+                    thinking=conv.thinking,
                 )
 
             interrupted = False
@@ -330,9 +395,12 @@ def create_app(
         task = (request.form.get("task") or "").strip()
         if not task or len(task) > 5000:
             return Response("tâche invalide", status=400)
-        # Dossier cible (workspace) pour CE run : champ UI, sinon défaut config.
-        # Les agents écrivent des chemins RELATIFS, résolus sous ce dossier.
-        target = (request.form.get("workspace") or "").strip() or workspace_dir
+        # Dossier cible (workspace) pour CE run : champ UI, sinon le workspace de la
+        # session active (mode session), sinon le défaut config. Les agents écrivent
+        # des chemins RELATIFS, résolus sous ce dossier.
+        sess = _session() if session_store is not None else None
+        default_ws = sess.workspace if sess is not None else workspace_dir
+        target = (request.form.get("workspace") or "").strip() or default_ws
         try:
             target = str(Path(target).expanduser().resolve())
             Path(target).mkdir(parents=True, exist_ok=True)
@@ -407,13 +475,20 @@ def create_app(
                 n_parallel=n_parallel,
                 semantic_review=semantic_review,
             )
+        # En mode session, mémorise le dossier choisi sur la session (les prochains runs
+        # le reprennent par défaut) et journalise le run sous cette session.
+        if sess is not None:
+            sess.workspace = target
+            session_store.save(sess)
         # Démarre le run en arrière-plan (survit au reload) et renvoie son flux live.
         with run_cv:
             run_buffer["id"] += 1
             rid = run_buffer["id"]
             run_buffer["events"] = [{"type": "run_info", "workspace": target}]
             run_buffer["done"] = False
-        threading.Thread(target=_run_worker, args=(rid, gen), daemon=True).start()
+        threading.Thread(
+            target=_run_worker, args=(rid, gen, sess, task), daemon=True
+        ).start()
         return Response(_tail(rid, 0), mimetype="text/event-stream")
 
     @app.get("/run/active")
@@ -436,12 +511,12 @@ def create_app(
 
     @app.post("/skills")
     def skills_update():
-        selected = request.form.getlist("skill")
-        conversation.set_skills(selected)
-        conversation.save(history_path)
+        conv, save = _ctx()
+        conv.set_skills(request.form.getlist("skill"))
+        save()
         skills = list_skills(skills_dir)
         return render_template(
-            "_skills.html", skills=skills, active_skills=conversation.active_skills
+            "_skills.html", skills=skills, active_skills=conv.active_skills
         )
 
     @app.post("/tool_decision")
@@ -454,19 +529,21 @@ def create_app(
 
     @app.post("/tools")
     def tools_update():
-        conversation.set_tools(request.form.getlist("tool"))
-        conversation.save(history_path)
+        conv, save = _ctx()
+        conv.set_tools(request.form.getlist("tool"))
+        save()
         return render_template(
             "_tools.html",
             available_tools=available_tools,
-            active_tools=conversation.active_tools,
+            active_tools=conv.active_tools,
         )
 
     @app.post("/thinking")
     def thinking_update():
-        conversation.set_thinking(request.form.get("thinking") == "1")
-        conversation.save(history_path)
-        return Response(str(int(conversation.thinking)), mimetype="text/plain")
+        conv, save = _ctx()
+        conv.set_thinking(request.form.get("thinking") == "1")
+        save()
+        return Response(str(int(conv.thinking)), mimetype="text/plain")
 
     @app.route("/classify", methods=["POST"])
     def classify():
@@ -512,10 +589,58 @@ def create_app(
 
     @app.post("/model")
     def model_update():
-        conversation.set_model(request.form.get("model", ""))
-        conversation.save(history_path)
-        return render_template(
-            "_models.html", models=models, current_model=conversation.model
-        )
+        conv, save = _ctx()
+        conv.set_model(request.form.get("model", ""))
+        save()
+        return render_template("_models.html", models=models, current_model=conv.model)
+
+    # --- Sessions : liste / nouvelle / bascule / suppression (mode session seulement) ---
+
+    @app.get("/sessions")
+    def sessions_list():
+        if session_store is None:
+            return {"sessions": [], "active": ""}
+        active = _session().id
+        return {
+            "sessions": [
+                {"id": m.id, "title": m.title, "workspace": m.workspace}
+                for m in session_store.list()
+            ],
+            "active": active,
+        }
+
+    @app.post("/session/new")
+    def session_new():
+        if session_store is None:
+            return Response("sessions désactivées", status=404)
+        ws = (request.form.get("workspace") or "").strip() or workspace_dir
+        title = (request.form.get("title") or "").strip()
+        sess = session_store.create(workspace=ws, title=title)
+        _cur["session"] = sess
+        return {"id": sess.id, "title": sess.title, "workspace": sess.workspace}
+
+    @app.post("/session/activate")
+    def session_activate():
+        if session_store is None:
+            return Response("sessions désactivées", status=404)
+        sid = (request.form.get("id") or "").strip()
+        loaded = session_store.load(sid)
+        if loaded is None:
+            return Response("session inconnue", status=404)
+        session_store.set_active(sid)
+        _cur["session"] = loaded
+        return {"id": loaded.id}
+
+    @app.post("/session/delete")
+    def session_delete():
+        if session_store is None:
+            return Response("sessions désactivées", status=404)
+        sid = (request.form.get("id") or "").strip()
+        session_store.delete(sid)
+        # Si on supprime la session courante, on recharge l'active (ou on en crée une).
+        if _cur["session"] is not None and _cur["session"].id == sid:
+            _cur["session"] = None
+            _session()
+        return {"ok": True}
 
     return app
