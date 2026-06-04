@@ -429,15 +429,17 @@ def review_semantic(
     *,
     model: str | None,
     max_tokens: int = 1024,
+    acceptance: str = "",
 ) -> list:
     """Défauts SÉMANTIQUES (comportement), que le verify déterministe ne voit pas.
-    Renvoie list[Defect] (kind='semantic'). Robuste : [] si JSON invalide / aucun défaut
-    (cf. spec §7 — ne bloque jamais, alimente au plus une passe de fix)."""
+    `acceptance` (optionnel) : critères observables des US -> vérification ORIENTÉE
+    INTENTION (le code permet-il vraiment d'accomplir chaque critère ?). Renvoie
+    list[Defect] (kind='semantic'). Robuste : [] si JSON invalide / aucun défaut."""
     from loom.verify import Defect
 
     files_txt = "\n\n".join(f"----- {p} -----\n{c}" for p, c in current_files)
     raw = client.complete(
-        [{"role": "user", "content": review_prompt(design, files_txt)}],
+        [{"role": "user", "content": review_prompt(design, files_txt, acceptance)}],
         _REVIEW_SYS,
         max_tokens=max_tokens,
         model=model,
