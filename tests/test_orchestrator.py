@@ -870,6 +870,49 @@ def test_run_build_intent_review_drives_one_fix(tmp_path):
     )
 
 
+def test_run_build_streams_coder_output_per_file(tmp_path):
+    """Le CODEUR est visible : sa sortie est streamée en deltas, taggés par fichier
+    (events content agent=build avec un id), pas seulement un tool_result final."""
+    from loom.orchestrator import run_build
+    from loom.verify import VerifyReport
+
+    plan = '{"design": "x", "files": [{"path": "app.js", "role": "logique"}]}'
+
+    class StreamClient:
+        def stream_chat(
+            self, messages, system_prompt, max_tokens=2048, model=None, thinking=True
+        ):
+            if "architecte" in system_prompt.lower():  # phase PLAN
+                yield ("content", plan)
+            else:  # phase de génération de fichier : deltas
+                yield ("content", "// li")
+                yield ("content", "gne1\n")
+
+        def complete(self, messages, system_prompt, **kw):
+            return ""  # critique/décompose -> fallbacks robustes
+
+    def write(path, content):
+        return str(tmp_path / path)
+
+    events, _run = _drive(
+        run_build(
+            "fais un truc",
+            StreamClient(),
+            model="m",
+            write=write,
+            workspace=str(tmp_path),
+            verifier=lambda paths: VerifyReport(ok=True),
+        )
+    )
+    coder = [
+        e
+        for e in events
+        if e["type"] == "content" and e.get("agent") == "build" and e.get("id")
+    ]
+    assert len(coder) >= 2  # streamé en deltas
+    assert "gne1" in "".join(e["text"] for e in coder)
+
+
 def test_run_build_distills_and_stores_lesson(tmp_path):
     """Auto-amélioration : un défaut au premier jet -> une leçon est distillée, persistée
     dans le LessonStore, et un event "learn" est émis (Loom s'augmente de ses erreurs)."""

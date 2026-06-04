@@ -239,24 +239,34 @@ def generate_one(
     file_char_cap: int | None = None,
     stories_text: str = "",
     lessons_text: str = "",
+    on_token=None,
 ) -> tuple[str, str]:
-    """Génère UN fichier (appel isolé, non-streamé, thinking off). Brique unitaire
-    réutilisée par le batch ET par l'orchestrateur (events live par fichier).
-    `file_char_cap` (optionnel) borne le `design` injecté (anti-overflow KV en fan-out).
-    `stories_text` : les US qui touchent ce fichier. `lessons_text` : leçons apprises."""
+    """Génère UN fichier (appel isolé, thinking off). Brique unitaire réutilisée par le
+    batch ET par l'orchestrateur (events live par fichier). `file_char_cap` borne le
+    `design` injecté. `stories_text`/`lessons_text` guident le dev. `on_token(kind, text)`
+    (optionnel) : si fourni ET que le client streame, relaie la SORTIE en direct (codeur
+    visible) ; sinon appel non-streamé classique."""
+    messages = [
+        {
+            "role": "user",
+            "content": _file_prompt(
+                spec, design, all_paths, file_char_cap, stories_text, lessons_text
+            ),
+        }
+    ]
+    if on_token is not None and hasattr(client, "stream_chat"):
+        acc = ""
+        for kind, payload in client.stream_chat(
+            messages, _GEN_SYS, max_tokens, model=model, thinking=False
+        ):
+            if kind == "content":
+                acc += payload
+                on_token("content", payload)
+            elif kind == "reasoning":
+                on_token("reasoning", payload)
+        return spec.path, extract_code(acc)
     raw = client.complete(
-        [
-            {
-                "role": "user",
-                "content": _file_prompt(
-                    spec, design, all_paths, file_char_cap, stories_text, lessons_text
-                ),
-            }
-        ],
-        _GEN_SYS,
-        max_tokens=max_tokens,
-        model=model,
-        thinking=False,
+        messages, _GEN_SYS, max_tokens=max_tokens, model=model, thinking=False
     )
     return spec.path, extract_code(raw)
 
