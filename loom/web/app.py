@@ -10,14 +10,10 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 
 from flask import Flask, Response, render_template, request
 
 from loom import context
-from loom.agents import resolve_agents
-from loom.orchestrator import run_build, run_pipeline
-from loom.session import RunRecord
 from loom.skills import compose_system_prompt, list_skills, load_skill
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -64,15 +60,8 @@ def create_app(
     available_tools=None,
     permission=None,
     confirm_timeout=300.0,
-    agents=None,
-    pipeline=None,
-    max_revisions=1,
-    verifier=None,
     workspace_dir=".",
-    server_context=8192,
-    n_parallel=1,
     session_store=None,
-    lesson_store=None,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -84,8 +73,6 @@ def create_app(
     workspace_dir = str(workspace_dir)
     models = list(models or [])
     available_tools = list(available_tools or [])
-    agents = list(agents or [])
-    pipeline = list(pipeline or [])
     chat_lock = threading.Lock()
     # Signal d'annulation : une nouvelle soumission le pose pour stopper net la
     # génération en cours (la boucle le vérifie à chaque token). Plus fiable que
@@ -139,89 +126,6 @@ def create_app(
         finally:
             pending.pop(tool_id, None)
 
-    # Run exécuté EN TÂCHE DE FOND (thread) qui pousse ses events dans un buffer. Le
-    # client se (re)branche dessus via /run/replay : un reload ne perd plus le run et le
-    # voit continuer en direct. Un seul run à la fois (chat_lock sérialise déjà).
-    run_buffer = {"id": 0, "events": [], "done": True}
-    run_cv = threading.Condition()
-
-    def _tail(rid: int, from_idx: int = 0):
-        """Streame les events du run `rid` depuis `from_idx`, puis suit les nouveaux en
-        direct jusqu'à la fin. Réutilisé par /run (live) ET /run/replay (reload)."""
-        i = from_idx
-        while True:
-            with run_cv:
-                while (
-                    i >= len(run_buffer["events"])
-                    and not run_buffer["done"]
-                    and run_buffer["id"] == rid
-                ):
-                    run_cv.wait(timeout=1.0)
-                if run_buffer["id"] != rid:
-                    return  # un run plus récent a pris la place
-                evs = run_buffer["events"][i:]
-                i = len(run_buffer["events"])
-                done = run_buffer["done"]
-            for ev in evs:
-                if ev["type"] != "run_done":
-                    yield _sse(
-                        ev["type"], **{k: v for k, v in ev.items() if k != "type"}
-                    )
-            if done:
-                yield _sse("done")
-                return
-
-    def _run_record(task: str, events: list) -> RunRecord:
-        """Résume un run (fichiers écrits + verdict du vérificateur) pour la session."""
-        files: list[str] = []
-        ok = False
-        for ev in events:
-            if (
-                ev.get("type") == "tool_result"
-                and ev.get("ok")
-                and ev.get("name") in ("write_file", "edit_file")
-                and ev.get("path")
-                and ev["path"] not in files
-            ):
-                files.append(ev["path"])
-            if ev.get("type") == "verify":
-                ok = bool(ev.get("ok"))
-        summary = f"{len(files)} fichier(s) généré(s)."
-        return RunRecord(task=task, summary=summary, files=files, ok=ok)
-
-    def _run_worker(rid: int, gen, sess=None, task: str = ""):
-        """Consomme le générateur de run EN ARRIÈRE-PLAN (indépendant du client) et pousse
-        chaque event dans le buffer. Libère chat_lock à la fin (run_done/erreur). En mode
-        session, journalise un RunRecord (le modèle reprend le fil au tour suivant)."""
-        try:
-            for ev in gen:
-                if cancel_event.is_set():
-                    break
-                with run_cv:
-                    if run_buffer["id"] != rid:
-                        return
-                    run_buffer["events"].append(ev)
-                    run_cv.notify_all()
-        except Exception as exc:  # noqa: BLE001 - relaie au client via le buffer
-            with run_cv:
-                if run_buffer["id"] == rid:
-                    run_buffer["events"].append({"type": "error", "message": str(exc)})
-                    run_cv.notify_all()
-        finally:
-            if sess is not None and session_store is not None:
-                try:
-                    with run_cv:
-                        events = list(run_buffer["events"])
-                    sess.add_run(_run_record(task, events))
-                    session_store.save(sess)
-                except Exception:  # noqa: BLE001 - journaliser ne doit pas casser le run
-                    pass
-            with run_cv:
-                if run_buffer["id"] == rid:
-                    run_buffer["done"] = True
-                    run_cv.notify_all()
-            chat_lock.release()
-
     def _index_context() -> dict:
         conv, _ = _ctx()
         # En mode session, le workspace et la liste des sessions viennent de la session
@@ -247,7 +151,6 @@ def create_app(
             "thinking": conv.thinking,
             "available_tools": available_tools,
             "active_tools": conv.active_tools,
-            "pipeline": resolve_agents(agents, pipeline),
             "workspace_dir": ws,
             "sessions": sessions,
             "active_session": active_id,
@@ -391,126 +294,6 @@ def create_app(
 
         return Response(generate(), mimetype="text/event-stream")
 
-    @app.post("/run")
-    def run():
-        task = (request.form.get("task") or "").strip()
-        if not task or len(task) > 5000:
-            return Response("tâche invalide", status=400)
-        # Dossier cible (workspace) pour CE run : champ UI, sinon le workspace de la
-        # session active (mode session), sinon le défaut config. Les agents écrivent
-        # des chemins RELATIFS, résolus sous ce dossier.
-        sess = _session() if session_store is not None else None
-        default_ws = sess.workspace if sess is not None else workspace_dir
-        target = (request.form.get("workspace") or "").strip() or default_ws
-        try:
-            target = str(Path(target).expanduser().resolve())
-            Path(target).mkdir(parents=True, exist_ok=True)
-        except (OSError, ValueError) as exc:
-            return Response(f"dossier cible invalide : {exc}", status=400)
-        if not chat_lock.acquire(blocking=False):
-            cancel_event.set()
-            if not chat_lock.acquire(timeout=interrupt_wait):
-                return Response("occupé : un échange est déjà en cours", status=429)
-        cancel_event.clear()
-
-        selected = resolve_agents(agents, pipeline)
-        # mode="build" (défaut) = fan-out (plan détaillé + génération parallèle isolée :
-        # pas d'overflow de tool-call, GPU batché). mode="pipeline" = ancien tool-loop.
-        mode = (request.form.get("mode") or "build").strip()
-        semantic_review = (request.form.get("semantic") or "").strip() in (
-            "1",
-            "true",
-            "on",
-            "yes",
-        )
-        build_model = (selected[0].model if selected else None) or (
-            models[0] if models else None
-        )
-        # Closures par-run : lient les outils ET le vérificateur au dossier cible
-        # choisi (le tool_factory/verifier de base acceptent un workspace optionnel).
-        run_factory = (
-            (lambda active: tool_factory(active, workspace=target))
-            if tool_factory
-            else None
-        )
-        run_verifier = (
-            (lambda paths: verifier(paths, workspace=target)) if verifier else None
-        )
-
-        def _write_to_target(path, content):
-            # Écriture atomique bornée au dossier cible, renvoie le chemin absolu (le
-            # vérificateur déterministe tourne ensuite sur l'ensemble des fichiers écrits).
-            from loom.tools.base import _resolve_in_root
-            from loom.tools.fs import _atomic_write
-
-            p = _resolve_in_root(Path(target), path)
-            _atomic_write(p, content)
-            return str(p)
-
-        if mode == "pipeline":
-            if not selected:
-                chat_lock.release()
-                return Response("aucun agent configuré", status=400)
-            gen = run_pipeline(
-                selected,
-                task,
-                client,
-                skills_dir,
-                max_tokens=max_tokens,
-                tool_factory=run_factory,
-                permission=permission,
-                confirm=_confirm,
-                max_revisions=max_revisions,
-                verifier=run_verifier,
-            )
-        else:
-            gen = run_build(
-                task,
-                client,
-                model=build_model,
-                write=_write_to_target,
-                workspace=target,
-                verifier=run_verifier,
-                max_tokens=max_tokens,
-                context=server_context,
-                n_parallel=n_parallel,
-                semantic_review=semantic_review,
-                lesson_store=lesson_store,
-            )
-        # En mode session, mémorise le dossier choisi sur la session (les prochains runs
-        # le reprennent par défaut) et journalise le run sous cette session.
-        if sess is not None:
-            sess.workspace = target
-            session_store.save(sess)
-        # Démarre le run en arrière-plan (survit au reload) et renvoie son flux live.
-        with run_cv:
-            run_buffer["id"] += 1
-            rid = run_buffer["id"]
-            run_buffer["events"] = [{"type": "run_info", "workspace": target}]
-            run_buffer["done"] = False
-        threading.Thread(
-            target=_run_worker, args=(rid, gen, sess, task), daemon=True
-        ).start()
-        return Response(_tail(rid, 0), mimetype="text/event-stream")
-
-    @app.get("/run/active")
-    def run_active():
-        with run_cv:
-            return {
-                "id": run_buffer["id"],
-                "running": not run_buffer["done"],
-                "has": len(run_buffer["events"]) > 0,
-            }
-
-    @app.get("/run/replay")
-    def run_replay():
-        with run_cv:
-            rid = run_buffer["id"]
-            has = len(run_buffer["events"]) > 0
-        if not has:
-            return Response(_sse("done"), mimetype="text/event-stream")
-        return Response(_tail(rid, 0), mimetype="text/event-stream")
-
     @app.post("/skills")
     def skills_update():
         conv, save = _ctx()
@@ -546,23 +329,6 @@ def create_app(
         conv.set_thinking(request.form.get("thinking") == "1")
         save()
         return Response(str(int(conv.thinking)), mimetype="text/plain")
-
-    @app.route("/classify", methods=["POST"])
-    def classify():
-        message = (request.form.get("message") or "").strip()
-        if not message:
-            return {"mode": "chat"}
-        if not chat_lock.acquire(blocking=False):
-            return {"mode": "chat"}  # occupé -> défaut sûr
-        try:
-            from loom.classify import classify_intent
-
-            mode = classify_intent(
-                client, message, model=(models[0] if models else None)
-            )
-        finally:
-            chat_lock.release()
-        return {"mode": mode}
 
     @app.route("/pick-folder", methods=["POST"])
     def pick_folder():

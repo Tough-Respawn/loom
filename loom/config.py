@@ -7,7 +7,6 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from loom.agents import Agent
 from loom.permissions import PermissionConfig, parse_permissions
 from loom.prompts import CHAT_SYSTEM
 from loom.tools.web import WebSearchConfig
@@ -47,10 +46,7 @@ class ChatConfig:
     max_retries: int = 6
     context_token_budget: int = 3000
     keep_recent_messages: int = 6
-    # Multi-agent : nombre max de passes review->fix (le développeur repasse tant
-    # que le relecteur bloque, borné). Plus haut => récupère plus de fichiers manquants.
-    max_revisions: int = 1
-    # Outils (boucle tool-use). enabled vide => chat classique, aucun outil exposé.
+    # Outils (boucle tool-use). enabled vide => aucun outil exposé.
     tools_enabled: list[str] = field(default_factory=list)
     workspace_dir: str = "."
     read_file_max_bytes: int = 200_000
@@ -87,20 +83,12 @@ class RuntimeConfig:
     # concurrence/ses tailles → pas de débordement du pool KV partagé.
     n_parallel: int = 4
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
-    agents: list[Agent] = field(default_factory=list)
-    default_pipeline: list[str] = field(default_factory=list)
 
     def model_by_id(self, model_id: str) -> ModelConfig:
         for m in self.models:
             if m.id == model_id:
                 return m
         return self.models[0]
-
-    def agent_by_id(self, agent_id: str) -> Agent | None:
-        for a in self.agents:
-            if a.id == agent_id:
-                return a
-        return None
 
     @property
     def model(self) -> ModelConfig:
@@ -117,20 +105,6 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         mmproj_filename=d.get("mmproj_filename", ""),
         id=d.get("id", "") or default_id or d["filename"],
         n_gpu_layers=d.get("n_gpu_layers"),
-    )
-
-
-def _parse_agent(d: dict) -> Agent:
-    """Construit un Agent depuis une table TOML [[agents]]."""
-    return Agent(
-        id=d["id"],
-        role=d["role"],
-        model=d["model"],
-        system_prompt=d.get("system_prompt", ""),
-        skills=list(d.get("skills", [])),
-        tools=list(d.get("tools", [])),
-        max_tokens=d.get("max_tokens"),
-        thinking=bool(d.get("thinking", True)),
     )
 
 
@@ -183,7 +157,6 @@ def load_config(
         max_retries=int(ch.get("max_retries", 6)),
         context_token_budget=int(ch.get("context_token_budget", 3000)),
         keep_recent_messages=int(ch.get("keep_recent_messages", 6)),
-        max_revisions=int(ch.get("max_revisions", 1)),
         tools_enabled=list(tl.get("enabled", [])),
         workspace_dir=tl.get("workspace_dir", "."),
         read_file_max_bytes=int(tl.get("read_file_max_bytes", 200_000)),
@@ -194,8 +167,6 @@ def load_config(
     )
     models = [_parse_model(rm) for rm in data["models"]]
     default_model = ch.get("default_model") or models[0].id
-    agents = [_parse_agent(a) for a in data.get("agents", [])]
-    default_pipeline = list(ch.get("default_pipeline", []))
     return RuntimeConfig(
         models=models,
         default_model=default_model,
@@ -208,6 +179,4 @@ def load_config(
         override_threads=o.get("threads"),
         chat=chat,
         permissions=parse_permissions(data),
-        agents=agents,
-        default_pipeline=default_pipeline,
     )

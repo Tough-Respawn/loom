@@ -39,19 +39,6 @@ def make_write_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
             raise ToolError(f"contenu trop volumineux (> {max_bytes} octets)")
         path = _resolve_in_root(root, rel)
         _atomic_write(path, content)
-        # P1.3 : check d'intégrité post-write — une troncature/erreur de syntaxe
-        # devient un défaut exploitable (ok=False) au lieu d'un faux succès.
-        from loom.verify import verify_syntax_file
-
-        report = verify_syntax_file(str(path))
-        if not report.ok:
-            details = "; ".join(
-                f"{d.location}: {d.evidence}" for d in report.defects[:3]
-            )
-            return (
-                f"erreur: {rel} écrit mais INTÉGRITÉ invalide ({details}). "
-                "Réécris le fichier, complet et correct."
-            )
         return f"écrit : {rel} ({len(content)} caractères)"
 
     return ToolSpec(
