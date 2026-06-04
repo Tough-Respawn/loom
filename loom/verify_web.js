@@ -23,7 +23,17 @@ function emit() {
   process.exit(0);
 }
 
+// Bruit d'ENVIRONNEMENT jsdom (pas des bugs de la page) : jsdom n'implémente pas la
+// navigation entre documents (un clic sur <a href="autre.html">), ni le chargement réel
+// de certaines ressources. Ces messages ne disent RIEN sur la justesse du code -> on les
+// ignore pour ne pas faire échouer à tort un site multi-pages qui fonctionne.
+function isEnvNoise(s) {
+  s = String(s);
+  return s.includes("Not implemented:") || s.includes("Could not load");
+}
+
 function addRuntime(evidence) {
+  if (isEnvNoise(evidence)) return;
   defects.push({
     location: path.basename(htmlPath || "page"),
     kind: "runtime",
@@ -74,14 +84,49 @@ function displaySig(doc) {
   return s;
 }
 
+function isNavLink(a) {
+  // Lien de NAVIGATION (vers une autre page / externe) : cliquer dessus ne teste pas une
+  // interactivité de la page, et jsdom lèverait un faux 'Not implemented: navigation'.
+  const h = (a.getAttribute("href") || "").trim();
+  if (!h || h === "#") return true;
+  return /^https?:|^\/\//.test(h) || /\.html?($|[?#])/i.test(h);
+}
+
 function interactiveEls(doc) {
   // Tout ce qu'un utilisateur peut actionner — AUCUNE hypothèse de domaine (pas de #board).
-  return Array.from(
+  const els = Array.from(
     doc.querySelectorAll(
       "button, [data-action], [data-digit], [data-operator], [data-key], " +
-        "[data-index], [data-cell], .cell, [role='button'], a[href]",
+        "[data-index], [data-cell], .cell, [role='button']",
     ),
   );
+  // Les <a> ne comptent QUE s'ils agissent dans la page (href='#...'), pas la navigation.
+  doc.querySelectorAll("a[href]").forEach((a) => {
+    if (!isNavLink(a)) els.push(a);
+  });
+  return els;
+}
+
+function checkLocalRefs(doc) {
+  // Vérif DÉTERMINISTE (pas via le loader jsdom, peu fiable) : tout asset LOCAL référencé
+  // (feuille de style, script, image) doit exister sur le disque. Un <link href='style.css'>
+  // sans fichier = lien cassé réel (≠ bruit jsdom). C'est le défaut qu'on VEUT remonter.
+  const dir = path.dirname(htmlPath);
+  const seen = new Set();
+  doc.querySelectorAll("link[href], script[src], img[src]").forEach((el) => {
+    const u = (el.getAttribute("href") || el.getAttribute("src") || "").trim();
+    if (!u || /^(https?:|data:|blob:|\/\/|#|mailto:)/.test(u)) return;
+    const rel = u.split(/[?#]/)[0];
+    if (seen.has(rel)) return;
+    seen.add(rel);
+    if (!fs.existsSync(path.resolve(dir, rel))) {
+      defects.push({
+        location: path.basename(htmlPath),
+        kind: "asset",
+        evidence: `référence introuvable: ${rel} (lien/script/image vers un fichier absent)`,
+      });
+    }
+  });
 }
 
 function pressKey(doc, key, kc) {
@@ -102,6 +147,7 @@ function checkRenderAndExit() {
   if (done) return;
   const doc = win.document;
   const body = doc.body;
+  checkLocalRefs(doc); // liens/scripts/images locaux cassés (déterministe, hors jsdom)
   const buttons = body ? interactiveEls(doc) : [];
   const inputs = body
     ? Array.from(doc.querySelectorAll("input:not([type='hidden']), textarea, select"))
