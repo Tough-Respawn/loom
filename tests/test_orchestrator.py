@@ -1,7 +1,44 @@
 # tests/test_orchestrator.py
 from loom.agents import Agent
-from loom.orchestrator import run_pipeline
+from loom.orchestrator import _asset_role, _missing_assets, run_pipeline
 from loom.tools import ToolRegistry, ToolSpec
+from loom.verify import Defect, VerifyReport
+
+
+def test_missing_assets_extracts_unplanned_referenced_files():
+    report = VerifyReport(
+        ok=False,
+        defects=[
+            Defect(
+                "index.html", "asset", "référence introuvable: styles.css (lien absent)"
+            ),
+            Defect(
+                "jeu.html", "asset", "référence introuvable: style.css (lien absent)"
+            ),
+            Defect("app.js", "syntax", "SyntaxError"),  # ignoré (pas un asset)
+        ],
+    )
+    # index.html est déjà planifié -> on ne le re-matérialise pas ; les 2 CSS, oui.
+    missing = _missing_assets(report, ["index.html", "app.js"])
+    assert set(missing) == {"styles.css", "style.css"}
+
+
+def test_missing_assets_rejects_unsafe_and_external():
+    report = VerifyReport(
+        ok=False,
+        defects=[
+            Defect(
+                "p.html", "asset", "référence introuvable: ../secret.css (lien absent)"
+            ),
+            Defect("p.html", "asset", "référence introuvable: evil.exe (lien absent)"),
+        ],
+    )
+    assert _missing_assets(report, []) == []  # remontée de dossier + extension non sûre
+
+
+def test_asset_role_describes_css_as_shared_stylesheet():
+    assert "CSS" in _asset_role("style.css")
+    assert "global" in _asset_role("util.js").lower()
 
 
 def _drive(gen):

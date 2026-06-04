@@ -17,6 +17,6 @@ Le DESIGN doit contenir ces sections :
 4. INTERACTIONS : événements EXACTS. Clics (quel élément -> quel effet) ET/OU clavier (keydown sur document, quelle touche -> quel effet). Si l'app est TEMPORELLE, décris la BOUCLE : setInterval(fn, N ms), démarrée au chargement.
 5. RÈGLES + SNIPPETS : la logique clé de la demande, avec des snippets de code JS pour les parties délicates.
 
-Dans ===FILES===, liste TOUS les fichiers (index.html, le CSS, le(s) JS). index.html référence les autres par leur chemin EXACT.
+Dans ===FILES===, liste TOUS les fichiers (chaque page HTML, le CSS, le(s) JS). RÈGLE ABSOLUE : tout fichier référencé par une page (chaque `<link rel=stylesheet href>`, chaque `<script src>`, chaque image locale) DOIT figurer dans ===FILES===. Site multi-pages : prévois UNE SEULE feuille de style partagée, avec UN NOM UNIQUE (ex. style.css), et référence-la À L'IDENTIQUE (même chemin exact) depuis TOUTES les pages — jamais 'style.css' sur une page et 'styles.css' sur une autre.
 
 Tâche : __TASK__

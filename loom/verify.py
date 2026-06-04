@@ -255,11 +255,11 @@ def verify_files(paths: list[str]) -> VerifyReport:
     ne peut pas étouffer sur un arbre géant ni spawn node par fichier). C'est le
     vérificateur du hard-gate P0.4 — on sait exactement ce que le développeur a écrit."""
     defects: list[Defect] = []
-    html_entry: Path | None = None
+    html_entries: list[Path] = []
     for raw in paths:
         f = Path(raw)
-        if f.suffix.lower() in (".html", ".htm") and html_entry is None:
-            html_entry = f
+        if f.suffix.lower() in (".html", ".htm"):
+            html_entries.append(f)
         checker = _CHECKERS.get(f.suffix.lower())
         if checker is None:
             continue
@@ -268,8 +268,11 @@ def verify_files(paths: list[str]) -> VerifyReport:
         except Exception as exc:  # noqa: BLE001 - un check ne casse jamais le rapport
             defects.append(Defect(f.name, "error", str(exc)[:200]))
     defects.extend(_check_no_es_modules([Path(raw) for raw in paths]))
-    if html_entry is not None and html_entry.exists():
-        defects.extend(_check_web(html_entry))
+    # Check runtime web sur CHAQUE page (site multi-pages) : sinon un asset cassé ou une
+    # erreur JS propre à blog.html/dashboard.html passe sous le radar (seul index était vu).
+    for h in html_entries:
+        if h.exists():
+            defects.extend(_check_web(h))
     return VerifyReport(ok=not defects, defects=defects)
 
 
