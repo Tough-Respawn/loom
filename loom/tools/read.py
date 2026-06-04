@@ -1,8 +1,5 @@
 # loom/tools/read.py
-"""Outils de lecture / preuve : read_file (lecture bornée au workspace) et verify
-(preuve déterministe de validité syntaxique). Tous deux READ-only (parse, n'exécutent
-pas) — verify ferme la boucle observe→agis→VÉRIFIE (cf. docs/harness-strategy.md).
-"""
+"""Outil de lecture : read_file (lecture bornée au workspace). READ-only."""
 
 from __future__ import annotations
 
@@ -53,48 +50,6 @@ def make_read_file(
                 "path": {
                     "type": "string",
                     "description": "Chemin du fichier, relatif au workspace.",
-                }
-            },
-            "required": ["path"],
-        },
-        run=run,
-    )
-
-
-def make_verify(workspace_dir: str) -> ToolSpec:
-    """Outil verify : preuve déterministe de la validité syntaxique d'un artefact.
-
-    Vérifie un fichier ou un dossier du workspace (JS via `node --check`, Python via
-    `compile`, JSON via `json`) et renvoie un rapport de défauts factuel. Read-only
-    (parse sans exécuter). C'est la brique qui ferme la boucle observe→agis→VÉRIFIE.
-    """
-    from loom.verify import format_report, verify_path
-
-    root = Path(workspace_dir)
-
-    def run(args: dict) -> str:
-        rel = (args.get("path") or "").strip()
-        if not rel:
-            raise ToolError("argument 'path' manquant")
-        target = _resolve_in_root(root, rel)
-        if not target.exists():
-            raise ToolError(f"introuvable : {rel}")
-        return format_report(verify_path(str(target)))
-
-    return ToolSpec(
-        name="verify",
-        description=(
-            "Vérifie DÉTERMINISTIQUEMENT la syntaxe des fichiers d'un chemin du "
-            "workspace (fichier OU dossier) : JS (node --check), Python (compile), "
-            "JSON. Renvoie un rapport de défauts factuel (file:ligne). Appelle-le pour "
-            "PROUVER que le code est valide AVANT de conclure — ne te fie pas à la lecture."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Chemin (fichier ou dossier) relatif au workspace.",
                 }
             },
             "required": ["path"],

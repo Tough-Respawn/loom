@@ -9,7 +9,6 @@ from loom.client import LoomClient
 from loom.config import load_config
 from loom.context import effective_context_budget
 from loom.conversation import Conversation
-from loom.lessons import LessonStore
 from loom.permissions import evaluate
 from loom.session import SessionStore
 from loom.tools import AVAILABLE_TOOLS, build_registry
@@ -48,16 +47,6 @@ def build_app(cfg):
             web_cfg=cfg.chat.web_search,
         )
 
-    # Vérificateur déterministe (P0.4) : vérifie EXACTEMENT les fichiers écrits par le
-    # développeur (syntaxe + runtime web si index.html en fait partie). Borné à ce set
-    # — ne rglob jamais un dossier, donc ne peut pas étouffer sur un arbre géant.
-    def make_verifier(rel_paths, workspace=None):
-        from loom.verify import verify_files
-
-        root = Path(workspace or cfg.chat.workspace_dir).resolve()
-        abs_paths = [str((root / p).resolve()) for p in rel_paths]
-        return verify_files(abs_paths)
-
     # Amorce les outils de la conversation depuis la config au 1er lancement.
     if not conversation.active_tools and cfg.chat.tools_enabled:
         conversation.set_tools(cfg.chat.tools_enabled)
@@ -70,8 +59,6 @@ def build_app(cfg):
     store = SessionStore(
         sessions_root, cfg.chat.system_prompt, default_tools=cfg.chat.tools_enabled
     )
-    # Mémoire d'auto-amélioration : leçons globales réinjectées dans les futurs runs.
-    lesson_store = LessonStore(data_root / "lessons.json")
     if not store.list() and conversation.messages:
         seed = store.create(workspace=cfg.chat.workspace_dir, title="Session importée")
         seed.conversation = conversation
@@ -90,15 +77,8 @@ def build_app(cfg):
         tool_factory=make_registry,
         available_tools=AVAILABLE_TOOLS,
         permission=permission,
-        agents=cfg.agents,
-        pipeline=cfg.default_pipeline,
-        max_revisions=cfg.chat.max_revisions,
-        verifier=make_verifier,
         workspace_dir=cfg.chat.workspace_dir,
-        server_context=cfg.context,
-        n_parallel=cfg.n_parallel,
         session_store=store,
-        lesson_store=lesson_store,
     )
     return app
 

@@ -16,19 +16,6 @@ def _wreg(tmp_path, max_bytes=10000):
 
 # --- write_file ---------------------------------------------------------
 
-
-def test_write_file_integrity_rejects_broken_python(tmp_path):
-    reg = _wreg(tmp_path)
-    out = reg.run("write_file", {"path": "broken.py", "content": "def f(:\n"})
-    assert "erreur" in out.lower() and "intégrité" in out.lower()
-
-
-def test_write_file_integrity_ok_for_valid_python(tmp_path):
-    reg = _wreg(tmp_path)
-    out = reg.run("write_file", {"path": "ok.py", "content": "x = 1\n"})
-    assert "écrit" in out.lower() and "erreur" not in out.lower()
-
-
 def test_write_file_no_integrity_check_for_plain_text(tmp_path):
     reg = _wreg(tmp_path)
     out = reg.run("write_file", {"path": "note.txt", "content": "(((pas du code"})
