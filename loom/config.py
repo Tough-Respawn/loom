@@ -9,16 +9,11 @@ from pathlib import Path
 
 from loom.agents import Agent
 from loom.permissions import PermissionConfig, parse_permissions
+from loom.prompts import CHAT_SYSTEM
 from loom.tools.web import WebSearchConfig
 
-DEFAULT_SYSTEM_PROMPT = (
-    "Tu es Loom, un agent local autonome. Tu réponds en français, de façon concise et "
-    "factuelle. Quand des outils te sont fournis (lire un fichier, exécuter une "
-    "commande, écrire...), tu les utilises TOI-MÊME pour accomplir la tâche : tu ne "
-    "demandes JAMAIS à l'utilisateur de lire un fichier, d'exécuter une commande ou de "
-    "te montrer un contenu que tu peux obtenir avec un outil. Tu agis d'abord, puis tu "
-    "rends compte du résultat."
-)
+# Le prompt système du chat vit dans loom/prompts/chat.system.md (source de vérité).
+DEFAULT_SYSTEM_PROMPT = CHAT_SYSTEM
 
 
 DEFAULT_READ_EXTENSIONS = [
