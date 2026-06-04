@@ -55,6 +55,7 @@ def build_app(cfg):
             todo_store=todo_store,
             model=cfg.default_model,
             sub_max_tokens=cfg.chat.max_tokens,
+            permission=permission,
         )
 
     # Amorce les outils de la conversation depuis la config au 1er lancement.
