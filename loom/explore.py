@@ -16,6 +16,30 @@ from loom.context import estimate_tokens
 from loom.tools.base import _resolve_in_root
 
 _PATH_RE = re.compile(r"[\w\-./]+\.\w{1,6}")
+_PROJECT_EXTS = (".html", ".css", ".js", ".mjs", ".json")
+
+
+def list_project_files(workspace: str, *, max_files: int = 25) -> list[str]:
+    """Liste (bornée) les fichiers web déjà présents sous `workspace`, en chemins relatifs
+    POSIX. Sert au plan brownfield (réutiliser EXACTEMENT l'existant, ne pas réinventer
+    l'archi). Ignore les dossiers cachés (dont `.loom`). Borne aussi le PARCOURS pour ne
+    jamais s'étouffer sur un arbre géant."""
+    root = Path(workspace)
+    if not root.is_dir():
+        return []
+    out: list[str] = []
+    visited = 0
+    for p in sorted(root.rglob("*")):
+        visited += 1
+        if visited > 2000 or len(out) >= max_files:
+            break
+        if not p.is_file() or p.suffix.lower() not in _PROJECT_EXTS:
+            continue
+        rel = p.relative_to(root)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        out.append(rel.as_posix())
+    return out
 
 
 @dataclass

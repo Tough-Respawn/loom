@@ -307,11 +307,24 @@ def run_build(
         "model": model,
     }
     try:
-        from loom.explore import explore
+        from loom.explore import explore, list_project_files
         from loom.parallel import _PLAN_SYS, _parse_plan, _plan_prompt
+        from loom.planning import (
+            critique_design,
+            decompose_into_stories,
+            write_plan_artifacts,
+        )
 
         ground = explore(task, workspace, context=context)
-        messages = [{"role": "user", "content": _plan_prompt(task, ground.summary)}]
+        # Brownfield strict : si des fichiers existent déjà, le plan DOIT les réutiliser
+        # (tue la divergence d'archi observée : 3 fichiers -> 4 inventés).
+        existing = list_project_files(workspace)
+        messages = [
+            {
+                "role": "user",
+                "content": _plan_prompt(task, ground.summary, existing_files=existing),
+            }
+        ]
         raw = ""
         if hasattr(client, "stream_chat"):
             # Streame le plan EN DIRECT : l'UI voit la réflexion ET le contrat se générer,
@@ -351,6 +364,30 @@ def run_build(
     if not specs:
         yield {"type": "run_done", "run": run}
         return
+
+    # 1b) PLANIFICATION PROFONDE : auto-critique du plan (comble ses trous) puis découpe
+    # en USER STORIES (critères d'acceptation observables), externalisées en .md sous
+    # `.loom/` via le writer du run -> dev/vérificateur s'y appuient, contexte libéré.
+    try:
+        yield {
+            "type": "agent_start",
+            "agent": "deep_plan",
+            "role": "Planification profonde",
+            "model": model,
+        }
+        design = critique_design(client, design, task, model=model)
+        stories = decompose_into_stories(client, design, specs, task, model=model)
+        write_plan_artifacts(workspace, design, stories, write=write)
+        run.stories = stories
+        yield {
+            "type": "content",
+            "agent": "deep_plan",
+            "text": "**User stories :**\n"
+            + "\n".join(f"- {s.id} — {s.title}" for s in stories),
+        }
+        yield {"type": "agent_done", "agent": "deep_plan"}
+    except Exception:  # noqa: BLE001 - la planif profonde ne doit jamais casser le run
+        stories = []
 
     all_paths = [s.path for s in specs]
     # P1 : budget DÉRIVÉ du contexte serveur partagé (jamais hand-tuné).
