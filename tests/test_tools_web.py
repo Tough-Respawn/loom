@@ -132,6 +132,7 @@ def test_available_searxng_when_url_set():
 
 
 def test_fetch_page_truncates(monkeypatch):
+    monkeypatch.setattr(tools_web, "_blocked_host_reason", lambda url: None)
     monkeypatch.setattr(tools_web, "_http_get", lambda *a, **k: _FakeResp({}))
 
     class _FakeResp2:
@@ -149,6 +150,8 @@ def test_fetch_page_truncates(monkeypatch):
 
 
 def test_fetch_page_fallback_snippet(monkeypatch):
+    monkeypatch.setattr(tools_web, "_blocked_host_reason", lambda url: None)
+
     class _FakeResp2:
         text = "page"
 
@@ -163,6 +166,8 @@ def test_fetch_page_fallback_snippet(monkeypatch):
 
 
 def test_fetch_page_offline_fallback_snippet(monkeypatch):
+    monkeypatch.setattr(tools_web, "_blocked_host_reason", lambda url: None)
+
     def boom(*a, **k):
         raise httpx.ConnectError("no network")
 
