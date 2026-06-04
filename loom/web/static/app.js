@@ -65,57 +65,9 @@ function patch(id, fields) {
   return it;
 }
 
-// Ticker : tant qu'une étape ou un verify tourne, on rafraîchit pour le timer live.
-setInterval(() => {
-  const live = state.timeline.some(
-    (i) =>
-      (i.kind === "step" && !i.done) ||
-      (i.kind === "verify" && i.status === "pending"),
-  );
-  if (live) scheduleRender();
-}, 100);
-
-// ----------------------------------------------------------------------------
-// Helpers d'étape (timer + tokens)
-// ----------------------------------------------------------------------------
-function metaText(s) {
-  const secs = fmtSecs((s.done ? s.tEnd : Date.now()) - s.t0);
-  // tokens = total RÉEL (somme des usage) + estimation LIVE du tour en cours
-  // (≈1/chunk). `~` tant que le tour n'est pas confirmé par un usage.
-  const total = s.tokens + s.live;
-  const tok = total ? (s.live ? `~${total} tok` : `${total} tok`) : "";
-  return "⏱ " + secs + (tok ? "  ·  " + tok : "");
-}
-function bumpLive(step) {
-  // Incrémente l'estimation du tour courant (le ticker 100ms / les patches de
-  // contenu déclenchent le re-render — pas besoin d'en forcer un ici).
-  if (step) step.live++;
-}
-function addUsage(step, evt) {
-  if (!step) return;
-  // Tour confirmé : on entérine les vrais tokens et on remet l'estimation à zéro.
-  step.tokens += evt.completion_tokens || 0;
-  step.live = 0;
-  scheduleRender();
-}
-function endStep(step) {
-  if (step && !step.done) {
-    step.done = true;
-    step.tEnd = Date.now();
-    scheduleRender();
-  }
-}
-
 // ----------------------------------------------------------------------------
 // Composants
 // ----------------------------------------------------------------------------
-function Step({ it }) {
-  return html`<div class=${"step-hdr" + (it.done ? "" : " active")}>
-    <span class="step-name">${it.label}</span>
-    <span class="step-meta">${metaText(it)}</span>
-  </div>`;
-}
-
 function Think({ it }) {
   if (!it.text) return null;
   return html`<details class=${"think" + (it.active ? " active" : "")} open=${it.active}>
@@ -145,35 +97,6 @@ function ToolPill({ it }) {
   </div>`;
 }
 
-function Verify({ it }) {
-  if (it.status === "pending") {
-    return html`<div class="verify-panel pending">
-      <span class="verify-head">Vérification en cours…</span>
-      <span class="vtimer"> ${fmtSecs(Date.now() - it.t0)}</span>
-    </div>`;
-  }
-  const ok = it.status === "ok";
-  const secs = fmtSecs((it.tEnd || it.t0) - it.t0);
-  return html`<div class=${"verify-panel " + (ok ? "ok" : "ko")}>
-    <div class="verify-head">
-      ${ok
-        ? "✓ Vérificateur : aucun défaut"
-        : `✕ Vérificateur : ${(it.defects || []).length} défaut(s)`}
-      ${"  ·  " + secs}
-    </div>
-    ${!ok && (it.defects || []).length
-      ? html`<ul class="verify-list">
-          ${it.defects.map(
-            (d) => html`<li>
-              <code>${d.location || ""}</code>
-              <span class="vk"> [${d.kind || ""}] </span>${d.evidence || ""}
-            </li>`,
-          )}
-        </ul>`
-      : null}
-  </div>`;
-}
-
 function PermAsk({ it }) {
   const decide = (approve) => {
     const fd = new FormData();
@@ -197,26 +120,6 @@ function PermAsk({ it }) {
           <button onClick=${() => decide(true)}>Autoriser</button>
           <button onClick=${() => decide(false)}>Refuser</button>
         </div>`
-      : null}
-  </div>`;
-}
-
-// Badge de routage (auto) : « → Build/Chat » + bouton pour forcer l'autre mode.
-function RouteBadge({ it }) {
-  const other = it.mode === "build" ? "chat" : "build";
-  return html`<div class="run-info" style="align-self:center">
-    ${it.mode === "build" ? "→ Build" : "→ Chat"}
-    ${!it.overridden
-      ? html`<button
-          type="button"
-          style="font-size:11px;padding:2px 8px;margin-left:8px;background:#1d2a22"
-          onClick=${() => {
-            patch(it.id, { overridden: true });
-            dispatch(it.text, it.img, other);
-          }}
-        >
-          plutôt ${other}
-        </button>`
       : null}
   </div>`;
 }
@@ -289,20 +192,10 @@ function Item({ it }) {
       return html`<${Assistant} it=${it} />`;
     case "think":
       return html`<${Think} it=${it} />`;
-    case "step":
-      return html`<${Step} it=${it} />`;
     case "tool":
       return html`<${ToolPill} it=${it} />`;
-    case "verify":
-      return html`<${Verify} it=${it} />`;
     case "perm":
       return html`<${PermAsk} it=${it} />`;
-    case "route":
-      return html`<${RouteBadge} it=${it} />`;
-    case "runinfo":
-      return html`<div class="run-info">dossier de travail : ${it.workspace}</div>`;
-    case "revision":
-      return html`<div class="tool-chip rev">Révision ${it.n}, correction en cours</div>`;
     case "error":
       return html`<div class="msg assistant err">${it.message}</div>`;
     default:
@@ -313,7 +206,7 @@ function Item({ it }) {
 function App() {
   if (!state.timeline.length) {
     return html`<div class="empty-state">
-      Écris ci-dessous. En Auto, Loom route vers chat ou build (ou force le mode).
+      Écris une demande. Loom agit avec ses outils (lire, écrire, exécuter, chercher).
     </div>`;
   }
   return state.timeline.map((it) => html`<${Item} key=${it.id} it=${it} />`);
@@ -429,134 +322,6 @@ async function sendChat(text, image) {
 }
 
 // ----------------------------------------------------------------------------
-// Pipeline multi-agent
-// ----------------------------------------------------------------------------
-// Fabrique le consommateur d'événements d'un run (état des agents + switch de
-// rendu). Réutilisé par `runPipeline` (run live) ET par la réattache au reload
-// (rejoue `/run/replay` à travers la même logique de rendu).
-function makeRunConsumer() {
-  const agents = {}; // agent -> { stepId, thinkId, asstId }
-  const tools = {};
-  let curVerifyId = null;
-  const stepOf = (agent) => agents[agent] && get(agents[agent].stepId);
-
-  const ensure = (agent, role, model) => {
-    if (agents[agent]) return agents[agent];
-    const stepId = push({
-      kind: "step",
-      label: role + " (" + model + ")",
-      t0: Date.now(),
-      tokens: 0,
-      live: 0,
-      done: false,
-    }).id;
-    agents[agent] = { stepId, thinkId: null, asstId: null, role };
-    return agents[agent];
-  };
-
-  const onEvent = (evt) => {
-    const a = evt.agent ? agents[evt.agent] : null;
-    switch (evt.type) {
-      case "run_info":
-        push({ kind: "runinfo", workspace: evt.workspace });
-        break;
-      case "agent_start":
-        ensure(evt.agent, evt.role, evt.model);
-        break;
-      case "reasoning": {
-        const ag = a || ensure(evt.agent, evt.role || "?", evt.model || "?");
-        if (!ag.thinkId) ag.thinkId = push({ kind: "think", role: ag.role, text: "", active: true }).id;
-        patch(ag.thinkId, { text: get(ag.thinkId).text + evt.text, active: true });
-        bumpLive(stepOf(evt.agent));
-        break;
-      }
-      case "content": {
-        // Contenu taggé par `id` = sortie d'un FICHIER streamée par le codeur : on
-        // l'append dans la boîte outil du fichier (codeur visible, comme le planif).
-        if (evt.id) {
-          const tid = tools[evt.id] || "tool:" + evt.id;
-          if (!get(tid)) {
-            push({ id: tid, kind: "tool", name: "write_file", pending: true });
-            tools[evt.id] = tid;
-          }
-          patch(tid, { stream: (get(tid).stream || "") + evt.text });
-          bumpLive(stepOf(evt.agent));
-          break;
-        }
-        const ag = a || ensure(evt.agent, "?", "?");
-        if (ag.thinkId) patch(ag.thinkId, { active: false });
-        if (!ag.asstId) ag.asstId = push({ kind: "assistant", raw: "", done: false }).id;
-        patch(ag.asstId, { raw: get(ag.asstId).raw + evt.text });
-        bumpLive(stepOf(evt.agent));
-        break;
-      }
-      case "agent_done":
-        if (a) {
-          if (a.thinkId) patch(a.thinkId, { active: false });
-          if (a.asstId) patch(a.asstId, { done: true });
-          endStep(get(a.stepId));
-        }
-        break;
-      case "usage":
-        addUsage(stepOf(evt.agent), evt);
-        break;
-      case "tool_begin":
-      case "tool_call": {
-        const tid = "tool:" + (evt.id || evt.name);
-        if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name, pending: true });
-        tools[evt.id] = tid;
-        break;
-      }
-      case "tool_result": {
-        const tid = "tool:" + (evt.id || evt.name);
-        if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name });
-        patch(tid, { name: evt.name, path: evt.path, ok: evt.ok, preview: evt.preview, detail: evt.detail, pending: false });
-        break;
-      }
-      case "tool_request":
-        push({ kind: "perm", callId: evt.id, name: evt.name, summary: evt.summary });
-        break;
-      case "verify_start":
-        curVerifyId = push({ kind: "verify", status: "pending", t0: Date.now() }).id;
-        break;
-      case "verify":
-        if (curVerifyId)
-          patch(curVerifyId, { status: evt.ok ? "ok" : "ko", defects: evt.defects || [], tEnd: Date.now() });
-        curVerifyId = null;
-        break;
-      case "revision":
-        push({ kind: "revision", n: evt.n });
-        break;
-      case "error":
-        push({ kind: "error", message: "Erreur : " + evt.message });
-        break;
-    }
-  };
-
-  return { onEvent, finish: () => Object.values(agents).forEach((ag) => endStep(get(ag.stepId))) };
-}
-
-async function runPipeline(task, workspace) {
-  state.pin = true;
-  push({ kind: "user", content: task });
-
-  const { onEvent, finish } = makeRunConsumer();
-
-  const fd = new FormData();
-  fd.append("task", task);
-  fd.append("mode", "build");
-  if (workspace) fd.append("workspace", workspace);
-
-  try {
-    await streamSSE("/run", fd, onEvent);
-  } catch (err) {
-    push({ kind: "error", message: "Erreur : " + err.message });
-  } finally {
-    finish();
-  }
-}
-
-// ----------------------------------------------------------------------------
 // Hydratation + câblage des contrôles (formulaires, image, historique, toggles)
 // ----------------------------------------------------------------------------
 (INIT.messages || []).forEach((m) =>
@@ -582,42 +347,21 @@ const preview = document.getElementById("preview");
 const previewWrap = document.getElementById("previewWrap");
 
 // ----------------------------------------------------------------------------
-// Mode (auto/chat/build) + dossier de travail (persistés en localStorage)
+// Dossier de travail des outils (où read/write/shell agissent), persisté
 // ----------------------------------------------------------------------------
-const modeSeg = document.getElementById("mode-seg");
 const workdirPath = document.getElementById("workdir-path");
 const workdirChip = document.getElementById("workdir-chip");
 
-let loomMode = localStorage.loomMode || "auto";
-// Défaut = workspace_dir rendu par le serveur dans #workdir-path (sinon init_json).
 let loomWorkdir =
   localStorage.loomWorkdir ||
   INIT.workspace_dir ||
   (workdirPath && workdirPath.textContent.trim()) ||
   "";
 
-function reflectMode() {
-  if (!modeSeg) return;
-  modeSeg.querySelectorAll("button[data-mode]").forEach((b) =>
-    b.classList.toggle("on", b.dataset.mode === loomMode),
-  );
-}
 function reflectWorkdir() {
   if (workdirPath) workdirPath.textContent = loomWorkdir;
 }
-reflectMode();
 reflectWorkdir();
-
-// segmented control : clic → mode actif persisté
-if (modeSeg) {
-  modeSeg.addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-mode]");
-    if (!btn) return;
-    loomMode = btn.dataset.mode;
-    localStorage.loomMode = loomMode;
-    reflectMode();
-  });
-}
 
 // --- drawer réglages ---
 const settingsBtn = document.getElementById("settings-btn");
@@ -711,32 +455,8 @@ function nearBottom() {
 }
 window.addEventListener("scroll", () => (state.pin = nearBottom()), { passive: true });
 
-// --- formulaire unifié (auto-route chat vs build) ---
+// --- formulaire : un seul chemin, l'agent tool-use (/chat) ---
 const chatForm = document.getElementById("chat");
-
-// Route un message déjà lu vers /run (build) ou /chat (chat).
-// `forced` non nul court-circuite le classifieur (boutons segmented / « plutôt … »).
-async function dispatch(text, img, forced) {
-  let mode = forced || loomMode;
-  if (mode === "auto") {
-    try {
-      const r = await fetch("/classify", {
-        method: "POST",
-        body: new URLSearchParams({ message: text }),
-      });
-      mode = (await r.json()).mode;
-    } catch {
-      mode = "chat"; // défaut sûr si le classifieur échoue
-    }
-    // Badge déclaratif (item timeline) : « → mode » + « plutôt {autre} ».
-    push({ kind: "route", mode, text, img });
-  }
-  if (mode === "build") {
-    await runPipeline(text, loomWorkdir);
-  } else {
-    await sendChat(text, img);
-  }
-}
 
 async function submitChat() {
   const text = input.value.trim();
@@ -748,7 +468,7 @@ async function submitChat() {
   clearImage();
   sendBtn.textContent = "…";
   try {
-    await dispatch(text, img);
+    await sendChat(text, img);
   } finally {
     sendBtn.textContent = "Envoyer";
     input.focus();
@@ -817,13 +537,3 @@ if (resetBtn) {
   });
 }
 
-// Réattache un run lancé précédemment (survit au reload) : on rejoue son flux.
-fetch("/run/active")
-  .then((r) => r.json())
-  .then((s) => {
-    if (s && s.has) {
-      const { onEvent, finish } = makeRunConsumer();
-      streamSSE("/run/replay", null, onEvent).finally(finish);
-    }
-  })
-  .catch(() => {});
