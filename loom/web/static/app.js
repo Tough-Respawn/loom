@@ -426,6 +426,9 @@ if (pickFolderBtn) {
         loomWorkdir = j.path;
         localStorage.loomWorkdir = loomWorkdir;
         reflectWorkdir();
+        // Applique le dossier à la SESSION ACTIVE tout de suite (sinon il ne
+        // s'appliquerait qu'à la prochaine « Nouvelle session »).
+        await postForm("/session/workspace", { workspace: j.path });
       } else if (j.error) {
         console.warn("pick-folder:", j.error);
         if (workdirChip) {
@@ -467,7 +470,7 @@ async function submitChat() {
   const img = pendingImage;
   input.value = "";
   clearImage();
-  sendBtn.textContent = "…";
+  sendBtn.textContent = "Stop";
   try {
     await sendChat(text, img);
   } finally {
@@ -475,8 +478,20 @@ async function submitChat() {
     input.focus();
   }
 }
+
+// Stop : coupe l'affichage côté client (abort) ET la génération côté serveur
+// (/cancel pose cancel_event). Pas de message vide envoyé -> plus de 429.
+function stopChat() {
+  if (currentAbort) currentAbort.abort();
+  fetch("/cancel", { method: "POST" }).catch(() => {});
+}
 chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
+  // Pendant une génération, le bouton « Stop » arrête au lieu de soumettre.
+  if (currentAbort) {
+    stopChat();
+    return;
+  }
   submitChat();
 });
 
