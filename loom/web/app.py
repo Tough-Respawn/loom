@@ -200,6 +200,15 @@ def create_app(
                 s for s in (load_skill(skills_dir, n) for n in conv.active_skills) if s
             ]
             system_prompt = compose_system_prompt(conv.system_prompt, active)
+            # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
+            # "Tu es Loom") -> il baratine quand on lui demande "quel modèle ?". On lui
+            # injecte son modèle courant pour qu'il réponde honnêtement.
+            if conv.model:
+                system_prompt += (
+                    f"\n\n# Ton moteur\nTu tournes sur le modèle local « {conv.model} ». "
+                    "Si on te demande quel modèle/moteur tu utilises, réponds-le "
+                    "honnêtement et directement (ce nom), sans esquiver."
+                )
         except ValueError as exc:
             chat_lock.release()
             return Response(str(exc), status=400)
@@ -224,9 +233,13 @@ def create_app(
                 save()
 
             # Registre construit selon les outils activés pour CETTE conversation
-            # (toggles UI). À défaut de factory, registre statique (compat tests).
+            # (toggles UI) ET le workspace de la session active : sans ça les outils
+            # (write/edit/run_shell + sous-agent) retombent sur cfg.chat.workspace_dir
+            # et écrivent à côté du dossier ciblé. À défaut de factory, registre
+            # statique (compat tests).
+            ws = _session().workspace if session_store is not None else workspace_dir
             registry = (
-                tool_factory(conv.active_tools) if tool_factory else tool_registry
+                tool_factory(conv.active_tools, ws) if tool_factory else tool_registry
             )
             use_tools = registry is not None and len(registry)
             if use_tools:
@@ -304,6 +317,14 @@ def create_app(
         return render_template(
             "_skills.html", skills=skills, active_skills=conv.active_skills
         )
+
+    @app.post("/cancel")
+    def cancel():
+        # Bouton Stop : pose le signal d'annulation que la boucle de /chat vérifie à
+        # chaque token -> la génération s'arrête net et libère le verrou de chat. Sans
+        # effet si rien ne tourne (le prochain /chat le remet à zéro avant de générer).
+        cancel_event.set()
+        return Response("", status=204)
 
     @app.post("/tool_decision")
     def tool_decision():
@@ -399,6 +420,21 @@ def create_app(
         session_store.set_active(sid)
         _cur["session"] = loaded
         return {"id": loaded.id}
+
+    @app.post("/session/workspace")
+    def session_workspace():
+        # Réaffecte le dossier de travail de la SESSION ACTIVE (appelé par le sélecteur
+        # de dossier). Sans ça, choisir un dossier ne s'appliquerait qu'à la création
+        # d'une nouvelle session -> les outils continueraient de cibler l'ancien.
+        if session_store is None:
+            return Response("sessions désactivées", status=404)
+        ws = (request.form.get("workspace") or "").strip()
+        if not ws:
+            return Response("workspace manquant", status=400)
+        sess = _session()
+        sess.workspace = ws
+        session_store.save(sess)
+        return {"workspace": sess.workspace}
 
     @app.post("/session/delete")
     def session_delete():
