@@ -44,31 +44,72 @@ def _build_user_content(message: str, image) -> str | list:
     ]
 
 
+# Verbe compact par outil pour la TRACE D'ACTIONS persistée (anti-amnésie). Les outils
+# de navigation (find/search/list) en sont absents : on mémorise les LECTURES et les
+# CHANGEMENTS d'état, pas les allers-retours d'exploration.
+_TRACE_VERB = {
+    "read_file": "lu",
+    "read_document": "lu",
+    "read_image": "vu",
+    "write_file": "créé",
+    "append_file": "complété",
+    "edit_file": "modifié",
+    "replace_lines": "modifié",
+    "insert_lines": "modifié",
+    "run_shell": "exécuté",
+    "dispatch_agent": "délégué",
+}
+_WRITE_NAMES = {
+    "write_file",
+    "append_file",
+    "edit_file",
+    "replace_lines",
+    "insert_lines",
+}
+
+
+def _action_trace_line(evt: dict) -> str | None:
+    """Rend un `tool_result` en ligne compacte pour la trace, ou None s'il ne mérite pas
+    d'être mémorisé (navigation, écriture échouée/différée)."""
+    name = evt.get("name") or ""
+    verb = _TRACE_VERB.get(name)
+    if verb is None:
+        return None
+    ok = bool(evt.get("ok"))
+    # Une écriture échouée/différée n'est pas un changement d'état à retenir (si elle
+    # réussit ensuite dans le même tour, c'est cette réussite-là qui sera tracée).
+    if name in _WRITE_NAMES and not ok:
+        return None
+    mark = "" if ok else "✗ "
+    if name == "run_shell":
+        head = (evt.get("preview") or "").split("\n")[0][:60]
+        return f"{mark}{verb} shell: {head}".strip()
+    if name == "dispatch_agent":
+        return f"{mark}{verb} une sous-tâche"
+    return f"{mark}{verb} {evt.get('path') or '?'}"
+
+
 def create_app(
-    conversation,
     client,
-    history_path,
     skills_dir,
+    session_store,
     *,
     max_tokens=2048,
     context_budget=3000,
     keep_recent=6,
     models=None,
     interrupt_wait=15.0,
-    tool_registry=None,
     tool_factory=None,
     available_tools=None,
     permission=None,
     confirm_timeout=300.0,
     workspace_dir=".",
-    session_store=None,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
     # redémarrer le serveur (sinon Jinja sert la version compilée au démarrage).
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.jinja_env.auto_reload = True
-    history_path = str(history_path)
     skills_dir = str(skills_dir)
     workspace_dir = str(workspace_dir)
     models = list(models or [])
@@ -85,9 +126,8 @@ def create_app(
     app.config["_cancel_event"] = cancel_event
     app.config["_pending"] = pending
 
-    # Session active : un fil persistant par projet. Mode session (session_store fourni)
-    # -> conversation/persistance pointent sur la session active. Mode legacy (absent)
-    # -> une seule conversation persistée dans history_path (tests).
+    # Session active : un fil persistant par projet. Tout passe par la session courante
+    # (conversation + persistance) ; un seul mode, plus de legacy.
     _cur: dict = {"session": None}
     app.config["_session_holder"] = _cur
 
@@ -106,14 +146,10 @@ def create_app(
         return sess
 
     def _ctx():
-        """Renvoie (conversation, save) : la conversation active et sa persistance.
-
-        Un seul point de vérité : les endpoints n'ont pas à savoir s'ils sont en mode
-        session ou legacy, ils manipulent `conv` et appellent `save()`."""
-        if session_store is not None:
-            sess = _session()
-            return sess.conversation, (lambda: session_store.save(sess))
-        return conversation, (lambda: conversation.save(history_path))
+        """Renvoie (conversation, save) : la conversation de la session active et sa
+        persistance. Point de vérité unique pour tous les endpoints."""
+        sess = _session()
+        return sess.conversation, (lambda: session_store.save(sess))
 
     def _confirm(tool_id: str, name: str, args: dict) -> bool:
         """Bloque jusqu'à la décision UI (OK/Refuser). Interruptible et borné.
@@ -133,21 +169,14 @@ def create_app(
             pending.pop(tool_id, None)
 
     def _index_context() -> dict:
-        conv, _ = _ctx()
-        # En mode session, le workspace et la liste des sessions viennent de la session
-        # active ; en legacy, du paramètre et liste vide (l'UI sessions reste inerte).
-        if session_store is not None:
-            sess = _session()
-            ws = sess.workspace
-            sessions = [
-                {"id": m.id, "title": m.title, "workspace": m.workspace}
-                for m in session_store.list()
-            ]
-            active_id = sess.id
-        else:
-            ws = workspace_dir
-            sessions = []
-            active_id = ""
+        sess = _session()
+        conv = sess.conversation
+        ws = sess.workspace
+        sessions = [
+            {"id": m.id, "title": m.title, "workspace": m.workspace}
+            for m in session_store.list()
+        ]
+        active_id = sess.id
         return {
             "messages": conv.messages,
             "skills": list_skills(skills_dir),
@@ -225,29 +254,34 @@ def create_app(
 
         def generate():
             answer = ""
+            actions: list[str] = []  # trace compacte des outils (anti-amnésie)
             saved = False
 
             def _persist():
-                # Idempotent : ne persiste que s'il y a du contenu (le placeholder
-                # "réfléchi" est déjà injecté dans `answer` sur le chemin normal).
-                # Sur interruption sans aucun token reçu, answer == "" -> on ne
-                # pollue pas l'historique avec une bulle assistant vide.
+                # Idempotent. Persiste le texte final + une TRACE COMPACTE des actions
+                # (chemins lus/écrits, commandes) : sans elle, l'historique persisté est
+                # amnésique de ce que l'agent a fait (seul son texte survivait) et le tour
+                # suivant repartait à l'aveugle. On NE persiste pas les messages `tool`
+                # bruts (gonflerait le contexte + casserait le résumeur).
                 nonlocal saved
-                if saved or not answer:
+                if saved:
+                    return
+                body = answer
+                if actions:
+                    trace = "[Actions de ce tour : " + " · ".join(actions[:20]) + "]"
+                    body = f"{body}\n\n{trace}" if body else trace
+                if not body:  # rien à dire ET rien fait -> pas de bulle vide
                     return
                 saved = True
-                conv.add("assistant", answer)
+                conv.add("assistant", body)
                 save()
 
             # Registre construit selon les outils activés pour CETTE conversation
             # (toggles UI) ET le workspace de la session active : sans ça les outils
             # (write/edit/run_shell + sous-agent) retombent sur cfg.chat.workspace_dir
-            # et écrivent à côté du dossier ciblé. À défaut de factory, registre
-            # statique (compat tests).
-            ws = _session().workspace if session_store is not None else workspace_dir
-            registry = (
-                tool_factory(conv.active_tools, ws) if tool_factory else tool_registry
-            )
+            # et écrivent à côté du dossier ciblé.
+            ws = _session().workspace
+            registry = tool_factory(conv.active_tools, ws, conv)
             use_tools = registry is not None and len(registry)
             if use_tools:
                 source = client.stream_chat_tools(
@@ -291,6 +325,9 @@ def create_app(
                     elif kind == "tool_stream":
                         yield _sse("tool_stream", **payload)
                     elif kind == "tool_result":
+                        line = _action_trace_line(payload)
+                        if line and line not in actions:
+                            actions.append(line)
                         yield _sse("tool_result", **payload)
                     elif kind == "usage":
                         yield _sse("usage", **payload)
@@ -391,12 +428,10 @@ def create_app(
         save()
         return render_template("_models.html", models=models, current_model=conv.model)
 
-    # --- Sessions : liste / nouvelle / bascule / suppression (mode session seulement) ---
+    # --- Sessions : liste / nouvelle / bascule / suppression ---
 
     @app.get("/sessions")
     def sessions_list():
-        if session_store is None:
-            return {"sessions": [], "active": ""}
         active = _session().id
         return {
             "sessions": [
@@ -408,8 +443,6 @@ def create_app(
 
     @app.post("/session/new")
     def session_new():
-        if session_store is None:
-            return Response("sessions désactivées", status=404)
         ws = (request.form.get("workspace") or "").strip() or workspace_dir
         title = (request.form.get("title") or "").strip()
         sess = session_store.create(workspace=ws, title=title)
@@ -418,8 +451,6 @@ def create_app(
 
     @app.post("/session/activate")
     def session_activate():
-        if session_store is None:
-            return Response("sessions désactivées", status=404)
         sid = (request.form.get("id") or "").strip()
         loaded = session_store.load(sid)
         if loaded is None:
@@ -433,8 +464,6 @@ def create_app(
         # Réaffecte le dossier de travail de la SESSION ACTIVE (appelé par le sélecteur
         # de dossier). Sans ça, choisir un dossier ne s'appliquerait qu'à la création
         # d'une nouvelle session -> les outils continueraient de cibler l'ancien.
-        if session_store is None:
-            return Response("sessions désactivées", status=404)
         ws = (request.form.get("workspace") or "").strip()
         if not ws:
             return Response("workspace manquant", status=400)
@@ -445,8 +474,6 @@ def create_app(
 
     @app.post("/session/delete")
     def session_delete():
-        if session_store is None:
-            return Response("sessions désactivées", status=404)
         sid = (request.form.get("id") or "").strip()
         session_store.delete(sid)
         # Si on supprime la session courante, on recharge l'active (ou on en crée une).

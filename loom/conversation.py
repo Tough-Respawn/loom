@@ -17,12 +17,16 @@ class Conversation:
     active_tools: list[str] = field(default_factory=list)
     model: str = ""
     thinking: bool = True
+    # Plan de tâches de manage_todos : par conversation (donc par session) et persisté
+    # ici -> survit au redémarrage, ne déborde plus d'une session à l'autre.
+    todos: list[dict] = field(default_factory=list)
 
     def add(self, role: str, content: str | list) -> None:
         self.messages.append({"role": role, "content": content})
 
     def reset(self) -> None:
         self.messages = []
+        self.todos = []  # nouvelle conversation = plan vierge
 
     def set_skills(self, names: list[str]) -> None:
         self.active_skills = list(names)
@@ -48,6 +52,7 @@ class Conversation:
             "active_tools": self.active_tools,
             "model": self.model,
             "thinking": self.thinking,
+            "todos": self.todos,
         }
 
     @classmethod
@@ -60,6 +65,7 @@ class Conversation:
             active_tools=list(data.get("active_tools", [])),
             model=data.get("model", ""),
             thinking=bool(data.get("thinking", True)),
+            todos=list(data.get("todos", [])),
         )
 
     def save(self, path: str | Path) -> None:
