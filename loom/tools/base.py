@@ -112,9 +112,15 @@ class ToolRegistry:
 
 
 def _resolve_in_root(root: Path, rel: str) -> Path:
-    """Résout `rel` sous `root` en refusant toute évasion (path traversal)."""
-    root = root.resolve()
-    target = (root / rel).resolve()
-    if target != root and root not in target.parents:
-        raise ToolError(f"chemin hors du périmètre autorisé : {rel}")
-    return target
+    """Résout un chemin d'outil. PLUS DE CONFINEMENT (Loom agit sur tout le système,
+    comme un agent généraliste) :
+    - chemin ABSOLU (ex. `C:/Users/.../x`, `/home/.../x`) -> utilisé tel quel ;
+    - chemin RELATIF -> résolu sous `root`, qui n'est qu'un DOSSIER DE TRAVAIL par défaut.
+
+    Le garde-fou n'est plus le périmètre mais la deny-list dure de loom.permissions
+    (rm -rf, format, …), incontournable même ici.
+    """
+    p = Path(rel)
+    if p.is_absolute():
+        return p.resolve()
+    return (Path(root).resolve() / p).resolve()

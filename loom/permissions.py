@@ -133,8 +133,8 @@ def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
 
     if tool_name in WRITE_TOOLS:
         rel = (args.get("path") or "").strip()
-        if rel and _path_escapes_root(cfg.workspace_root, rel):
-            return Decision("deny", "chemin hors du périmètre autorisé")
+        # Plus de confinement au workspace : write/edit peuvent viser tout le système
+        # (Loom = agent généraliste). La deny-list dure reste le garde-fou.
         if cfg.mode == "deny_all":
             return Decision("deny", "mode deny_all")
         if cfg.mode == "allow":
