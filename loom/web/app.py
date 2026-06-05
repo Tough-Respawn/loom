@@ -96,7 +96,14 @@ def create_app(
             _cur["session"] = session_store.active() or session_store.create(
                 workspace=workspace_dir
             )
-        return _cur["session"]
+        sess = _cur["session"]
+        # Une session neuve peut naître sans modèle -> requête model="" -> llama-swap
+        # renvoie 404 'no router for requested model'. On garantit un modèle valide
+        # (le 1er = défaut) ; corrige aussi les sessions déjà créées vides.
+        if not sess.conversation.model and models:
+            sess.conversation.set_model(models[0])
+            session_store.save(sess)
+        return sess
 
     def _ctx():
         """Renvoie (conversation, save) : la conversation active et sa persistance.
