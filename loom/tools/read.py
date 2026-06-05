@@ -1,6 +1,6 @@
 # loom/tools/read.py
 """Outils de lecture : read_file (texte) et read_document (PDF/Excel/Word -> texte).
-READ-only, bornés au workspace."""
+READ-only. Acceptent un chemin absolu (n'importe où) ou relatif au dossier de travail."""
 
 from __future__ import annotations
 
@@ -22,6 +22,32 @@ _IMAGE_MIME = {
 }
 
 
+def _decode_text(data: bytes) -> str | None:
+    """Décode des octets en texte en gérant les encodages courants sous Windows.
+    Renvoie None si ça ressemble vraiment à du binaire (échec de tout décodage)."""
+    if data[:3] == b"\xef\xbb\xbf":  # UTF-8 avec BOM
+        return data[3:].decode("utf-8", errors="replace")
+    if data[:2] == b"\xff\xfe":  # UTF-16 LE (BOM) — défaut PowerShell
+        return data[2:].decode("utf-16-le", errors="replace")
+    if data[:2] == b"\xfe\xff":  # UTF-16 BE (BOM)
+        return data[2:].decode("utf-16-be", errors="replace")
+    try:
+        return data.decode("utf-8")  # cas le plus courant
+    except UnicodeDecodeError:
+        pass
+    # UTF-16 sans BOM : beaucoup d'octets nuls (1 octet sur 2 pour de l'ASCII).
+    if data and data.count(b"\x00") > len(data) // 4:
+        for enc in ("utf-16-le", "utf-16-be"):
+            try:
+                return data.decode(enc)
+            except UnicodeDecodeError:
+                continue
+    try:
+        return data.decode("cp1252")  # Windows-1252 (legacy), strict : binaire -> lève
+    except UnicodeDecodeError:
+        return None
+
+
 def make_read_file(
     workspace_dir: str, extensions: list[str], max_bytes: int
 ) -> ToolSpec:
@@ -41,29 +67,28 @@ def make_read_file(
         if allowed and path.suffix.lower() not in allowed:
             raise ToolError(f"extension non autorisée : {path.suffix or '(aucune)'}")
         data = path.read_bytes()
-        truncated = len(data) > max_bytes
-        if truncated:
-            data = data[:max_bytes]
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ToolError(f"fichier binaire non lisible : {rel}") from exc
-        if truncated:
-            text += f"\n...[tronqué à {max_bytes} octets]"
+        text = _decode_text(data)
+        if text is None:
+            raise ToolError(f"fichier binaire non lisible : {rel}")
+        if len(text) > max_bytes:
+            text = text[:max_bytes] + f"\n...[tronqué à {max_bytes} caractères]"
         return text
 
     return ToolSpec(
         name="read_file",
         description=(
-            "Lit le contenu d'un fichier texte du workspace et le renvoie. "
-            "Utilise un chemin relatif au workspace."
+            "Lit le contenu d'un fichier texte et le renvoie. Chemin relatif au "
+            "dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/notes.txt')."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Chemin du fichier, relatif au workspace.",
+                    "description": (
+                        "Chemin du fichier : relatif au dossier de travail ou absolu "
+                        "(ex: 'C:/Users/moi/notes.txt')."
+                    ),
                 }
             },
             "required": ["path"],
@@ -146,17 +171,20 @@ def make_read_document(workspace_dir: str, max_chars: int = 20000) -> ToolSpec:
     return ToolSpec(
         name="read_document",
         description=(
-            "Extrait et renvoie le TEXTE d'un document du workspace : PDF (.pdf), "
-            "Excel (.xlsx) ou Word (.docx). Utilise-le pour lire/résumer une facture, "
-            "un tableur, un rapport. Pour un fichier TEXTE (.txt/.md/.py...), utilise "
-            "read_file à la place."
+            "Extrait et renvoie le TEXTE d'un document : PDF (.pdf), Excel (.xlsx) ou "
+            "Word (.docx). Chemin relatif au dossier de travail OU absolu. Utilise-le "
+            "pour lire/résumer une facture, un tableur, un rapport. Pour un fichier "
+            "TEXTE (.txt/.md/.py...), utilise read_file à la place."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Chemin du document (.pdf/.xlsx/.docx), relatif au workspace.",
+                    "description": (
+                        "Chemin du document (.pdf/.xlsx/.docx) : relatif au dossier de "
+                        "travail ou absolu (ex: 'C:/Users/moi/Desktop/facture.pdf')."
+                    ),
                 }
             },
             "required": ["path"],
@@ -200,17 +228,21 @@ def make_read_image(workspace_dir: str, max_bytes: int = 10 * 1024 * 1024) -> To
     return ToolSpec(
         name="read_image",
         description=(
-            "Charge une IMAGE du workspace (png/jpg/jpeg/gif/webp/bmp) et te la fait "
-            "VOIR directement : capture d'écran, photo, schéma, diagramme. Utilise-le "
-            "pour décrire une image, lire un texte dessus, comparer un rendu. Pour un "
-            "PDF/Excel/Word, utilise read_document ; pour du texte, read_file."
+            "Charge une IMAGE (png/jpg/jpeg/gif/webp/bmp) et te la fait VOIR "
+            "directement : capture d'écran, photo, schéma, diagramme. Chemin relatif au "
+            "dossier de travail OU absolu. Utilise-le pour décrire une image, lire un "
+            "texte dessus, comparer un rendu. Pour un PDF/Excel/Word, read_document ; "
+            "pour du texte, read_file."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Chemin de l'image, relatif au workspace.",
+                    "description": (
+                        "Chemin de l'image : relatif au dossier de travail ou absolu "
+                        "(ex: 'C:/Users/moi/Desktop/capture.png')."
+                    ),
                 }
             },
             "required": ["path"],
