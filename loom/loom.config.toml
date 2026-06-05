@@ -83,7 +83,9 @@ enabled = [
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
 # loom.config.local.toml pour pointer la vraie racine de la machine.
 workspace_dir = "."
-read_file_max_bytes = 200000
+# Cap par appel read_file (caractères) : bas devant le contexte (24576) -> un gros
+# fichier se lit par tranches (start_line) au lieu de tout charger et déborder.
+read_file_max_bytes = 40000
 
 [web_search]
 # snippet-first : on utilise les extraits des résultats au lieu de scraper les
