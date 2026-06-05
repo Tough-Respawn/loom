@@ -1,6 +1,6 @@
 # État du projet — Loom
 
-> Dernière mise à jour : 2026-06-04
+> Dernière mise à jour : 2026-06-05
 
 Agent IA **local, multimodal et offline** : un petit modèle open-source (Gemma 4B) rendu
 réellement utile par un **harness tool-use** — la boucle qui lui donne des outils et la
@@ -91,6 +91,20 @@ Par capacité, du levier harness le plus fort au plus borné par le modèle :
    d'agent (plan, diff, résultat), au lieu d'un auto-jugement en plein flux.
 3. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite — `fetch_pages=false`).
 4. `llama-swap` + 2ᵉ modèle ; RAG (skills volumineux) ; audio.
+5. **Mémoire projet auto-injectée (équivalent `/init`)** : un `LOOM.md` (ou `.loom/CONTEXT.md`)
+   par dossier de travail, généré par Loom (il analyse le projet) et **rechargé
+   automatiquement dans le system prompt** quand ce workspace est actif — comme `CLAUDE.md`.
+   Évite de re-découvrir le projet à chaque session. La génération est déjà faisable via les
+   outils ; le manque = l'**auto-injection** (`<workspace>/LOOM.md` → prompt, ~10 lignes dans
+   `app.py`) + un déclencheur « Init » (bouton UI ou consigne canon). À distinguer d'une
+   **mémoire globale** (type `MEMORY.md` + outil `remember`) : `LOOM.md` = cerveau DU projet,
+   mémoire globale = cerveau de Loom à travers les projets.
+6. **Tester une page web via Playwright (navigateur headless)** : Loom ne sait pas VÉRIFIER
+   qu'un site/jeu marche — observé en vrai, le modèle voulait « lancer minesweeper.html dans
+   un navigateur » et bricolait des `run_shell` vides faute d'outil. Un outil qui rend la page
+   (Playwright headless) : ouvrir une URL/fichier HTML, lire le DOM rendu + les erreurs console,
+   cliquer, screenshot. Ça ferme la boucle « écris du web → vérifie que ça marche » (preuve
+   d'exécution, pas juste lecture du code), exactement comme la règle d'or EXÉCUTER avant d'AFFIRMER.
 
 ## Conventions
 - Toolchain : **`uv`** (`uv run` / `uvx`) + **`ruff`** (hook PostToolUse lint+format PEP8).
