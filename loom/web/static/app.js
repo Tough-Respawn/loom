@@ -158,12 +158,15 @@ function Assistant({ it }) {
 function enhance(el, raw) {
   el.querySelectorAll("pre").forEach((pre) => {
     if (pre.querySelector(".copy-btn")) return;
+    // Capture le texte du code AVANT d'ajouter le bouton : sinon innerText inclut
+    // « copier » et l'ancien hack regex rognait un code finissant vraiment par « copier ».
+    const code = (pre.querySelector("code") || pre).innerText;
     const btn = document.createElement("button");
     btn.className = "copy-btn";
     btn.type = "button";
     btn.textContent = "copier";
     btn.onclick = () => {
-      navigator.clipboard.writeText(pre.innerText.replace(/copier$/, ""));
+      navigator.clipboard.writeText(code);
       btn.textContent = "copié ✓";
       setTimeout(() => (btn.textContent = "copier"), 1200);
     };
