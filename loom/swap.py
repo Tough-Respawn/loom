@@ -16,23 +16,37 @@ def _model_cmd(
     llama_bin: str,
     models_dir: str,
     context: int,
+    override_n_gpu_layers: int | None = None,
 ) -> str:
     model_path = f"{models_dir}/{model.filename}"
+    # Précédence (identique au chemin mono-modèle resolve_n_gpu_layers) : champ par
+    # modèle > override global ([override] n_gpu_layers, ex. 99 = offload total) >
+    # recommandation auto. SANS l'override ici, llama-swap laissait des couches sur CPU
+    # (-ngl 30/35 pour Gemma) -> plus lent que l'offload total (33 tok/s).
     if model.n_gpu_layers is not None:
         ngl = model.n_gpu_layers
+    elif override_n_gpu_layers is not None:
+        ngl = override_n_gpu_layers
     elif profile.has_gpu:
         ngl = recommend_gpu_layers(profile.vram_free_mb, model.size_mb, model.n_layers)
     else:
         ngl = 0
     mmproj = f"{models_dir}/{model.mmproj_filename}" if model.mmproj_filename else None
+    # Mêmes réglages perf que le chemin mono-modèle (serve.py) : Flash-Attn + KV q8_0
+    # (gpu_tuning) divisent le KV par 2 -> indispensable sur 6 Go, sinon spill. Threads =
+    # cœurs PHYSIQUES en GPU (logiques/2) pour ne pas pénaliser la passe CPU (PLE Gemma).
+    threads = (
+        max(1, profile.cpu_threads // 2) if profile.has_gpu else profile.cpu_threads
+    )
     args = build_server_args(
         server_bin=llama_bin,
         model_path=model_path,
         port="${PORT}",
         context=context,
         n_gpu_layers=ngl,
-        threads=profile.cpu_threads,
+        threads=threads,
         mmproj_path=mmproj,
+        gpu_tuning=profile.has_gpu,
     )
     return " ".join(str(a) for a in args).replace("\\", "/")
 
@@ -43,10 +57,15 @@ def build_swap_config(
     llama_bin: str,
     models_dir: str,
     context: int,
+    override_n_gpu_layers: int | None = None,
 ) -> dict:
     return {
         "models": {
-            m.id: {"cmd": _model_cmd(m, profile, llama_bin, models_dir, context)}
+            m.id: {
+                "cmd": _model_cmd(
+                    m, profile, llama_bin, models_dir, context, override_n_gpu_layers
+                )
+            }
             for m in models
         }
     }
