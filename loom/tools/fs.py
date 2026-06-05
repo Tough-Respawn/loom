@@ -1,7 +1,7 @@
 # loom/tools/fs.py
 """Outils d'écriture : write_file (création/écrasement) et edit_file (remplace).
 
-Bornés au workspace via `_resolve_in_root` (anti path-traversal). Écriture
+Chemin absolu (écrire n'importe où) ou relatif au dossier de travail. Écriture
 ATOMIQUE (fichier .tmp + os.replace, comme `Conversation.save`) pour ne jamais
 laisser de fichier partiel. Encodage utf-8, `newline=''` afin de préserver le
 contenu byte-exact (pas de traduction \\n -> \\r\\n sous Windows).
@@ -44,15 +44,17 @@ def make_write_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
     return ToolSpec(
         name="write_file",
         description=(
-            "Crée ou écrase un fichier du workspace avec le contenu fourni. "
-            "Utilise un chemin relatif au workspace."
+            "Crée ou écrase un fichier avec le contenu fourni. Chemin relatif au "
+            "dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/out.txt')."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Chemin du fichier, relatif au workspace.",
+                    "description": (
+                        "Chemin du fichier : relatif au dossier de travail ou absolu."
+                    ),
                 },
                 "content": {
                     "type": "string",
@@ -126,16 +128,19 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="edit_file",
         description=(
-            "Remplace old_string par new_string dans un fichier du workspace. Par défaut "
-            "old_string doit être UNIQUE (sinon l'erreur liste les lignes des occurrences) ; "
-            "passe replace_all=true pour remplacer TOUTES les occurrences identiques."
+            "Remplace old_string par new_string dans un fichier (chemin relatif au "
+            "dossier de travail ou absolu). Par défaut old_string doit être UNIQUE "
+            "(sinon l'erreur liste les lignes des occurrences) ; passe replace_all=true "
+            "pour remplacer TOUTES les occurrences identiques."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Chemin du fichier, relatif au workspace.",
+                    "description": (
+                        "Chemin du fichier : relatif au dossier de travail ou absolu."
+                    ),
                 },
                 "old_string": {
                     "type": "string",
