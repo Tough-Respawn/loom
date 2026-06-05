@@ -273,12 +273,24 @@ async function sendChat(text, image) {
         patch(thinkId, { text: get(thinkId).text + evt.text, active: true });
         break;
       case "text":
-        if (thinkId) patch(thinkId, { active: false });
+        // Le texte clôt l'étape de raisonnement courante (et la prochaine en ouvrira une
+        // neuve) -> on ferme la bulle au lieu de tout empiler dans une seule.
+        if (thinkId) {
+          patch(thinkId, { active: false });
+          thinkId = null;
+        }
         if (!asstId) asstId = push({ kind: "assistant", raw: "", done: false }).id;
         patch(asstId, { raw: get(asstId).raw + evt.text });
         break;
       case "tool_begin":
       case "tool_call": {
+        // Un outil se déclenche = fin de l'étape de réflexion en cours. On clôt la bulle
+        // pour que le raisonnement du PROCHAIN tour démarre une bulle SÉPARÉE (une par
+        // étape : réfléchir -> agir -> réfléchir…), au lieu d'une seule qui grossit.
+        if (thinkId) {
+          patch(thinkId, { active: false });
+          thinkId = null;
+        }
         const tid = "tool:" + (evt.id || evt.name);
         if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name, pending: true });
         tools[evt.id] = tid;
