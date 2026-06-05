@@ -3,16 +3,30 @@
 # on ne les met ici (section [override]) que pour forcer/plafonner.
 # Le chemin du binaire spécifique à une machine va dans loom.config.local.toml.
 
+# DEUX modèles -> serve.py lance llama-swap (hot-swap par le sélecteur de l'UI selon le
+# champ `model` de la requête). default_model ci-dessous = celui chargé par défaut.
+
 [[models]]
-# Gemma 4 E4B *ablitéré* (non censuré) — même archi que le Gemma officiel,
-# poids décensurés (mradermacher). Q4_K_M ~5.34 Go. Garde la vision via notre mmproj.
+# Gemma 4 E4B *abliterated* (non censuré) — Gemma 3n E4B (effectif ~4B). Q4_K_M ~5.34 Go,
+# vision via mmproj-F16. PLE en RAM -> CPU-bound mais sliding-window -> KV léger -> ~1,7 Go
+# de VRAM libre, ~33 tok/s STABLE, pas de spill. C'est le défaut (le plus sûr sur 6 Go).
 id = "gemma-uncensored"
 repo = "mradermacher/gemma-4-E4B-it-uncensored-GGUF"
 filename = "gemma-4-E4B-it-uncensored.Q4_K_M.gguf"
-# mmproj du repo unsloth officiel, déjà présent localement (même archi -> compatible).
 mmproj_filename = "mmproj-F16.gguf"   # "" pour désactiver la vision
 n_layers = 35
 size_mb = 5340
+
+[[models]]
+# Qwen3-VL 8B abliterated — dense 8B, vision. ~38 tok/s en décodage pur MAIS VRAM au ras
+# (~170 Mo libres) -> spill possible si contexte/image montent = ralentissements brutaux.
+# À choisir ponctuellement dans le sélecteur quand on veut sa qualité, pas en défaut.
+id = "qwen3-vl-abliterated"
+repo = "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v2-GGUF"
+filename = "Qwen3-VL-8B-Instruct-abliterated-v2.Q4_K_M.gguf"
+mmproj_filename = "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-Q8_0.gguf"
+n_layers = 36
+size_mb = 5030
 
 [server]
 # Contexte 24576 : large fenêtre pour une boucle tool-use qui enchaîne lectures et

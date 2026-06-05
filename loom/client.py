@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import sys
 import time
 from collections.abc import Iterator
 
@@ -18,6 +21,75 @@ from loom.inline_image import (
 # Outils mutateurs à gros contenu : sérialisés (1/tour) pour qu'un batch de N
 # write_file ne sature pas max_tokens et ne tronque pas les derniers (P1.1).
 _SERIAL_WRITE = frozenset({"write_file", "edit_file"})
+
+# --- Mode debug (LOOM_DEBUG=1) : trace l'échange avec le modèle dans le terminal -------
+_B64_RE = re.compile(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+")
+
+
+def _debug_on() -> bool:
+    return os.environ.get("LOOM_DEBUG", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _trunc(text: str, limit: int) -> str:
+    """Tronque + masque les images base64 (illisibles, énormes) pour un log propre."""
+    text = _B64_RE.sub("data:image/...;base64,<masque>", text)
+    return (
+        text
+        if len(text) <= limit
+        else text[:limit] + f" ...[+{len(text) - limit} car.]"
+    )
+
+
+def _emit(text: str) -> None:
+    """Écrit sur stderr sans JAMAIS lever (un crash d'encodage ne doit pas casser la
+    génération) : encode dans l'encodage du terminal, caractères non gérés -> remplacés."""
+    try:
+        enc = getattr(sys.stderr, "encoding", None) or "utf-8"
+        buf = getattr(sys.stderr, "buffer", None)
+        if buf is not None:
+            buf.write(text.encode(enc, "replace") + b"\n")
+            buf.flush()
+        else:
+            sys.stderr.write(text + "\n")
+            sys.stderr.flush()
+    except Exception:  # noqa: BLE001 - le debug est best-effort, jamais bloquant
+        pass
+
+
+def _debug(label: str, payload, limit: int = 4000) -> None:
+    """Imprime un bloc de debug sur stderr (terminal de loom.web), no-op si désactivé.
+    Labels ASCII volontairement (pas d'accents/flèches) pour rester lisible sur tout
+    terminal Windows."""
+    if not _debug_on():
+        return
+    body = (
+        payload
+        if isinstance(payload, str)
+        else json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    )
+    _emit(f"\n===== [LOOM_DEBUG] {label} =====")
+    _emit(_trunc(body, limit))
+
+
+def _debug_messages(model: str, messages: list[dict]) -> None:
+    """Trace la requête : modèle ciblé + chaque message (rôle + contenu tronqué)."""
+    if not _debug_on():
+        return
+    lines = [f"model={model}  ({len(messages)} messages)"]
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False, default=str)
+        extra = ""
+        if m.get("tool_calls"):
+            extra = " +tool_calls=" + json.dumps(m["tool_calls"], ensure_ascii=False)
+        lines.append(f"  [{m.get('role')}] {_trunc((content or '') + extra, 1500)}")
+    _debug("REQUETE -> modele", "\n".join(lines), limit=20000)
 
 
 def _sub_activity_line(kind: str, payload) -> str:
@@ -167,11 +239,19 @@ class LoomClient:
         kwargs = build_create_kwargs(
             model or self.model, messages, system_prompt, max_tokens, thinking
         )
+        _debug_messages(kwargs["model"], kwargs["messages"])
         stream = self._client.chat.completions.create(**kwargs)
+        reasoning, content = "", ""
         try:
-            yield from _iter_events(stream)
+            for kind, chunk in _iter_events(stream):
+                if kind == "reasoning":
+                    reasoning += chunk
+                elif kind == "content":
+                    content += chunk
+                yield (kind, chunk)
         finally:
             _close(stream)
+            _debug("REPONSE <- modele", {"reasoning": reasoning, "content": content})
 
     def complete(
         self,
@@ -252,17 +332,30 @@ class LoomClient:
                 thinking,
                 tools=tools,
             )
+            _debug_messages(kwargs["model"], kwargs["messages"])
             collector: dict = {"tool_calls": [], "finish_reason": None}
             text = ""
+            reasoning = ""
             try:
                 stream = self._client.chat.completions.create(**kwargs)
                 try:
                     for kind, chunk in _iter_turn(stream, collector):
                         if kind == "content":
                             text += chunk
+                        elif kind == "reasoning":
+                            reasoning += chunk
                         yield (kind, chunk)
                 finally:
                     _close(stream)
+                _debug(
+                    "REPONSE <- modele",
+                    {
+                        "reasoning": reasoning,
+                        "content": text,
+                        "tool_calls": collector["tool_calls"],
+                        "finish_reason": collector["finish_reason"],
+                    },
+                )
             except APIError as exc:
                 # Le modèle a vraisemblablement dépassé max_tokens AU MILIEU d'un
                 # tool_call → JSON tronqué → llama-server renvoie 500. On NE crashe
