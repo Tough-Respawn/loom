@@ -12,11 +12,24 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from loom.permissions import is_protected_write_path
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
+
+
+def _guard_write_path(path: Path) -> None:
+    """Barrière de sécurité DURE (indépendante de l'UI, comme la deny-list de run_shell) :
+    refuse l'écriture sur un chemin système ou un dossier de secrets, MÊME en mode 'allow'.
+    Le modèle reçoit une erreur d'outil exploitable, pas une bulle de confirmation."""
+    if is_protected_write_path(str(path), []):
+        raise ToolError(
+            "chemin protégé par la politique de sécurité (dossier système ou secrets) "
+            "— écriture refusée. Vise un autre emplacement."
+        )
 
 
 def _atomic_write(path: Path, content: str) -> None:
     """Écrit `content` en utf-8 de façon atomique (tmp + os.replace)."""
+    _guard_write_path(path)  # choke point : write_file/edit/replace/insert passent ici
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8", newline="") as fh:
@@ -90,6 +103,7 @@ def make_append_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
                 f"morceau trop volumineux (> {max_bytes} octets) — découpe en plus petit"
             )
         path = _resolve_in_root(root, rel)
+        _guard_write_path(path)  # append n'utilise pas _atomic_write : garde explicite
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8", newline="") as fh:
             fh.write(content)

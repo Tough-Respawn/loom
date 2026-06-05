@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
 # Outils sans effet de bord destructeur : autorisés d'office (pas de bulle de
 # confirmation), même en mode 'ask'. Lecture/recherche + le bloc-notes de todos.
@@ -57,6 +56,25 @@ DEFAULT_DENY: tuple[re.Pattern, ...] = (
 )
 
 
+# Chemins PROTÉGÉS en ÉCRITURE (write/append/edit/replace/insert) : refusés MÊME en
+# mode allow, comme la deny-list shell. Cibles dont l'écrasement est catastrophique ou
+# irréversible (dossiers système, clés/secrets) — pas une question de « persistance »
+# ennuyeuse, juste les dégâts qu'une hallucination de chemin ou une injection ne doit
+# JAMAIS pouvoir causer. Évalués sur le chemin RÉSOLU (absolu), séparateurs normalisés
+# en '/'. Volontairement COURTE (comme DEFAULT_DENY) : un mur, pas un filtre.
+DEFAULT_PROTECTED_PATHS: tuple[re.Pattern, ...] = (
+    # Windows : dossiers système (System32 est sous Windows/).
+    re.compile(r"^[a-z]:/windows(/|$)", re.IGNORECASE),
+    re.compile(r"^[a-z]:/program files( \(x86\))?(/|$)", re.IGNORECASE),
+    # Unix / macOS : dossiers système.
+    re.compile(r"^/(bin|sbin|boot|dev|proc|sys|usr|lib|lib64|etc)(/|$)", re.IGNORECASE),
+    re.compile(r"^/system(/|$)", re.IGNORECASE),
+    # Clés / secrets (toute plateforme) : ~/.ssh, ~/.gnupg.
+    re.compile(r"/\.ssh/", re.IGNORECASE),
+    re.compile(r"/\.gnupg/", re.IGNORECASE),
+)
+
+
 @dataclass(frozen=True)
 class Decision:
     action: str  # 'allow' | 'ask' | 'deny'
@@ -93,11 +111,16 @@ def _is_hard_denied(command: str, deny_commands: list[str]) -> bool:
     return any(extra.lower() in low for extra in deny_commands)
 
 
-def _path_escapes_root(root: str, rel: str) -> bool:
-    """Vrai si `rel` sort de `root` (anti path-traversal, sans I/O fichier)."""
-    base = Path(root).resolve()
-    target = (base / rel).resolve()
-    return target != base and base not in target.parents
+def is_protected_write_path(path: str, deny_paths: list[str]) -> bool:
+    """Vrai si `path` (résolu, absolu) vise un emplacement protégé en écriture : un
+    motif dur de DEFAULT_PROTECTED_PATHS, ou un fragment de la deny custom `deny_paths`.
+    Séparateurs normalisés en '/' pour matcher pareil sous Windows et Unix."""
+    norm = str(path).replace("\\", "/")
+    for pat in DEFAULT_PROTECTED_PATHS:
+        if pat.search(norm):
+            return True
+    low = norm.lower()
+    return any(extra.replace("\\", "/").lower() in low for extra in deny_paths)
 
 
 def _command_allowlisted(command: str, allow_commands: list[str]) -> bool:
