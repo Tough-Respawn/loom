@@ -254,12 +254,18 @@ def make_list_dir(workspace_dir: str, *, max_entries: int = 300) -> ToolSpec:
             raise ToolError(f"introuvable : {rel}")
         if not target.is_dir():
             raise ToolError(f"'{rel}' n'est pas un dossier (utilise read_file)")
+        # Préfixe = le dossier TEL QUE LE MODÈLE l'a demandé -> chaque entrée est un chemin
+        # directement copiable dans read_file/edit (pas un nom seul résolu, lui, contre le
+        # dossier de travail de la session, qui n'est PAS forcément celui-ci).
+        prefix = (
+            "" if rel in (".", "./", "") else rel.replace("\\", "/").rstrip("/") + "/"
+        )
         entries: list[str] = []
         items = sorted(target.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
         for p in items:
             if p.name in _SKIP_DIRS:
                 continue
-            entries.append(p.name + ("/" if p.is_dir() else ""))
+            entries.append(prefix + p.name + ("/" if p.is_dir() else ""))
             if len(entries) >= max_entries:
                 break
         if not entries:
@@ -270,8 +276,9 @@ def make_list_dir(workspace_dir: str, *, max_entries: int = 300) -> ToolSpec:
         name="list_dir",
         description=(
             "Liste le contenu d'un dossier (sous-dossiers suffixés '/'). Chemin relatif "
-            "au dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/projet'). Sert à "
-            "explorer un dossier. Pour une recherche large par motif, find_files est mieux."
+            "au dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/projet'). Renvoie "
+            "des chemins PRÊTS À L'EMPLOI (préfixés du dossier listé) : copie-les tels quels "
+            "dans read_file/edit. Pour une recherche large par motif, find_files est mieux."
         ),
         parameters={
             "type": "object",

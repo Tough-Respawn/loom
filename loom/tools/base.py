@@ -38,6 +38,8 @@ AVAILABLE_TOOLS = [
     {"name": "write_file", "label": "write_file", "danger": True},
     {"name": "append_file", "label": "append_file", "danger": True},
     {"name": "edit_file", "label": "edit_file", "danger": True},
+    {"name": "replace_lines", "label": "replace_lines", "danger": True},
+    {"name": "insert_lines", "label": "insert_lines", "danger": True},
     {"name": "run_shell", "label": "run_shell", "danger": True},
 ]
 
