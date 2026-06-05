@@ -58,11 +58,39 @@ logique de les enchaîner. Voir [README.md](README.md) pour le pitch et le déma
 ## État technique
 - **281 tests verts**, ruff clean. Branche `feat/moteur-unique`.
 
+## Cap agentic (roadmap)
+
+Quatre capacités font la différence entre un agent qui impressionne en démo et un agent
+fiable. Principe directeur : **le modèle fixe le plafond de jugement brut, le harness
+détermine quelle fraction de ce plafond on atteint** (surtout en donnant à chaque jugement
+difficile un contexte frais, étroit, bien nourri, plutôt qu'un seul flux qui dérive et fait
+tout à la fois). Le geste-clé n'est pas de rendre le modèle plus malin (impossible), c'est de
+**séparer les rôles faire/juger** pour que le modèle faible n'ait jamais à se noter lui-même
+en plein flux.
+
+Par capacité, du levier harness le plus fort au plus borné par le modèle :
+
+1. **Juger qu'une approche est mauvaise et pivoter** (le plus gros levier harness).
+   Métacognition : difficile pour un petit modèle en plein flux. Solution architecturale :
+   un **evaluator séparé**, contexte vierge, question étroite (« ce plan / ce diff est-il
+   correct, que manque-t-il ? »). Pattern planner/generator/evaluator. Un fan-out, c'est déjà
+   plusieurs regards frais sur le même problème. → priorité n°1.
+2. **Tenir un raisonnement long sans dériver** : gestion de contexte / **resets** (garder le
+   but visible, purger le bruit). La dérive vient surtout d'un contexte saturé, pas du modèle.
+3. **Récupérer après une erreur sans s'enfoncer** : **qualité du signal d'erreur** réinjecté
+   (échec de test, retour d'outil, exception) net et exploitable. 100 % harness en amont ;
+   le modèle ne peut reculer que si le signal arrive clair.
+4. **Décomposer un problème flou en sous-problèmes** : le harness peut *forcer* une étape de
+   plan, mais la **qualité** du découpage est bornée par le modèle. C'est là que le passage à
+   un 8B se sentira le plus ; le harness y plafonne vite.
+
 ## Reste / pistes
 1. **Modèle plus costaud** : Gemma 4B est le plancher ; un 8B abliterated GGUF (~6 Go) est
-   évalué (différé). Le dernier kilomètre (logique fine) est borné par le modèle, pas le harness.
-2. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite — `fetch_pages=false`).
-3. `llama-swap` + 2ᵉ modèle ; RAG (skills volumineux) ; audio.
+   évalué (différé). Borne directe de la capacité n°4 (décomposition) et du dernier kilomètre.
+2. **Séparer faire/juger** (capacité n°1) : étape evaluator à contexte frais sur les sorties
+   d'agent (plan, diff, résultat), au lieu d'un auto-jugement en plein flux.
+3. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite — `fetch_pages=false`).
+4. `llama-swap` + 2ᵉ modèle ; RAG (skills volumineux) ; audio.
 
 ## Conventions
 - Toolchain : **`uv`** (`uv run` / `uvx`) + **`ruff`** (hook PostToolUse lint+format PEP8).
