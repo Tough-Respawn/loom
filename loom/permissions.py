@@ -29,7 +29,9 @@ READ_TOOLS = frozenset(
     }
 )
 SHELL_TOOLS = frozenset({"run_shell", "bash"})
-WRITE_TOOLS = frozenset({"write_file", "append_file", "edit_file"})
+WRITE_TOOLS = frozenset(
+    {"write_file", "append_file", "edit_file", "replace_lines", "insert_lines"}
+)
 
 
 # Motifs durs : destructeurs ou irréversibles. Refusés MÊME en mode allow et

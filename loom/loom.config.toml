@@ -77,7 +77,8 @@ enabled = [
     "read_file", "read_document", "read_image",
     "web_search", "fetch_url",
     "dispatch_agent", "manage_todos",
-    "write_file", "append_file", "edit_file", "run_shell",
+    "write_file", "append_file", "edit_file",
+    "replace_lines", "insert_lines", "run_shell",
 ]
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
 # loom.config.local.toml pour pointer la vraie racine de la machine.

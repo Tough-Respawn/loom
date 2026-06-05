@@ -217,3 +217,166 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
         },
         run=run,
     )
+
+
+def _lines_and_nl(path: Path, rel: str) -> tuple[list[str], str]:
+    """(lignes avec fins préservées, style de fin de ligne). Lève si binaire. Le découpage
+    matche la numérotation de read_file (1-based) : len == nb de lignes affichées."""
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ToolError(f"fichier binaire non éditable : {rel}") from exc
+    nl = "\r\n" if "\r\n" in text else "\n"
+    return text.splitlines(keepends=True), nl
+
+
+def _new_block(content: str, nl: str) -> str:
+    """Normalise un bloc de remplacement aux fins de ligne du fichier, terminé par nl."""
+    if content == "":
+        return ""
+    body = nl.join(content.replace("\r\n", "\n").split("\n"))
+    return body if body.endswith(nl) else body + nl
+
+
+def make_replace_lines(workspace_dir: str) -> ToolSpec:
+    """Outil replace_lines : remplace les lignes [start..end] (1-based, incluses) par
+    `content`. Édition robuste pour petit modèle : il référence les NUMÉROS de ligne (vus
+    via read_file) au lieu de recopier le texte exact (raté sur l'indentation), et n'écrit
+    que le bloc modifié (pas tout le fichier -> pas d'overflow)."""
+    root = Path(workspace_dir)
+
+    def run(args: dict) -> str:
+        rel = (args.get("path") or "").strip()
+        if not rel:
+            raise ToolError("argument 'path' manquant")
+        try:
+            start = int(args.get("start_line"))
+            end = int(args.get("end_line"))
+        except (TypeError, ValueError):
+            raise ToolError(
+                "'start_line' et 'end_line' doivent être des entiers (1-based)"
+            ) from None
+        content = args.get("content")
+        if content is None:
+            raise ToolError("argument 'content' manquant ('' = supprimer les lignes)")
+        path = _resolve_in_root(root, rel)
+        if not path.exists():
+            raise ToolError(f"fichier introuvable : {rel}")
+        if path.is_dir():
+            raise ToolError(f"'{rel}' est un répertoire, pas un fichier")
+        lines, nl = _lines_and_nl(path, rel)
+        n = len(lines)
+        if start < 1 or start > end:
+            raise ToolError(
+                f"plage invalide : start_line={start}, end_line={end} (1 ≤ start ≤ end)"
+            )
+        if end > n:
+            raise ToolError(f"end_line={end} hors fichier : {rel} a {n} lignes")
+        block = _new_block(content, nl)
+        _atomic_write(path, "".join(lines[: start - 1]) + block + "".join(lines[end:]))
+        added = 0 if content == "" else content.count("\n") + 1
+        return f"remplacé : {rel} lignes {start}-{end} ({end - start + 1} → {added} lignes)"
+
+    return ToolSpec(
+        name="replace_lines",
+        description=(
+            "Remplace une PLAGE de lignes [start_line..end_line] (numéros vus dans "
+            "read_file, 1-based, bornes INCLUSES) par `content`. LE bon outil pour "
+            "corriger/remplacer un bloc au MILIEU d'un fichier : pas besoin de recopier "
+            "l'ancien texte (juste ses numéros), et tu n'écris que le nouveau bloc (pas "
+            "tout le fichier). content='' supprime les lignes. N'inclus PAS les préfixes "
+            "'N→' de read_file dans le contenu."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Chemin du fichier (relatif au dossier de travail ou absolu).",
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "1re ligne à remplacer (1-based, incluse).",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Dernière ligne à remplacer (incluse).",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Nouveau contenu des lignes. '' pour les supprimer.",
+                },
+            },
+            "required": ["path", "start_line", "end_line", "content"],
+        },
+        run=run,
+    )
+
+
+def make_insert_lines(workspace_dir: str) -> ToolSpec:
+    """Outil insert_lines : insère `content` APRÈS la ligne `after_line` (0 = au début).
+    Pour AJOUTER du code au milieu sans rien remplacer."""
+    root = Path(workspace_dir)
+
+    def run(args: dict) -> str:
+        rel = (args.get("path") or "").strip()
+        if not rel:
+            raise ToolError("argument 'path' manquant")
+        try:
+            after = int(args.get("after_line"))
+        except (TypeError, ValueError):
+            raise ToolError(
+                "'after_line' doit être un entier (0 = au tout début)"
+            ) from None
+        content = args.get("content")
+        if not content:
+            raise ToolError("argument 'content' manquant")
+        path = _resolve_in_root(root, rel)
+        if not path.exists():
+            raise ToolError(f"fichier introuvable : {rel}")
+        if path.is_dir():
+            raise ToolError(f"'{rel}' est un répertoire, pas un fichier")
+        lines, nl = _lines_and_nl(path, rel)
+        n = len(lines)
+        if after < 0 or after > n:
+            raise ToolError(
+                f"after_line={after} hors fichier : {rel} a {n} lignes (0..{n})"
+            )
+        head = lines[:after]
+        # si la dernière ligne gardée n'a pas de fin de ligne, l'ajouter (sinon collage)
+        if head and not head[-1].endswith(("\n", "\r")):
+            head = head[:-1] + [head[-1] + nl]
+        _atomic_write(
+            path, "".join(head) + _new_block(content, nl) + "".join(lines[after:])
+        )
+        return (
+            f"inséré : {rel} après ligne {after} (+{content.count(chr(10)) + 1} lignes)"
+        )
+
+    return ToolSpec(
+        name="insert_lines",
+        description=(
+            "Insère `content` APRÈS la ligne `after_line` (numéros vus dans read_file ; "
+            "0 = tout au début). Pour AJOUTER du code au MILIEU d'un fichier sans rien "
+            "remplacer. Pour ajouter à la toute fin, append_file est plus simple."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Chemin du fichier (relatif au dossier de travail ou absolu).",
+                },
+                "after_line": {
+                    "type": "integer",
+                    "description": "Insère après cette ligne (0 = au tout début).",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Contenu à insérer (lignes).",
+                },
+            },
+            "required": ["path", "after_line", "content"],
+        },
+        run=run,
+    )

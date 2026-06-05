@@ -70,22 +70,30 @@ def make_read_file(
         text = _decode_text(data)
         if text is None:
             raise ToolError(f"fichier binaire non lisible : {rel}")
+        truncated = len(text) > max_bytes
+        if truncated:
+            text = text[:max_bytes]
+        # NUMÉROS DE LIGNE (format `  12→contenu`) : le modèle référence ces numéros pour
+        # éditer via replace_lines/insert_lines, au lieu de devoir recopier le texte au
+        # caractère près (ce qu'un petit modèle rate sur l'indentation). NE PAS recopier
+        # le préfixe `N→` dans le contenu d'une écriture.
+        lines = text.splitlines()
+        width = max(2, len(str(len(lines))))
+        numbered = "\n".join(f"{i:>{width}}→{line}" for i, line in enumerate(lines, 1))
         # Marqueur de fin EXPLICITE : sans lui, le modèle qui voit du code s'arrêter net
-        # croit que SA LECTURE a été coupée et relit en boucle. On distingue clairement
-        # "lecture tronquée (fichier plus long)" de "fichier lu en entier (s'il s'arrête
-        # net, c'est LE FICHIER qui est incomplet, ne le relis pas, complète-le)".
-        if len(text) > max_bytes:
+        # croit que SA LECTURE a été coupée et relit en boucle.
+        if truncated:
             return (
-                text[:max_bytes]
+                numbered
                 + f"\n...[LECTURE TRONQUÉE à {max_bytes} caractères : le FICHIER est "
                 "plus long. Relis une portion ciblée si besoin.]"
             )
         return (
-            text
-            + f"\n[FIN DU FICHIER — {len(text)} caractères, lecture COMPLÈTE. Si le "
-            "code s'arrête brutalement, c'est LE FICHIER qui est incomplet (pas ta "
-            "lecture) : ne le relis pas, complète-le en ajoutant la suite avec "
-            "append_file (PAS edit_file).]"
+            numbered
+            + f"\n[FIN DU FICHIER — {len(lines)} lignes, lecture COMPLÈTE. Pour éditer : "
+            "replace_lines/insert_lines avec ces numéros de ligne. Si le code s'arrête "
+            "net, c'est LE FICHIER qui est incomplet (pas ta lecture) : complète-le "
+            "(append_file pour la fin, insert_lines au milieu) — ne relis pas en boucle.]"
         )
 
     return ToolSpec(
