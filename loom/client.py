@@ -11,7 +11,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from openai import APIError, OpenAI
+from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
 
 from loom.inline_image import (
     image_user_message,
@@ -19,9 +19,12 @@ from loom.inline_image import (
     parse_inline_image,
 )
 
-# Outils mutateurs à gros contenu : sérialisés (1/tour) pour qu'un batch de N
-# write/append ne sature pas max_tokens et ne tronque pas les derniers (P1.1).
-_SERIAL_WRITE = frozenset({"write_file", "append_file", "edit_file"})
+# Écritures à GROS contenu intégral : sérialisées (1/tour) pour qu'un batch de N ne
+# sature pas max_tokens et ne tronque pas les derniers (P1.1). On NE sérialise QUE
+# celles-ci : les éditions par bloc (edit_file/replace_lines/insert_lines) écrivent peu
+# -> pas de risque d'overflow, et les laisser passer ensemble réduit le nombre de tours
+# d'un refactor multi-fichiers (cf. plafond max_iters).
+_SERIAL_WRITE = frozenset({"write_file", "append_file"})
 
 
 def _safe_args(raw: str) -> str:
@@ -35,6 +38,30 @@ def _safe_args(raw: str) -> str:
         return raw
     except json.JSONDecodeError:
         return "{}"
+
+
+def _classify_api_error(exc: APIError) -> str:
+    """Range une erreur du SDK openai en catégorie d'ACTION (pas en code HTTP brut).
+
+    Le piège historique : tout `APIError` était traité comme un overflow (« écris plus
+    petit »), y compris un 404 « modèle inconnu » ou un serveur éteint -> diagnostic
+    trompeur + retries inutiles. On discrimine :
+    - 'timeout' / 'connection' : transport (serveur lent ou pas lancé) -> stop, pas de retry ;
+    - 'model_not_found' : 404 (llama-swap n'a pas le modèle demandé) -> stop ;
+    - 'other' : erreur cliente 4xx (auth, requête invalide) -> stop, on remonte la cause ;
+    - 'overflow' : 5xx OU erreur sans statut (tool_call vraisemblablement tronqué par
+      max_tokens) -> seul cas où « écris plus court » + retry borné a un sens.
+    """
+    if isinstance(exc, APITimeoutError):  # sous-classe d'APIConnectionError -> avant
+        return "timeout"
+    if isinstance(exc, APIConnectionError):
+        return "connection"
+    status = getattr(exc, "status_code", None)
+    if status == 404:
+        return "model_not_found"
+    if status is not None and status < 500:
+        return "other"
+    return "overflow"
 
 
 # --- Mode debug (LOOM_DEBUG=1) : trace l'échange avec le modèle dans le terminal -------
@@ -279,32 +306,6 @@ class LoomClient:
             _close(stream)
             _debug("REPONSE <- modele", {"reasoning": reasoning, "content": content})
 
-    def complete(
-        self,
-        messages: list[dict],
-        system_prompt: str,
-        max_tokens: int = 2048,
-        model: str | None = None,
-        thinking: bool = False,
-        temperature: float | None = None,
-    ) -> str:
-        """Complétion NON-streamée : renvoie le texte final d'un coup.
-
-        Pour la génération PARALLÈLE de fichiers (plusieurs appels concurrents que
-        llama-server batche en continu -> GPU saturé). `thinking=False` par défaut :
-        on veut du code direct, pas du raisonnement (qui explose le temps/les tokens).
-        `temperature` basse (ex 0.2) pour les sorties à FORMAT strict (plan).
-        """
-        kwargs = build_create_kwargs(
-            model or self.model, messages, system_prompt, max_tokens, thinking
-        )
-        kwargs["stream"] = False
-        kwargs.pop("stream_options", None)  # usage non pertinent hors streaming
-        if temperature is not None:
-            kwargs["temperature"] = temperature
-        resp = self._client.chat.completions.create(**kwargs)
-        return resp.choices[0].message.content or ""
-
     def stream_chat_tools(
         self,
         messages: list[dict],
@@ -313,7 +314,7 @@ class LoomClient:
         model: str | None = None,
         registry=None,
         thinking: bool = True,
-        max_iters: int = 15,
+        max_iters: int = 30,
         permission=None,
         confirm=None,
         max_overflow_retries: int = 2,
@@ -383,30 +384,44 @@ class LoomClient:
                     },
                 )
             except APIError as exc:
-                # Le modèle a vraisemblablement dépassé max_tokens AU MILIEU d'un
-                # tool_call → JSON tronqué → llama-server renvoie 500. On NE crashe
-                # PAS : on demande de découper et on relance la passe (reprise
-                # bornée par max_overflow_retries), sinon on s'arrête proprement.
-                if overflow_retries >= max_overflow_retries:
-                    yield (
-                        "content",
-                        f"\n[génération interrompue : {str(exc)[:160]}. "
-                        "Fichiers déjà écrits conservés.]",
+                kind = _classify_api_error(exc)
+                # OVERFLOW : tool_call vraisemblablement tronqué par max_tokens (5xx ou
+                # erreur sans statut). On NE crashe PAS : on demande de découper et on
+                # relance (reprise bornée par max_overflow_retries), sinon stop propre.
+                if kind == "overflow":
+                    if overflow_retries >= max_overflow_retries:
+                        yield (
+                            "content",
+                            f"\n[génération interrompue : {str(exc)[:160]}. "
+                            "Fichiers déjà écrits conservés.]",
+                        )
+                        return
+                    overflow_retries += 1
+                    note = (
+                        "Ta réponse précédente était trop longue et a été tronquée par "
+                        "la limite de tokens. Écris des fichiers PLUS PETITS : un seul "
+                        "fichier par appel write_file, et découpe tout contenu volumineux "
+                        "en plusieurs fichiers/appels successifs. Reprends, en plus court."
                     )
-                    return
-                overflow_retries += 1
-                note = (
-                    "Ta réponse précédente était trop longue et a été tronquée par "
-                    "la limite de tokens. Écris des fichiers PLUS PETITS : un seul "
-                    "fichier par appel write_file, et découpe tout contenu volumineux "
-                    "en plusieurs fichiers/appels successifs. Reprends, en plus court."
-                )
-                convo.append({"role": "user", "content": note})
-                yield (
-                    "tool_result",
-                    {"name": "(génération)", "ok": False, "preview": note},
-                )
-                continue
+                    convo.append({"role": "user", "content": note})
+                    yield (
+                        "tool_result",
+                        {"name": "(génération)", "ok": False, "preview": note},
+                    )
+                    continue
+                # Erreurs NON récupérables : pas un overflow -> message clair et stop net,
+                # PAS de « écris plus court » trompeur ni de retry voué à re-échouer.
+                reason = {
+                    "timeout": "le serveur a mis trop de temps à répondre (timeout).",
+                    "connection": "serveur de modèle injoignable (Loom est-il lancé ?).",
+                    "model_not_found": (
+                        f"modèle « {model or self.model} » introuvable ou non chargé "
+                        "(vérifie le modèle sélectionné)."
+                    ),
+                    "other": f"erreur du serveur de modèle : {str(exc)[:160]}",
+                }[kind]
+                yield ("content", f"\n[génération interrompue : {reason}]")
+                return
 
             tool_calls = collector["tool_calls"]
             if not tool_calls:
@@ -445,7 +460,7 @@ class LoomClient:
                     ],
                 }
             )
-            wrote_this_turn = False  # P1.1 : un seul write/edit par tour (anti-batch)
+            wrote_this_turn = False  # P1.1 : un seul write_file/append_file par tour
             # Images inline (read_image) à faire VOIR au modèle : différées après TOUS
             # les résultats d'outils (les messages `tool` doivent rester contigus).
             image_followups: list[dict] = []
@@ -470,11 +485,12 @@ class LoomClient:
                         {"id": tc["id"], "name": name, "ok": False, "preview": result},
                     )
                     continue
-                # P1.1 : sérialiser les écritures (1 write/edit par tour) -> évite le
-                # batch de N gros write_file qui sature max_tokens et tronque.
+                # P1.1 : sérialiser les écritures à gros contenu (1 par tour) -> évite le
+                # batch de N gros write_file/append_file qui sature max_tokens et tronque.
+                # Les éditions par bloc (edit/replace/insert) ne passent PAS par ici.
                 if name in _SERIAL_WRITE and wrote_this_turn:
                     result = (
-                        "différé : un seul write_file/edit_file par tour. Réémets "
+                        "différé : un seul write_file/append_file par tour. Réémets "
                         "cet appel (seul) au prochain tour."
                     )
                     convo.append(
