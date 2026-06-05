@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import re
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from flask import Flask, Response, render_template, request
 
@@ -17,6 +20,37 @@ from loom import context
 from loom.skills import compose_system_prompt, list_skills, load_skill
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+# Détection d'un chemin ABSOLU dans un message (Windows `C:\...` / `C:/...` ou POSIX
+# `/...`). Sert à l'auto-adoption du dossier de travail : si l'utilisateur désigne un
+# dossier existant, la session l'adopte -> run_shell tourne dedans, les chemins relatifs
+# s'y résolvent, et il n'a PAS à pointer le dossier dans l'UI.
+_PATH_RE = re.compile(r"""(?:[A-Za-z]:[\\/]|[\\/])[^\s"'`<>|*?]*""")
+
+
+def _detect_workspace(message: str) -> str | None:
+    """Renvoie le dossier EXISTANT le plus spécifique cité dans `message` (résolu absolu),
+    ou None. Un fichier existant -> son dossier parent. N'adopte QUE du réel (isdir/isfile),
+    donc un chemin de référence faux n'a aucun effet."""
+    found: list[str] = []
+    for raw in _PATH_RE.findall(message):
+        p = raw.rstrip(".,;:!?)]}»\"'`").strip()
+        if len(p) < 3:
+            continue
+        try:
+            if os.path.isdir(p):
+                found.append(p)
+            elif os.path.isfile(p):
+                found.append(os.path.dirname(p))
+        except OSError:
+            continue
+    if not found:
+        return None
+    best = max(found, key=len)  # le chemin le plus long = le plus spécifique
+    try:
+        return str(Path(best).resolve())
+    except OSError:
+        return None
 
 
 def _sse(event_type: str, **fields) -> str:
@@ -223,6 +257,18 @@ def create_app(
         cancel_event.clear()
         conv, save = _ctx()
 
+        # Auto-adoption du dossier de travail : si le message désigne un dossier EXISTANT,
+        # la session l'adopte avant le tour -> run_shell tourne dedans et les chemins
+        # relatifs s'y résolvent, sans que l'utilisateur ait à pointer le dossier dans l'UI.
+        adopted_ws = None
+        detected = _detect_workspace(message)
+        if detected:
+            sess = _session()
+            if detected != sess.workspace:
+                sess.workspace = detected
+                session_store.save(sess)
+                adopted_ws = detected
+
         try:
             content = _build_user_content(message, request.files.get("image"))
             conv.add("user", content)
@@ -253,6 +299,8 @@ def create_app(
             return Response(f"erreur: {exc}", status=500)
 
         def generate():
+            if adopted_ws:  # informe l'UI que le dossier de travail a été adopté
+                yield _sse("workspace", path=adopted_ws)
             answer = ""
             actions: list[str] = []  # trace compacte des outils (anti-amnésie)
             saved = False

@@ -316,6 +316,17 @@ async function sendChat(text, image) {
       case "tool_request":
         push({ kind: "perm", callId: evt.id, name: evt.name, summary: evt.summary });
         break;
+      case "workspace":
+        // Le serveur a adopté le dossier de travail désigné dans le message : on
+        // reflète la nouvelle pastille (l'utilisateur n'a rien eu à pointer).
+        loomWorkdir = evt.path;
+        try {
+          localStorage.loomWorkdir = loomWorkdir;
+        } catch (e) {
+          /* localStorage indispo : sans effet */
+        }
+        reflectWorkdir();
+        break;
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancé ?)" });
         break;
