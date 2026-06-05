@@ -45,7 +45,9 @@ def make_write_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
         name="write_file",
         description=(
             "Crée ou écrase un fichier avec le contenu fourni. Chemin relatif au "
-            "dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/out.txt')."
+            "dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/out.txt'). Pour un "
+            "GROS fichier (qui dépasserait la limite de tokens d'une réponse) : écris le "
+            "DÉBUT ici, puis complète par petits morceaux avec append_file."
         ),
         parameters={
             "type": "object",
@@ -59,6 +61,60 @@ def make_write_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
                 "content": {
                     "type": "string",
                     "description": "Contenu complet à écrire dans le fichier.",
+                },
+            },
+            "required": ["path", "content"],
+        },
+        run=run,
+    )
+
+
+def make_append_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
+    """Outil append_file : AJOUTE du contenu à la fin d'un fichier (le crée si absent).
+
+    Clé du « chunking » : un gros fichier dont le contenu entier ne tient pas dans la
+    limite de tokens d'UNE réponse (sinon l'appel d'outil est tronqué -> JSON cassé) est
+    écrit en PLUSIEURS petits appels. Pas d'écriture atomique (mode append) : on accumule.
+    """
+    root = Path(workspace_dir)
+
+    def run(args: dict) -> str:
+        rel = (args.get("path") or "").strip()
+        if not rel:
+            raise ToolError("argument 'path' manquant")
+        content = args.get("content")
+        if content is None:
+            raise ToolError("argument 'content' manquant")
+        if len(content.encode("utf-8")) > max_bytes:
+            raise ToolError(
+                f"morceau trop volumineux (> {max_bytes} octets) — découpe en plus petit"
+            )
+        path = _resolve_in_root(root, rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8", newline="") as fh:
+            fh.write(content)
+        return f"ajouté : {rel} (+{len(content)} caractères)"
+
+    return ToolSpec(
+        name="append_file",
+        description=(
+            "AJOUTE du contenu à la FIN d'un fichier (le crée s'il n'existe pas). Sert à "
+            "écrire un GROS fichier SANS dépasser la limite de tokens : write_file pour le "
+            "début, puis append_file plusieurs fois pour la suite, par PETITS morceaux. "
+            "Chemin relatif au dossier de travail ou absolu."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Chemin du fichier : relatif au dossier de travail ou absolu."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Morceau de contenu à ajouter à la fin du fichier.",
                 },
             },
             "required": ["path", "content"],
@@ -106,12 +162,14 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
         count = text.count(old_string)
         if count == 0:
             crlf = old_string.replace("\n", "\r\n")
-            hint = (
-                " (le fichier utilise des fins de ligne CRLF — vérifie les retours"
-                " à la ligne d'old_string)"
-                if crlf != old_string and crlf in text
-                else ""
-            )
+            if crlf != old_string and crlf in text:
+                hint = " — le fichier est en CRLF, mets des \\r\\n dans old_string"
+            else:
+                hint = (
+                    " — old_string doit être COPIÉ TEL QUEL du fichier (indentation et "
+                    "espaces EXACTS). Si tu veux AJOUTER du code à la FIN (compléter un "
+                    "fichier), n'utilise PAS edit_file : utilise append_file."
+                )
             raise ToolError(f"old_string introuvable dans {rel}{hint}")
         if count > 1 and not replace_all:
             locs = ", ".join(str(n) for n in _occurrence_lines(text, old_string)[:12])

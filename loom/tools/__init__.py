@@ -43,6 +43,7 @@ _SUBAGENT_TOOLS = [
     "web_search",
     "fetch_url",
     "write_file",
+    "append_file",
     "edit_file",
     "run_shell",
 ]
@@ -69,7 +70,7 @@ def build_registry(
     """
     # Imports locaux : les sous-modules d'écriture/shell/web importent `base`,
     # on les charge à la demande pour garder un graphe d'import simple.
-    from loom.tools.fs import make_edit_file, make_write_file
+    from loom.tools.fs import make_append_file, make_edit_file, make_write_file
     from loom.tools.search import make_find_files, make_list_dir, make_search_text
     from loom.tools.shell import make_run_shell
 
@@ -88,6 +89,8 @@ def build_registry(
         specs.append(make_read_image(workspace_dir))
     if "write_file" in enabled:
         specs.append(make_write_file(workspace_dir, max_bytes))
+    if "append_file" in enabled:
+        specs.append(make_append_file(workspace_dir, max_bytes))
     if "edit_file" in enabled:
         specs.append(make_edit_file(workspace_dir))
     if "run_shell" in enabled:
