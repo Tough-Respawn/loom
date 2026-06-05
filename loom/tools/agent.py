@@ -15,7 +15,8 @@ shell) : un ouvrier en lecture seule ne sert à rien. Garde-fous :
   par défaut (le sous-agent tourne sans UI) ;
 - `thinking=False` ; l'arrêt suit le stop naturel du modèle, borné par les
   garde-fous de stream_chat_tools (plafond de tours, mur de temps, non-progrès).
-  Le sous-agent (ouvrier multi-fichiers) a un plafond plus haut que le principal.
+  Plafond de tours généreux (comme le principal) : un ouvrier multi-fichiers a
+  besoin de marge, le vrai anti-runaway reste le mur de temps + le non-progrès.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def make_dispatch_agent(
     system_prompt: str,
     model: str | None = None,
     max_tokens: int = 2048,
-    max_iters: int = 25,
+    max_iters: int = 30,
     permission=None,
 ) -> ToolSpec:
     """Outil dispatch_agent : lance une boucle tool-use isolée et renvoie sa synthèse.
