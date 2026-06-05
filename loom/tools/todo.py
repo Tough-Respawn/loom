@@ -8,9 +8,9 @@ rendu renvoyé À CHAQUE appel lui rappelle où il en est -> il ne repart pas de
 zéro ni n'oublie une étape.
 
 Sémantique de REMPLACEMENT total (comme l'outil TodoWrite de Claude Code) : le
-modèle renvoie la liste COMPLÈTE à jour, on ne fusionne pas. L'état vit dans un
-`TodoStore` partagé entre les reconstructions du registre (un par tour) pour
-survivre d'un tour de conversation au suivant.
+modèle renvoie la liste COMPLÈTE à jour, on ne fusionne pas. L'état vit dans la
+`Conversation` de la session active (`conversation.todos`) : par session, persisté
+dans session.json -> survit au redémarrage et ne déborde pas d'une session à l'autre.
 """
 
 from __future__ import annotations
@@ -20,16 +20,6 @@ from loom.tools.base import ToolError, ToolSpec
 # Marqueurs ASCII (pas d'emoji) : à faire / en cours / fait.
 _MARK = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]"}
 _MAX_TODOS = 30
-
-
-class TodoStore:
-    """Liste de tâches partagée (mémoire de travail). `items` = list[{content,status}]."""
-
-    def __init__(self) -> None:
-        self.items: list[dict] = []
-
-    def replace(self, items: list[dict]) -> None:
-        self.items = items
 
 
 def _render(items: list[dict]) -> str:
@@ -42,8 +32,13 @@ def _render(items: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def make_manage_todos(store: TodoStore) -> ToolSpec:
-    """Outil manage_todos : écrit/met à jour la liste de tâches courante."""
+def make_manage_todos(conversation) -> ToolSpec:
+    """Outil manage_todos : écrit/met à jour le plan de la conversation active.
+
+    `conversation` : tout objet portant une liste `.todos` (la Conversation de la
+    session). On mute `conversation.todos` en place ; la persistance (session.json)
+    est faite par la sauvegarde de fin de tour, comme pour les messages.
+    """
 
     def run(args: dict) -> str:
         todos = args.get("todos")
@@ -66,7 +61,7 @@ def make_manage_todos(store: TodoStore) -> ToolSpec:
                     f"statut invalide '{status}' : pending | in_progress | done"
                 )
             clean.append({"content": content, "status": status})
-        store.replace(clean)
+        conversation.todos = clean
         return _render(clean)
 
     return ToolSpec(

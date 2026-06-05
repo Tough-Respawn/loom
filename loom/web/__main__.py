@@ -12,7 +12,6 @@ from loom.conversation import Conversation
 from loom.permissions import evaluate
 from loom.session import SessionStore
 from loom.tools import AVAILABLE_TOOLS, build_registry
-from loom.tools.todo import TodoStore
 from loom.web.app import create_app
 
 RUNTIME_DIR = Path(__file__).resolve().parent.parent
@@ -36,23 +35,18 @@ def build_app(cfg):
         cfg.chat.context_token_budget, cfg.context, cfg.chat.max_tokens
     )
 
-    # Mémoire de travail des todos : un SEUL store partagé entre les reconstructions
-    # du registre (une par tour) -> le plan du modèle survit d'un tour au suivant.
-    todo_store = TodoStore()
-
     # Factory : le registre est (re)construit selon les outils cochés dans l'UI pour la
     # conversation courante. `workspace` optionnel : à défaut, celui de la config.
-    # `client`/`model` arment dispatch_agent (sous-boucle tool-use), `todo_store` arme
-    # manage_todos.
-    def make_registry(active, workspace=None):
+    # `client`/`model` arment dispatch_agent (sous-boucle tool-use) ; `conversation` arme
+    # manage_todos, dont le plan vit dans `conversation.todos` (par session, persisté).
+    def make_registry(active, workspace=None, conversation=None):
         return build_registry(
             workspace_dir=workspace or cfg.chat.workspace_dir,
-            extensions=cfg.chat.read_file_extensions,
             max_bytes=cfg.chat.read_file_max_bytes,
             enabled=active,
             web_cfg=cfg.chat.web_search,
             client=client,
-            todo_store=todo_store,
+            conversation=conversation,
             model=cfg.default_model,
             sub_max_tokens=cfg.chat.max_tokens,
             permission=permission,
@@ -80,10 +74,9 @@ def build_app(cfg):
 
     permission = lambda name, args: evaluate(name, args, cfg.permissions)  # noqa: E731
     app = create_app(
-        conversation,
         client,
-        cfg.chat.history_path,
         cfg.chat.skills_dir,
+        store,
         max_tokens=cfg.chat.max_tokens,
         context_budget=budget,
         keep_recent=cfg.chat.keep_recent_messages,
@@ -92,7 +85,6 @@ def build_app(cfg):
         available_tools=AVAILABLE_TOOLS,
         permission=permission,
         workspace_dir=cfg.chat.workspace_dir,
-        session_store=store,
     )
     return app
 

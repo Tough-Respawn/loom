@@ -53,13 +53,12 @@ _SUBAGENT_TOOLS = [
 
 def build_registry(
     workspace_dir: str,
-    extensions: list[str],
     max_bytes: int,
     enabled: list[str],
     web_cfg=None,
     *,
     client=None,
-    todo_store=None,
+    conversation=None,
     model: str | None = None,
     sub_max_tokens: int = 2048,
     permission=None,
@@ -68,7 +67,8 @@ def build_registry(
 
     `client`/`model` : requis pour dispatch_agent (lance une sous-boucle tool-use).
     `permission` : politique relayée à la sous-boucle (même sécurité qu'au principal).
-    `todo_store` : mémoire partagée requise pour manage_todos (survit aux tours).
+    `conversation` : requise pour manage_todos (son plan vit dans `conversation.todos`,
+    par session et persisté). Absente -> pas de manage_todos (cas du sous-agent).
     """
     # Imports locaux : les sous-modules d'écriture/shell/web importent `base`,
     # on les charge à la demande pour garder un graphe d'import simple.
@@ -90,7 +90,7 @@ def build_registry(
     if "list_dir" in enabled:
         specs.append(make_list_dir(workspace_dir))
     if "read_file" in enabled:
-        specs.append(make_read_file(workspace_dir, extensions, max_bytes))
+        specs.append(make_read_file(workspace_dir, max_bytes))
     if "read_document" in enabled:
         specs.append(make_read_document(workspace_dir))
     if "read_image" in enabled:
@@ -115,10 +115,10 @@ def build_registry(
             specs.append(make_web_search(wc))
         if "fetch_url" in enabled:
             specs.append(make_fetch_url(wc))
-    if "manage_todos" in enabled and todo_store is not None:
+    if "manage_todos" in enabled and conversation is not None:
         from loom.tools.todo import make_manage_todos
 
-        specs.append(make_manage_todos(todo_store))
+        specs.append(make_manage_todos(conversation))
     if "dispatch_agent" in enabled and client is not None:
         from loom.prompts import SUBAGENT_SYSTEM
         from loom.tools.agent import make_dispatch_agent
@@ -127,7 +127,7 @@ def build_registry(
             # Sous-registre complet SANS client -> pas de dispatch_agent imbriqué
             # (anti-récursion). Écriture/shell inclus : c'est un vrai ouvrier.
             return build_registry(
-                workspace_dir, extensions, max_bytes, _SUBAGENT_TOOLS, web_cfg=web_cfg
+                workspace_dir, max_bytes, _SUBAGENT_TOOLS, web_cfg=web_cfg
             )
 
         specs.append(

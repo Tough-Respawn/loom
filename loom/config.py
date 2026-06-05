@@ -15,26 +15,6 @@ from loom.tools.web import WebSearchConfig
 DEFAULT_SYSTEM_PROMPT = CHAT_SYSTEM
 
 
-DEFAULT_READ_EXTENSIONS = [
-    ".py",
-    ".md",
-    ".txt",
-    ".toml",
-    ".json",
-    ".html",
-    ".js",
-    ".css",
-    ".yaml",
-    ".yml",
-    ".sh",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".cfg",
-    ".ini",
-]
-
-
 @dataclass
 class ChatConfig:
     system_prompt: str
@@ -49,10 +29,10 @@ class ChatConfig:
     # Outils (boucle tool-use). enabled vide => aucun outil exposé.
     tools_enabled: list[str] = field(default_factory=list)
     workspace_dir: str = "."
-    read_file_max_bytes: int = 200_000
-    read_file_extensions: list[str] = field(
-        default_factory=lambda: DEFAULT_READ_EXTENSIONS
-    )
+    # Cap par appel read_file (caractères). Volontairement BAS devant le contexte (24576
+    # tokens) : un seul gros fichier ne doit pas le faire déborder -> on lit par tranches
+    # (start_line). ~40000 car ≈ 10k tokens.
+    read_file_max_bytes: int = 40_000
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
 
 
@@ -161,10 +141,7 @@ def load_config(
         keep_recent_messages=int(ch.get("keep_recent_messages", 6)),
         tools_enabled=list(tl.get("enabled", [])),
         workspace_dir=tl.get("workspace_dir", "."),
-        read_file_max_bytes=int(tl.get("read_file_max_bytes", 200_000)),
-        read_file_extensions=list(
-            tl.get("read_file_extensions", DEFAULT_READ_EXTENSIONS)
-        ),
+        read_file_max_bytes=int(tl.get("read_file_max_bytes", 40_000)),
         web_search=_parse_web_search(ws),
     )
     models = [_parse_model(rm) for rm in data["models"]]

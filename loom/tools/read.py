@@ -48,12 +48,13 @@ def _decode_text(data: bytes) -> str | None:
         return None
 
 
-def make_read_file(
-    workspace_dir: str, extensions: list[str], max_bytes: int
-) -> ToolSpec:
-    """Outil read_file borné au workspace, extensions autorisées, taille plafonnée."""
+def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
+    """Outil read_file : lit tout fichier TEXTE (taille plafonnée, fenêtrable).
+
+    Plus d'allowlist d'extensions (Loom est généraliste : .env/.log/Dockerfile/CSV…
+    sont légitimes) ; le garde anti-binaire de `_decode_text` rejette ce qui n'est pas
+    du texte. Symétrique de write_file, qui n'a jamais restreint l'extension."""
     root = Path(workspace_dir)
-    allowed = {e.lower() for e in extensions}
 
     def run(args: dict) -> str:
         rel = (args.get("path") or "").strip()
@@ -64,43 +65,74 @@ def make_read_file(
             raise ToolError(f"fichier introuvable : {rel}")
         if path.is_dir():
             raise ToolError(f"'{rel}' est un répertoire, pas un fichier")
-        if allowed and path.suffix.lower() not in allowed:
-            raise ToolError(f"extension non autorisée : {path.suffix or '(aucune)'}")
         data = path.read_bytes()
         text = _decode_text(data)
         if text is None:
             raise ToolError(f"fichier binaire non lisible : {rel}")
-        truncated = len(text) > max_bytes
-        if truncated:
-            text = text[:max_bytes]
-        # NUMÉROS DE LIGNE (format `  12→contenu`) : le modèle référence ces numéros pour
-        # éditer via replace_lines/insert_lines, au lieu de devoir recopier le texte au
-        # caractère près (ce qu'un petit modèle rate sur l'indentation). NE PAS recopier
-        # le préfixe `N→` dans le contenu d'une écriture.
+        # Fenêtre de lecture (1-based, optionnelle) : lire un GROS fichier par TRANCHES
+        # plutôt que tout d'un coup -> on ne dépasse pas le contexte. Sans start_line on
+        # part du début ; on s'arrête à line_count lignes OU au cap de caractères.
+        try:
+            start = int(args.get("start_line") or 1)
+        except (TypeError, ValueError):
+            raise ToolError("start_line doit être un entier (1-based)") from None
+        if start < 1:
+            raise ToolError("start_line doit être >= 1 (1-based)")
+        lc = args.get("line_count")
+        try:
+            count = None if lc in (None, "") else int(lc)
+        except (TypeError, ValueError):
+            raise ToolError("line_count doit être un entier") from None
+
         lines = text.splitlines()
-        width = max(2, len(str(len(lines))))
-        numbered = "\n".join(f"{i:>{width}}→{line}" for i, line in enumerate(lines, 1))
-        # Marqueur de fin EXPLICITE : sans lui, le modèle qui voit du code s'arrêter net
-        # croit que SA LECTURE a été coupée et relit en boucle.
-        if truncated:
-            return (
-                numbered
-                + f"\n...[LECTURE TRONQUÉE à {max_bytes} caractères : le FICHIER est "
-                "plus long. Relis une portion ciblée si besoin.]"
-            )
-        return (
-            numbered
-            + f"\n[FIN DU FICHIER — {len(lines)} lignes, lecture COMPLÈTE. Pour éditer : "
-            "replace_lines/insert_lines avec ces numéros de ligne. Si le code s'arrête "
-            "net, c'est LE FICHIER qui est incomplet (pas ta lecture) : complète-le "
-            "(append_file pour la fin, insert_lines au milieu) — ne relis pas en boucle.]"
+        total = len(lines)
+        if total == 0:
+            return f"[fichier vide : {rel}]"
+        if start > total:
+            raise ToolError(f"start_line={start} hors fichier : {rel} a {total} lignes")
+        end_limit = total if count is None else min(total, start - 1 + count)
+        # Sélection bornée par line_count ET par le cap de caractères (garde-fou contexte).
+        selected: list[str] = []
+        chars = 0
+        i = start - 1
+        while i < end_limit and chars <= max_bytes:
+            selected.append(lines[i])
+            chars += len(lines[i]) + 1
+            i += 1
+        last = i  # index exclusif -> dernière ligne affichée = i (1-based)
+        # NUMÉROS DE LIGNE (format `  12→contenu`), ABSOLUS : le modèle les référence pour
+        # éditer via replace_lines/insert_lines, au lieu de recopier le texte au caractère
+        # près. NE PAS recopier le préfixe `N→` dans le contenu d'une écriture.
+        width = max(2, len(str(last)))
+        numbered = "\n".join(
+            f"{n:>{width}}→{line}" for n, line in enumerate(selected, start)
         )
+        # Marqueur de fin EXPLICITE : sans lui, le modèle qui voit du code s'arrêter net
+        # croit que SA LECTURE a été coupée et relit en boucle. Si tronqué, on indique la
+        # COMMANDE pour lire la suite (mécanisme réel, pas un vœu pieux).
+        if last >= total:
+            footer = (
+                f"\n[FIN DU FICHIER — lignes {start}–{total} sur {total}. Pour éditer : "
+                "replace_lines/insert_lines avec ces numéros. Si le code s'arrête net, "
+                "c'est LE FICHIER qui est incomplet (pas ta lecture) : complète-le "
+                "(append_file pour la fin, insert_lines au milieu) — ne relis pas en boucle.]"
+            )
+        else:
+            footer = (
+                f"\n[affiché lignes {start}–{last} sur {total} — le FICHIER est plus long. "
+                f"Lis la suite avec read_file(path, start_line={last + 1}), ou cible une "
+                "zone précise avec search_text puis read_file(start_line=…).]"
+            )
+        return numbered + footer
 
     return ToolSpec(
         name="read_file",
         description=(
-            "Lit le contenu d'un fichier texte et le renvoie. Chemin relatif au "
-            "dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/notes.txt')."
+            "Lit un fichier texte (avec numéros de ligne) et le renvoie. Chemin relatif "
+            "au dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/notes.txt'). "
+            "GROS fichier : lis par TRANCHES avec start_line (et éventuellement "
+            "line_count) — le pied de réponse t'indique où continuer. Pour viser une "
+            "zone précise, fais d'abord search_text puis read_file(start_line=…)."
         ),
         parameters={
             "type": "object",
@@ -111,7 +143,21 @@ def make_read_file(
                         "Chemin du fichier : relatif au dossier de travail ou absolu "
                         "(ex: 'C:/Users/moi/notes.txt')."
                     ),
-                }
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": (
+                        "Première ligne à lire (1-based, défaut 1). Pour lire la suite "
+                        "d'un gros fichier déjà entamé."
+                    ),
+                },
+                "line_count": {
+                    "type": "integer",
+                    "description": (
+                        "Nombre de lignes à lire depuis start_line (défaut : jusqu'à la "
+                        "fin ou la limite de taille)."
+                    ),
+                },
             },
             "required": ["path"],
         },
