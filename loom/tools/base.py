@@ -36,6 +36,7 @@ AVAILABLE_TOOLS = [
     {"name": "dispatch_agent", "label": "dispatch_agent", "danger": False},
     {"name": "manage_todos", "label": "manage_todos", "danger": False},
     {"name": "write_file", "label": "write_file", "danger": True},
+    {"name": "append_file", "label": "append_file", "danger": True},
     {"name": "edit_file", "label": "edit_file", "danger": True},
     {"name": "run_shell", "label": "run_shell", "danger": True},
 ]

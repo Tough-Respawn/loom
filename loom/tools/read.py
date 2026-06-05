@@ -70,9 +70,23 @@ def make_read_file(
         text = _decode_text(data)
         if text is None:
             raise ToolError(f"fichier binaire non lisible : {rel}")
+        # Marqueur de fin EXPLICITE : sans lui, le modèle qui voit du code s'arrêter net
+        # croit que SA LECTURE a été coupée et relit en boucle. On distingue clairement
+        # "lecture tronquée (fichier plus long)" de "fichier lu en entier (s'il s'arrête
+        # net, c'est LE FICHIER qui est incomplet, ne le relis pas, complète-le)".
         if len(text) > max_bytes:
-            text = text[:max_bytes] + f"\n...[tronqué à {max_bytes} caractères]"
-        return text
+            return (
+                text[:max_bytes]
+                + f"\n...[LECTURE TRONQUÉE à {max_bytes} caractères : le FICHIER est "
+                "plus long. Relis une portion ciblée si besoin.]"
+            )
+        return (
+            text
+            + f"\n[FIN DU FICHIER — {len(text)} caractères, lecture COMPLÈTE. Si le "
+            "code s'arrête brutalement, c'est LE FICHIER qui est incomplet (pas ta "
+            "lecture) : ne le relis pas, complète-le en ajoutant la suite avec "
+            "append_file (PAS edit_file).]"
+        )
 
     return ToolSpec(
         name="read_file",

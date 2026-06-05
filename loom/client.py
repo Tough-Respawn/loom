@@ -19,8 +19,22 @@ from loom.inline_image import (
 )
 
 # Outils mutateurs à gros contenu : sérialisés (1/tour) pour qu'un batch de N
-# write_file ne sature pas max_tokens et ne tronque pas les derniers (P1.1).
-_SERIAL_WRITE = frozenset({"write_file", "edit_file"})
+# write/append ne sature pas max_tokens et ne tronque pas les derniers (P1.1).
+_SERIAL_WRITE = frozenset({"write_file", "append_file", "edit_file"})
+
+
+def _safe_args(raw: str) -> str:
+    """Renvoie des arguments JSON VALIDES pour l'historique. Si l'appel a été tronqué
+    (réponse coupée par max_tokens -> JSON cassé), on remet `{}` : sans ça, le JSON
+    invalide reste dans la conversation et CHAQUE requête suivante échoue (500 'parse
+    error') -> cascade infinie. Le message d'erreur d'outil signale déjà la troncature."""
+    raw = raw or "{}"
+    try:
+        json.loads(raw)
+        return raw
+    except json.JSONDecodeError:
+        return "{}"
+
 
 # --- Mode debug (LOOM_DEBUG=1) : trace l'échange avec le modèle dans le terminal -------
 _B64_RE = re.compile(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+")
@@ -409,7 +423,10 @@ class LoomClient:
                             "type": "function",
                             "function": {
                                 "name": tc["name"],
-                                "arguments": tc["arguments"],
+                                # JSON sain dans l'historique : un appel tronqué (JSON
+                                # cassé) provoquerait un 500 'parse error' à CHAQUE tour
+                                # suivant -> cascade. _safe_args remet {} si invalide.
+                                "arguments": _safe_args(tc["arguments"]),
                             },
                         }
                         for tc in tool_calls
