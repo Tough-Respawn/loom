@@ -582,6 +582,9 @@ class LoomClient:
                         "ok": ok,
                         "preview": tool_content[:300],
                         "path": args.get("path"),
+                        # Commande réellement lancée par run_shell : pour la VOIR dans la
+                        # pastille (sinon on ne voit que le résultat, pas ce qui a tourné).
+                        "cmd": args.get("command"),
                         "detail": detail[:4000] if detail else None,
                     },
                 )

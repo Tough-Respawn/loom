@@ -84,7 +84,7 @@ function ToolPill({ it }) {
     : (it.ok ? "✓ " : "✕ ") + (it.preview || "").split("\n")[0];
   return html`<div class=${"tool-chip" + (it.pending ? "" : it.ok ? " ok" : " ko") + (hasDetail ? " has-detail" : "")}>
     <div class="tool-row" onClick=${() => hasDetail && setOpen(!open)}>
-      <span class="tool-main">${it.name || "outil"}${it.path ? " → " + it.path : ""}</span>
+      <span class="tool-main">${it.name || "outil"}${it.cmd ? " → " + it.cmd : it.path ? " → " + it.path : ""}</span>
       <span class="tool-status">${status}</span>
       <span class="tool-caret">${hasDetail ? (open ? "▾" : "▸") : ""}</span>
     </div>
@@ -310,7 +310,7 @@ async function sendChat(text, image) {
       case "tool_result": {
         const tid = "tool:" + (evt.id || evt.name);
         if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name });
-        patch(tid, { name: evt.name, path: evt.path, ok: evt.ok, preview: evt.preview, detail: evt.detail, pending: false });
+        patch(tid, { name: evt.name, path: evt.path, cmd: evt.cmd, ok: evt.ok, preview: evt.preview, detail: evt.detail, pending: false });
         break;
       }
       case "tool_request":
