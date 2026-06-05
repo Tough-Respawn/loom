@@ -68,7 +68,10 @@ def build_app(cfg):
     data_root = Path(cfg.chat.history_path).resolve().parent
     sessions_root = data_root / "sessions"
     store = SessionStore(
-        sessions_root, cfg.chat.system_prompt, default_tools=cfg.chat.tools_enabled
+        sessions_root,
+        cfg.chat.system_prompt,
+        default_tools=cfg.chat.tools_enabled,
+        default_model=cfg.default_model,
     )
     if not store.list() and conversation.messages:
         seed = store.create(workspace=cfg.chat.workspace_dir, title="Session importée")
