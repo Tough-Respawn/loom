@@ -9,6 +9,7 @@ import re
 import sys
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 from openai import APIError, OpenAI
 
@@ -59,9 +60,14 @@ def _trunc(text: str, limit: int) -> str:
     )
 
 
+# Fichier de log debug : permet d'inspecter l'échange modèle APRÈS coup (le terminal
+# n'est pas lisible à distance). Sous loom/data/ (gitignoré). Écrit en plus de stderr.
+_DEBUG_LOG = Path(__file__).resolve().parent / "data" / "loom-debug.log"
+
+
 def _emit(text: str) -> None:
-    """Écrit sur stderr sans JAMAIS lever (un crash d'encodage ne doit pas casser la
-    génération) : encode dans l'encodage du terminal, caractères non gérés -> remplacés."""
+    """Écrit sur stderr ET dans le fichier de log, sans JAMAIS lever (un crash d'encodage
+    ne doit pas casser la génération) : encodage tolérant, caractères non gérés remplacés."""
     try:
         enc = getattr(sys.stderr, "encoding", None) or "utf-8"
         buf = getattr(sys.stderr, "buffer", None)
@@ -72,6 +78,12 @@ def _emit(text: str) -> None:
             sys.stderr.write(text + "\n")
             sys.stderr.flush()
     except Exception:  # noqa: BLE001 - le debug est best-effort, jamais bloquant
+        pass
+    try:
+        _DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_DEBUG_LOG, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(text + "\n")
+    except Exception:  # noqa: BLE001 - best-effort
         pass
 
 
