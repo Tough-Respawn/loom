@@ -135,6 +135,7 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         llama_bin=cfg.server_bin,
         models_dir=str(MODELS_DIR),
         context=cfg.context,
+        override_n_gpu_layers=cfg.override_n_gpu_layers,
     )
     write_swap_yaml(swap, SWAP_YAML)
     args = [
