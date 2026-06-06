@@ -48,6 +48,7 @@ _SUBAGENT_TOOLS = [
     "replace_lines",
     "insert_lines",
     "run_shell",
+    "check_page",
 ]
 
 
@@ -107,6 +108,10 @@ def build_registry(
         specs.append(make_insert_lines(workspace_dir))
     if "run_shell" in enabled:
         specs.append(make_run_shell(workspace_dir))
+    if "check_page" in enabled:
+        from loom.tools.browser import make_check_page
+
+        specs.append(make_check_page(workspace_dir))
     if "web_search" in enabled or "fetch_url" in enabled:
         from loom.tools.web import WebSearchConfig, make_fetch_url, make_web_search
 

@@ -141,6 +141,7 @@ AVAILABLE_TOOLS = [
     {"name": "read_image", "label": "read_image", "danger": False},
     {"name": "web_search", "label": "web_search", "danger": False},
     {"name": "fetch_url", "label": "fetch_url", "danger": False},
+    {"name": "check_page", "label": "check_page", "danger": False},
     {"name": "dispatch_agent", "label": "dispatch_agent", "danger": False},
     {"name": "manage_todos", "label": "manage_todos", "danger": False},
     {"name": "write_file", "label": "write_file", "danger": True},
