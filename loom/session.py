@@ -88,6 +88,11 @@ class SessionStore:
     def _file(self, sid: str) -> Path:
         return self.root / sid / "session.json"
 
+    def session_dir(self, sid: str) -> Path:
+        """Dossier d'une session (root/<id>) : porte session.json ET les logs runtime
+        (debug.log) propres à cette session."""
+        return self.root / sid
+
     def create(self, *, workspace: str = ".", title: str = "") -> Session:
         sid = uuid.uuid4().hex[:12]
         now = _now_iso()

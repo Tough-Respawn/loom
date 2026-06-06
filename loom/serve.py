@@ -24,6 +24,20 @@ CONFIG_PATH = LOOM_DIR / "loom.config.toml"
 LOCAL_CONFIG_PATH = LOOM_DIR / "loom.config.local.toml"
 MODELS_DIR = LOOM_DIR / "models"
 SWAP_YAML = MODELS_DIR.parent / "llama-swap.yaml"
+# Log PERSISTANT du serveur modèle (le terminal est éphémère / illisible à distance).
+# La web app en recopie une vue dans chaque session active. Repart à neuf à chaque lancement.
+SERVE_LOG = LOOM_DIR / "data" / "serve.log"
+
+
+def _log(msg: str) -> None:
+    """Écrit une ligne sur stderr (terminal) ET dans serve.log, sans jamais lever."""
+    print(msg, file=sys.stderr)
+    try:
+        SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(SERVE_LOG, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(msg + "\n")
+    except OSError:
+        pass
 
 
 def resolve_n_gpu_layers(
@@ -100,15 +114,15 @@ def build_launch(
 
 
 def _run(args: list[str], bin_name: str, hint: str) -> int:
-    """Lance un binaire externe ; message clair s'il est introuvable."""
-    print(f"[loom] Lancement : {' '.join(args)}", file=sys.stderr)
+    """Lance un binaire externe ; sa sortie (stdout+stderr) va dans serve.log. Message
+    clair s'il est introuvable."""
+    _log(f"[loom] Lancement : {' '.join(args)}")
     try:
-        return subprocess.run(args).returncode
+        SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(SERVE_LOG, "a", encoding="utf-8", errors="replace") as fh:
+            return subprocess.run(args, stdout=fh, stderr=subprocess.STDOUT).returncode
     except FileNotFoundError:
-        print(
-            f"[loom] ERREUR : binaire '{bin_name}' introuvable. {hint}",
-            file=sys.stderr,
-        )
+        _log(f"[loom] ERREUR : binaire '{bin_name}' introuvable. {hint}")
         return 1
 
 
@@ -154,15 +168,18 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
 
 
 def main() -> int:
+    # Log serveur frais à chaque lancement (on veut la session courante, pas l'historique).
+    try:
+        SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        SERVE_LOG.write_text("", encoding="utf-8")
+    except OSError:
+        pass
     cfg = load_config(CONFIG_PATH, LOCAL_CONFIG_PATH)
     profile = detect_hardware()
-    print(f"[loom] Profil détecté : {profile}", file=sys.stderr)
+    _log(f"[loom] Profil détecté : {profile}")
 
     ensure_all_models(cfg.models, MODELS_DIR)
-    print(
-        f"[loom] {len(cfg.models)} modèle(s), défaut={cfg.default_model}",
-        file=sys.stderr,
-    )
+    _log(f"[loom] {len(cfg.models)} modèle(s), défaut={cfg.default_model}")
 
     # Un seul modèle : pas de routeur, llama-server direct (zéro dépendance externe).
     # Plusieurs : llama-swap pour le hot-swap par le champ 'model' de la requête.
