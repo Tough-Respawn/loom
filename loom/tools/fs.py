@@ -1,5 +1,19 @@
 # loom/tools/fs.py
-"""Outils d'écriture : write_file (création/écrasement) et edit_file (remplace).
+"""Outils d'écriture/édition. Cinq outils DÉLIBÉRÉMENT distincts (cf. ADR 0002) :
+chacun neutralise une contrainte précise d'un petit modèle sur un contexte étroit.
+
+- write_file   : créer / réécrire un petit fichier (baseline).
+- append_file  : contourner l'OVERFLOW — un gros fichier ne tient pas dans une
+                 réponse (plafond max_tokens) sans être tronqué ; on écrit par morceaux.
+- replace_lines: contourner la RECOPIE EXACTE — un 4B ne recopie pas un bloc au
+                 caractère près ; on adresse par NUMÉROS de ligne (read_file). Outil
+                 d'édition principal pour un bloc au milieu.
+- insert_lines : ajouter au MILIEU sans rien remplacer (adressage par ligne).
+- edit_file    : petit remplacement UNIQUE par string exacte (un nom, un token).
+
+Ne PAS consolider par goût du minimalisme : moins d'outils = chaque outil restant
+plus dur à piloter, ce qu'un 4B gère le moins bien. On ajoute un outil quand il
+retire un mode d'échec qu'aucun autre ne couvre proprement.
 
 Chemin absolu (écrire n'importe où) ou relatif au dossier de travail. Écriture
 ATOMIQUE (fichier .tmp + os.replace, comme `Conversation.save`) pour ne jamais
@@ -201,9 +215,12 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
         name="edit_file",
         description=(
             "Remplace old_string par new_string dans un fichier (chemin relatif au "
-            "dossier de travail ou absolu). Par défaut old_string doit être UNIQUE "
-            "(sinon l'erreur liste les lignes des occurrences) ; passe replace_all=true "
-            "pour remplacer TOUTES les occurrences identiques."
+            "dossier de travail ou absolu). Réserve-le aux PETITS remplacements UNIQUES "
+            "recopiables au caractère près (un nom, un token). Si tu connais les NUMÉROS "
+            "de ligne (tu viens de lire le fichier) ou si le bloc est long/indenté, "
+            "utilise replace_lines (pas de recopie exacte à risque). Par défaut "
+            "old_string doit être UNIQUE (sinon l'erreur liste les lignes) ; "
+            "replace_all=true remplace TOUTES les occurrences identiques."
         ),
         parameters={
             "type": "object",
