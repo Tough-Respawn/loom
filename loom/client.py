@@ -89,8 +89,17 @@ def _trunc(text: str, limit: int) -> str:
 
 
 # Fichier de log debug : permet d'inspecter l'échange modèle APRÈS coup (le terminal
-# n'est pas lisible à distance). Sous loom/data/ (gitignoré). Écrit en plus de stderr.
+# n'est pas lisible à distance). Écrit en plus de stderr. Cible PARAMÉTRABLE : la web app
+# la pointe sur sessions/<id>/debug.log à chaque tour pour un trace PAR SESSION (au même
+# titre que session.json). Défaut global tant qu'aucune session n'est désignée.
 _DEBUG_LOG = Path(__file__).resolve().parent / "data" / "loom-debug.log"
+
+
+def set_debug_log_path(path) -> None:
+    """Redirige le trace debug vers `path` (ex. sessions/<id>/debug.log). Le dossier est
+    créé à l'écriture. Appelé par la web app au début de chaque tour."""
+    global _DEBUG_LOG
+    _DEBUG_LOG = Path(path)
 
 
 def _emit(text: str) -> None:
@@ -321,9 +330,9 @@ def _norm(text: str) -> str:
     return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
 
 
-def _intends_to_act(text: str, tools_ran: bool) -> bool:
+def _intends_to_act(text: str, executed: bool) -> bool:
     """Vrai si `text` ANNONCE une prochaine action outillée non appelée, ou AFFIRME avoir
-    agi alors qu'AUCUN outil n'a tourné ce tour-ci (confabulation)."""
+    agi alors qu'AUCUNE exécution réelle n'a eu lieu ce tour-ci (confabulation)."""
     low = _norm(text.strip())
     if not low:
         return False
@@ -333,9 +342,67 @@ def _intends_to_act(text: str, tools_ran: bool) -> bool:
             tail = low[pos : pos + 60]  # « je vais RESUMER » = parole, pas action outil
             if not any(v in tail for v in _TALK_VERBS):
                 return True
-    if not tools_ran and any(m in low for m in _ACT_CLAIM):
+    if not executed and any(m in low for m in _ACT_CLAIM):
         return True
     return False
+
+
+# --- Audit de claim déterministe (anti-confabulation, couches A et B) -----------------
+# Le modèle décide TOUT ; on l'empêche seulement de PRÉTENDRE un résultat qu'il n'a pas
+# produit. Garde de vérité, pas orchestrateur. Deux vérifs déterministes au stop :
+#   A. il revendique un FICHIER (créé/contient) qui n'existe pas -> artefact inventé ;
+#   B. il rapporte un RÉSULTAT D'EXÉCUTION sans avoir lancé run_shell ni dispatch_agent.
+_WRITE_TOOLS = frozenset(
+    {"write_file", "append_file", "edit_file", "replace_lines", "insert_lines"}
+)
+_EXEC_CLAIM = (
+    "a affiche",
+    "a retourne",
+    "resultat :",
+    "sortie :",
+    "exit=",
+    "j'ai lance",
+    "j'ai execute",
+    "j'ai teste",
+    "le test passe",
+    "-> success",
+    "preuve :",
+    "preuve de sortie",
+    "j'ai simule",  # aveu typique de confabulation
+)
+# Chemin ABSOLU de fichier (avec extension), Windows ou POSIX, cité dans le texte.
+_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)[\w./\\-]+\.[A-Za-z0-9]{1,6}")
+_ARTIFACT_VERBS = ("cree", "ecrit", "genere", "produit", "contient", "preuve")
+
+
+def _claims_execution(text: str) -> bool:
+    """Vrai si `text` rapporte une sortie / un résultat d'exécution."""
+    low = _norm(text)
+    return any(m in low for m in _EXEC_CLAIM)
+
+
+def _claims_missing_artifact(text: str, files_written: set) -> str | None:
+    """Renvoie le 1er chemin ABSOLU revendiqué (créé/contient) qui n'existe PAS et n'a pas
+    été écrit ce tour — artefact inventé. Sinon None. Chemins absolus uniquement (vérif
+    fiable sans connaître le workspace)."""
+    low = _norm(text)
+    for match in _PATH_RE.finditer(text):
+        path = match.group(0).strip("`\"'")
+        idx = low.find(_norm(path))
+        if idx == -1:
+            continue
+        window = low[max(0, idx - 60) : idx + len(path) + 60]
+        if not any(v in window for v in _ARTIFACT_VERBS):
+            continue
+        if path in files_written:
+            continue
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                continue
+        except OSError:
+            pass
+        return path
+    return None
 
 
 def _msg_chars(content) -> int:
@@ -446,7 +513,10 @@ class LoomClient:
         deadline = time.monotonic() + max_seconds
         prev_sig_set = None  # jeu d'appels du tour précédent (détecteur de non-progrès)
         repeat_streak = 0
-        tools_ran = False  # un outil a-t-il réellement tourné depuis le début du tour ?
+        executed = (
+            False  # un run_shell / dispatch_agent a-t-il réellement tourné ce tour ?
+        )
+        files_written: set[str] = set()  # chemins écrits avec succès ce tour (couche A)
         act_nudges = 0  # nb de relances « passe de la parole à l'acte » déjà émises
         for _ in range(max_iters):
             if time.monotonic() >= deadline:
@@ -546,19 +616,42 @@ class LoomClient:
 
             tool_calls = collector["tool_calls"]
             if not tool_calls:
-                # « Parle sans agir » : le modèle annonce/affirme une action mais n'a émis
-                # aucun appel -> on le relance pour qu'il exécute réellement (borné).
-                if act_nudges < max_act_nudges and _intends_to_act(text, tools_ran):
+                # Audit de claim au stop : le modèle prétend-il un résultat qu'il n'a pas
+                # produit ? (A) artefact fichier inventé, (B) résultat d'exécution sans
+                # run_shell/dispatch, ou intention/affirmation sans exécution réelle. On le
+                # relance pour qu'il FASSE vraiment (borné). Garde de vérité, pas orchestrateur.
+                missing = _claims_missing_artifact(text, files_written)
+                exec_confab = not executed and _claims_execution(text)
+                if act_nudges < max_act_nudges and (
+                    missing or exec_confab or _intends_to_act(text, executed)
+                ):
                     act_nudges += 1
                     convo.append({"role": "assistant", "content": text or "..."})
-                    nudge = (
-                        "Tu as annoncé/affirmé une action mais tu n'as appelé AUCUN outil : "
-                        "rien n'a été réellement fait. Émets MAINTENANT l'appel d'outil "
-                        "directement (aucune phrase avant). Si la tâche est vraiment "
-                        "terminée ET vérifiée par un outil, dis seulement le résultat constaté."
-                    )
+                    if missing:
+                        nudge = (
+                            f"Tu affirmes avoir produit « {missing} » mais ce fichier "
+                            "n'existe pas (ou est vide). Crée-le RÉELLEMENT avec un outil "
+                            "puis vérifie-le — n'invente pas d'artefact ni de preuve."
+                        )
+                        label = "CLAIM_AUDIT(artefact)"
+                    elif exec_confab:
+                        nudge = (
+                            "Tu rapportes un résultat d'exécution (sortie, « ça marche », "
+                            "preuve) mais tu n'as lancé AUCUNE commande ce tour (ni run_shell "
+                            "ni dispatch_agent). Lance-la RÉELLEMENT et rapporte la VRAIE "
+                            "sortie — n'invente pas de résultat."
+                        )
+                        label = "CLAIM_AUDIT(exécution)"
+                    else:
+                        nudge = (
+                            "Tu as annoncé/affirmé une action mais tu n'as rien exécuté : "
+                            "rien n'a été réellement fait. Émets MAINTENANT l'appel d'outil "
+                            "directement (aucune phrase avant). Si la tâche est vraiment "
+                            "terminée ET vérifiée, dis seulement le résultat constaté."
+                        )
+                        label = "ACT_NUDGE"
                     convo.append({"role": "user", "content": nudge})
-                    _debug("ACT_NUDGE", nudge)
+                    _debug(label, nudge)
                     continue
                 return  # réponse finale déjà streamée (stop naturel du modèle)
 
@@ -595,7 +688,6 @@ class LoomClient:
                     ],
                 }
             )
-            tools_ran = True  # des outils sont appelés ce tour (≠ « parle sans agir »)
             wrote_this_turn = False  # P1.1 : un seul write_file/append_file par tour
             # Images inline (read_image) à faire VOIR au modèle : différées après TOUS
             # les résultats d'outils (les messages `tool` doivent rester contigus).
@@ -726,6 +818,14 @@ class LoomClient:
                 )
                 if name in _SERIAL_WRITE:
                     wrote_this_turn = True
+                # Suivi pour l'audit de claim : une EXÉCUTION réelle (run_shell/dispatch,
+                # même en échec mais hors refus de permission) et les FICHIERS écrits.
+                if name in ("run_shell", "dispatch_agent") and not str(
+                    result
+                ).startswith("refusé"):
+                    executed = True
+                if ok and name in _WRITE_TOOLS and args.get("path"):
+                    files_written.add(args["path"])
             convo.extend(image_followups)  # images vues au tour suivant
         yield (
             "content",
