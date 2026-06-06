@@ -131,6 +131,7 @@ def create_app(
     max_tokens=2048,
     context_budget=3000,
     keep_recent=6,
+    context_window=8192,
     models=None,
     interrupt_wait=15.0,
     tool_factory=None,
@@ -146,6 +147,11 @@ def create_app(
     app.jinja_env.auto_reload = True
     skills_dir = str(skills_dir)
     workspace_dir = str(workspace_dir)
+    # Seuil de microcompact INTERNE à la boucle d'outils : on vide les vieux résultats
+    # d'outils quand le contexte vivant approche la fenêtre du modèle (en réservant la
+    # place de la réponse). Distinct du résumé inter-tours (context_budget) qui, lui,
+    # ne porte que sur l'historique persisté.
+    compact_after_tokens = max(1024, context_window - max_tokens - 1024)
     models = list(models or [])
     available_tools = list(available_tools or [])
     chat_lock = threading.Lock()
@@ -341,6 +347,7 @@ def create_app(
                     thinking=conv.thinking,
                     permission=permission,
                     confirm=_confirm,
+                    compact_after_tokens=compact_after_tokens,
                 )
             else:
                 source = client.stream_chat(

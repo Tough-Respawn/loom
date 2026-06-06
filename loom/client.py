@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -260,6 +261,105 @@ def _iter_turn(stream, collector: dict) -> Iterator[tuple[str, str]]:
     collector["tool_calls"] = [acc[i] for i in sorted(acc)]
 
 
+# --- Microcompact INTERNE à la boucle d'outils ---------------------------------------
+# Sur une chaîne longue (refactor multi-fichiers, exploration), `convo` accumule TOUS les
+# messages role:tool et finit par approcher la fenêtre du modèle -> overflow. CC règle ça
+# par un "microcompact" SANS LLM : on vide le CONTENU des plus vieux résultats d'outils
+# (gros stdout, gros read périmés) en gardant les N derniers + toute la STRUCTURE (chaque
+# tool_call garde son tool_result). Non destructif pour le raisonnement (user/assistant
+# intacts) et bien moins risqué qu'un résumé généré par un 4B. Le modèle peut toujours
+# relire un fichier / refaire une recherche s'il a encore besoin d'un résultat effacé.
+_CLEARED_TOOL = (
+    "[résultat d'outil ancien retiré pour garder de la place dans le contexte ; "
+    "relis le fichier ou refais la recherche si tu en as encore besoin]"
+)
+
+
+# --- Anti « parle sans agir » --------------------------------------------------------
+# Échec central d'un petit modèle : il ÉCRIT l'intention (« je vais lire X ») ou AFFIRME
+# le résultat (« j'ai créé le fichier ») SANS émettre l'appel d'outil. Comme un tour sans
+# tool_call termine la boucle, la tâche s'arrête inachevée (ou sur une affirmation fausse).
+# On détecte ce cas au stop et on RELANCE le modèle pour qu'il exécute réellement (nudge
+# borné). Ce n'est pas un orchestrateur : on ne décide pas QUOI faire, on force juste le
+# passage de la parole à l'acte. dispatch_agent reste l'autre garde-fou (exécution réelle
+# par un sous-agent). On exclut les verbes de PAROLE (résumer/expliquer) qui ne sont pas
+# des actions outillées, pour ne pas harceler un vrai message final. Marqueurs SANS accents
+# ni apostrophe courbe : la comparaison normalise le texte (un modèle quantifié laisse
+# parfois tomber les accents -> on veut quand même détecter).
+_ACT_INTENT = (
+    "je vais ",
+    "laisse-moi ",
+    "permets-moi ",
+    "je commence par ",
+    "je dois d'abord ",
+    "il faut que je ",
+    "je m'occupe ",
+    "commencons par ",
+    "je vais maintenant ",
+    "je vais d'abord ",
+)
+_ACT_CLAIM = (
+    "j'ai cree",
+    "j'ai ecrit",
+    "j'ai modifie",
+    "j'ai ajoute",
+    "j'ai lance",
+    "j'ai execute",
+    "j'ai teste",
+    "j'ai corrige",
+    "j'ai supprime",
+    "le test passe",
+)
+_TALK_VERBS = ("resum", "expliqu", "montr", "repond", "decri", "te dire", "vous dire")
+
+
+def _norm(text: str) -> str:
+    """Minuscule, sans accents, apostrophe courbe -> droite : pour comparer aux marqueurs
+    quel que soit l'encodage exact produit par le modèle."""
+    text = text.lower().replace("’", "'")
+    decomposed = unicodedata.normalize("NFD", text)
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+
+
+def _intends_to_act(text: str, tools_ran: bool) -> bool:
+    """Vrai si `text` ANNONCE une prochaine action outillée non appelée, ou AFFIRME avoir
+    agi alors qu'AUCUN outil n'a tourné ce tour-ci (confabulation)."""
+    low = _norm(text.strip())
+    if not low:
+        return False
+    for marker in _ACT_INTENT:
+        pos = low.find(marker)
+        if pos != -1:
+            tail = low[pos : pos + 60]  # « je vais RESUMER » = parole, pas action outil
+            if not any(v in tail for v in _TALK_VERBS):
+                return True
+    if not tools_ran and any(m in low for m in _ACT_CLAIM):
+        return True
+    return False
+
+
+def _msg_chars(content) -> int:
+    """Taille approx. d'un contenu de message (str ou liste de parts multimodales)."""
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        return sum(len(p.get("text", "")) for p in content if isinstance(p, dict))
+    return 0
+
+
+def _microcompact_tools(convo: list[dict], keep_recent_tools: int) -> int:
+    """Vide le CONTENU des plus vieux messages role:tool (garde les `keep_recent_tools`
+    derniers intacts), en place. Renvoie le nb de messages allégés."""
+    idx = [i for i, m in enumerate(convo) if m.get("role") == "tool"]
+    older = idx[:-keep_recent_tools] if keep_recent_tools else idx
+    n = 0
+    for i in older:
+        if convo[i].get("content") != _CLEARED_TOOL:
+            convo[i] = {**convo[i], "content": _CLEARED_TOOL}
+            n += 1
+    return n
+
+
 class LoomClient:
     def __init__(
         self,
@@ -320,6 +420,9 @@ class LoomClient:
         max_overflow_retries: int = 2,
         max_seconds: float = 300.0,
         repeat_limit: int = 3,
+        compact_after_tokens: int | None = None,
+        keep_recent_tools: int = 4,
+        max_act_nudges: int = 2,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
 
@@ -343,6 +446,8 @@ class LoomClient:
         deadline = time.monotonic() + max_seconds
         prev_sig_set = None  # jeu d'appels du tour précédent (détecteur de non-progrès)
         repeat_streak = 0
+        tools_ran = False  # un outil a-t-il réellement tourné depuis le début du tour ?
+        act_nudges = 0  # nb de relances « passe de la parole à l'acte » déjà émises
         for _ in range(max_iters):
             if time.monotonic() >= deadline:
                 yield (
@@ -351,6 +456,22 @@ class LoomClient:
                     "la tâche n'est peut-être pas terminée).",
                 )
                 return
+            # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
+            # résultats d'outils AVANT d'appeler le modèle (évite l'overflow sur une
+            # chaîne longue). Estimation grossière ~4 car./token, comme loom.context.
+            if compact_after_tokens:
+                approx = (
+                    len(system_prompt)
+                    + sum(_msg_chars(m.get("content")) for m in convo)
+                ) // 4
+                if approx > compact_after_tokens:
+                    cleared = _microcompact_tools(convo, keep_recent_tools)
+                    if cleared:
+                        _debug(
+                            "MICROCOMPACT",
+                            f"{cleared} résultat(s) d'outil allégé(s) (~{approx} tokens "
+                            f"> seuil {compact_after_tokens}).",
+                        )
             kwargs = build_create_kwargs(
                 model or self.model,
                 convo,
@@ -425,6 +546,20 @@ class LoomClient:
 
             tool_calls = collector["tool_calls"]
             if not tool_calls:
+                # « Parle sans agir » : le modèle annonce/affirme une action mais n'a émis
+                # aucun appel -> on le relance pour qu'il exécute réellement (borné).
+                if act_nudges < max_act_nudges and _intends_to_act(text, tools_ran):
+                    act_nudges += 1
+                    convo.append({"role": "assistant", "content": text or "..."})
+                    nudge = (
+                        "Tu as annoncé/affirmé une action mais tu n'as appelé AUCUN outil : "
+                        "rien n'a été réellement fait. Émets MAINTENANT l'appel d'outil "
+                        "directement (aucune phrase avant). Si la tâche est vraiment "
+                        "terminée ET vérifiée par un outil, dis seulement le résultat constaté."
+                    )
+                    convo.append({"role": "user", "content": nudge})
+                    _debug("ACT_NUDGE", nudge)
+                    continue
                 return  # réponse finale déjà streamée (stop naturel du modèle)
 
             # Non-progrès : même jeu d'appels (outils+args) que le tour précédent ?
@@ -460,6 +595,7 @@ class LoomClient:
                     ],
                 }
             )
+            tools_ran = True  # des outils sont appelés ce tour (≠ « parle sans agir »)
             wrote_this_turn = False  # P1.1 : un seul write_file/append_file par tour
             # Images inline (read_image) à faire VOIR au modèle : différées après TOUS
             # les résultats d'outils (les messages `tool` doivent rester contigus).
