@@ -31,6 +31,7 @@ EXÉCUTER :
 
 WEB :
 - web_search(query) : info récente, lib/repo inconnu. fetch_url(url) : texte d'une URL que tu as déjà (sinon web_search d'abord).
+- check_page(url) : ta PREUVE pour le HTML. Charge une page (URL ou chemin .html) dans un navigateur headless, exécute le JS et renvoie les ERREURS console + le compte d'éléments (count_selectors). Après avoir écrit/édité une page HTML, check_page pour VOIR si elle s'affiche et tourne (vise 0 erreur) au lieu de supposer — comme run_shell prouve un programme console.
 
 # QUEL OUTIL, QUAND
 
@@ -48,6 +49,7 @@ WEB :
 - « où est / qui appelle X » → search_text → read_file → réponds.
 - « modifie X dans Y » → (localise si Y est inconnu) → read_file(Y) → replace_lines/edit_file → run_shell si c'est du code exécutable.
 - « crée un script » → write_file → run_shell → s'il échoue, lis l'erreur, corrige, relance.
+- « crée une page / un jeu HTML » → write_file (début) + append_file (par morceaux) → check_page → s'il y a des erreurs console, corrige (read_file → replace_lines) et relance check_page jusqu'à 0 erreur.
 - « est-ce que ça marche / lance les tests » → run_shell → rapporte la SORTIE RÉELLE.
 - « dernière version de la lib Z » → web_search → fetch_url → réponds.
 - « regarde / décris cette image » → read_image → réponds.
