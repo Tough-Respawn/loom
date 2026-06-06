@@ -8,6 +8,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -17,6 +18,7 @@ from pathlib import Path
 from flask import Flask, Response, render_template, request
 
 from loom import context
+from loom.client import set_debug_log_path
 from loom.skills import compose_system_prompt, list_skills, load_skill
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -262,6 +264,19 @@ def create_app(
         # On tient le verrou : repartir d'un signal d'annulation propre.
         cancel_event.clear()
         conv, save = _ctx()
+
+        # Logs PAR SESSION (au même titre que session.json) : (1) trace des échanges modèle
+        # routée vers sessions/<id>/debug.log ; (2) copie du log serveur modèle global
+        # (loom/data/serve.log) dans la session — doublon assumé, pour tout avoir sous la main.
+        _sdir = session_store.session_dir(_session().id)
+        set_debug_log_path(_sdir / "debug.log")
+        _serve_log = session_store.root.parent / "serve.log"
+        if _serve_log.exists():
+            try:
+                _sdir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(_serve_log, _sdir / "serve.log")
+            except OSError:
+                pass
 
         # Auto-adoption du dossier de travail : si le message désigne un dossier EXISTANT,
         # la session l'adopte avant le tour -> run_shell tourne dedans et les chemins
