@@ -269,6 +269,30 @@ def _new_block(content: str, nl: str) -> str:
     return body if body.endswith(nl) else body + nl
 
 
+def _context_after_edit(path: Path, lo: int, hi: int, pad: int = 4) -> str:
+    """Relit le fichier APRÈS écriture et renvoie les lignes [lo-pad .. hi+pad] avec leurs
+    NUMÉROS À JOUR. Clé anti-thrash : après une édition, les numéros de ligne bougent ; sans
+    ça le modèle doit refaire un read_file (tour gâché) et risque d'éditer sur des numéros
+    périmés (plage inversée, mauvaise zone). En lui rendant le contexte re-numéroté ici, il
+    enchaîne l'édition suivante directement, avec des numéros corrects."""
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    lines = text.splitlines()
+    n = len(lines)
+    if n == 0:
+        return ""
+    a = max(1, lo - pad)
+    b = min(n, hi + pad)
+    width = max(2, len(str(b)))
+    body = "\n".join(f"{i:>{width}}→{lines[i - 1]}" for i in range(a, b + 1))
+    return (
+        f"\nÉtat À JOUR autour de l'édition (lignes {a}-{b} sur {n}, numéros corrects — "
+        f"réutilise-les directement, ne refais pas de read_file) :\n{body}"
+    )
+
+
 def make_replace_lines(workspace_dir: str) -> ToolSpec:
     """Outil replace_lines : remplace les lignes [start..end] (1-based, incluses) par
     `content`. Édition robuste pour petit modèle : il référence les NUMÉROS de ligne (vus
@@ -306,7 +330,10 @@ def make_replace_lines(workspace_dir: str) -> ToolSpec:
         block = _new_block(content, nl)
         _atomic_write(path, "".join(lines[: start - 1]) + block + "".join(lines[end:]))
         added = 0 if content == "" else content.count("\n") + 1
-        return f"remplacé : {rel} lignes {start}-{end} ({end - start + 1} → {added} lignes)"
+        head = f"remplacé : {rel} lignes {start}-{end} ({end - start + 1} → {added} lignes)"
+        # Bornes de la zone éditée dans le NOUVEAU fichier (start .. start-1+added).
+        new_hi = start if added == 0 else start - 1 + added
+        return head + _context_after_edit(path, start, new_hi)
 
     return ToolSpec(
         name="replace_lines",
@@ -380,9 +407,10 @@ def make_insert_lines(workspace_dir: str) -> ToolSpec:
         _atomic_write(
             path, "".join(head) + _new_block(content, nl) + "".join(lines[after:])
         )
-        return (
-            f"inséré : {rel} après ligne {after} (+{content.count(chr(10)) + 1} lignes)"
-        )
+        k = content.count("\n") + 1
+        msg = f"inséré : {rel} après ligne {after} (+{k} lignes)"
+        # La zone insérée occupe les lignes [after+1 .. after+k] dans le nouveau fichier.
+        return msg + _context_after_edit(path, after + 1, after + k)
 
     return ToolSpec(
         name="insert_lines",
