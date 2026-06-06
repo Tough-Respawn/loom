@@ -80,6 +80,7 @@ def build_app(cfg):
         max_tokens=cfg.chat.max_tokens,
         context_budget=budget,
         keep_recent=cfg.chat.keep_recent_messages,
+        context_window=cfg.context,
         models=[m.id for m in cfg.models],
         tool_factory=make_registry,
         available_tools=AVAILABLE_TOOLS,
