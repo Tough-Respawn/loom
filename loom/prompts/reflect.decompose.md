@@ -8,8 +8,14 @@ Raisonne en ENTONNOIR, du global au minuscule :
 Chaque tâche doit avoir :
 - `goal` : l'unique chose à faire, précise ;
 - `files` : le(s) fichier(s) qu'elle touche ;
-- `acceptance` : un critère EXÉCUTABLE qui prouve qu'elle est finie — une commande `run_shell`, une vérif `check_page`, un nombre attendu, une sortie console. JAMAIS « le code est propre / ça marche » : donne la commande qui le démontre.
+- `acceptance` : un critère qui prouve, par le COMPORTEMENT OBSERVABLE, que la tâche marche.
 
-Vise BEAUCOUP de petites tâches plutôt que peu de grosses : plus une tâche est petite et vérifiable, moins elle peut échouer.
+RÈGLES DURES sur `acceptance` (c'est le point le plus important) :
+- Mesure un COMPORTEMENT, jamais une métrique de fichier. Pour une page web : `check_page` sur le fichier (0 erreur console, et le nombre d'éléments attendus, ex. 81 cellules). Pour un script : la SORTIE RÉELLE de `run_shell` (ex. « run_shell python app.py affiche "OK" sans erreur »).
+- INTERDIT, car ça ne prouve RIEN que ça marche : le nombre de lignes du fichier (`wc -l`, « 81 lignes »), la taille du fichier, le simple fait que le fichier existe, un `echo` qui réécrit une valeur, « le code est propre / ça marche ». Le nombre 81 du démineur, c'est 81 CELLULES affichées dans la page (via `check_page`), PAS 81 lignes de code.
+- Si une tâche écrit un bout de logique difficile à tester seul, son `acceptance` doit quand même viser l'effet observable le plus proche (ex. « check_page : la grille contient 81 cellules cliquables » plutôt que « la fonction existe »).
+- La DERNIÈRE tâche doit avoir comme `acceptance` exactement le `success_check` global : c'est elle qui prouve l'objectif d'origine de bout en bout.
+
+Vise BEAUCOUP de petites tâches plutôt que peu de grosses : plus une tâche est petite et vérifiable par un comportement, moins elle peut échouer.
 
 Quand ton plan est prêt, appelle `submit_plan(goal, success_check, tasks)`. N'écris pas le plan en texte : émets directement l'appel d'outil.
