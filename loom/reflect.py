@@ -115,3 +115,77 @@ def validate_plan(plan: Plan, max_tasks: int = 30) -> str | None:
                 "nombre attendu, une sortie console)"
             )
     return None
+
+
+# --- Anti-bluff : un verdict positif n'est cru que s'il est PROUVÉ ---------------------
+_PROOF_TOOLS = frozenset({"run_shell", "check_page"})
+
+
+def verdict_proven(verdict_ok: bool, saw_proof: bool) -> tuple[bool, str]:
+    """Le vérificateur EST le même petit modèle : on l'empêche de se déclarer vert tout
+    seul. Un `ok` positif n'est accepté QUE si une preuve outillée réelle a réussi pendant
+    la vérif (un run_shell/check_page ok). Sinon -> non prouvé."""
+    if verdict_ok and not saw_proof:
+        return (
+            False,
+            "verdict positif REJETÉ : aucune preuve exécutée (ni run_shell ni check_page "
+            "n'a tourné avec succès). « ça marche » sans preuve = non prouvé.",
+        )
+    return (verdict_ok, "")
+
+
+def execute_prompt(task: Task) -> str:
+    """Consigne autonome d'exécution d'UNE tâche, en proof-first."""
+    files = (
+        "\n".join(f"- {f}" for f in task.files) or "(localise-les toi-même si besoin)"
+    )
+    return (
+        f"TÂCHE UNIQUE (ne fais QUE ça, ne touche à rien d'autre) :\n{task.goal}\n\n"
+        f"Fichiers concernés — lis d'abord leur ÉTAT COURANT (ne suppose pas le "
+        f"contenu) :\n{files}\n\n"
+        f"Critère d'acceptation (la PREUVE que c'est fini) :\n{task.acceptance}\n\n"
+        "Procède en PROOF-FIRST :\n"
+        "1) lance d'abord le critère d'acceptation et CONSTATE qu'il échoue (sauf tâche "
+        "triviale) ;\n"
+        "2) écris le code minimal pour le satisfaire, puis appelle format_code ;\n"
+        "3) relance le critère et CONSTATE qu'il passe, sortie réelle à l'appui.\n"
+        "Termine en rapportant la sortie réelle constatée, sans rien inventer."
+    )
+
+
+def fix_prompt(task: Task) -> str:
+    """Consigne de correction après un échec de vérification (l'evidence = la vraie sortie)."""
+    return (
+        f"La tâche suivante a ÉCHOUÉ à sa vérification :\n{task.goal}\n\n"
+        f"Critère d'acceptation :\n{task.acceptance}\n\n"
+        f"Preuve d'échec observée :\n{task.evidence[:800]}\n\n"
+        "Corrige la cause RÉELLE de cet échec (lis l'état courant des fichiers, ne "
+        "suppose rien), appelle format_code, puis relance le critère et CONSTATE qu'il "
+        "passe. Ne fais que cette correction."
+    )
+
+
+def verify_prompt(task: Task) -> str:
+    """Consigne du vérificateur frais : lance la preuve, puis report_verdict."""
+    return (
+        "Tu es un VÉRIFICATEUR à regard neuf : tu n'as pas écrit ce code, ne le juge pas "
+        "de confiance.\n\n"
+        f"Objectif de la tâche : {task.goal}\n"
+        f"Critère d'acceptation à PROUVER : {task.acceptance}\n\n"
+        "Lance RÉELLEMENT ce critère (run_shell / check_page selon le cas) et observe la "
+        "sortie. Puis appelle report_verdict(ok, evidence) où `evidence` est la sortie "
+        "RÉELLE observée (pas une paraphrase). N'appelle report_verdict qu'APRÈS avoir "
+        "exécuté la preuve : un « ok » sans commande lancée sera rejeté."
+    )
+
+
+def integration_prompt(plan) -> str:
+    """Consigne de la Phase 4 : prouver l'objectif d'origine de bout en bout."""
+    return (
+        "Toutes les tâches sont faites. VÉRIFIE maintenant l'objectif D'ORIGINE de bout "
+        "en bout, comme un utilisateur final, à regard neuf.\n\n"
+        f"Objectif : {plan.goal}\n"
+        f"Critère de succès final à PROUVER : {plan.success_check}\n\n"
+        "Lance RÉELLEMENT la preuve (run_shell / check_page), observe la sortie, puis "
+        "appelle report_verdict(ok, evidence) avec la sortie RÉELLE. N'invente rien."
+    )
