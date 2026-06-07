@@ -46,8 +46,8 @@ EXT_PRETTIER = frozenset(
 )
 
 _RUFF_HINT = (
-    "ruff introuvable. Installe-le une fois : `uv tool install ruff` "
-    "(ou assure-toi que `uvx` est sur le PATH)."
+    "ruff introuvable. Il est normalement livré avec Loom (`uv sync`) ; sinon "
+    "`uv tool install ruff` (ou assure-toi que `ruff`/`uvx` est sur le PATH)."
 )
 _PRETTIER_HINT = (
     "prettier introuvable (hors-ligne). Installe-le une fois : `npm install -g prettier` "
@@ -76,13 +76,20 @@ def make_format_code(workspace_dir: str) -> ToolSpec:
     root = Path(workspace_dir)
 
     def _format_python(path: Path) -> str:
-        uvx = shutil.which("uvx")
-        if not uvx:
-            raise ToolError(_RUFF_HINT)
+        # ruff est une dépendance de Loom (présent dans le venv) : on l'utilise EN PRIORITÉ
+        # (hors-ligne, version pinnée). Repli sur `uvx ruff` si le binaire n'est pas sur le PATH.
+        ruff = shutil.which("ruff")
+        if ruff:
+            base = [ruff]
+        else:
+            uvx = shutil.which("uvx")
+            if not uvx:
+                raise ToolError(_RUFF_HINT)
+            base = [uvx, "ruff"]
         try:
             # 1) corrige les soucis PEP8 SÛRS (imports inutiles, tri…), 2) style.
-            fix = _run([uvx, "ruff", "check", "--fix", str(path)], root, 60)
-            fmt = _run([uvx, "ruff", "format", str(path)], root, 60)
+            fix = _run([*base, "check", "--fix", str(path)], root, 60)
+            fmt = _run([*base, "format", str(path)], root, 60)
         except subprocess.TimeoutExpired as exc:
             raise ToolError("ruff : délai dépassé (>60s)") from exc
         fix_out = _clean(fix.stdout, fix.stderr)
