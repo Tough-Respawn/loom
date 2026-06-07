@@ -273,3 +273,103 @@ def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
         "steps": results,
         "error": "",
     }
+
+
+def make_check_interactive(workspace_dir: str) -> ToolSpec:
+    """Outil check_interactive : joue une séquence d'actions sur une page et vérifie le DOM
+    après chaque action. Pour PROUVER qu'une page est jouable (pas seulement « 0 erreur »)."""
+
+    def run(args: dict) -> str:
+        target = (args.get("url") or "").strip()
+        if not target:
+            raise ToolError("argument 'url' manquant (page HTML à tester)")
+        steps = args.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise ToolError(
+                "argument 'steps' : liste non vide d'actions {op, selector, expect}"
+            )
+        res = run_interactive(workspace_dir, target, steps)
+        lines = [f"page : {res['url']}"]
+        if res.get("error"):
+            lines.append(f"erreur: {res['error']}")
+        lines.append(f"console : {len(res.get('console_errors', []))} erreur(s)")
+        for e in res.get("console_errors", [])[:5]:
+            lines.append(f"  [erreur] {e[:160]}")
+        for i, s in enumerate(res.get("steps", []), 1):
+            mark = "ok" if s["ok"] else "ÉCHEC"
+            lines.append(
+                f"  étape {i} [{mark}] {s['op']} {s['selector']} -> {s['observed']}"
+            )
+        lines.append(
+            "VERDICT : "
+            + (
+                "toutes les actions passent, 0 erreur"
+                if res["ok"]
+                else "au moins une action/post-condition échoue"
+            )
+        )
+        return "\n".join(lines)
+
+    return ToolSpec(
+        name="check_interactive",
+        description=(
+            "Prouve qu'une page HTML est JOUABLE : joue une séquence d'actions réelles "
+            "(click, rightclick, dblclick, hover, type) sur des sélecteurs CSS et vérifie, "
+            "APRÈS chaque action, une post-condition dans le DOM. Va plus loin que check_page "
+            "(qui ne fait que charger). Utilise-le pour prouver « cliquer une cellule la "
+            "révèle », « clic droit pose un drapeau », « restart réinitialise »."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Page HTML (chemin .html ou URL).",
+                },
+                "steps": {
+                    "type": "array",
+                    "description": "Actions à jouer dans l'ordre.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": [
+                                    "click",
+                                    "rightclick",
+                                    "dblclick",
+                                    "hover",
+                                    "type",
+                                    "none",
+                                ],
+                            },
+                            "selector": {
+                                "type": "string",
+                                "description": "Cible CSS de l'action.",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Texte à saisir (op=type).",
+                            },
+                            "expect": {
+                                "type": "object",
+                                "description": "Post-condition DOM après l'action.",
+                                "properties": {
+                                    "selector": {"type": "string"},
+                                    "check": {
+                                        "type": "string",
+                                        "enum": ["count", "class", "text", "absent"],
+                                    },
+                                    "value": {"type": "string"},
+                                    "cmp": {"type": "string", "enum": ["min", "eq"]},
+                                },
+                            },
+                        },
+                        "required": ["op"],
+                    },
+                },
+            },
+            "required": ["url", "steps"],
+        },
+        run=run,
+    )
