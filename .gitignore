@@ -1,5 +1,7 @@
-# Modèles (trop lourds)
-loom/models/
+# Poids des modèles (trop lourds) — ignorés ; la config/profil par modèle (model.toml,
+# profile.md sous loom/models/<id>/) reste suivie.
+loom/models/*.gguf
+loom/models/**/*.gguf
 loom/data/
 # Surcharges machine
 *.local.toml
