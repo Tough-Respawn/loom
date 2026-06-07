@@ -11,9 +11,11 @@ auto d'une tâche bloquée, triage auto code/Q&A (ici : engagé par toggle UI).
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
-from loom.tools.base import ToolError, ToolSpec
+from loom.prompts import REFLECT_DECOMPOSE
+from loom.tools.base import ToolError, ToolRegistry, ToolSpec
 
 
 @dataclass
@@ -281,3 +283,144 @@ def make_report_verdict(holder: dict) -> ToolSpec:
         },
         run=run,
     )
+
+
+# --- Orchestrateur ---------------------------------------------------------------------
+
+
+def _drive_subloop(
+    client,
+    sub_messages,
+    registry,
+    stats,
+    *,
+    system_prompt,
+    model,
+    max_tokens,
+    permission,
+    thinking=False,
+):
+    """Générateur : lance une sous-boucle stream_chat_tools, RELAIE ses events vers le haut
+    et remplit `stats` en place : stats['saw_proof'] (un run_shell/check_page a réussi),
+    stats['text'] (texte final accumulé)."""
+    stats["saw_proof"] = False
+    stats["text"] = ""
+    for kind, payload in client.stream_chat_tools(
+        sub_messages,
+        system_prompt,
+        max_tokens,
+        model=model,
+        registry=registry,
+        thinking=thinking,
+        permission=permission,
+    ):
+        if kind == "content" and isinstance(payload, str):
+            stats["text"] += payload
+        elif kind == "tool_result" and isinstance(payload, dict):
+            if payload.get("ok") and payload.get("name") in _PROOF_TOOLS:
+                stats["saw_proof"] = True
+        yield (kind, payload)
+
+
+def _plan_summary(plan: Plan) -> str:
+    lines = [f"\n**Plan ({len(plan.tasks)} tâches)** — objectif : {plan.goal}"]
+    lines += [f"{i}. {t.goal}" for i, t in enumerate(plan.tasks, 1)]
+    lines.append(f"Critère final : {plan.success_check}")
+    return "\n".join(lines)
+
+
+def _blocked_report(idx: int, total: int, task: Task) -> str:
+    return (
+        f"\n**STOP — tâche {idx}/{total} bloquée.** Je n'avance pas sur une base non "
+        f"prouvée.\nObjectif : {task.goal}\nCritère : {task.acceptance}\n"
+        f"Dernière preuve d'échec :\n{task.evidence[:800]}"
+    )
+
+
+def _final_report(plan: Plan, evidence: str, success: bool) -> str:
+    head = (
+        "\n**✓ Objectif atteint et prouvé de bout en bout.**"
+        if success
+        else "\n**✗ Intégration NON prouvée** (les tâches passent isolément mais "
+        "l'ensemble ne valide pas le critère d'origine)."
+    )
+    return f"{head}\nCritère : {plan.success_check}\nPreuve :\n{evidence[:1000]}"
+
+
+def run_reflective(
+    client,
+    messages,
+    system_prompt,
+    *,
+    make_sub_registry: Callable[..., ToolRegistry],
+    model=None,
+    max_tokens=2048,
+    permission=None,
+    max_tasks: int = 30,
+    max_fix_attempts: int = 3,
+    max_decompose_retries: int = 2,
+) -> Iterator[tuple[str, object]]:
+    """Rail de réflexion. `make_sub_registry(extra_specs=None)` fabrique un registre frais
+    de sous-agent (outils complets + extras éventuels). Yield les events de stream_chat_tools
+    (+ 'phase'). Sur blocage d'une tâche : STOP + rapport (re-découpage = palier 2)."""
+    holder: dict = {}
+
+    # --- Phase 1 : décomposition (bornée + repli en mode direct) ---
+    yield (
+        "phase",
+        {"name": "décomposition", "task": None, "detail": "découpe la demande"},
+    )
+    plan: Plan | None = None
+    convo = list(messages)
+    for _ in range(max_decompose_retries + 1):
+        holder.pop("plan", None)
+        reg = ToolRegistry([make_submit_plan(holder)])
+        stats: dict = {}
+        yield from _drive_subloop(
+            client,
+            convo,
+            reg,
+            stats,
+            system_prompt=REFLECT_DECOMPOSE,
+            model=model,
+            max_tokens=max_tokens,
+            permission=permission,
+            thinking=True,
+        )
+        plan = holder.get("plan")
+        if plan is None:
+            convo = list(messages) + [
+                {
+                    "role": "user",
+                    "content": "Tu n'as pas appelé submit_plan. Appelle "
+                    "submit_plan MAINTENANT avec le plan structuré (goal, success_check, tasks).",
+                }
+            ]
+            continue
+        err = validate_plan(plan, max_tasks)
+        if err is None:
+            break
+        convo = list(messages) + [
+            {
+                "role": "user",
+                "content": f"Plan refusé : {err}. Réémets submit_plan corrigé.",
+            }
+        ]
+        plan = None
+
+    if plan is None:
+        yield ("content", "\n[réflexion : plan inexploitable, repli en mode direct.]")
+        yield from client.stream_chat_tools(
+            messages,
+            system_prompt,
+            max_tokens,
+            model=model,
+            registry=make_sub_registry(),
+            thinking=False,
+            permission=permission,
+        )
+        return
+
+    yield ("content", _plan_summary(plan))
+    # (Phases 2-4 ajoutées dans la tâche suivante)
+    yield ("content", "\n[exécution des tâches : à implémenter — Task 7]")
