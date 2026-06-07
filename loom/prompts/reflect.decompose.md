@@ -19,4 +19,8 @@ RÈGLES DURES sur `acceptance` (c'est le point le plus important) :
 
 Vise BEAUCOUP de petites tâches plutôt que peu de grosses : plus une tâche est petite et vérifiable par un comportement, moins elle peut échouer.
 
-Quand ton plan est prêt, appelle `submit_plan(goal, success_check, tasks)`. N'écris pas le plan en texte : émets directement l'appel d'outil.
+Déclare aussi le CONTRAT du programme : `program_type` (html_game | web_page | cli | python_lib | api | script), `launch` (le fichier .html à ouvrir pour une page web, ou la commande de lancement), et `behaviors` — les comportements à PROUVER par interaction réelle. Chaque behavior a un `step` jouable : `{op: click|rightclick|dblclick|hover|type|none, selector: "<css>", expect: {selector, check: count|class|text|absent, value}}`.
+
+Exemple (démineur) : `{desc:"cliquer une cellule la révèle", step:{op:"click", selector:".cell:first-child", expect:{selector:".cell.revealed", check:"count", value:"1", cmp:"min"}}}` ; `{desc:"clic droit pose un drapeau", step:{op:"rightclick", selector:".cell:nth-child(2)", expect:{selector:".flag", check:"count", value:"1", cmp:"min"}}}`.
+
+Quand ton contrat est prêt, appelle `submit_spec(goal, success_check, program_type, files, launch, tasks, behaviors)`. N'écris pas le plan en texte : émets directement l'appel d'outil.

@@ -419,6 +419,124 @@ def make_submit_plan(holder: dict) -> ToolSpec:
     )
 
 
+def make_submit_spec(holder: dict) -> ToolSpec:
+    """Outil submit_spec : contrat de succès structuré rangé dans holder['plan']. Étend
+    submit_plan (goal/success_check/tasks) avec program_type, launch, behaviors prouvables."""
+
+    def run(args: dict) -> str:
+        plan = parse_spec(args)
+        holder["plan"] = plan
+        return (
+            f"Spec reçue : type={plan.program_type}, {len(plan.tasks)} tâche(s), "
+            f"{len(plan.behaviors)} comportement(s). (le rail prend la suite)"
+        )
+
+    return ToolSpec(
+        name="submit_spec",
+        description=(
+            "Rends ton CONTRAT de succès AVANT d'écrire : program_type "
+            "(html_game|web_page|cli|python_lib|api|script), files (manifest), launch "
+            "(fichier .html à ouvrir / commande), tasks (petites tâches atomiques avec "
+            "acceptance exécutable), et behaviors = comportements PROUVABLES, chacun avec un "
+            "`step` jouable {op, selector, expect:{selector, check, value}}."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "Objectif global reformulé."},
+                "success_check": {
+                    "type": "string",
+                    "description": "Preuve finale de bout en bout.",
+                },
+                "program_type": {
+                    "type": "string",
+                    "enum": [
+                        "html_game",
+                        "web_page",
+                        "cli",
+                        "python_lib",
+                        "api",
+                        "script",
+                    ],
+                },
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Manifest des fichiers attendus.",
+                },
+                "launch": {
+                    "type": "string",
+                    "description": "Fichier .html à ouvrir, ou commande de lancement.",
+                },
+                "tasks": {
+                    "type": "array",
+                    "description": "Tâches atomiques, dans l'ordre.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {"type": "string"},
+                            "files": {"type": "array", "items": {"type": "string"}},
+                            "acceptance": {"type": "string"},
+                        },
+                        "required": ["goal", "acceptance"],
+                    },
+                },
+                "behaviors": {
+                    "type": "array",
+                    "description": "Comportements à prouver par interaction réelle.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "desc": {"type": "string"},
+                            "step": {
+                                "type": "object",
+                                "properties": {
+                                    "op": {
+                                        "type": "string",
+                                        "enum": [
+                                            "click",
+                                            "rightclick",
+                                            "dblclick",
+                                            "hover",
+                                            "type",
+                                            "none",
+                                        ],
+                                    },
+                                    "selector": {"type": "string"},
+                                    "text": {"type": "string"},
+                                    "expect": {
+                                        "type": "object",
+                                        "properties": {
+                                            "selector": {"type": "string"},
+                                            "check": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "count",
+                                                    "class",
+                                                    "text",
+                                                    "absent",
+                                                ],
+                                            },
+                                            "value": {"type": "string"},
+                                            "cmp": {
+                                                "type": "string",
+                                                "enum": ["min", "eq"],
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        "required": ["desc", "step"],
+                    },
+                },
+            },
+            "required": ["goal", "success_check", "program_type", "tasks"],
+        },
+        run=run,
+    )
+
+
 def make_report_verdict(holder: dict) -> ToolSpec:
     """Outil report_verdict : range le verdict du vérificateur dans holder['verdict']."""
 
@@ -567,7 +685,7 @@ def run_reflective(
     convo = list(messages)
     for _ in range(max_decompose_retries + 1):
         holder.pop("plan", None)
-        reg = ToolRegistry([make_submit_plan(holder)])
+        reg = ToolRegistry([make_submit_spec(holder)])
         stats: dict = {}
         yield from _drive_subloop(
             client,
@@ -586,18 +704,18 @@ def run_reflective(
             convo = list(messages) + [
                 {
                     "role": "user",
-                    "content": "Tu n'as pas appelé submit_plan. Appelle "
-                    "submit_plan MAINTENANT avec le plan structuré (goal, success_check, tasks).",
+                    "content": "Tu n'as pas appelé submit_spec. Appelle "
+                    "submit_spec MAINTENANT avec le plan structuré (goal, success_check, program_type, tasks).",
                 }
             ]
             continue
-        err = validate_plan(plan, max_tasks)
+        err = validate_spec(plan, max_tasks)
         if err is None:
             break
         convo = list(messages) + [
             {
                 "role": "user",
-                "content": f"Plan refusé : {err}. Réémets submit_plan corrigé.",
+                "content": f"Plan refusé : {err}. Réémets submit_spec corrigé.",
             }
         ]
         plan = None
