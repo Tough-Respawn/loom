@@ -28,10 +28,23 @@ class Task:
 
 
 @dataclass
+class Behavior:
+    desc: str  # "cliquer une cellule la révèle"
+    step: dict = field(
+        default_factory=dict
+    )  # {op, selector, text?, expect:{selector,check,value,cmp?}}
+
+
+@dataclass
 class Plan:
     goal: str
     success_check: str
     tasks: list[Task] = field(default_factory=list)
+    program_type: str = (
+        "script"  # html_game | web_page | cli | python_lib | api | script
+    )
+    launch: str = ""  # page .html / commande de lancement
+    behaviors: list[Behavior] = field(default_factory=list)
 
 
 def parse_plan(args: dict) -> Plan:
@@ -59,6 +72,28 @@ def parse_plan(args: dict) -> Plan:
         success_check=(args.get("success_check") or "").strip(),
         tasks=tasks,
     )
+
+
+_WEB_TYPES = frozenset({"html_game", "web_page"})
+
+
+def parse_spec(args: dict) -> Plan:
+    """Construit un Plan enrichi depuis les arguments de submit_spec. Réutilise parse_plan
+    pour goal/success_check/tasks, ajoute program_type/launch/behaviors."""
+    plan = parse_plan(args)
+    plan.program_type = (args.get("program_type") or "script").strip()
+    plan.launch = (args.get("launch") or "").strip()
+    raw = args.get("behaviors") or []
+    behaviors: list[Behavior] = []
+    if isinstance(raw, list):
+        for b in raw:
+            if isinstance(b, dict):
+                step = b.get("step") if isinstance(b.get("step"), dict) else {}
+                behaviors.append(
+                    Behavior(desc=(b.get("desc") or "").strip(), step=step)
+                )
+    plan.behaviors = behaviors
+    return plan
 
 
 # Marqueurs d'une acceptation EXÉCUTABLE (heuristique du gate) : commande, outil de preuve,
@@ -124,6 +159,41 @@ def validate_plan(plan: Plan, max_tasks: int = 30) -> str | None:
                 "exécutable (cite une commande run_shell/check_page, un fichier, un "
                 "nombre attendu, une sortie console)"
             )
+    return None
+
+
+def validate_spec(plan: Plan, max_tasks: int = 30) -> str | None:
+    """Gate de submit_spec : d'abord le gate de plan, puis les exigences du contrat —
+    program_type connu, et pour un programme web des behaviors avec post-condition
+    OBSERVABLE (un step.expect testable). Message actionnable sinon."""
+    base = validate_plan(plan, max_tasks)
+    if base is not None:
+        return base
+    types = {"html_game", "web_page", "cli", "python_lib", "api", "script"}
+    if plan.program_type not in types:
+        return (
+            f"program_type '{plan.program_type}' inconnu : choisis parmi "
+            f"{', '.join(sorted(types))}."
+        )
+    if plan.program_type in _WEB_TYPES:
+        if not plan.launch:
+            return "launch manquant : donne le fichier .html à ouvrir (la page testée)."
+        if not plan.behaviors:
+            return (
+                "aucun behavior : déclare des comportements PROUVABLES (ex. cliquer une "
+                "cellule la révèle), chacun avec un step {op, selector, expect}."
+            )
+        for i, b in enumerate(plan.behaviors, 1):
+            exp = b.step.get("expect") if isinstance(b.step, dict) else None
+            if (
+                not isinstance(exp, dict)
+                or not exp.get("selector")
+                or not exp.get("check")
+            ):
+                return (
+                    f"behavior {i} (« {b.desc[:40]} ») sans post-condition observable : "
+                    "ajoute step.expect = {selector, check (count|class|text|absent), value}."
+                )
     return None
 
 
