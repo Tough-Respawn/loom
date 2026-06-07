@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
-from loom.prompts import REFLECT_DECOMPOSE
+from loom.prompts import REFLECT_DECOMPOSE, SUBAGENT_SYSTEM
 from loom.tools.base import ToolError, ToolRegistry, ToolSpec
 
 
@@ -422,5 +422,99 @@ def run_reflective(
         return
 
     yield ("content", _plan_summary(plan))
-    # (Phases 2-4 ajoutées dans la tâche suivante)
-    yield ("content", "\n[exécution des tâches : à implémenter — Task 7]")
+    # --- Phases 2+3 : exécuter puis vérifier chaque tâche (contexte frais, anti-bluff) ---
+    total = len(plan.tasks)
+    for idx, task in enumerate(plan.tasks, 1):
+        task.status = "in_progress"
+        proven = False
+        for fix_attempt in range(max_fix_attempts + 1):
+            # Phase exécution (1er essai) ou fix (essais suivants).
+            if fix_attempt == 0:
+                yield (
+                    "phase",
+                    {"name": "exécution", "task": idx, "detail": task.goal[:70]},
+                )
+                exec_msg = execute_prompt(task)
+            else:
+                yield (
+                    "phase",
+                    {
+                        "name": "fix",
+                        "task": idx,
+                        "detail": f"correction {fix_attempt}/{max_fix_attempts}",
+                    },
+                )
+                exec_msg = fix_prompt(task)
+            es: dict = {}
+            yield from _drive_subloop(
+                client,
+                [{"role": "user", "content": exec_msg}],
+                make_sub_registry(),
+                es,
+                system_prompt=SUBAGENT_SYSTEM,
+                model=model,
+                max_tokens=max_tokens,
+                permission=permission,
+            )
+
+            # Phase vérification : un sous-agent FRAIS lance la preuve.
+            yield (
+                "phase",
+                {"name": "vérification", "task": idx, "detail": task.acceptance[:70]},
+            )
+            holder.pop("verdict", None)
+            vreg = make_sub_registry([make_report_verdict(holder)])
+            vs: dict = {}
+            yield from _drive_subloop(
+                client,
+                [{"role": "user", "content": verify_prompt(task)}],
+                vreg,
+                vs,
+                system_prompt=SUBAGENT_SYSTEM,
+                model=model,
+                max_tokens=max_tokens,
+                permission=permission,
+            )
+            verdict = holder.get("verdict") or {
+                "ok": False,
+                "evidence": vs.get("text", ""),
+            }
+            ok, note = verdict_proven(verdict["ok"], vs.get("saw_proof", False))
+            task.evidence = verdict["evidence"] or note
+            if ok:
+                proven = True
+                break
+
+        if proven:
+            task.status = "done"
+            yield ("content", f"\n✓ Tâche {idx}/{total} prouvée : {task.goal[:80]}")
+        else:
+            task.status = "blocked"
+            yield (
+                "phase",
+                {"name": "blocage", "task": idx, "detail": "tâche non prouvée"},
+            )
+            yield ("content", _blocked_report(idx, total, task))
+            return
+
+    # --- Phase 4 : intégration (prouver l'objectif d'origine de bout en bout) ---
+    yield (
+        "phase",
+        {"name": "intégration", "task": None, "detail": plan.success_check[:70]},
+    )
+    holder.pop("verdict", None)
+    ireg = make_sub_registry([make_report_verdict(holder)])
+    isum: dict = {}
+    yield from _drive_subloop(
+        client,
+        [{"role": "user", "content": integration_prompt(plan)}],
+        ireg,
+        isum,
+        system_prompt=SUBAGENT_SYSTEM,
+        model=model,
+        max_tokens=max_tokens,
+        permission=permission,
+    )
+    verdict = holder.get("verdict") or {"ok": False, "evidence": isum.get("text", "")}
+    ok, note = verdict_proven(verdict["ok"], isum.get("saw_proof", False))
+    yield ("content", _final_report(plan, verdict["evidence"] or note, success=ok))
