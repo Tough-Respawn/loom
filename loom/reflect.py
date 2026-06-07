@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from loom.tools.base import ToolError
+from loom.tools.base import ToolError, ToolSpec
 
 
 @dataclass
@@ -188,4 +188,96 @@ def integration_prompt(plan) -> str:
         f"Critère de succès final à PROUVER : {plan.success_check}\n\n"
         "Lance RÉELLEMENT la preuve (run_shell / check_page), observe la sortie, puis "
         "appelle report_verdict(ok, evidence) avec la sortie RÉELLE. N'invente rien."
+    )
+
+
+# --- Outils INTERNES du rail (jamais dans AVAILABLE_TOOLS, non cochables) ---------------
+# Ils ne donnent aucune capacité d'action : juste un canal de RETOUR typé. On les monte
+# dans un registre éphémère pour récupérer du JSON validé plutôt que de parser le texte
+# libre d'un petit modèle.
+
+
+def make_submit_plan(holder: dict) -> ToolSpec:
+    """Outil submit_plan : range le plan parsé dans holder['plan'] (ou lève ToolError ->
+    message actionnable que le modèle corrige)."""
+
+    def run(args: dict) -> str:
+        plan = parse_plan(args)
+        holder["plan"] = plan
+        return f"Plan reçu : {len(plan.tasks)} tâche(s). (le rail prend la suite)"
+
+    return ToolSpec(
+        name="submit_plan",
+        description=(
+            "Rends ton plan structuré : l'objectif global ('goal'), le critère de succès "
+            "final ('success_check' : comment prouver l'objectif de bout en bout), et "
+            "'tasks' = la liste des petites tâches atomiques, chacune avec un critère "
+            "'acceptance' EXÉCUTABLE."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "Objectif global reformulé."},
+                "success_check": {
+                    "type": "string",
+                    "description": "Preuve runnable de l'objectif d'origine de bout en bout.",
+                },
+                "tasks": {
+                    "type": "array",
+                    "description": "Tâches atomiques, dans l'ordre d'exécution.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {
+                                "type": "string",
+                                "description": "L'unique chose à faire.",
+                            },
+                            "files": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Fichiers concernés (chemins).",
+                            },
+                            "acceptance": {
+                                "type": "string",
+                                "description": "Preuve runnable que la tâche est finie.",
+                            },
+                        },
+                        "required": ["goal", "acceptance"],
+                    },
+                },
+            },
+            "required": ["goal", "success_check", "tasks"],
+        },
+        run=run,
+    )
+
+
+def make_report_verdict(holder: dict) -> ToolSpec:
+    """Outil report_verdict : range le verdict du vérificateur dans holder['verdict']."""
+
+    def run(args: dict) -> str:
+        holder["verdict"] = {
+            "ok": bool(args.get("ok")),
+            "evidence": (args.get("evidence") or "").strip(),
+        }
+        return "Verdict enregistré."
+
+    return ToolSpec(
+        name="report_verdict",
+        description=(
+            "Rends ton verdict de vérification APRÈS avoir lancé la preuve : ok (true/false) "
+            "et evidence = la sortie RÉELLE observée."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean", "description": "La preuve passe-t-elle ?"},
+                "evidence": {
+                    "type": "string",
+                    "description": "Sortie réelle observée.",
+                },
+            },
+            "required": ["ok", "evidence"],
+        },
+        run=run,
     )
