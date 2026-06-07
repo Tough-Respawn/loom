@@ -4,7 +4,7 @@
 - Date : 2026-06-06
 
 ## Contexte
-Loom expose 16 outils, dont 5 rien que pour l'édition de fichiers
+Loom expose 18 outils, dont 5 rien que pour l'édition de fichiers
 (write_file, append_file, edit_file, replace_lines, insert_lines). La question se
 pose régulièrement : n'est-ce pas trop ? Faut-il consolider pour réduire la charge
 de sélection du petit modèle (Gemma 4B) ?

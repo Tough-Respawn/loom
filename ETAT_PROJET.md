@@ -31,18 +31,23 @@ logique de les enchaîner. Voir [README.md](README.md) pour le pitch et le déma
 ### Agent tool-use (le cœur)
 - `client.stream_chat_tools()` : reconstruction des `tool_calls` streamés, exécution,
   réinjection `role:tool`, relance. **Arrêt piloté par le stop naturel** du modèle.
-- **13 outils** (`loom/tools/`, armés par défaut) :
+- **18 outils** (`loom/tools/`, armés par défaut) :
   - localiser : `find_files`, `search_text`, `list_dir` ;
   - lire : `read_file`, `read_document` (PDF/xlsx/docx), `read_image` (vision sur fichier,
     injectée dans la boucle via un message multimodal — cf. `loom/inline_image.py`) ;
   - planifier/déléguer : `manage_todos` (mémoire de travail), `dispatch_agent` (sous-agent
     à contexte isolé, mêmes outils, anti-récursion, **activité visible en direct**) ;
-  - modifier : `write_file`, `edit_file` (atomiques) ; exécuter : `run_shell` ;
-  - web : `web_search`, `fetch_url`.
+  - modifier/créer : `write_file`, `append_file`, `edit_file` (exact-unique),
+    `replace_lines`/`insert_lines` (par numéro de ligne, indentation préservée — cf.
+    `loom/tools/indent.py`), `format_code` (ruff/prettier) ;
+  - exécuter : `run_shell` (deny-list dure, tue l'arbre au timeout) ;
+  - web : `web_search`, `fetch_url` ;
+  - vérifier le rendu : `check_page` (navigateur headless : erreurs console + compte
+    d'éléments — cf. `loom/tools/browser.py`).
 - **Politique de décision + séquencement** écrits dans `loom/prompts/chat.system.md`
   (un 4B n'infère pas le « quel outil quand »).
 - **Garde-fous de boucle** (best practice agentic, pas un plafond fixe arbitraire) :
-  plafond de tours (15 principal, 25 sous-agent), **mur de temps** (`max_seconds`),
+  plafond de tours (30, principal et sous-agent), **mur de temps** (`max_seconds`),
   **détecteur de non-progrès** (mêmes appels répétés → stop), message d'arrêt explicite.
 
 ### Sécurité
