@@ -228,6 +228,7 @@ def create_app(
             "models": models,
             "current_model": conv.model,
             "thinking": conv.thinking,
+            "reflect": conv.reflect,
             "available_tools": available_tools,
             "active_tools": conv.active_tools,
             "workspace_dir": ws,
