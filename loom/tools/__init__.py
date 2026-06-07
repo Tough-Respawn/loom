@@ -24,6 +24,7 @@ __all__ = [
     "ToolSpec",
     "_resolve_in_root",
     "build_registry",
+    "build_subagent_registry",
     "make_read_document",
     "make_read_file",
     "make_read_image",
@@ -65,6 +66,7 @@ def build_registry(
     sub_max_tokens: int = 2048,
     permission=None,
     active_model: str | None = None,
+    extra_specs: list[ToolSpec] | None = None,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
@@ -155,7 +157,33 @@ def build_registry(
                 permission=permission,
             )
         )
+    # Outils SUPPLÉMENTAIRES injectés par l'appelant (ex. report_verdict du harnais de
+    # réflexion) : montés tels quels, hors univers AVAILABLE_TOOLS (non cochables).
+    if extra_specs:
+        specs.extend(extra_specs)
+
     from loom.models_profile import load_profile
 
     profile = load_profile(active_model) if active_model else None
     return ToolRegistry(specs, profile=profile)
+
+
+def build_subagent_registry(
+    workspace_dir: str,
+    max_bytes: int,
+    web_cfg=None,
+    *,
+    active_model: str | None = None,
+    extra_specs: list[ToolSpec] | None = None,
+) -> ToolRegistry:
+    """Registre d'un sous-agent du HARNAIS de réflexion : les outils _SUBAGENT_TOOLS (donc
+    PAS dispatch_agent ni manage_todos) + d'éventuels outils internes (report_verdict).
+    Fabriqué frais à chaque tâche pour ne partager aucun état."""
+    return build_registry(
+        workspace_dir,
+        max_bytes,
+        _SUBAGENT_TOOLS,
+        web_cfg=web_cfg,
+        active_model=active_model,
+        extra_specs=extra_specs,
+    )
