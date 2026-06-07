@@ -16,16 +16,20 @@ chemin, l'agent qui agit.
 ## Ce que ça fait
 
 - 💬 **Chat web** local (Flask + Preact/htm, zéro build) avec **streaming SSE** et markdown.
-- 🧰 **13 outils** exposés au modèle, regroupés par usage :
+- 🧰 **18 outils** exposés au modèle, regroupés par usage :
   - **Localiser** : `find_files` (glob), `search_text` (grep), `list_dir`.
   - **Lire** : `read_file` (texte), `read_document` (PDF / Excel / Word → texte),
     `read_image` (voir une image du disque : capture, schéma).
   - **Planifier / déléguer** : `manage_todos` (bloc-notes de plan, mémoire de travail),
     `dispatch_agent` (sous-agent à contexte isolé qui fait un gros chantier et ne renvoie
     qu'une synthèse — son activité est visible en direct).
-  - **Modifier** : `write_file`, `edit_file` (atomiques, remplacement exact-unique).
-  - **Exécuter** : `run_shell` (PowerShell/bash, deny-list dure).
+  - **Modifier / créer** : `write_file`, `append_file` (ajout en fin), `edit_file`
+    (remplacement exact-unique), `replace_lines` / `insert_lines` (édition par numéro de
+    ligne, indentation préservée), `format_code` (ruff Python / prettier web).
+  - **Exécuter** : `run_shell` (PowerShell/bash, deny-list dure, tue l'arbre au timeout).
   - **Web** : `web_search`, `fetch_url` (dégradés proprement hors-ligne).
+  - **Vérifier le rendu** : `check_page` (charge une page HTML en navigateur headless,
+    exécute le JS, renvoie erreurs console + compte d'éléments).
 - 🧭 **Boucle agentic, pas déterministe** : l'arrêt suit le **stop naturel** du modèle
   (il répond sans appel d'outil → fini). Par-dessus, des **garde-fous** non-bloquants :
   plafond de tours, mur de temps, détecteur de non-progrès (anti-boucle).
@@ -114,7 +118,7 @@ vont dans `loom/loom.config.local.toml` (gitignoré).
 État détaillé : [ETAT_PROJET.md](ETAT_PROJET.md).
 
 - ✅ Runtime auto-adaptatif, sessions, vision, skills, thinking, interruption, multi-modèles.
-- ✅ Agent tool-use : 13 outils, politique de décision + séquencement dans le prompt système.
+- ✅ Agent tool-use : 18 outils, politique de décision + séquencement dans le prompt système.
 - ✅ Garde-fous de boucle (stop naturel + plafonds + mur de temps + anti-répétition).
 - ✅ Sécurité d'ingestion : anti-SSRF + frontière de confiance (active même hors-ligne).
 - 🔜 SearXNG (web_search fiable), 2ᵉ modèle plus costaud, RAG (skills volumineux), audio.
