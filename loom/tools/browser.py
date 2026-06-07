@@ -142,3 +142,134 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
         },
         run=run,
     )
+
+
+def _eval_expect(page, expect: dict) -> tuple[bool, str]:
+    """Evalue une post-condition DANS le DOM courant. Renvoie (ok, observe)."""
+    sel = (expect.get("selector") or "").strip()
+    check = (expect.get("check") or "").strip().lower()
+    val = expect.get("value")
+    if not sel or not check:
+        return True, "(aucune post-condition)"
+    try:
+        if check == "count":
+            n = len(page.query_selector_all(sel))
+            cmp = (expect.get("cmp") or "min").lower()
+            ok = n >= int(val) if cmp == "min" else n == int(val)
+            return ok, f"{sel} x{n} (attendu {cmp} {val})"
+        el = page.query_selector(sel)
+        if check == "absent":
+            return el is None, f"{sel} {'absent' if el is None else 'present'}"
+        if el is None:
+            return False, f"{sel} introuvable"
+        if check == "class":
+            classes = (el.get_attribute("class") or "").split()
+            return str(val) in classes, f"{sel} classes={classes}"
+        if check == "text":
+            txt = el.inner_text()
+            return str(val).lower() in txt.lower(), f"{sel} texte~{txt[:60]!r}"
+        return False, f"check inconnu '{check}'"
+    except Exception as exc:  # noqa: BLE001 - une eval ratee = step en echec, pas un crash
+        return False, f"evaluation echouee : {str(exc)[:120]}"
+
+
+def _run_step(page, step: dict) -> dict:
+    """Joue UNE action puis evalue sa post-condition. Ne leve jamais."""
+    op = (step.get("op") or "none").strip().lower()
+    selector = (step.get("selector") or "").strip()
+    res = {"op": op, "selector": selector, "ok": False, "observed": ""}
+    try:
+        if op == "click":
+            page.click(selector, timeout=4000)
+        elif op == "rightclick":
+            page.click(selector, button="right", timeout=4000)
+        elif op == "dblclick":
+            page.dblclick(selector, timeout=4000)
+        elif op == "hover":
+            page.hover(selector, timeout=4000)
+        elif op == "type":
+            page.fill(selector, step.get("text") or "", timeout=4000)
+        elif op in ("none", "load", ""):
+            pass
+        else:
+            res["observed"] = f"op inconnu '{op}'"
+            return res
+        page.wait_for_timeout(300)  # laisse le JS reagir a l'action
+    except Exception as exc:  # noqa: BLE001 - action ratee = step en echec
+        res["observed"] = f"action '{op}' echouee : {str(exc)[:120]}"
+        return res
+    res["ok"], res["observed"] = _eval_expect(page, step.get("expect") or {})
+    return res
+
+
+def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
+    """Charge une page, JOUE `steps` (clics/saisie reels) et evalue une post-condition DOM
+    apres chaque action. Renvoie un dict STRUCTURE lu par le harnais (jamais par le modele) :
+    {url, ok, console_errors, steps:[{op,selector,ok,observed}], error}. `ok` global = 0 erreur
+    console ET toutes les etapes ok. Ne leve jamais (toute panne -> ok=False + error)."""
+    root = Path(workspace_dir)
+    if target.startswith(("http://", "https://", "file://")):
+        url = target
+    else:
+        path = _resolve_in_root(root, target)
+        if not path.exists():
+            return {
+                "url": target,
+                "ok": False,
+                "error": f"fichier introuvable : {target}",
+                "console_errors": [],
+                "steps": [],
+            }
+        url = path.as_uri()
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {
+            "url": url,
+            "ok": False,
+            "error": _INSTALL_HINT,
+            "console_errors": [],
+            "steps": [],
+        }
+
+    console: list[tuple[str, str]] = []
+    page_errors: list[str] = []
+    results: list[dict] = []
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.on("console", lambda m: console.append((m.type, m.text)))
+            page.on("pageerror", lambda e: page_errors.append(str(e)))
+            page.goto(url, wait_until="load", timeout=15000)
+            page.wait_for_timeout(800)
+            for step in steps:
+                results.append(_run_step(page, step))
+            browser.close()
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        if "Executable doesn't exist" in msg or "playwright install" in msg:
+            return {
+                "url": url,
+                "ok": False,
+                "error": _INSTALL_HINT,
+                "console_errors": [],
+                "steps": results,
+            }
+        return {
+            "url": url,
+            "ok": False,
+            "error": f"echec du chargement : {msg[:200]}",
+            "console_errors": [],
+            "steps": results,
+        }
+
+    errors = [t for (k, t) in console if k == "error"] + page_errors
+    ok = not errors and all(r["ok"] for r in results)
+    return {
+        "url": url,
+        "ok": ok,
+        "console_errors": errors[:8],
+        "steps": results,
+        "error": "",
+    }
