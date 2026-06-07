@@ -15,3 +15,6 @@ __pycache__/
 node_modules/
 # Traces de playwright-mcp (debug UI)
 .playwright-mcp/
+
+# Config llama-swap generee par serve.py (chemins machine-specifiques)
+loom/llama-swap.yaml
