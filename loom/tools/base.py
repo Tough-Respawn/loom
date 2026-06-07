@@ -149,6 +149,7 @@ AVAILABLE_TOOLS = [
     {"name": "edit_file", "label": "edit_file", "danger": True},
     {"name": "replace_lines", "label": "replace_lines", "danger": True},
     {"name": "insert_lines", "label": "insert_lines", "danger": True},
+    {"name": "format_code", "label": "format_code", "danger": True},
     {"name": "run_shell", "label": "run_shell", "danger": True},
 ]
 
