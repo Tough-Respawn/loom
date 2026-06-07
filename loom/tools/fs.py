@@ -269,16 +269,9 @@ def _new_block(content: str, nl: str) -> str:
     return body if body.endswith(nl) else body + nl
 
 
-def _context_after_edit(path: Path, lo: int, hi: int, pad: int = 4) -> str:
-    """Relit le fichier APRÈS écriture et renvoie les lignes [lo-pad .. hi+pad] avec leurs
-    NUMÉROS À JOUR. Clé anti-thrash : après une édition, les numéros de ligne bougent ; sans
-    ça le modèle doit refaire un read_file (tour gâché) et risque d'éditer sur des numéros
-    périmés (plage inversée, mauvaise zone). En lui rendant le contexte re-numéroté ici, il
-    enchaîne l'édition suivante directement, avec des numéros corrects."""
-    try:
-        text = path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError):
-        return ""
+def _render_context(text: str, lo: int, hi: int, pad: int = 4, note: str = "") -> str:
+    """Rend les lignes [lo-pad .. hi+pad] de `text` avec leurs NUMÉROS (style read_file).
+    `note` : en-tête personnalisé (sinon : message « état à jour, réutilise ces numéros »)."""
     lines = text.splitlines()
     n = len(lines)
     if n == 0:
@@ -287,10 +280,21 @@ def _context_after_edit(path: Path, lo: int, hi: int, pad: int = 4) -> str:
     b = min(n, hi + pad)
     width = max(2, len(str(b)))
     body = "\n".join(f"{i:>{width}}→{lines[i - 1]}" for i in range(a, b + 1))
-    return (
-        f"\nÉtat À JOUR autour de l'édition (lignes {a}-{b} sur {n}, numéros corrects — "
-        f"réutilise-les directement, ne refais pas de read_file) :\n{body}"
+    head = note or (
+        f"État À JOUR autour de l'édition (lignes {a}-{b} sur {n}, numéros corrects — "
+        f"réutilise-les directement, ne refais pas de read_file) :"
     )
+    return f"\n{head}\n{body}"
+
+
+def _context_after_edit(path: Path, lo: int, hi: int, pad: int = 4) -> str:
+    """Relit le fichier APRÈS écriture et rend les lignes [lo-pad .. hi+pad] re-numérotées
+    (anti-thrash : le modèle enchaîne l'édition suivante sans refaire de read_file)."""
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return _render_context(text, lo, hi, pad)
 
 
 def make_replace_lines(workspace_dir: str) -> ToolSpec:
