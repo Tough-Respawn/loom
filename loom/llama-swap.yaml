@@ -1,5 +1,0 @@
-models:
-  "gemma-uncensored":
-    cmd: "C:/tools/llama/llama-server.exe -m C:/Users/Amine/Documents/from-claude-to-local-haranessed-llm/loom/models/gemma-4-E4B-it-uncensored.Q4_K_M.gguf --host 127.0.0.1 --port ${PORT} -c 24576 --parallel 1 -ngl 99 -t 6 --jinja -fa on -b 2048 -ub 512 -ctk q8_0 -ctv q8_0 --prio 2 --mmproj C:/Users/Amine/Documents/from-claude-to-local-haranessed-llm/loom/models/mmproj-F16.gguf --no-mmproj-offload"
-  "qwen3-vl-abliterated":
-    cmd: "C:/tools/llama/llama-server.exe -m C:/Users/Amine/Documents/from-claude-to-local-haranessed-llm/loom/models/Qwen3-VL-8B-Instruct-abliterated-v2.Q4_K_M.gguf --host 127.0.0.1 --port ${PORT} -c 24576 --parallel 1 -ngl 99 -t 6 --jinja -fa on -b 2048 -ub 512 -ctk q8_0 -ctv q8_0 --prio 2 --mmproj C:/Users/Amine/Documents/from-claude-to-local-haranessed-llm/loom/models/Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-Q8_0.gguf --no-mmproj-offload"
