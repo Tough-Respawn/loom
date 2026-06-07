@@ -17,6 +17,8 @@ class Conversation:
     active_tools: list[str] = field(default_factory=list)
     model: str = ""
     thinking: bool = True
+    # Mode harnais de réflexion (découpage forcé) : OFF par défaut, activé par toggle UI.
+    reflect: bool = False
     # Plan de tâches de manage_todos : par conversation (donc par session) et persisté
     # ici -> survit au redémarrage, ne déborde plus d'une session à l'autre.
     todos: list[dict] = field(default_factory=list)
@@ -40,6 +42,9 @@ class Conversation:
     def set_thinking(self, thinking: bool) -> None:
         self.thinking = bool(thinking)
 
+    def set_reflect(self, reflect: bool) -> None:
+        self.reflect = bool(reflect)
+
     def to_messages(self) -> list[dict]:
         return list(self.messages)
 
@@ -52,6 +57,7 @@ class Conversation:
             "active_tools": self.active_tools,
             "model": self.model,
             "thinking": self.thinking,
+            "reflect": self.reflect,
             "todos": self.todos,
         }
 
@@ -65,6 +71,7 @@ class Conversation:
             active_tools=list(data.get("active_tools", [])),
             model=data.get("model", ""),
             thinking=bool(data.get("thinking", True)),
+            reflect=bool(data.get("reflect", False)),
             todos=list(data.get("todos", [])),
         )
 
