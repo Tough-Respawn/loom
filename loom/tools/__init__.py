@@ -64,6 +64,7 @@ def build_registry(
     model: str | None = None,
     sub_max_tokens: int = 2048,
     permission=None,
+    active_model: str | None = None,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
@@ -137,7 +138,11 @@ def build_registry(
             # Sous-registre complet SANS client -> pas de dispatch_agent imbriqué
             # (anti-récursion). Écriture/shell inclus : c'est un vrai ouvrier.
             return build_registry(
-                workspace_dir, max_bytes, _SUBAGENT_TOOLS, web_cfg=web_cfg
+                workspace_dir,
+                max_bytes,
+                _SUBAGENT_TOOLS,
+                web_cfg=web_cfg,
+                active_model=active_model,
             )
 
         specs.append(
@@ -150,4 +155,7 @@ def build_registry(
                 permission=permission,
             )
         )
-    return ToolRegistry(specs)
+    from loom.models_profile import load_profile
+
+    profile = load_profile(active_model) if active_model else None
+    return ToolRegistry(specs, profile=profile)

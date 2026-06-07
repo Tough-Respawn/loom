@@ -180,8 +180,9 @@ class ToolSpec:
 class ToolRegistry:
     """Collection d'outils : expose les schémas et exécute par nom (sans lever)."""
 
-    def __init__(self, specs: list[ToolSpec]) -> None:
+    def __init__(self, specs: list[ToolSpec], profile=None) -> None:
         self._specs = {s.name: s for s in specs}
+        self._profile = profile  # loom.models_profile.Profile | None (duck-typed)
 
     def __len__(self) -> int:
         return len(self._specs)
@@ -209,6 +210,10 @@ class ToolRegistry:
             return self._unknown_tool(name)
         try:
             args = validate_and_coerce(name, spec.parameters, args)
+            if self._profile is not None:
+                p = args.get("path")
+                suffix = Path(p).suffix if isinstance(p, str) else ""
+                args = self._profile.apply(name, args, suffix)
             return spec.run(args)
         except ToolError as exc:
             return f"erreur: {exc}"
