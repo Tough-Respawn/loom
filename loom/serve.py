@@ -71,11 +71,13 @@ def resolve_mmproj_path(
 
 
 def ensure_all_models(models, models_dir: Path) -> None:
-    """Télécharge le GGUF (et le mmproj) de chaque modèle du registre s'il manque."""
+    """Télécharge le GGUF (et le mmproj) de chaque modèle s'il manque, DANS le dossier du
+    modèle (loom/models/<id>/) quand il est connu, sinon dans la racine partagée."""
     for m in models:
-        ensure_model(m.repo, m.filename, models_dir)
+        dest = Path(m.dir) if m.dir else models_dir
+        ensure_model(m.repo, m.filename, dest)
         if m.mmproj_filename:
-            ensure_model(m.repo, m.mmproj_filename, models_dir)
+            ensure_model(m.repo, m.mmproj_filename, dest)
 
 
 def build_launch(
@@ -129,10 +131,9 @@ def _run(args: list[str], bin_name: str, hint: str) -> int:
 def launch_direct(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
     """Un seul modèle : llama-server directement, pas besoin de llama-swap."""
     model = cfg.model  # = modèle par défaut
-    model_path = MODELS_DIR / model.filename
-    mmproj_path = resolve_mmproj_path(
-        model.mmproj_filename, MODELS_DIR, repo=model.repo
-    )
+    base = Path(model.dir) if model.dir else MODELS_DIR
+    model_path = base / model.filename
+    mmproj_path = resolve_mmproj_path(model.mmproj_filename, base, repo=model.repo)
     args = build_launch(cfg, profile, model_path, mmproj_path)
     return _run(
         args,
