@@ -18,15 +18,16 @@ n_layers = 35
 size_mb = 5340
 
 [[models]]
-# Qwen3-VL 8B abliterated — dense 8B, vision. ~38 tok/s en décodage pur MAIS VRAM au ras
-# (~170 Mo libres) -> spill possible si contexte/image montent = ralentissements brutaux.
-# À choisir ponctuellement dans le sélecteur quand on veut sa qualité, pas en défaut.
-id = "qwen3-vl-abliterated"
-repo = "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v2-GGUF"
-filename = "Qwen3-VL-8B-Instruct-abliterated-v2.Q4_K_M.gguf"
-mmproj_filename = "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-Q8_0.gguf"
+# Qwen3.5-4B abliterated (Huihui) — dense 4B 2026, TEXTE seul. Q4_K_M ~2,8 Go -> laisse
+# ~3 Go VRAM libres sur 6 Go => PAS de spill (contrairement au Qwen3-VL 8B, acté inviable
+# le 2026-06-06, cf. mémoire loom-choix-modele) et contexte 24576 tient. Modèle récent
+# censé taper au-dessus de Gemma E4B sans sortir des 6 Go. À tester via le sélecteur UI.
+id = "qwen3.5-4b-abliterated"
+repo = "mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF"
+filename = "Huihui-Qwen3.5-4B-abliterated.Q4_K_M.gguf"
+mmproj_filename = ""   # texte seul (pas de vision)
 n_layers = 36
-size_mb = 5030
+size_mb = 2800
 
 [server]
 # Contexte 24576 : large fenêtre pour une boucle tool-use qui enchaîne lectures et
@@ -78,7 +79,7 @@ enabled = [
     "web_search", "fetch_url",
     "dispatch_agent", "manage_todos",
     "write_file", "append_file", "edit_file",
-    "replace_lines", "insert_lines", "run_shell",
+    "replace_lines", "insert_lines", "format_code", "run_shell",
     "check_page",
 ]
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
