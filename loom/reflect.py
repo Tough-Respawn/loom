@@ -129,6 +129,11 @@ def validate_plan(plan: Plan, max_tasks: int = 30) -> str | None:
 
 # --- Anti-bluff : un verdict positif n'est cru que s'il est PROUVÉ ---------------------
 _PROOF_TOOLS = frozenset({"run_shell", "check_page"})
+# Outils qui MODIFIENT le fichier : s'ils tournent APRÈS le dernier check_page, la preuve
+# est périmée (on ne valide pas un état non re-vérifié).
+_WRITE_TOOLS_REFLECT = frozenset(
+    {"write_file", "append_file", "edit_file", "replace_lines", "insert_lines"}
+)
 
 
 def verdict_proven(verdict_ok: bool, saw_proof: bool) -> tuple[bool, str]:
@@ -142,6 +147,83 @@ def verdict_proven(verdict_ok: bool, saw_proof: bool) -> tuple[bool, str]:
             "n'a tourné avec succès). « ça marche » sans preuve = non prouvé.",
         )
     return (verdict_ok, "")
+
+
+def evaluate_executor_proof(
+    stats: dict, acceptance: str
+) -> tuple[bool, str, str | None]:
+    """Porte de validation DÉTERMINISTE (remplace le sous-agent vérificateur). Lit le DERNIER
+    check_page lancé par l'exécuteur (capté dans `stats`) et décide, par le CODE et non par un
+    jugement du modèle, si la tâche est prouvée :
+      - un check_page a bien tourné ;
+      - aucun fichier modifié APRÈS ce check_page (sinon la preuve est périmée) ;
+      - 0 erreur console ;
+      - si l'`acceptance` exprime un compte d'éléments attendu ET que check_page l'a compté,
+        au moins ce nombre d'éléments.
+    Renvoie (ok, evidence, nudge). `nudge` : consigne à ajouter à la prochaine tentative de
+    fix quand l'échec vient d'une preuve MANQUANTE / PÉRIMÉE / incomplète (None si l'échec
+    vient de vraies erreurs : la sortie parle d'elle-même)."""
+    import re
+
+    out = (stats.get("last_check") or "").strip()
+    if not stats.get("check_ran"):
+        return (
+            False,
+            "(aucun check_page lancé)",
+            "Tu n'as PAS prouvé via check_page. Appelle l'OUTIL check_page sur la PAGE .html "
+            "(avec count_selectors pour le compte attendu) et constate le résultat.",
+        )
+    if stats.get("dirty_after_check"):
+        return (
+            False,
+            out[:600],
+            "Tu as modifié le fichier APRÈS ton dernier check_page : la preuve est périmée. "
+            "Relance check_page pour prouver l'état FINAL.",
+        )
+    m = re.search(r"console\s*:\s*(\d+)\s*erreur", out)
+    if m is not None:
+        n_err = int(m.group(1))
+    elif "aucune erreur console" in out:
+        n_err = 0
+    else:
+        return (
+            False,
+            out[:600],
+            "Relance check_page et laisse-le rapporter sa sortie complète "
+            "(format attendu : « console : N erreur(s) »).",
+        )
+    if n_err > 0:
+        return (
+            False,
+            out[:600],
+            None,
+        )  # vraies erreurs console -> fix (sortie parlante)
+    # Compte d'éléments attendu : un entier de l'acceptance NON suivi de « erreur/warning ».
+    nums = [
+        int(n)
+        for n in re.findall(r"\b(\d{1,4})\b", acceptance)
+        if not re.search(rf"\b{n}\s*(?:erreur|warning)", acceptance)
+    ]
+    expected = max(nums) if nums else None
+    if expected:
+        # Sélecteur CSS ISOLÉ (lookbehind : évite « .html » dans « index.html »).
+        sel_m = re.search(r"(?<![\w])[.#][A-Za-z][\w-]*", acceptance)
+        sel = sel_m.group(0) if sel_m else None
+        count_m = (
+            re.search(rf"{re.escape(sel)}\s*×\s*(\d+)", out)
+            if sel
+            else re.search(r"×\s*(\d+)", out)
+        )
+        if count_m is None:
+            return (
+                False,
+                out[:600],
+                f"Relance check_page avec count_selectors='{sel or '.cell'}' pour PROUVER "
+                f"le compte attendu ({expected} éléments).",
+            )
+        if int(count_m.group(1)) < expected:
+            return (False, out[:600], None)  # pas assez d'éléments rendus -> fix
+    return (True, out[:600], None)
 
 
 def execute_prompt(task: Task) -> str:
@@ -197,12 +279,12 @@ def verify_prompt(task: Task) -> str:
 def integration_prompt(plan) -> str:
     """Consigne de la Phase 4 : prouver l'objectif d'origine de bout en bout."""
     return (
-        "Toutes les tâches sont faites. VÉRIFIE maintenant l'objectif D'ORIGINE de bout "
-        "en bout, comme un utilisateur final, à regard neuf.\n\n"
+        "Toutes les tâches sont faites. PROUVE l'objectif D'ORIGINE de bout en bout.\n\n"
         f"Objectif : {plan.goal}\n"
-        f"Critère de succès final à PROUVER : {plan.success_check}\n\n"
-        "Lance RÉELLEMENT la preuve (run_shell / check_page), observe la sortie, puis "
-        "appelle report_verdict(ok, evidence) avec la sortie RÉELLE. N'invente rien."
+        f"Critère de succès final : {plan.success_check}\n\n"
+        "Appelle l'OUTIL check_page sur la PAGE .html finale (avec count_selectors pour le "
+        "compte attendu, ex. '.cell') et constate le résultat. TERMINE sur ce check_page : "
+        "c'est lui qui fait foi, ne modifie plus rien après. N'invente aucun résultat."
     )
 
 
@@ -324,6 +406,11 @@ def _drive_subloop(
     re-émettre submit_plan/report_verdict en boucle jusqu'au repeat_limit (tours gaspillés)."""
     stats["saw_proof"] = False
     stats["text"] = ""
+    stats["check_ran"] = False  # un check_page a-t-il tourné ?
+    stats["last_check"] = (
+        ""  # sortie du DERNIER check_page (pour la porte déterministe)
+    )
+    stats["dirty_after_check"] = False  # un fichier modifié APRÈS ce check_page ?
     stream = client.stream_chat_tools(
         sub_messages,
         system_prompt,
@@ -338,8 +425,17 @@ def _drive_subloop(
             if kind == "content" and isinstance(payload, str):
                 stats["text"] += payload
             elif kind == "tool_result" and isinstance(payload, dict):
-                if payload.get("ok") and payload.get("name") in _PROOF_TOOLS:
+                name = payload.get("name")
+                if payload.get("ok") and name in _PROOF_TOOLS:
                     stats["saw_proof"] = True
+                if name == "check_page":
+                    stats["check_ran"] = True
+                    stats["last_check"] = (
+                        payload.get("detail") or payload.get("preview") or ""
+                    )
+                    stats["dirty_after_check"] = False
+                elif name in _WRITE_TOOLS_REFLECT and payload.get("ok"):
+                    stats["dirty_after_check"] = True
             yield (kind, payload)
             if done is not None and done():
                 break
@@ -485,31 +581,16 @@ def run_reflective(
                 permission=permission,
             )
 
-            # Phase vérification : un sous-agent FRAIS lance la preuve.
+            # Vérification DÉTERMINISTE (plus de sous-agent vérificateur séparé) : le harnais
+            # LIT le dernier check_page de l'exécuteur et tranche par le CODE (0 erreur +
+            # compte attendu + preuve non périmée). ÷2 les boucles, et le verdict ne peut
+            # plus être auto-jugé/bluffé par le modèle.
             yield (
                 "phase",
                 {"name": "vérification", "task": idx, "detail": task.acceptance[:70]},
             )
-            holder.pop("verdict", None)
-            vreg = make_sub_registry([make_report_verdict(holder)])
-            vs: dict = {}
-            yield from _drive_subloop(
-                client,
-                [{"role": "user", "content": verify_prompt(task)}],
-                vreg,
-                vs,
-                system_prompt=SUBAGENT_SYSTEM,
-                model=model,
-                max_tokens=max_tokens,
-                permission=permission,
-                done=lambda: "verdict" in holder,
-            )
-            verdict = holder.get("verdict") or {
-                "ok": False,
-                "evidence": vs.get("text", ""),
-            }
-            ok, note = verdict_proven(verdict["ok"], vs.get("saw_proof", False))
-            task.evidence = verdict["evidence"] or note
+            ok, evidence, nudge = evaluate_executor_proof(es, task.acceptance)
+            task.evidence = f"{evidence}\n{nudge}" if nudge else evidence
             if ok:
                 proven = True
                 break
@@ -526,25 +607,22 @@ def run_reflective(
             yield ("content", _blocked_report(idx, total, task))
             return
 
-    # --- Phase 4 : intégration (prouver l'objectif d'origine de bout en bout) ---
+    # --- Phase 4 : intégration (1 boucle) — l'agent lance check_page sur la page finale,
+    # le harnais valide le success_check de façon DÉTERMINISTE (même porte que les tâches).
     yield (
         "phase",
         {"name": "intégration", "task": None, "detail": plan.success_check[:70]},
     )
-    holder.pop("verdict", None)
-    ireg = make_sub_registry([make_report_verdict(holder)])
     isum: dict = {}
     yield from _drive_subloop(
         client,
         [{"role": "user", "content": integration_prompt(plan)}],
-        ireg,
+        make_sub_registry(),
         isum,
         system_prompt=SUBAGENT_SYSTEM,
         model=model,
         max_tokens=max_tokens,
         permission=permission,
-        done=lambda: "verdict" in holder,
     )
-    verdict = holder.get("verdict") or {"ok": False, "evidence": isum.get("text", "")}
-    ok, note = verdict_proven(verdict["ok"], isum.get("saw_proof", False))
-    yield ("content", _final_report(plan, verdict["evidence"] or note, success=ok))
+    ok, evidence, _ = evaluate_executor_proof(isum, plan.success_check)
+    yield ("content", _final_report(plan, evidence, success=ok))
