@@ -38,9 +38,10 @@ default_model = "gemma-uncensored"
 history_path = "loom/data/conversation.json"
 web_port = 8000
 skills_dir = "loom/skills"
-# 4096 (au lieu de 2048) : laisse passer des réponses/écritures plus grosses sans
-# troncature. La vraie parade au gros fichier reste le chunk (write_file + append_file).
-max_tokens = 4096
+# 8192 : avec un modèle à réflexion (Qwen3.5), le thinking mange une part du budget ; 8192
+# laisse de la place au raisonnement ET à la sortie (compact_after = 24576-8192-1024 =
+# 15360, large). La parade au gros fichier reste le chunk (write_file + append_file).
+max_tokens = 8192
 request_timeout = 120
 max_retries = 6
 context_token_budget = 5000
