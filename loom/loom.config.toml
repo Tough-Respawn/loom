@@ -59,7 +59,7 @@ enabled = [
     "dispatch_agent", "manage_todos",
     "write_file", "append_file", "edit_file",
     "replace_lines", "insert_lines", "format_code", "run_shell",
-    "check_page",
+    "check_page", "check_interactive",
 ]
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
 # loom.config.local.toml pour pointer la vraie racine de la machine.
