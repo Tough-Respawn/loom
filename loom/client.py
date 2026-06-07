@@ -490,6 +490,7 @@ class LoomClient:
         compact_after_tokens: int | None = None,
         keep_recent_tools: int = 4,
         max_act_nudges: int = 2,
+        max_length_continues: int = 30,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
 
@@ -518,6 +519,7 @@ class LoomClient:
         )
         files_written: set[str] = set()  # chemins écrits avec succès ce tour (couche A)
         act_nudges = 0  # nb de relances « passe de la parole à l'acte » déjà émises
+        length_continues = 0  # nb de relances « continue » sur troncature max_tokens
         for _ in range(max_iters):
             if time.monotonic() >= deadline:
                 yield (
@@ -616,6 +618,36 @@ class LoomClient:
 
             tool_calls = collector["tool_calls"]
             if not tool_calls:
+                # CONTINUATION sur troncature : la réponse texte/raisonnement a été coupée
+                # par la limite de tokens (finish_reason == "length") sans appel d'outil.
+                # Plutôt que de rendre une réponse tronquée, on relance le modèle pour qu'il
+                # POURSUIVE là où il s'est arrêté. Autant de fois que nécessaire (cap dur
+                # max_length_continues, anti-runaway). Le texte continue d'être streamé à
+                # l'UI tour après tour (le web app concatène). Cas des tool_calls tronqués
+                # NON concerné (géré par 'arguments tronqués' / overflow).
+                if (
+                    collector["finish_reason"] == "length"
+                    and length_continues < max_length_continues
+                ):
+                    length_continues += 1
+                    if text:
+                        convo.append({"role": "assistant", "content": text})
+                        nudge = (
+                            "Ta réponse a été coupée par la limite de tokens. CONTINUE "
+                            "exactement là où tu t'es arrêté, sans répéter ce qui précède."
+                        )
+                    else:
+                        nudge = (
+                            "Ta réflexion a été coupée par la limite de tokens. Termine et "
+                            "DONNE ta réponse (ou émets l'appel d'outil) MAINTENANT, plus "
+                            "direct."
+                        )
+                    convo.append({"role": "user", "content": nudge})
+                    _debug(
+                        "CONTINUATION(length)",
+                        f"relance {length_continues}/{max_length_continues}",
+                    )
+                    continue
                 # Audit de claim au stop : le modèle prétend-il un résultat qu'il n'a pas
                 # produit ? (A) artefact fichier inventé, (B) résultat d'exécution sans
                 # run_shell/dispatch, ou intention/affirmation sans exécution réelle. On le
