@@ -369,6 +369,7 @@ def create_app(
                     model=conv.model or None,
                     max_tokens=max_tokens,
                     permission=permission,
+                    workspace_dir=ws,
                 )
             elif use_tools:
                 source = client.stream_chat_tools(
