@@ -50,6 +50,7 @@ def build_app(cfg):
             model=cfg.default_model,
             sub_max_tokens=cfg.chat.max_tokens,
             permission=permission,
+            active_model=(conversation.model if conversation else cfg.default_model),
         )
 
     # Amorce les outils de la conversation depuis la config au 1er lancement.
