@@ -51,6 +51,7 @@ _SUBAGENT_TOOLS = [
     "format_code",
     "run_shell",
     "check_page",
+    "check_interactive",
 ]
 
 
@@ -120,6 +121,10 @@ def build_registry(
         from loom.tools.browser import make_check_page
 
         specs.append(make_check_page(workspace_dir))
+    if "check_interactive" in enabled:
+        from loom.tools.browser import make_check_interactive
+
+        specs.append(make_check_interactive(workspace_dir))
     if "web_search" in enabled or "fetch_url" in enabled:
         from loom.tools.web import WebSearchConfig, make_fetch_url, make_web_search
 

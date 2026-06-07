@@ -25,6 +25,7 @@ READ_TOOLS = frozenset(
         "web_search",
         "fetch_url",
         "check_page",
+        "check_interactive",
         "manage_todos",
     }
 )
