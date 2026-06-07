@@ -658,6 +658,33 @@ def _final_report(plan: Plan, evidence: str, success: bool) -> str:
     return f"{head}\nCritère : {plan.success_check}\nPreuve :\n{evidence[:1000]}"
 
 
+def _compile_behaviors(plan: Plan) -> list[dict]:
+    """Traduit les behaviors du contrat en steps pour run_interactive (ne garde que ceux
+    qui ont un step exploitable)."""
+    return [b.step for b in plan.behaviors if isinstance(b.step, dict) and b.step]
+
+
+def _interactive_report(plan: Plan, res: dict) -> str:
+    head = (
+        "\n**✓ Objectif atteint : tous les comportements sont PROUVÉS par interaction réelle.**"
+        if res.get("ok")
+        else "\n**✗ Comportements NON prouvés** (au moins une action/post-condition échoue)."
+    )
+    lines = [head, f"Page : {res.get('url', plan.launch)}"]
+    if res.get("error"):
+        lines.append(f"erreur : {res['error']}")
+    if res.get("console_errors"):
+        lines.append(f"erreurs console : {len(res['console_errors'])}")
+    for i, s in enumerate(res.get("steps", []), 1):
+        b = (
+            plan.behaviors[i - 1].desc
+            if i - 1 < len(plan.behaviors)
+            else s.get("op", "")
+        )
+        lines.append(f"  {i}. [{'ok' if s['ok'] else 'ÉCHEC'}] {b} → {s['observed']}")
+    return "\n".join(lines)
+
+
 def run_reflective(
     client,
     messages,
@@ -667,6 +694,7 @@ def run_reflective(
     model=None,
     max_tokens=2048,
     permission=None,
+    workspace_dir: str = ".",
     max_tasks: int = 30,
     max_fix_attempts: int = 3,
     max_decompose_retries: int = 2,
@@ -795,12 +823,20 @@ def run_reflective(
             yield ("content", _blocked_report(idx, total, task))
             return
 
-    # --- Phase 4 : intégration (1 boucle) — l'agent lance check_page sur la page finale,
-    # le harnais valide le success_check de façon DÉTERMINISTE (même porte que les tâches).
+    # --- Phase 4 : intégration. Pour un programme WEB, le HARNAIS joue lui-même les
+    # behaviors (clics réels) via run_interactive et tranche déterministiquement. Sinon,
+    # repli sur la preuve du sous-agent (porte evaluate_executor_proof, palier 1).
     yield (
         "phase",
         {"name": "intégration", "task": None, "detail": plan.success_check[:70]},
     )
+    steps = _compile_behaviors(plan)
+    if plan.program_type in _WEB_TYPES and plan.launch and steps:
+        from loom.tools.browser import run_interactive
+
+        res = run_interactive(workspace_dir, plan.launch, steps)
+        yield ("content", _interactive_report(plan, res))
+        return
     isum: dict = {}
     yield from _drive_subloop(
         client,
