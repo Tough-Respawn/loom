@@ -159,7 +159,10 @@ def execute_prompt(task: Task) -> str:
         "triviale) ;\n"
         "2) écris le code minimal pour le satisfaire, puis appelle format_code ;\n"
         "3) relance le critère et CONSTATE qu'il passe, sortie réelle à l'appui.\n"
-        "Termine en rapportant la sortie réelle constatée, sans rien inventer."
+        "`check_page` et `format_code` sont des OUTILS : appelle-les DIRECTEMENT "
+        "(check_page avec l'URL de la PAGE .html ; jamais un .css/.js seul), ne les tape "
+        "JAMAIS comme commande dans run_shell. N'invente aucun résultat : sans appel "
+        "d'outil réel, tu n'as pas de preuve."
     )
 
 
@@ -182,10 +185,12 @@ def verify_prompt(task: Task) -> str:
         "de confiance.\n\n"
         f"Objectif de la tâche : {task.goal}\n"
         f"Critère d'acceptation à PROUVER : {task.acceptance}\n\n"
-        "Lance RÉELLEMENT ce critère (run_shell / check_page selon le cas) et observe la "
-        "sortie. Puis appelle report_verdict(ok, evidence) où `evidence` est la sortie "
-        "RÉELLE observée (pas une paraphrase). N'appelle report_verdict qu'APRÈS avoir "
-        "exécuté la preuve : un « ok » sans commande lancée sera rejeté."
+        "Lance RÉELLEMENT la preuve en APPELANT l'outil adéquat DIRECTEMENT : `check_page` "
+        "(sur la PAGE .html) pour une page web, `run_shell` pour une vraie commande système. "
+        "N'écris JAMAIS « check_page » dans run_shell (c'est un outil, pas une commande). "
+        "Puis appelle report_verdict(ok, evidence) où `evidence` est la sortie RÉELLE "
+        "observée (pas une paraphrase). N'appelle report_verdict qu'APRÈS avoir exécuté la "
+        "preuve : un « ok » sans appel d'outil réel sera rejeté."
     )
 
 

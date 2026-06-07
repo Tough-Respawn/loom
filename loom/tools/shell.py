@@ -22,7 +22,16 @@ import sys
 from pathlib import Path
 
 from loom.permissions import _is_hard_denied
-from loom.tools.base import ToolError, ToolSpec
+from loom.tools.base import AVAILABLE_TOOLS, ToolError, ToolSpec
+
+# Noms des OUTILS Loom. Le modèle confond parfois un outil (check_page, format_code, …)
+# avec une commande shell et le tape dans run_shell -> PowerShell répond « commande
+# inconnue » (opaque) et il boucle. Aucun de ces noms n'est un vrai exécutable : on
+# détecte le cas en tête de run_shell et on REDIRIGE vers l'appel d'outil direct.
+_LOOM_TOOL_NAMES = frozenset(t["name"] for t in AVAILABLE_TOOLS) | {
+    "submit_plan",
+    "report_verdict",
+}
 
 
 def _shell_argv(command: str) -> list[str]:
@@ -74,6 +83,16 @@ def make_run_shell(
         # Barrière de sécurité non contournable : refus AVANT lancement.
         if _is_hard_denied(command, []):
             raise ToolError("commande interdite par la politique de sécurité")
+        # Le 1er mot est-il un OUTIL Loom tapé par erreur comme commande shell ? (cas
+        # fréquent du 4B : « check_page … » dans run_shell). On redirige vers l'outil.
+        first = command.split(maxsplit=1)[0].strip("'\"`").lower()
+        if first in _LOOM_TOOL_NAMES:
+            raise ToolError(
+                f"« {first} » est un OUTIL Loom, PAS une commande shell : ne le lance pas "
+                "via run_shell. Appelle-le DIRECTEMENT comme outil, avec ses arguments "
+                "(ex. check_page avec url=<chemin .html> ; format_code avec path=<fichier>). "
+                "run_shell est réservé aux VRAIES commandes système (python, git, npm, …)."
+            )
         # PowerShell 5.1 (pas de pwsh) ne supporte pas '&&'/'||' -> erreur exploitable
         # par le modèle plutôt qu'un parse error opaque.
         if (
