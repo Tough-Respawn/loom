@@ -442,17 +442,42 @@ def make_insert_lines(workspace_dir: str) -> ToolSpec:
             raise ToolError(
                 f"after_line={after} hors fichier : {rel} a {n} lignes (0..{n})"
             )
+        before_text = "".join(lines)
+        suffix = path.suffix
+        # Ancre = la ligne qui SUIVRA le bloc inséré (lines[after], 0-based), sinon la
+        # précédente : target_indent gère le repli + le cas « après un ':' ».
+        target = target_indent(lines, after, suffix)
+        new_content = snap_indent(content, target)
+        snapped = new_content != content.replace("\r\n", "\n").replace("\r", "\n")
+        content = new_content
         head = lines[:after]
         # si la dernière ligne gardée n'a pas de fin de ligne, l'ajouter (sinon collage)
         if head and not head[-1].endswith(("\n", "\r")):
             head = head[:-1] + [head[-1] + nl]
-        _atomic_write(
-            path, "".join(head) + _new_block(content, nl) + "".join(lines[after:])
-        )
+        new_text = "".join(head) + _new_block(content, nl) + "".join(lines[after:])
+        if is_python(suffix) and py_compiles(before_text):
+            err = indent_error(new_text)
+            if err:
+                return (
+                    f"erreur: ton insertion casse l'indentation ({err}) — {rel} n'a PAS "
+                    "été modifié. Réémets avec la bonne indentation."
+                    + _render_context(
+                        before_text,
+                        after,
+                        after + 1,
+                        note=f"État actuel (INCHANGÉ) de {rel} au point d'insertion :",
+                    )
+                )
+        _atomic_write(path, new_text)
         k = content.count("\n") + 1
         msg = f"inséré : {rel} après ligne {after} (+{k} lignes)"
+        if snapped:
+            msg += " (bloc ré-indenté pour coller au contexte)"
         # La zone insérée occupe les lignes [after+1 .. after+k] dans le nouveau fichier.
-        return msg + _context_after_edit(path, after + 1, after + k)
+        tail = _context_after_edit(path, after + 1, after + k)
+        if is_python(suffix) and not py_compiles(new_text):
+            tail += "\nnote: le fichier ne compile pas encore — poursuis tes edits."
+        return msg + tail
 
     return ToolSpec(
         name="insert_lines",
