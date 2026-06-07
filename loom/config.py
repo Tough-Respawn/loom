@@ -45,6 +45,9 @@ class ModelConfig:
     mmproj_filename: str = ""
     id: str = ""
     n_gpu_layers: int | None = None
+    # Dossier du modèle (loom/models/<id>/) : porte le GGUF, le mmproj et profile.md.
+    # Rempli par la découverte ; les chemins GGUF se résolvent contre lui.
+    dir: str = ""
 
 
 @dataclass
@@ -87,7 +90,26 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         mmproj_filename=d.get("mmproj_filename", ""),
         id=d.get("id", "") or default_id or d["filename"],
         n_gpu_layers=d.get("n_gpu_layers"),
+        dir=d.get("dir", ""),
     )
+
+
+def _discover_models(models_root: Path) -> list[ModelConfig]:
+    """Découvre un modèle par sous-dossier `loom/models/<id>/model.toml` (l'id = nom du
+    dossier). Renvoie la liste triée par id. Chaque ModelConfig porte son `dir`. Vide si
+    le dossier racine n'existe pas ou ne contient aucun model.toml."""
+    if not models_root.is_dir():
+        return []
+    out: list[ModelConfig] = []
+    for folder in sorted(p for p in models_root.iterdir() if p.is_dir()):
+        toml_path = folder / "model.toml"
+        if not toml_path.exists():
+            continue
+        d = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        m = _parse_model(d, default_id=folder.name)
+        m.dir = str(folder)
+        out.append(m)
+    return out
 
 
 def _parse_web_search(d: dict) -> WebSearchConfig:
@@ -144,7 +166,15 @@ def load_config(
         read_file_max_bytes=int(tl.get("read_file_max_bytes", 40_000)),
         web_search=_parse_web_search(ws),
     )
-    models = [_parse_model(rm) for rm in data["models"]]
+    # Découverte par dossier (loom/models/<id>/model.toml) ; repli sur l'ancien bloc
+    # [[models]] de la config si aucun dossier-modèle n'est présent (transition douce).
+    models = _discover_models(Path(path).parent / "models")
+    if not models:
+        models = [_parse_model(rm) for rm in data.get("models", [])]
+    if not models:
+        raise ValueError(
+            "aucun modèle : crée loom/models/<id>/model.toml (ou un bloc [[models]])"
+        )
     default_model = ch.get("default_model") or models[0].id
     return RuntimeConfig(
         models=models,

@@ -18,7 +18,10 @@ def _model_cmd(
     context: int,
     override_n_gpu_layers: int | None = None,
 ) -> str:
-    model_path = f"{models_dir}/{model.filename}"
+    base = (
+        model.dir or models_dir
+    )  # dossier du modèle (découverte) sinon racine partagée
+    model_path = f"{base}/{model.filename}"
     # Précédence (identique au chemin mono-modèle resolve_n_gpu_layers) : champ par
     # modèle > override global ([override] n_gpu_layers, ex. 99 = offload total) >
     # recommandation auto. SANS l'override ici, llama-swap laissait des couches sur CPU
@@ -31,7 +34,7 @@ def _model_cmd(
         ngl = recommend_gpu_layers(profile.vram_free_mb, model.size_mb, model.n_layers)
     else:
         ngl = 0
-    mmproj = f"{models_dir}/{model.mmproj_filename}" if model.mmproj_filename else None
+    mmproj = f"{base}/{model.mmproj_filename}" if model.mmproj_filename else None
     # Mêmes réglages perf que le chemin mono-modèle (serve.py) : Flash-Attn + KV q8_0
     # (gpu_tuning) divisent le KV par 2 -> indispensable sur 6 Go, sinon spill. Threads =
     # cœurs PHYSIQUES en GPU (logiques/2) pour ne pas pénaliser la passe CPU (PLE Gemma).
