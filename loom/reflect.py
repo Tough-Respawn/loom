@@ -110,6 +110,14 @@ def validate_plan(plan: Plan, max_tasks: int = 30) -> str | None:
                 f"tâche {i} sans critère d'acceptation : donne une commande/observable "
                 "qui PROUVE qu'elle est finie"
             )
+        low = t.acceptance.lower()
+        if any(p in low for p in ("wc -l", "nombre de lignes", "compte de lignes")):
+            return (
+                f"tâche {i} : l'acceptation se base sur un COMPTE DE LIGNES du fichier — "
+                "c'est un proxy trompeur (le nombre de lignes ne prouve pas que ça marche). "
+                "Donne un critère de COMPORTEMENT : check_page (0 erreur console + nombre "
+                "d'éléments attendus, ex. 81 cellules) ou la sortie réelle d'une commande."
+            )
         if not any(h in t.acceptance.lower() for h in _PROOF_HINTS):
             return (
                 f"tâche {i} : l'acceptation « {t.acceptance[:60]} » n'est pas une preuve "
@@ -299,13 +307,19 @@ def _drive_subloop(
     max_tokens,
     permission,
     thinking=False,
+    done=None,
 ):
     """Générateur : lance une sous-boucle stream_chat_tools, RELAIE ses events vers le haut
     et remplit `stats` en place : stats['saw_proof'] (un run_shell/check_page a réussi),
-    stats['text'] (texte final accumulé)."""
+    stats['text'] (texte final accumulé).
+
+    `done` (optionnel) : callable sans argument testé APRÈS chaque event. Dès qu'il renvoie
+    vrai, on ARRÊTE la sous-boucle (et on ferme le flux). Sert aux sous-boucles à outil
+    interne : une fois le plan/verdict capté dans le holder, inutile de laisser le modèle
+    re-émettre submit_plan/report_verdict en boucle jusqu'au repeat_limit (tours gaspillés)."""
     stats["saw_proof"] = False
     stats["text"] = ""
-    for kind, payload in client.stream_chat_tools(
+    stream = client.stream_chat_tools(
         sub_messages,
         system_prompt,
         max_tokens,
@@ -313,13 +327,21 @@ def _drive_subloop(
         registry=registry,
         thinking=thinking,
         permission=permission,
-    ):
-        if kind == "content" and isinstance(payload, str):
-            stats["text"] += payload
-        elif kind == "tool_result" and isinstance(payload, dict):
-            if payload.get("ok") and payload.get("name") in _PROOF_TOOLS:
-                stats["saw_proof"] = True
-        yield (kind, payload)
+    )
+    try:
+        for kind, payload in stream:
+            if kind == "content" and isinstance(payload, str):
+                stats["text"] += payload
+            elif kind == "tool_result" and isinstance(payload, dict):
+                if payload.get("ok") and payload.get("name") in _PROOF_TOOLS:
+                    stats["saw_proof"] = True
+            yield (kind, payload)
+            if done is not None and done():
+                break
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
 
 
 def _plan_summary(plan: Plan) -> str:
@@ -386,6 +408,7 @@ def run_reflective(
             max_tokens=max_tokens,
             permission=permission,
             thinking=True,
+            done=lambda: "plan" in holder,
         )
         plan = holder.get("plan")
         if plan is None:
@@ -474,6 +497,7 @@ def run_reflective(
                 model=model,
                 max_tokens=max_tokens,
                 permission=permission,
+                done=lambda: "verdict" in holder,
             )
             verdict = holder.get("verdict") or {
                 "ok": False,
@@ -514,6 +538,7 @@ def run_reflective(
         model=model,
         max_tokens=max_tokens,
         permission=permission,
+        done=lambda: "verdict" in holder,
     )
     verdict = holder.get("verdict") or {"ok": False, "evidence": isum.get("text", "")}
     ok, note = verdict_proven(verdict["ok"], isum.get("saw_proof", False))
