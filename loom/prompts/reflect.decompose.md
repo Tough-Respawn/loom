@@ -11,9 +11,10 @@ Chaque tâche doit avoir :
 - `acceptance` : un critère qui prouve, par le COMPORTEMENT OBSERVABLE, que la tâche marche.
 
 RÈGLES DURES sur `acceptance` (c'est le point le plus important) :
-- Mesure un COMPORTEMENT, jamais une métrique de fichier. Pour une page web : `check_page` sur le fichier (0 erreur console, et le nombre d'éléments attendus, ex. 81 cellules). Pour un script : la SORTIE RÉELLE de `run_shell` (ex. « run_shell python app.py affiche "OK" sans erreur »).
-- INTERDIT, car ça ne prouve RIEN que ça marche : le nombre de lignes du fichier (`wc -l`, « 81 lignes »), la taille du fichier, le simple fait que le fichier existe, un `echo` qui réécrit une valeur, « le code est propre / ça marche ». Le nombre 81 du démineur, c'est 81 CELLULES affichées dans la page (via `check_page`), PAS 81 lignes de code.
-- Si une tâche écrit un bout de logique difficile à tester seul, son `acceptance` doit quand même viser l'effet observable le plus proche (ex. « check_page : la grille contient 81 cellules cliquables » plutôt que « la fonction existe »).
+- Formule-le comme une OBSERVATION du résultat attendu, JAMAIS comme une ligne de commande à taper. `check_page` est un OUTIL (pas une commande shell) : écris « check_page sur index.html montre 0 erreur console et 81 cellules .cell », pas « check_page C:/…/x.css ». L'ouvrier saura quel outil appeler.
+- Mesure un COMPORTEMENT, jamais une métrique de fichier. Pour une page web : ce que `check_page` révèle sur la PAGE HTML — le fichier `.html`, JAMAIS un `.css`/`.js` seul (check_page charge une page, pas une feuille de style). Pour un script : la SORTIE RÉELLE de `run_shell` (ex. « python app.py affiche "OK" sans erreur »).
+- INTERDIT, car ça ne prouve RIEN que ça marche : le nombre de lignes du fichier (`wc -l`, « 81 lignes »), la taille du fichier, le simple fait que le fichier existe, un `echo` qui réécrit une valeur, « le code est propre / ça marche ». Le nombre 81 du démineur, c'est 81 CELLULES affichées dans la page (via `check_page` sur le `.html`), PAS 81 lignes de code.
+- Si une tâche écrit un bout de logique difficile à tester seul, son `acceptance` doit quand même viser l'effet observable le plus proche (ex. « check_page sur index.html : la grille contient 81 cellules cliquables » plutôt que « la fonction existe »).
 - La DERNIÈRE tâche doit avoir comme `acceptance` exactement le `success_check` global : c'est elle qui prouve l'objectif d'origine de bout en bout.
 
 Vise BEAUCOUP de petites tâches plutôt que peu de grosses : plus une tâche est petite et vérifiable par un comportement, moins elle peut échouer.
