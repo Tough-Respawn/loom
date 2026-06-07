@@ -47,6 +47,7 @@ _SUBAGENT_TOOLS = [
     "edit_file",
     "replace_lines",
     "insert_lines",
+    "format_code",
     "run_shell",
     "check_page",
 ]
@@ -106,6 +107,10 @@ def build_registry(
         specs.append(make_replace_lines(workspace_dir))
     if "insert_lines" in enabled:
         specs.append(make_insert_lines(workspace_dir))
+    if "format_code" in enabled:
+        from loom.tools.format import make_format_code
+
+        specs.append(make_format_code(workspace_dir))
     if "run_shell" in enabled:
         specs.append(make_run_shell(workspace_dir))
     if "check_page" in enabled:
