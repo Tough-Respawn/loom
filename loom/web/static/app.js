@@ -201,6 +201,8 @@ function Item({ it }) {
       return html`<${PermAsk} it=${it} />`;
     case "error":
       return html`<div class="msg assistant err">${it.message}</div>`;
+    case "phase":
+      return html`<div class="phase-sep">&#9658; ${it.name}${it.detail ? " — " + it.detail : ""}</div>`;
     default:
       return null;
   }
@@ -313,6 +315,13 @@ async function sendChat(text, image) {
         patch(tid, { name: evt.name, path: evt.path, cmd: evt.cmd, ok: evt.ok, preview: evt.preview, detail: evt.detail, pending: false });
         break;
       }
+      case "phase":
+        // Séparateur de phase du harnais de réflexion. Si on ignore cet event, le run
+        // reste lisible (les lignes du texte narrent déjà l'avancement) -> non bloquant.
+        if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
+        if (asstId) { patch(asstId, { done: true }); asstId = null; }
+        push({ kind: "phase", name: evt.name, task: evt.task, detail: evt.detail });
+        break;
       case "tool_request":
         push({ kind: "perm", callId: evt.id, name: evt.name, summary: evt.summary });
         break;
@@ -566,6 +575,16 @@ if (thinkingCb) {
     const fd = new FormData();
     fd.append("thinking", thinkingCb.checked ? "1" : "0");
     fetch("/thinking", { method: "POST", body: fd });
+  });
+}
+
+// --- toggle mode réflexion (harnais de découpage) ---
+const reflectCb = document.getElementById("reflect-cb");
+if (reflectCb) {
+  reflectCb.addEventListener("change", async () => {
+    const fd = new FormData();
+    fd.append("reflect", reflectCb.checked ? "1" : "0");
+    await fetch("/reflect", { method: "POST", body: fd });
   });
 }
 
