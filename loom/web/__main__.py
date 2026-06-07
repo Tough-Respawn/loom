@@ -53,6 +53,19 @@ def build_app(cfg):
             active_model=(conversation.model if conversation else cfg.default_model),
         )
 
+    from loom.tools import build_subagent_registry
+
+    def make_sub_registry(workspace=None, conversation=None, extra_specs=None):
+        """Registre frais d'un sous-agent du harnais de réflexion (outils complets sans
+        dispatch/todos, + extras comme report_verdict). Workspace = celui de la session."""
+        return build_subagent_registry(
+            workspace or cfg.chat.workspace_dir,
+            cfg.chat.read_file_max_bytes,
+            cfg.chat.web_search,
+            active_model=(conversation.model if conversation else cfg.default_model),
+            extra_specs=extra_specs,
+        )
+
     # Amorce les outils de la conversation depuis la config au 1er lancement.
     if not conversation.active_tools and cfg.chat.tools_enabled:
         conversation.set_tools(cfg.chat.tools_enabled)
@@ -84,6 +97,7 @@ def build_app(cfg):
         context_window=cfg.context,
         models=[m.id for m in cfg.models],
         tool_factory=make_registry,
+        reflect_factory=make_sub_registry,
         available_tools=AVAILABLE_TOOLS,
         permission=permission,
         workspace_dir=cfg.chat.workspace_dir,
