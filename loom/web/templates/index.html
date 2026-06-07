@@ -119,6 +119,8 @@
     .skill.tool-danger::after { content: '!'; font-size: 10px; font-weight: 700; color: #c79a52;
              background: #2a2414; border: 1px solid #4a4030; border-radius: 4px; padding: 0 5px; }
     #thinking-toggle input { accent-color: #3e7d63; width: 15px; height: 15px; }
+    .phase-sep { align-self: flex-start; font-size: 11.5px; color: #6a7a8a; letter-spacing: .2px;
+                 padding: 2px 0; }
     .hint { font-size: 11px; color: #5b6172; margin-top: 6px; line-height: 1.5; }
     #model-select { background:#161922; color:#e6e6e6; border:1px solid #2a2d3e;
                     border-radius:8px; padding:4px 8px; font-size:13px; }
@@ -219,6 +221,8 @@
     {% endif %}
     <label id="thinking-toggle" title="Réflexion préalable (décoché = réponse directe)">
       <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> Réflexion préalable</label>
+    <label id="thinking-toggle" title="Mode réflexion : découpe la tâche en phases (harnais)">
+      <input type="checkbox" id="reflect-cb"> Mode réflexion (découpage forcé)</label>
     <div class="drawer-section"><span class="drawer-label">Modèle</span>{% include "_models.html" %}</div>
     <details class="skills-box" open><summary>Skills</summary>{% include "_skills.html" %}</details>
     <details class="skills-box" open><summary>Outils &amp; permissions</summary>{% include "_tools.html" %}
