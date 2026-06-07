@@ -28,6 +28,13 @@ from pathlib import Path
 
 from loom.permissions import is_protected_write_path
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
+from loom.tools.indent import (
+    indent_error,
+    is_python,
+    py_compiles,
+    snap_indent,
+    target_indent,
+)
 
 
 def _guard_write_path(path: Path) -> None:
@@ -331,13 +338,44 @@ def make_replace_lines(workspace_dir: str) -> ToolSpec:
             )
         if end > n:
             raise ToolError(f"end_line={end} hors fichier : {rel} a {n} lignes")
+        before_text = "".join(lines)
+        suffix = path.suffix
+        snapped = False
+        if content != "":
+            target = target_indent(lines, start - 1, suffix)
+            new_content = snap_indent(content, target)
+            snapped = new_content != content.replace("\r\n", "\n").replace("\r", "\n")
+            content = new_content
         block = _new_block(content, nl)
-        _atomic_write(path, "".join(lines[: start - 1]) + block + "".join(lines[end:]))
+        new_text = "".join(lines[: start - 1]) + block + "".join(lines[end:])
+        # Validation DIFFÉRENTIELLE (Python) : on n'écrit pas si l'édition introduit une
+        # erreur d'indentation dans un fichier qui compilait. On ne bloque QUE ce cas (les
+        # états intermédiaires non-compilables d'une construction restent permis).
+        if is_python(suffix) and py_compiles(before_text):
+            err = indent_error(new_text)
+            if err:
+                return (
+                    f"erreur: ton bloc casse l'indentation ({err}) — {rel} n'a PAS été "
+                    "modifié. Réémets le bloc avec la bonne indentation (mêmes niveaux "
+                    "que le code autour)."
+                    + _render_context(
+                        before_text,
+                        start,
+                        end,
+                        note=f"État actuel (INCHANGÉ) de {rel} autour de la zone visée :",
+                    )
+                )
+        _atomic_write(path, new_text)
         added = 0 if content == "" else content.count("\n") + 1
         head = f"remplacé : {rel} lignes {start}-{end} ({end - start + 1} → {added} lignes)"
+        if snapped:
+            head += " (bloc ré-indenté pour coller au contexte)"
         # Bornes de la zone éditée dans le NOUVEAU fichier (start .. start-1+added).
         new_hi = start if added == 0 else start - 1 + added
-        return head + _context_after_edit(path, start, new_hi)
+        tail = _context_after_edit(path, start, new_hi)
+        if is_python(suffix) and not py_compiles(new_text):
+            tail += "\nnote: le fichier ne compile pas encore — poursuis tes edits."
+        return head + tail
 
     return ToolSpec(
         name="replace_lines",
