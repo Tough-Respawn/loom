@@ -33,7 +33,7 @@ READ_TOOLS = frozenset(
 # (rangent un plan / un verdict dans un holder). Autorisés d'office, comme les lectures —
 # ils ne touchent ni fichier ni système, les soumettre au gate 'ask' les ferait refuser à
 # tort (les sous-boucles du rail n'ont pas de callback de confirmation interactive).
-INTERNAL_TOOLS = frozenset({"submit_plan", "report_verdict"})
+INTERNAL_TOOLS = frozenset({"submit_plan", "submit_spec", "report_verdict"})
 SHELL_TOOLS = frozenset({"run_shell", "bash"})
 WRITE_TOOLS = frozenset(
     {
