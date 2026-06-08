@@ -1,0 +1,15 @@
+# Qwen3.6 35B-A3B abliterated (huihui) — MoE : 35B totaux, ~3B ACTIFS par token.
+# GROS modele rendu jouable sur 6 Go via offload MoE (cf. guide llama.cpp Doctor-Shotgun) :
+#   -ngl 999 --cpu-moe  => attention + FFN dense + expert partage sur GPU,
+#                          experts ROUTES (gros, peu sollicites) en RAM.
+# Resultat attendu sur RTX 2060 6 Go + 32 Go RAM : qualite ~classe-30B, gen ~15 tok/s,
+# prefill ~350-400 tok/s. Prerequis : ~18-20 Go de RAM libre (fermer apps lourdes).
+# Tuning : si VRAM OK, monter -c et -ub ; sinon baisser -c. Fallback si --cpu-moe absent :
+#   -ot "exps=CPU". Pour deborder un peu plus en RAM : --n-cpu-moe N (N couches d'experts).
+# PAS de vision (mmproj non inclus dans cette abliteration). id = nom du dossier.
+repo = "mradermacher/Huihui-Qwen3.6-35B-A3B-abliterated-GGUF"
+filename = "Huihui-Qwen3.6-35B-A3B-abliterated.Q4_K_M.gguf"
+n_layers = 48
+size_mb = 20400
+cpu_moe = true
+context = 16384
