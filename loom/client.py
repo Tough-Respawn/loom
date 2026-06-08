@@ -7,7 +7,6 @@ import json
 import os
 import re
 import sys
-import time
 import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
@@ -485,7 +484,6 @@ class LoomClient:
         permission=None,
         confirm=None,
         max_overflow_retries: int = 2,
-        max_seconds: float = 300.0,
         repeat_limit: int = 3,
         compact_after_tokens: int | None = None,
         keep_recent_tools: int = 4,
@@ -499,19 +497,21 @@ class LoomClient:
         preview}).
 
         L'ARRÊT est piloté par le modèle (stop naturel) : dès qu'il répond SANS
-        tool_call, on sort. Par-dessus, trois garde-fous non-négociables (best
+        tool_call, on sort. Par-dessus, deux garde-fous non-négociables (best
         practice agentic : le modèle, surtout petit, ne sait pas toujours s'arrêter) :
         - `max_iters` : plafond dur de tours d'outils (anti-runaway) ;
-        - `max_seconds` : mur de temps global de la boucle ;
         - `repeat_limit` : non-progrès — si le modèle réémet `repeat_limit` fois de
           suite EXACTEMENT le même jeu d'appels (mêmes outils + mêmes args), il
           tourne en rond, on coupe. Chaque garde-fou émet un message d'arrêt EXPLICITE
           (on sait que c'est la sécurité, pas une fin normale).
+
+        PAS de mur de temps : sur un modèle local lent, un chrono global décapitait
+        la boucle en plein travail (cf. session démineur). Les bornes sont le NOMBRE
+        de tours et le NON-PROGRÈS, jamais l'horloge.
         """
         convo = list(messages)
         tools = registry.openai_tools() if registry else None
         overflow_retries = 0
-        deadline = time.monotonic() + max_seconds
         prev_sig_set = None  # jeu d'appels du tour précédent (détecteur de non-progrès)
         repeat_streak = 0
         executed = (
@@ -521,13 +521,6 @@ class LoomClient:
         act_nudges = 0  # nb de relances « passe de la parole à l'acte » déjà émises
         length_continues = 0  # nb de relances « continue » sur troncature max_tokens
         for _ in range(max_iters):
-            if time.monotonic() >= deadline:
-                yield (
-                    "content",
-                    f"\n(arrêt : garde-fou de temps après {int(max_seconds)}s — "
-                    "la tâche n'est peut-être pas terminée).",
-                )
-                return
             # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
             # résultats d'outils AVANT d'appeler le modèle (évite l'overflow sur une
             # chaîne longue). Estimation grossière ~4 car./token, comme loom.context.
