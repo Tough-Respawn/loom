@@ -26,7 +26,12 @@ def _model_cmd(
     # modèle > override global ([override] n_gpu_layers, ex. 99 = offload total) >
     # recommandation auto. SANS l'override ici, llama-swap laissait des couches sur CPU
     # (-ngl 30/35 pour Gemma) -> plus lent que l'offload total (33 tok/s).
-    if model.n_gpu_layers is not None:
+    if model.cpu_moe:
+        # MoE offloadé : toutes les couches DENSES sur GPU (-ngl 999), les experts routés
+        # partent en RAM via --cpu-moe (build_server_args). On ignore l'override global
+        # n_gpu_layers (pensé pour les petits modèles denses).
+        ngl = 999
+    elif model.n_gpu_layers is not None:
         ngl = model.n_gpu_layers
     elif override_n_gpu_layers is not None:
         ngl = override_n_gpu_layers
@@ -34,6 +39,8 @@ def _model_cmd(
         ngl = recommend_gpu_layers(profile.vram_free_mb, model.size_mb, model.n_layers)
     else:
         ngl = 0
+    # Contexte propre au modèle si défini (gros MoE -> KV plus lourd -> on raccourcit).
+    ctx = model.context or context
     mmproj = f"{base}/{model.mmproj_filename}" if model.mmproj_filename else None
     # Mêmes réglages perf que le chemin mono-modèle (serve.py) : Flash-Attn + KV q8_0
     # (gpu_tuning) divisent le KV par 2 -> indispensable sur 6 Go, sinon spill. Threads =
@@ -45,11 +52,12 @@ def _model_cmd(
         server_bin=llama_bin,
         model_path=model_path,
         port="${PORT}",
-        context=context,
+        context=ctx,
         n_gpu_layers=ngl,
         threads=threads,
         mmproj_path=mmproj,
         gpu_tuning=profile.has_gpu,
+        cpu_moe=model.cpu_moe,
     )
     return " ".join(str(a) for a in args).replace("\\", "/")
 

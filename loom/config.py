@@ -45,6 +45,12 @@ class ModelConfig:
     mmproj_filename: str = ""
     id: str = ""
     n_gpu_layers: int | None = None
+    # MoE offload : si True, garde attention + FFN dense sur GPU et bascule les experts
+    # ROUTÉS en RAM (--cpu-moe + -ngl 999). Rend un MoE 26-35B jouable sur 6 Go.
+    cpu_moe: bool = False
+    # Contexte propre au modèle (override le global). Un gros MoE = KV plus lourd -> on
+    # raccourcit (ex. 16384) là où les petits tiennent 24576.
+    context: int | None = None
     # Dossier du modèle (loom/models/<id>/) : porte le GGUF, le mmproj et profile.md.
     # Rempli par la découverte ; les chemins GGUF se résolvent contre lui.
     dir: str = ""
@@ -90,6 +96,8 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         mmproj_filename=d.get("mmproj_filename", ""),
         id=d.get("id", "") or default_id or d["filename"],
         n_gpu_layers=d.get("n_gpu_layers"),
+        cpu_moe=bool(d.get("cpu_moe", False)),
+        context=d.get("context"),
         dir=d.get("dir", ""),
     )
 
