@@ -66,6 +66,8 @@ def build_registry(
     sub_max_tokens: int = 2048,
     permission=None,
     active_model: str | None = None,
+    skills_dir: str | None = None,
+    plugins_root: str | None = None,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
@@ -160,6 +162,25 @@ def build_registry(
                 permission=permission,
             )
         )
+    if "use_skill" in enabled and skills_dir is not None:
+        from loom.skills import collect_skills
+        from loom.tools.skills import make_use_skill
+
+        specs.append(make_use_skill(lambda: collect_skills(skills_dir, plugins_root)))
+    if plugins_root is not None:
+        from loom.tools.plugins import (
+            make_add_marketplace,
+            make_install_plugin,
+            make_list_plugins,
+        )
+
+        if "add_marketplace" in enabled:
+            specs.append(make_add_marketplace(plugins_root))
+        if "install_plugin" in enabled:
+            specs.append(make_install_plugin(plugins_root))
+        if "list_plugins" in enabled:
+            specs.append(make_list_plugins(plugins_root))
+
     from loom.models_profile import load_profile
 
     profile = load_profile(active_model) if active_model else None
