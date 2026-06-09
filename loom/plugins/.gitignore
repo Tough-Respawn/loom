@@ -1,0 +1,5 @@
+# Contenu installé (tiers) : pas versionné. Le dossier existe pour le store.
+marketplaces/
+cache/
+*.json
+!.gitignore
