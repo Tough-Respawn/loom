@@ -19,4 +19,3 @@ def _load(name: str) -> str:
 
 CHAT_SYSTEM = _load("chat.system.md")
 SUBAGENT_SYSTEM = _load("subagent.system.md")
-REFLECT_DECOMPOSE = _load("reflect.decompose.md")
