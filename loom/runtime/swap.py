@@ -1,4 +1,4 @@
-# loom/swap.py
+# loom/runtime/swap.py
 """Génération de la config llama-swap (un modèle = une commande llama-server)."""
 
 from __future__ import annotations
@@ -6,8 +6,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from loom.config import ModelConfig
-from loom.hardware import HardwareProfile, recommend_gpu_layers
-from loom.server_args import build_server_args
+from loom.runtime.hardware import HardwareProfile, recommend_gpu_layers
+from loom.runtime.server_args import build_server_args
 
 
 def _model_cmd(
