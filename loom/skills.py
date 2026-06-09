@@ -27,7 +27,7 @@ def _parse_skill_md(text: str, fallback_name: str) -> tuple[str, str, str]:
         end = text.find("\n---", 3)
         if end != -1:
             front = text[3:end]
-            body = text[end + 4 :].lstrip("\n")
+            body = text[end + 4 :].lstrip("\r\n")
             for line in front.splitlines():
                 if ":" in line:
                     key, _, val = line.partition(":")
