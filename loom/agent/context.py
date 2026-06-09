@@ -1,4 +1,4 @@
-# loom/context.py
+# loom/agent/context.py
 """Gestion de la fenêtre de contexte : estimation de tokens + résumé automatique."""
 
 from __future__ import annotations

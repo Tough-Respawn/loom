@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from loom.skills import Skill, load_skill_body
+from loom.extend.skills import Skill, load_skill_body
 from loom.tools.base import ToolError, ToolSpec
 
 

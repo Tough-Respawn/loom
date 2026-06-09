@@ -7,7 +7,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from loom.inline_image import wrap_image
+from loom.agent.inline_image import wrap_image
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.trust import untrusted
 

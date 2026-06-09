@@ -1,4 +1,4 @@
-# loom/client.py
+# loom/agent/client.py
 """Client modèle : parle à l'endpoint OpenAI-compatible de Loom via le SDK openai."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
 
-from loom.inline_image import (
+from loom.agent.inline_image import (
     image_user_message,
     is_inline_image,
     parse_inline_image,

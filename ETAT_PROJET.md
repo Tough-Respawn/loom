@@ -60,10 +60,10 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   (mêmes appels répétés → stop). **Pas de mur de temps** (retiré : décapitait le raisonnement).
 
 ### Skills & plugins
-- **Skills déclenchés par le modèle** (`loom/skills.py`) : le prompt système annonce un
+- **Skills déclenchés par le modèle** (`loom/extend/skills.py`) : le prompt système annonce un
   **catalogue** `nom : description` (locaux + plugins, plugins namespacés `plugin:nom`) ; le
   modèle charge un skill via `use_skill(name)`. Plus d'activation manuelle.
-- **Store de plugins compatible Claude Code** (`loom/plugins.py` + CLI `python -m loom.plugins`)
+- **Store de plugins compatible Claude Code** (`loom/extend/plugins.py` + CLI `python -m loom.extend.plugins`)
   : Loom héberge son propre store (marketplaces + cache, format CC), indépendant de `~/.claude`.
   Installe n'importe quel plugin CC → ses **skills** rejoignent le catalogue. Install durci
   (anti-injection d'args git, anti-traversée) et gardé `ask`. Hooks/agents : tranches suivantes.

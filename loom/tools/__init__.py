@@ -163,7 +163,7 @@ def build_registry(
             )
         )
     if "use_skill" in enabled and skills_dir is not None:
-        from loom.skills import collect_skills
+        from loom.extend.skills import collect_skills
         from loom.tools.skills import make_use_skill
 
         specs.append(make_use_skill(lambda: collect_skills(skills_dir, plugins_root)))

@@ -64,15 +64,14 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
 ```
 Navigateur ──HTTP──► Loom (Flask :8000) ──OpenAI API──► llama-server (:8080) ──► GGUF (GPU+CPU)
                         │
-                        ├─ client.py        (SDK openai + boucle tool-use stream_chat_tools + garde-fous)
-                        ├─ conversation.py  (mémoire + modèle + thinking + outils, persisté JSON)
-                        ├─ session.py       (un fil persistant par projet)
-                        ├─ context.py       (budget tokens + résumé auto)
-                        ├─ skills.py        (catalogue de skills + chargement à la demande)
-                        ├─ plugins.py       (store de plugins compatible Claude Code + CLI)
-                        ├─ tools/           (localiser, lire, modifier, exécuter, web, todos, sous-agent, skills, plugins)
-                        ├─ permissions.py   (deny-list dure + allow/ask/deny)
-                        └─ swap.py          (modèles découverts par dossier → llama-swap.yaml)
+                        ├─ agent/           (boucle tool-use : client, conversation, context, session, inline_image)
+                        ├─ tools/           (capacités appelées par le modèle : localiser, lire, modifier, exécuter, web, todos, sous-agent…)
+                        ├─ extend/          (skills = catalogue + use_skill ; plugins = store compatible Claude Code)
+                        ├─ permissions.py   (deny-list dure + allow/ask/deny — filtre les appels d'outils)
+                        ├─ config.py        (config transverse depuis loom.config.toml)
+                        ├─ prompts/         (prompts système)
+                        ├─ runtime/         (llama.cpp : serve, swap, hardware, server_args, fetch, profils)
+                        └─ web/             (serveur Flask + SSE + templates/static — la couche UI)
 ```
 
 - **Runtime** : [llama.cpp](https://github.com/ggml-org/llama.cpp) (`llama-server`), derrière une
@@ -113,7 +112,7 @@ Puis ouvre **http://127.0.0.1:8000**.
 - **Skill local** : crée `loom/skills/<nom>/SKILL.md` (frontmatter `name`/`description` + corps).
   Il rejoint le catalogue ; le modèle l'appelle via `use_skill` quand c'est pertinent.
 - **Plugin Claude Code** : ajoute une marketplace puis installe un plugin —
-  `python -m loom.plugins marketplace add <git-url>` puis `install <plugin>` (ou via les outils
+  `python -m loom.extend.plugins marketplace add <git-url>` puis `install <plugin>` (ou via les outils
   `add_marketplace` / `install_plugin`). Ses skills apparaissent au catalogue.
 
 ## Configuration

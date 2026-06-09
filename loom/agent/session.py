@@ -1,4 +1,4 @@
-# loom/session.py
+# loom/agent/session.py
 """Session : le fil de travail persistant d'un projet (un chat par session).
 
 Une session vit sous `root/<id>/session.json` : conversation (historique + outils
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from loom.conversation import Conversation
+from loom.agent.conversation import Conversation
 
 
 @dataclass
