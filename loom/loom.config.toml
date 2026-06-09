@@ -38,6 +38,8 @@ default_model = "gemma-uncensored"
 history_path = "loom/data/conversation.json"
 web_port = 8000
 skills_dir = "loom/skills"
+# Racine du store de plugins (défaut loom/plugins). Contenu installé git-ignoré.
+plugins_root = "loom/plugins"
 # 8192 : avec un modèle à réflexion (Qwen3.5), le thinking mange une part du budget ; 8192
 # laisse de la place au raisonnement ET à la sortie (compact_after = 24576-8192-1024 =
 # 15360, large). La parade au gros fichier reste le chunk (write_file + append_file).
@@ -60,6 +62,7 @@ enabled = [
     "write_file", "append_file", "edit_file",
     "replace_lines", "insert_lines", "format_code", "run_shell",
     "check_page", "check_interactive",
+    "use_skill", "list_plugins", "add_marketplace", "install_plugin",
 ]
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
 # loom.config.local.toml pour pointer la vraie racine de la machine.

@@ -13,7 +13,6 @@ from pathlib import Path
 class Conversation:
     system_prompt: str
     messages: list[dict] = field(default_factory=list)
-    active_skills: list[str] = field(default_factory=list)
     active_tools: list[str] = field(default_factory=list)
     model: str = ""
     thinking: bool = True
@@ -27,9 +26,6 @@ class Conversation:
     def reset(self) -> None:
         self.messages = []
         self.todos = []  # nouvelle conversation = plan vierge
-
-    def set_skills(self, names: list[str]) -> None:
-        self.active_skills = list(names)
 
     def set_tools(self, names: list[str]) -> None:
         self.active_tools = list(names)
@@ -48,7 +44,6 @@ class Conversation:
         return {
             "system_prompt": self.system_prompt,
             "messages": self.messages,
-            "active_skills": self.active_skills,
             "active_tools": self.active_tools,
             "model": self.model,
             "thinking": self.thinking,
@@ -61,7 +56,6 @@ class Conversation:
         return cls(
             system_prompt=data.get("system_prompt", default_system_prompt),
             messages=list(data.get("messages", [])),
-            active_skills=list(data.get("active_skills", [])),
             active_tools=list(data.get("active_tools", [])),
             model=data.get("model", ""),
             thinking=bool(data.get("thinking", True)),
