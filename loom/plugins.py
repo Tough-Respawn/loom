@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -180,3 +182,184 @@ def _git_clone(
         _run(["git", "fetch", "--depth", "1", "origin", target], cwd=dest)
         _run(["git", "checkout", target, "--"], cwd=dest)
     return _run(["git", "rev-parse", "HEAD"], cwd=dest)
+
+
+# ---------------------------------------------------------------------------
+# Task 2 : marketplace add/list, plugin install/add-local/remove
+# ---------------------------------------------------------------------------
+
+
+def marketplace_add(root: str | Path | None, source: str) -> str:
+    """Ajoute une marketplace (git clone ou copie locale) sous marketplaces/<name>.
+    Renvoie son nom. Lève PluginError sans .claude-plugin/marketplace.json."""
+    root = plugins_root(root)
+    tmp = Path(tempfile.mkdtemp(prefix="loom-mkt-"))
+    try:
+        if _looks_like_git(source):
+            _git_clone(source, tmp / "repo")
+            repo = tmp / "repo"
+        else:
+            repo = Path(source).expanduser().resolve()
+            if not repo.is_dir():
+                raise PluginError(f"chemin introuvable : {source}")
+        data = _read_json(repo / ".claude-plugin" / "marketplace.json", None)
+        if not isinstance(data, dict) or not data.get("name"):
+            raise PluginError("source sans .claude-plugin/marketplace.json valide")
+        name = str(data["name"])
+        dest = root / "marketplaces" / name
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        shutil.copytree(repo, dest)
+        known = _read_json(
+            root / "known_marketplaces.json", {"version": 1, "marketplaces": {}}
+        )
+        known.setdefault("marketplaces", {})[name] = {
+            "source": source,
+            "addedAt": _now_iso(),
+        }
+        _write_json(root / "known_marketplaces.json", known)
+        return name
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def marketplace_list(root: str | Path | None = None) -> list[dict]:
+    root = plugins_root(root)
+    known = _read_json(root / "known_marketplaces.json", {"marketplaces": {}})
+    return [{"name": n, **v} for n, v in (known.get("marketplaces") or {}).items()]
+
+
+def _find_entry(root: Path, plugin: str, marketplace: str | None) -> tuple[str, dict]:
+    """Trouve (marketplace, entrée plugin) dans les marketplace.json. Lève si introuvable."""
+    mkts = root / "marketplaces"
+    names = (
+        [marketplace]
+        if marketplace
+        else [d.name for d in mkts.iterdir() if d.is_dir()]
+        if mkts.is_dir()
+        else []
+    )
+    for mname in names:
+        data = _read_json(mkts / mname / ".claude-plugin" / "marketplace.json", None)
+        for entry in (data or {}).get("plugins", []):
+            if entry.get("name") == plugin:
+                return mname, entry
+    raise PluginError(
+        f"plugin '{plugin}' introuvable dans les marketplaces installées "
+        f"(ajoute d'abord la marketplace via marketplace_add)"
+    )
+
+
+def _materialize(root: Path, mname: str, entry: dict, staging: Path) -> str:
+    """Matérialise la source d'un plugin dans `staging`. Renvoie le sha git ('' si local)."""
+    source = entry.get("source")
+    if isinstance(source, str):  # chemin relatif au dépôt de la marketplace
+        src = (root / "marketplaces" / mname / source).resolve()
+        if not src.is_dir():
+            raise PluginError(f"source locale introuvable : {source}")
+        shutil.copytree(src, staging)
+        return ""
+    if isinstance(source, dict):
+        kind = source.get("source")
+        url = source.get("url")
+        if kind == "git":
+            return _git_clone(url, staging, ref=source.get("ref"))
+        if kind == "git-subdir":
+            tmp = Path(tempfile.mkdtemp(prefix="loom-sub-"))
+            try:
+                sha = _git_clone(
+                    url, tmp / "repo", ref=source.get("ref"), sha=source.get("sha")
+                )
+                sub = (tmp / "repo" / (source.get("path") or "")).resolve()
+                if not sub.is_dir():
+                    raise PluginError(f"sous-dossier absent : {source.get('path')}")
+                shutil.copytree(sub, staging)
+                return sha
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+    raise PluginError(f"forme de source non gérée : {source!r}")
+
+
+def _register_installed(root: Path, ref_key: str, dest: Path, version: str, sha: str):
+    data = _read_json(root / "installed_plugins.json", {"version": 2, "plugins": {}})
+    data.setdefault("plugins", {})[ref_key] = [
+        {
+            "scope": "user",
+            "installPath": str(dest.resolve()),
+            "version": version,
+            "installedAt": _now_iso(),
+            "lastUpdated": _now_iso(),
+            "gitCommitSha": sha,
+        }
+    ]
+    _write_json(root / "installed_plugins.json", data)
+
+
+def plugin_install(root: str | Path | None, ref: str) -> dict:
+    """Installe '<plugin>' ou '<plugin>@<marketplace>' : résout la source, matérialise sous
+    cache/<mkt>/<plugin>/<version>/, enregistre. Renvoie {name, marketplace, version, path}."""
+    root = plugins_root(root)
+    plugin, _, marketplace = ref.partition("@")
+    plugin = plugin.strip()
+    marketplace = marketplace.strip() or None
+    mname, entry = _find_entry(root, plugin, marketplace)
+    staging = Path(tempfile.mkdtemp(prefix="loom-plug-"))
+    try:
+        sha = _materialize(root, mname, entry, staging / "p")
+        man = _read_manifest(staging / "p")
+        if man is None:
+            raise PluginError("plugin sans .claude-plugin/plugin.json")
+        version = str(man.get("version") or "unknown")
+        dest = root / "cache" / mname / plugin / version
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staging / "p"), str(dest))
+        _register_installed(root, f"{plugin}@{mname}", dest, version, sha)
+        return {
+            "name": plugin,
+            "marketplace": mname,
+            "version": version,
+            "path": str(dest),
+        }
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def plugin_add_local(root: str | Path | None, path: str) -> dict:
+    """Fallback B : copie un dossier plugin (avec .claude-plugin/plugin.json) sous
+    cache/_local/<plugin>/<version>/ et l'enregistre."""
+    root = plugins_root(root)
+    src = Path(path).expanduser().resolve()
+    man = _read_manifest(src)
+    if man is None:
+        raise PluginError(f"pas de .claude-plugin/plugin.json dans {path}")
+    name = man.get("name") or src.name
+    version = str(man.get("version") or "unknown")
+    dest = root / "cache" / "_local" / name / version
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dest)
+    _register_installed(root, f"{name}@_local", dest, version, "")
+    return {
+        "name": name,
+        "marketplace": "_local",
+        "version": version,
+        "path": str(dest),
+    }
+
+
+def plugin_remove(root: str | Path | None, ref: str) -> None:
+    """Retire un plugin (cache + installed_plugins.json). ref = '<plugin>' ou '<plugin>@<mkt>'."""
+    root = plugins_root(root)
+    data = _read_json(root / "installed_plugins.json", {"version": 2, "plugins": {}})
+    plugins = data.get("plugins") or {}
+    keys = [k for k in plugins if k == ref or k.split("@", 1)[0] == ref]
+    if not keys:
+        raise PluginError(f"plugin non installé : {ref}")
+    for k in keys:
+        for entry in plugins[k]:
+            shutil.rmtree(Path(entry.get("installPath", "")), ignore_errors=True)
+        del plugins[k]
+    _write_json(root / "installed_plugins.json", data)
