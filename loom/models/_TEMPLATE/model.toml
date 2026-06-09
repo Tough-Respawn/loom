@@ -1,0 +1,26 @@
+# TEMPLATE de modèle Loom — copie ce dossier en `loom/models/<ton-id>/` et adapte.
+# L'`id` du modèle = le NOM DU DOSSIER (pas un champ ici). Il apparaît dans le sélecteur UI
+# et dans `default_model` (section [chat] de loom.config.toml).
+#
+# Place le GGUF dans le même dossier (il est gitignoré, jamais distribué). Tu peux le
+# télécharger toi-même, ou laisser Loom le récupérer depuis `repo`/`filename` ci-dessous
+# (cf. `python -m loom.models_fetch` / loom/models_fetch.py).
+
+# --- Source du poids (pour le téléchargement auto ; sinon dépose le .gguf à la main) ---
+repo = "org/mon-modele-GGUF"                 # dépôt Hugging Face
+filename = "mon-modele.Q4_K_M.gguf"          # nom exact du fichier GGUF dans le dépôt
+
+# --- Métadonnées d'offload (servent à serve.py pour régler -ngl selon la VRAM) ---
+n_layers = 32                                # nb de couches du modèle (cf. la fiche du modèle)
+size_mb = 5000                               # taille approx. du GGUF en Mo (pour les logs/heuristiques)
+
+# --- Contexte (optionnel ; sinon valeur de [server].context dans loom.config.toml) ---
+# context = 24576
+
+# --- Vision (optionnel) : un projecteur multimodal à côté du GGUF ---
+# mmproj_filename = "mon-modele.mmproj-Q8_0.gguf"
+
+# --- MoE : offload des experts en RAM pour faire tenir un gros modèle sur peu de VRAM ---
+# cpu_moe = true            # tous les experts routés en RAM (attention/dense restent GPU)
+# n_cpu_moe = 35            # variante fine : n premières couches d'experts en RAM, le reste GPU
+#                           # (monte n jusqu'à ~remplir la VRAM ; cf. gemma4-26b / qwen3.6-35b)

@@ -1,7 +1,10 @@
-# Poids des modèles (trop lourds) — ignorés ; la config/profil par modèle (model.toml,
-# profile.md sous loom/models/<id>/) reste suivie.
+# Poids des modèles (trop lourds) — toujours ignorés.
 loom/models/*.gguf
 loom/models/**/*.gguf
+# Modèles PERSO : les dossiers de modèles ne sont PAS distribués (chacun branche les siens
+# en copiant _TEMPLATE/). Seul le template est suivi ; loom/models/README.md aussi (fichier).
+loom/models/*/
+!loom/models/_TEMPLATE/
 loom/data/
 # Surcharges machine
 *.local.toml
