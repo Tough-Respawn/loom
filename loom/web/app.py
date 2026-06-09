@@ -19,7 +19,6 @@ from flask import Flask, Response, render_template, request
 
 from loom import context
 from loom.client import set_debug_log_path
-from loom.reflect import run_reflective
 from loom.skills import compose_system_prompt, list_skills, load_skill
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -169,7 +168,6 @@ def create_app(
     models=None,
     interrupt_wait=15.0,
     tool_factory=None,
-    reflect_factory=None,
     available_tools=None,
     permission=None,
     confirm_timeout=300.0,
@@ -259,7 +257,6 @@ def create_app(
             "models": models,
             "current_model": conv.model,
             "thinking": conv.thinking,
-            "reflect": conv.reflect,
             "available_tools": available_tools,
             "active_tools": conv.active_tools,
             "workspace_dir": ws,
@@ -386,23 +383,7 @@ def create_app(
             ws = _session().workspace
             registry = tool_factory(conv.active_tools, ws, conv)
             use_tools = registry is not None and len(registry)
-            if use_tools and conv.reflect and reflect_factory is not None:
-                # Harnais de réflexion : décompose -> exécute -> vérifie -> intègre.
-                # Les sous-agents tournent sur un registre frais (sans dispatch/todos).
-                def _make_sub(extra=None):
-                    return reflect_factory(ws, conv, extra)
-
-                source = run_reflective(
-                    client,
-                    conv.to_messages(),
-                    system_prompt,
-                    make_sub_registry=_make_sub,
-                    model=conv.model or None,
-                    max_tokens=max_tokens,
-                    permission=permission,
-                    workspace_dir=ws,
-                )
-            elif use_tools:
+            if use_tools:
                 source = client.stream_chat_tools(
                     conv.to_messages(),
                     system_prompt,
@@ -526,13 +507,6 @@ def create_app(
         conv.set_thinking(request.form.get("thinking") == "1")
         save()
         return Response(str(int(conv.thinking)), mimetype="text/plain")
-
-    @app.post("/reflect")
-    def reflect_update():
-        conv, save = _ctx()
-        conv.set_reflect(request.form.get("reflect") == "1")
-        save()
-        return Response(str(int(conv.reflect)), mimetype="text/plain")
 
     @app.route("/pick-folder", methods=["POST"])
     def pick_folder():

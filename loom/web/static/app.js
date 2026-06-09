@@ -592,16 +592,6 @@ if (thinkingCb) {
   });
 }
 
-// --- toggle mode réflexion (harnais de découpage) ---
-const reflectCb = document.getElementById("reflect-cb");
-if (reflectCb) {
-  reflectCb.addEventListener("change", async () => {
-    const fd = new FormData();
-    fd.append("reflect", reflectCb.checked ? "1" : "0");
-    await fetch("/reflect", { method: "POST", body: fd });
-  });
-}
-
 // --- reset (vide la conversation côté serveur + client) ---
 const resetBtn = document.getElementById("reset-btn");
 if (resetBtn) {

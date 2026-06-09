@@ -221,8 +221,6 @@
     {% endif %}
     <label id="thinking-toggle" title="Réflexion préalable (décoché = réponse directe)">
       <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> Réflexion préalable</label>
-    <label id="thinking-toggle" title="Mode réflexion : découpe la tâche en phases (harnais)">
-      <input type="checkbox" id="reflect-cb" {% if reflect %}checked{% endif %}> Mode réflexion (découpage forcé)</label>
     <div class="drawer-section"><span class="drawer-label">Modèle</span>{% include "_models.html" %}</div>
     <details class="skills-box" open><summary>Skills</summary>{% include "_skills.html" %}</details>
     <details class="skills-box" open><summary>Outils &amp; permissions</summary>{% include "_tools.html" %}

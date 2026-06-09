@@ -28,10 +28,7 @@ from loom.tools.base import AVAILABLE_TOOLS, ToolError, ToolSpec
 # avec une commande shell et le tape dans run_shell -> PowerShell répond « commande
 # inconnue » (opaque) et il boucle. Aucun de ces noms n'est un vrai exécutable : on
 # détecte le cas en tête de run_shell et on REDIRIGE vers l'appel d'outil direct.
-_LOOM_TOOL_NAMES = frozenset(t["name"] for t in AVAILABLE_TOOLS) | {
-    "submit_plan",
-    "report_verdict",
-}
+_LOOM_TOOL_NAMES = frozenset(t["name"] for t in AVAILABLE_TOOLS)
 
 
 def _shell_argv(command: str) -> list[str]:
