@@ -153,10 +153,17 @@ def _eval_expect(page, expect: dict) -> tuple[bool, str]:
         return True, "(aucune post-condition)"
     try:
         if check == "count":
+            try:
+                target = int(val)
+            except (TypeError, ValueError):
+                return (
+                    False,
+                    f"{sel} count : 'value' doit etre un entier (recu {val!r})",
+                )
             n = len(page.query_selector_all(sel))
             cmp = (expect.get("cmp") or "min").lower()
-            ok = n >= int(val) if cmp == "min" else n == int(val)
-            return ok, f"{sel} x{n} (attendu {cmp} {val})"
+            ok = n >= target if cmp == "min" else n == target
+            return ok, f"{sel} x{n} (attendu {cmp} {target})"
         el = page.query_selector(sel)
         if check == "absent":
             return el is None, f"{sel} {'absent' if el is None else 'present'}"
@@ -177,7 +184,19 @@ def _run_step(page, step: dict) -> dict:
     """Joue UNE action puis evalue sa post-condition. Ne leve jamais."""
     op = (step.get("op") or "none").strip().lower()
     selector = (step.get("selector") or "").strip()
-    res = {"op": op, "selector": selector, "ok": False, "observed": ""}
+    expect = step.get("expect") if isinstance(step.get("expect"), dict) else {}
+    # Une etape n'est une PREUVE que si elle porte une post-condition reelle (selector +
+    # check). Sans ca, l'etape passe « pour rien » -> traquee pour interdire la preuve vide.
+    asserted = bool(
+        (expect.get("selector") or "").strip() and (expect.get("check") or "").strip()
+    )
+    res = {
+        "op": op,
+        "selector": selector,
+        "ok": False,
+        "asserted": asserted,
+        "observed": "",
+    }
     try:
         if op == "click":
             page.click(selector, timeout=4000)
@@ -198,7 +217,7 @@ def _run_step(page, step: dict) -> dict:
     except Exception as exc:  # noqa: BLE001 - action ratee = step en echec
         res["observed"] = f"action '{op}' echouee : {str(exc)[:120]}"
         return res
-    res["ok"], res["observed"] = _eval_expect(page, step.get("expect") or {})
+    res["ok"], res["observed"] = _eval_expect(page, expect)
     return res
 
 
@@ -265,12 +284,23 @@ def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
         }
 
     errors = [t for (k, t) in console if k == "error"] + page_errors
-    ok = not errors and all(r["ok"] for r in results)
+    asserted = sum(1 for r in results if r.get("asserted"))
+    steps_ok = bool(results) and all(r["ok"] for r in results)
+    # PREUVE NON VIDE : `ok` global exige au moins une post-condition reelle qui passe.
+    # Sinon une suite de clics sans `expect` se declarerait « jouable » a tort.
+    ok = (not errors) and steps_ok and asserted > 0
+    note = (
+        ""
+        if asserted
+        else "preuve vide : aucune etape n'a de post-condition reelle (expect)"
+    )
     return {
         "url": url,
         "ok": ok,
         "console_errors": errors[:8],
         "steps": results,
+        "asserted_steps": asserted,
+        "note": note,
         "error": "",
     }
 
@@ -300,14 +330,18 @@ def make_check_interactive(workspace_dir: str) -> ToolSpec:
             lines.append(
                 f"  étape {i} [{mark}] {s['op']} {s['selector']} -> {s['observed']}"
             )
-        lines.append(
-            "VERDICT : "
-            + (
-                "toutes les actions passent, 0 erreur"
-                if res["ok"]
-                else "au moins une action/post-condition échoue"
+        if res.get("note"):
+            lines.append(f"NOTE : {res['note']}")
+        if res["ok"]:
+            verdict = "toutes les actions passent, 0 erreur"
+        elif res.get("note"):
+            verdict = (
+                "preuve INSUFFISANTE — ajoute un `expect` testable (selector + check) sur "
+                "au moins une étape pour prouver le comportement"
             )
-        )
+        else:
+            verdict = "au moins une action/post-condition échoue"
+        lines.append("VERDICT : " + verdict)
         return "\n".join(lines)
 
     return ToolSpec(
