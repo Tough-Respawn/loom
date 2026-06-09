@@ -1,4 +1,4 @@
-# loom/inline_image.py
+# loom/agent/inline_image.py
 """Protocole d'image INLINE entre un outil (read_image) et la boucle tool-use.
 
 Problème : un message de rôle `tool` ne transporte que du TEXTE — on ne peut pas y

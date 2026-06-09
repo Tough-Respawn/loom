@@ -4,7 +4,7 @@ add_marketplace / install_plugin clonent du code tiers ; list_plugins est en lec
 
 from __future__ import annotations
 
-from loom import plugins as store
+from loom.extend import plugins as store
 from loom.tools.base import ToolError, ToolSpec
 
 
