@@ -27,9 +27,15 @@ READ_TOOLS = frozenset(
         "check_page",
         "check_interactive",
         "manage_todos",
+        "use_skill",
+        "list_plugins",
     }
 )
 SHELL_TOOLS = frozenset({"run_shell", "bash"})
+# Outils d'INSTALLATION de plugins : clonent du code tiers + écrivent sur disque -> gardés
+# comme les écritures (ask par défaut). Le modèle peut proposer/lancer l'install, pas sans
+# accord en mode 'ask'.
+PLUGIN_TOOLS = frozenset({"add_marketplace", "install_plugin"})
 WRITE_TOOLS = frozenset(
     {
         "write_file",
@@ -164,6 +170,13 @@ def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
                 return Decision("allow")
             return Decision("ask", "commande non listée")
         return Decision("ask")  # mode 'ask'
+
+    if tool_name in PLUGIN_TOOLS:
+        if cfg.mode == "deny_all":
+            return Decision("deny", "mode deny_all")
+        if cfg.mode == "allow":
+            return Decision("allow")
+        return Decision("ask")
 
     if tool_name in WRITE_TOOLS:
         rel = (args.get("path") or "").strip()
