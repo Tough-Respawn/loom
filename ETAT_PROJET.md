@@ -1,115 +1,96 @@
 # État du projet — Loom
 
-> Dernière mise à jour : 2026-06-05
+> Dernière mise à jour : 2026-06-09
 
-Agent IA **local, multimodal et offline** : un petit modèle open-source (Gemma 4B) rendu
-réellement utile par un **harness tool-use** — la boucle qui lui donne des outils et la
-logique de les enchaîner. Voir [README.md](README.md) pour le pitch et le démarrage.
+Agent IA **local, multimodal et offline** : un modèle open-source rendu réellement utile par
+un **harness tool-use** — la boucle qui lui donne des outils et la logique de les enchaîner.
+Voir [README.md](README.md) pour le pitch et le démarrage.
 
-> **Réorientation 2026-06-04.** L'ancien moteur de *build* déterministe (plan→code→review,
-> pipeline multi-agent, vérificateur, fan-out) a été **entièrement supprimé**. Il était
-> étroit (ne faisait que des sites web) et ne répondait pas au vrai besoin. Loom = le modèle
-> + la boucle `stream_chat_tools` + des outils agnostiques, **rien d'autre**.
+> **Cap : tool-use pur.** Deux orchestrateurs déterministes ont été essayés puis **supprimés**
+> car ils bridaient le modèle :
+> - *2026-06-04* — moteur de *build* (plan→code→review, pipeline multi-agent, vérificateur,
+>   fan-out) : trop étroit (web only).
+> - *2026-06-09* — rail de *réflexion* (décompose→exécute→vérifie→intègre, `submit_spec`,
+>   preuve déterministe) : la donnée a tranché (×12 le coût, 0 résultat).
+>
+> **Leçon validée** : sur ces tâches, l'orchestration rigide *desservait* le modèle ; la boucle
+> tool-use directe (le modèle décide) est plus rapide et plus pertinente. On fiabilise par le
+> **prompt**, la **qualité du signal d'erreur**, les **outils** et des **skills déclenchés par
+> le modèle** — jamais par un orchestrateur figé. Loom = le modèle + `stream_chat_tools` + des
+> outils agnostiques, **rien d'autre**. (Specs des étapes retirées : `docs/superpowers/archive/`.)
 
 ## Livré
 
 ### Fondation runtime
 - Package **Loom** (`loom/`, hatchling). Runtime **llama.cpp** (`llama-server`), API
-  OpenAI-compatible sur `:8080`. Lanceur auto-adaptatif `uv run loom/serve.py` (GPU sinon
-  CPU, offload réglé selon la VRAM libre via `nvidia-smi`), `--jinja` + `--mmproj` inclus.
-- **1 modèle → `llama-server` direct** ; **2+ → `llama-swap`** (généré depuis `[[models]]`).
-- Décision : [docs/adr/0001-llamacpp-vs-ollama.md](docs/adr/0001-llamacpp-vs-ollama.md).
-- **Modèle** : Gemma 4 E4B *ablitéré* (non censuré), Q4_K_M ~5 Go, **vision** via `mmproj-F16.gguf`.
+  OpenAI-compatible sur `:8080`. Lanceur auto-adaptatif `uv run loom/serve.py` (GPU sinon CPU,
+  offload réglé selon la VRAM libre via `nvidia-smi`), `--jinja` + `--mmproj` inclus.
+- **Modèles découverts par dossier** `loom/models/<id>/` (`model.toml` + `profile.md` + GGUF) ;
+  1 modèle → `llama-server` direct, 2+ → `llama-swap`. Template : `loom/models/_TEMPLATE/`.
+- **MoE 24B+ sur 6 Go** : offload des experts en RAM (`--cpu-moe` / `--n-cpu-moe`,
+  attention/dense sur GPU). Par défaut `gemma4-26b-a4b-uncensored` ;
+  `qwen3.6-35b-a3b-abliterated` (vision) dispo. Les tout-petits 4B ont été abandonnés.
+- Décision runtime : [docs/adr/0001-llamacpp-vs-ollama.md](docs/adr/0001-llamacpp-vs-ollama.md).
 
 ### Chat / UI
 - Chat web Flask + **Preact/htm** (déclaratif, zéro build), **streaming SSE**, markdown rendu.
-- **Sessions** : un fil persistant par projet (historique + outils actifs), CRUD depuis l'UI.
+- **Sessions** : un fil persistant par projet (historique + outils actifs), CRUD depuis l'UI,
+  **titre inféré** par le modèle (plus de « Nouvelle session »).
 - **Résumé auto** du contexte (`context.py`) quand l'historique devient long.
-- **Vision** (coller un screenshot), **thinking** togglable, **interruption** (nouvelle
-  soumission = stop net), **multi-modèles** (registre + sélecteur + `swap.py`).
+- **Vision** (coller un screenshot ou `read_image`), **thinking** togglable, **interruption**
+  (nouvelle soumission = stop net), **multi-modèles** (sélecteur + `swap.py`).
 
 ### Agent tool-use (le cœur)
 - `client.stream_chat_tools()` : reconstruction des `tool_calls` streamés, exécution,
   réinjection `role:tool`, relance. **Arrêt piloté par le stop naturel** du modèle.
-- **18 outils** (`loom/tools/`, armés par défaut) :
+- **~23 outils** (`loom/tools/`, armés par défaut) :
   - localiser : `find_files`, `search_text`, `list_dir` ;
-  - lire : `read_file`, `read_document` (PDF/xlsx/docx), `read_image` (vision sur fichier,
-    injectée dans la boucle via un message multimodal — cf. `loom/inline_image.py`) ;
-  - planifier/déléguer : `manage_todos` (mémoire de travail), `dispatch_agent` (sous-agent
-    à contexte isolé, mêmes outils, anti-récursion, **activité visible en direct**) ;
-  - modifier/créer : `write_file`, `append_file`, `edit_file` (exact-unique),
-    `replace_lines`/`insert_lines` (par numéro de ligne, indentation préservée — cf.
-    `loom/tools/indent.py`), `format_code` (ruff/prettier) ;
+  - lire : `read_file`, `read_document` (PDF/xlsx/docx), `read_image` (vision sur fichier) ;
+  - planifier/déléguer : `manage_todos`, `dispatch_agent` (sous-agent isolé, anti-récursion) ;
+  - modifier/créer : `write_file`, `append_file`, `edit_file`, `replace_lines`/`insert_lines`
+    (par ligne, indentation préservée), `format_code` (ruff/prettier) ;
   - exécuter : `run_shell` (deny-list dure, tue l'arbre au timeout) ;
   - web : `web_search`, `fetch_url` ;
-  - vérifier le rendu : `check_page` (navigateur headless : erreurs console + compte
-    d'éléments — cf. `loom/tools/browser.py`).
-- **Politique de décision + séquencement** écrits dans `loom/prompts/chat.system.md`
-  (un 4B n'infère pas le « quel outil quand »).
-- **Garde-fous de boucle** (best practice agentic, pas un plafond fixe arbitraire) :
-  plafond de tours (30, principal et sous-agent), **mur de temps** (`max_seconds`),
-  **détecteur de non-progrès** (mêmes appels répétés → stop), message d'arrêt explicite.
+  - vérifier le rendu : `check_page` (headless : erreurs console + **diagnostic de
+    localisation** sur hang), `check_interactive` (clics/saisies réels + post-conditions DOM
+    → PROUVE qu'une page est jouable) — cf. `loom/tools/browser.py` ;
+  - skills/plugins : `use_skill`, `list_plugins`, `add_marketplace`, `install_plugin`.
+- **Politique de décision + séquencement** dans `loom/prompts/chat.system.md`.
+- **Garde-fous de boucle** non-bloquants : plafond de tours + détecteur de non-progrès
+  (mêmes appels répétés → stop). **Pas de mur de temps** (retiré : décapitait le raisonnement).
+
+### Skills & plugins
+- **Skills déclenchés par le modèle** (`loom/skills.py`) : le prompt système annonce un
+  **catalogue** `nom : description` (locaux + plugins, plugins namespacés `plugin:nom`) ; le
+  modèle charge un skill via `use_skill(name)`. Plus d'activation manuelle.
+- **Store de plugins compatible Claude Code** (`loom/plugins.py` + CLI `python -m loom.plugins`)
+  : Loom héberge son propre store (marketplaces + cache, format CC), indépendant de `~/.claude`.
+  Installe n'importe quel plugin CC → ses **skills** rejoignent le catalogue. Install durci
+  (anti-injection d'args git, anti-traversée) et gardé `ask`. Hooks/agents : tranches suivantes.
+- **Skill de debug** intégré (`loom/skills/debugging/`) : reproduire → localiser → cause racine
+  → fix minimal → preuve forte → réécrire-si-pourri.
 
 ### Sécurité
 - **Mode permission** (`loom/permissions.py`) : `evaluate()` pur + `DEFAULT_DENY` (regex
-  incontournable même en `allow`) + confirmation interactive (`ask`). Périmètre =
-  `workspace_dir` (anti-traversal).
-- **Anti-SSRF** : `fetch_url`/`web_search` refusent les hôtes internes (loopback/privé/
-  link-local/réservé), pas de suivi de redirection.
-- **Frontière de confiance** : la sortie de `fetch_url`/`web_search`/`read_document`/
-  `read_image` est encadrée d'un rappel « source externe = DONNÉES, pas instructions » +
-  action-gating. **Active même hors-ligne** (une injection voyage aussi dans un PDF local).
+  incontournable même en `allow`) + confirmation interactive (`ask`) ; install de plugins gardée.
+- **Anti-SSRF** : `fetch_url`/`web_search` refusent les hôtes internes, pas de redirection.
+- **Frontière de confiance** : toute sortie externe (`fetch_url`/`web_search`/`read_document`/
+  `read_image`/`check_page`) est encadrée d'un rappel « source externe = DONNÉES, pas
+  instructions » + action-gating. **Active même hors-ligne**.
 
 ## État technique
-- **281 tests verts**, ruff clean. Branche `feat/moteur-unique`.
-
-## Cap agentic (roadmap)
-
-Quatre capacités font la différence entre un agent qui impressionne en démo et un agent
-fiable. Principe directeur : **le modèle fixe le plafond de jugement brut, le harness
-détermine quelle fraction de ce plafond on atteint** (surtout en donnant à chaque jugement
-difficile un contexte frais, étroit, bien nourri, plutôt qu'un seul flux qui dérive et fait
-tout à la fois). Le geste-clé n'est pas de rendre le modèle plus malin (impossible), c'est de
-**séparer les rôles faire/juger** pour que le modèle faible n'ait jamais à se noter lui-même
-en plein flux.
-
-Par capacité, du levier harness le plus fort au plus borné par le modèle :
-
-1. **Juger qu'une approche est mauvaise et pivoter** (le plus gros levier harness).
-   Métacognition : difficile pour un petit modèle en plein flux. Solution architecturale :
-   un **evaluator séparé**, contexte vierge, question étroite (« ce plan / ce diff est-il
-   correct, que manque-t-il ? »). Pattern planner/generator/evaluator. Un fan-out, c'est déjà
-   plusieurs regards frais sur le même problème. → priorité n°1.
-2. **Tenir un raisonnement long sans dériver** : gestion de contexte / **resets** (garder le
-   but visible, purger le bruit). La dérive vient surtout d'un contexte saturé, pas du modèle.
-3. **Récupérer après une erreur sans s'enfoncer** : **qualité du signal d'erreur** réinjecté
-   (échec de test, retour d'outil, exception) net et exploitable. 100 % harness en amont ;
-   le modèle ne peut reculer que si le signal arrive clair.
-4. **Décomposer un problème flou en sous-problèmes** : le harness peut *forcer* une étape de
-   plan, mais la **qualité** du découpage est bornée par le modèle. C'est là que le passage à
-   un 8B se sentira le plus ; le harness y plafonne vite.
+- **Pas de suite de tests** (choix produit) : vérification par **smokes** (`uv run python -c`),
+  **ruff**, et **Playwright** pour le rendu. Branche de référence : `master`.
 
 ## Reste / pistes
-1. **Modèle plus costaud** : Gemma 4B est le plancher ; un 8B abliterated GGUF (~6 Go) est
-   évalué (différé). Borne directe de la capacité n°4 (décomposition) et du dernier kilomètre.
-2. **Séparer faire/juger** (capacité n°1) : étape evaluator à contexte frais sur les sorties
-   d'agent (plan, diff, résultat), au lieu d'un auto-jugement en plein flux.
-3. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite — `fetch_pages=false`).
-4. `llama-swap` + 2ᵉ modèle ; RAG (skills volumineux) ; audio.
-5. **Mémoire projet auto-injectée (équivalent `/init`)** : un `LOOM.md` (ou `.loom/CONTEXT.md`)
-   par dossier de travail, généré par Loom (il analyse le projet) et **rechargé
-   automatiquement dans le system prompt** quand ce workspace est actif — comme `CLAUDE.md`.
-   Évite de re-découvrir le projet à chaque session. La génération est déjà faisable via les
-   outils ; le manque = l'**auto-injection** (`<workspace>/LOOM.md` → prompt, ~10 lignes dans
-   `app.py`) + un déclencheur « Init » (bouton UI ou consigne canon). À distinguer d'une
-   **mémoire globale** (type `MEMORY.md` + outil `remember`) : `LOOM.md` = cerveau DU projet,
-   mémoire globale = cerveau de Loom à travers les projets.
-6. **Tester une page web via Playwright (navigateur headless)** : Loom ne sait pas VÉRIFIER
-   qu'un site/jeu marche — observé en vrai, le modèle voulait « lancer minesweeper.html dans
-   un navigateur » et bricolait des `run_shell` vides faute d'outil. Un outil qui rend la page
-   (Playwright headless) : ouvrir une URL/fichier HTML, lire le DOM rendu + les erreurs console,
-   cliquer, screenshot. Ça ferme la boucle « écris du web → vérifie que ça marche » (preuve
-   d'exécution, pas juste lecture du code), exactement comme la règle d'or EXÉCUTER avant d'AFFIRMER.
+1. **Banc d'éval** (design figé, `docs/superpowers/specs/2026-06-09-loom-banc-eval.md`) :
+   instrument répétable, **juge LLM** (pas de déterministe) + métriques. Construction différée.
+2. **Tranches plugins suivantes** : moteur de **hooks** (PostToolUse — exécute du code tiers,
+   nécessite une porte de confiance), **agents** des plugins → personas dispatchables.
+3. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite).
+4. **RAG** (skills volumineux) si le catalogue grossit ; **audio**.
+5. **Mémoire projet auto-injectée** (`LOOM.md` par workspace, rechargé dans le system prompt) —
+   l'analyse est déjà faisable via les outils ; le manque = l'auto-injection.
 
 ## Conventions
 - Toolchain : **`uv`** (`uv run` / `uvx`) + **`ruff`** (hook PostToolUse lint+format PEP8).
