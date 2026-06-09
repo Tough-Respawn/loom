@@ -374,3 +374,62 @@ def plugin_remove(root: str | Path | None, ref: str) -> None:
             shutil.rmtree(Path(entry.get("installPath", "")), ignore_errors=True)
         del plugins[k]
     _write_json(root / "installed_plugins.json", data)
+
+
+# --- CLI ---
+
+
+def _fmt_plugin(p: Plugin) -> str:
+    return (
+        f"{p.marketplace}/{p.name} ({p.version}) — "
+        f"skills:{len(p.skills)} agents:{len(p.agents)} "
+        f"hooks:{len(p.hooks)} commands:{len(p.commands)}"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="python -m loom.plugins")
+    ap.add_argument(
+        "--root", default=None, help="racine du store (défaut loom/plugins)"
+    )
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    mk = sub.add_parser("marketplace").add_subparsers(dest="mcmd", required=True)
+    mk.add_parser("add").add_argument("source")
+    mk.add_parser("list")
+    sub.add_parser("install").add_argument("ref")
+    sub.add_parser("add-local").add_argument("path")
+    sub.add_parser("remove").add_argument("ref")
+    sub.add_parser("list")
+    args = ap.parse_args(argv)
+    try:
+        if args.cmd == "marketplace" and args.mcmd == "add":
+            print("ajoutée :", marketplace_add(args.root, args.source))
+        elif args.cmd == "marketplace" and args.mcmd == "list":
+            for m in marketplace_list(args.root):
+                print(f"{m['name']} <- {m.get('source', '')}")
+        elif args.cmd == "install":
+            info = plugin_install(args.root, args.ref)
+            print(
+                f"installé : {info['marketplace']}/{info['name']} ({info['version']})"
+            )
+        elif args.cmd == "add-local":
+            info = plugin_add_local(args.root, args.path)
+            print(f"ajouté : _local/{info['name']} ({info['version']})")
+        elif args.cmd == "remove":
+            plugin_remove(args.root, args.ref)
+            print("retiré :", args.ref)
+        elif args.cmd == "list":
+            for p in discover_plugins(args.root):
+                print(_fmt_plugin(p))
+    except PluginError as exc:
+        print(f"erreur : {exc}", flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))
