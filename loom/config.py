@@ -21,6 +21,7 @@ class ChatConfig:
     history_path: str
     web_port: int
     skills_dir: str = "loom/skills"
+    plugins_root: str = "loom/plugins"
     max_tokens: int = 2048
     request_timeout: int = 120
     max_retries: int = 6
@@ -169,6 +170,7 @@ def load_config(
         history_path=ch.get("history_path", "loom/data/conversation.json"),
         web_port=int(ch.get("web_port", 8000)),
         skills_dir=ch.get("skills_dir", "loom/skills"),
+        plugins_root=ch.get("plugins_root", "loom/plugins"),
         max_tokens=int(ch.get("max_tokens", 2048)),
         request_timeout=int(ch.get("request_timeout", 120)),
         max_retries=int(ch.get("max_retries", 6)),

@@ -1,13 +1,8 @@
 <div id="skills-panel">
   {% for s in skills %}
-    <label class="skill" title="{{ s.description }}">
-      <input type="checkbox" name="skill" value="{{ s.name }}"
-             hx-post="/skills" hx-target="#skills-panel" hx-swap="outerHTML"
-             hx-include="#skills-panel"
-             {% if s.name in active_skills %}checked{% endif %}>
-      {{ s.name }}
-    </label>
+    <div class="skill-ro" title="{{ s.description }}">{{ s.name }}</div>
   {% else %}
-    <span class="muted">Aucun skill. Ajoute loom/skills/&lt;nom&gt;/SKILL.md</span>
+    <span class="muted">Aucun skill. Installe un plugin (install_plugin) ou ajoute
+      loom/skills/&lt;nom&gt;/SKILL.md</span>
   {% endfor %}
 </div>

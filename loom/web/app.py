@@ -19,7 +19,7 @@ from flask import Flask, Response, render_template, request
 
 from loom import context
 from loom.client import set_debug_log_path
-from loom.skills import compose_system_prompt, list_skills, load_skill
+from loom.skills import collect_skills, render_catalog
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
@@ -172,6 +172,7 @@ def create_app(
     permission=None,
     confirm_timeout=300.0,
     workspace_dir=".",
+    plugins_dir="loom/plugins",
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -180,6 +181,7 @@ def create_app(
     app.jinja_env.auto_reload = True
     skills_dir = str(skills_dir)
     workspace_dir = str(workspace_dir)
+    plugins_dir = str(plugins_dir)
     # Seuil de microcompact INTERNE à la boucle d'outils : on vide les vieux résultats
     # d'outils quand le contexte vivant approche la fenêtre du modèle (en réservant la
     # place de la réponse). Distinct du résumé inter-tours (context_budget) qui, lui,
@@ -252,8 +254,7 @@ def create_app(
         active_id = sess.id
         return {
             "messages": conv.messages,
-            "skills": list_skills(skills_dir),
-            "active_skills": conv.active_skills,
+            "skills": collect_skills(skills_dir, plugins_dir),
             "models": models,
             "current_model": conv.model,
             "thinking": conv.thinking,
@@ -330,10 +331,11 @@ def create_app(
             if context.summarize(conv, client, context_budget, keep_recent):
                 save()
 
-            active = [
-                s for s in (load_skill(skills_dir, n) for n in conv.active_skills) if s
-            ]
-            system_prompt = compose_system_prompt(conv.system_prompt, active)
+            skills = collect_skills(skills_dir, plugins_dir)
+            catalog = render_catalog(skills)
+            system_prompt = (
+                f"{conv.system_prompt}\n\n{catalog}" if catalog else conv.system_prompt
+            )
             # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
             # "Tu es Loom") -> il baratine quand on lui demande "quel modèle ?". On lui
             # injecte son modèle courant pour qu'il réponde honnêtement.
@@ -463,16 +465,6 @@ def create_app(
                 chat_lock.release()
 
         return Response(generate(), mimetype="text/event-stream")
-
-    @app.post("/skills")
-    def skills_update():
-        conv, save = _ctx()
-        conv.set_skills(request.form.getlist("skill"))
-        save()
-        skills = list_skills(skills_dir)
-        return render_template(
-            "_skills.html", skills=skills, active_skills=conv.active_skills
-        )
 
     @app.post("/cancel")
     def cancel():
