@@ -52,42 +52,66 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
         ]
 
         try:
+            from playwright.sync_api import TimeoutError as PWTimeout
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
             raise ToolError(_INSTALL_HINT) from exc
 
         console: list[tuple[str, str]] = []
         page_errors: list[str] = []
+        title = ""
+        body_text = ""
+        counts: dict[str, int] = {}
+        note = ""  # diagnostic de localisation (timeout, lecture interrompue, échec)
         try:
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True)
                 page = browser.new_page()
+                page.set_default_timeout(5000)  # borne les lectures (pas de hang 30s)
                 page.on("console", lambda m: console.append((m.type, m.text)))
                 page.on("pageerror", lambda e: page_errors.append(str(e)))
-                page.goto(url, wait_until="load", timeout=15000)
-                if wait_selector:
+                try:
+                    page.goto(url, wait_until="load", timeout=15000)
+                    loaded = True
+                except PWTimeout:
+                    # Chargement non terminé : on NE LIT PAS la page (le thread JS peut être
+                    # gelé -> nouveaux timeouts). On garde les preuves déjà captées + un indice
+                    # de localisation au lieu d'un timeout muet.
+                    loaded = False
+                    note = (
+                        "chargement non terminé en 15s → script bloquant probable "
+                        "(ex. boucle infinie à l'init). Désactive les scripts un par un pour "
+                        "bisecter ; les erreurs console ci-dessus pointent souvent la cause."
+                    )
+                if loaded:
+                    if wait_selector:
+                        try:
+                            page.wait_for_selector(wait_selector, timeout=5000)
+                        except Exception:  # noqa: BLE001 - absence = info, pas un crash
+                            pass
+                    page.wait_for_timeout(1200)  # laisse le JS d'init s'exécuter
                     try:
-                        page.wait_for_selector(wait_selector, timeout=5000)
-                    except Exception:  # noqa: BLE001 - absence = info, pas un crash
-                        pass
-                page.wait_for_timeout(1200)  # laisse le JS d'init s'exécuter
-                title = page.title()
-                body = page.query_selector("body")
-                body_text = body.inner_text()[:2000] if body else ""
-                counts = {
-                    sel: len(page.query_selector_all(sel)) for sel in count_selectors
-                }
+                        title = page.title()
+                        body = page.query_selector("body")
+                        body_text = body.inner_text()[:2000] if body else ""
+                        counts = {
+                            sel: len(page.query_selector_all(sel))
+                            for sel in count_selectors
+                        }
+                    except Exception as exc:  # noqa: BLE001 - lecture partiellement bloquée
+                        note = f"lecture de la page interrompue : {str(exc)[:120]}"
                 browser.close()
         except Exception as exc:  # noqa: BLE001 - navigateur absent / page injoignable
             msg = str(exc)
             if "Executable doesn't exist" in msg or "playwright install" in msg:
                 raise ToolError(_INSTALL_HINT) from exc
-            raise ToolError(f"échec du chargement de {url} : {msg[:200]}") from exc
+            # On NE jette PAS les preuves : diagnostic structuré plutôt qu'une exception sèche.
+            note = note or f"échec du chargement : {msg[:200]}"
 
         errors = [t for (k, t) in console if k == "error"] + page_errors
         warnings = [t for (k, t) in console if k == "warning"]
         lines = [
-            f"page : {title!r} ({url})",
+            f"page : {title!r} ({url})" if title else f"page : ({url})",
             f"console : {len(errors)} erreur(s), {len(warnings)} warning(s)",
         ]
         for e in errors[:8]:
@@ -99,7 +123,9 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
         visible = " ".join(body_text.split())
         if visible:
             lines.append(f"texte visible : {visible[:400]}")
-        if not errors and not page_errors:
+        if note:
+            lines.append(f"DIAGNOSTIC : {note}")
+        elif not errors and not page_errors:
             lines.append("(aucune erreur console — la page s'est chargée et exécutée)")
         return untrusted("\n".join(lines), f"page {url}")
 
