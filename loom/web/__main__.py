@@ -51,6 +51,8 @@ def build_app(cfg):
             sub_max_tokens=cfg.chat.max_tokens,
             permission=permission,
             active_model=(conversation.model if conversation else cfg.default_model),
+            skills_dir=cfg.chat.skills_dir,
+            plugins_root=plugins_dir,
         )
 
     # Amorce les outils de la conversation depuis la config au 1er lancement.
@@ -61,6 +63,11 @@ def build_app(cfg):
     # Migration douce : si aucune session n'existe mais qu'une ancienne conversation est
     # là, on l'importe comme première session pour ne pas perdre l'historique.
     data_root = Path(cfg.chat.history_path).resolve().parent
+
+    from loom.plugins import plugins_root as _plugins_root
+
+    plugins_dir = str(_plugins_root(getattr(cfg.chat, "plugins_root", None)))
+
     sessions_root = data_root / "sessions"
     store = SessionStore(
         sessions_root,
@@ -87,6 +94,7 @@ def build_app(cfg):
         available_tools=AVAILABLE_TOOLS,
         permission=permission,
         workspace_dir=cfg.chat.workspace_dir,
+        plugins_dir=plugins_dir,
     )
     return app
 
