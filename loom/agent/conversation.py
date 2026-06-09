@@ -1,4 +1,4 @@
-# loom/conversation.py
+# loom/agent/conversation.py
 """Mémoire de conversation : historique des messages + persistance JSON."""
 
 from __future__ import annotations

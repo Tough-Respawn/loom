@@ -17,9 +17,9 @@ from pathlib import Path
 
 from flask import Flask, Response, render_template, request
 
-from loom import context
-from loom.client import set_debug_log_path
-from loom.skills import collect_skills, render_catalog
+from loom.agent import context
+from loom.agent.client import set_debug_log_path
+from loom.extend.skills import collect_skills, render_catalog
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 

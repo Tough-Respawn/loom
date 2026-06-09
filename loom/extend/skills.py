@@ -1,4 +1,4 @@
-# loom/skills.py
+# loom/extend/skills.py
 """Skills : modules de connaissance markdown DÉCLENCHÉS PAR LE MODÈLE (façon Claude Code).
 
 On annonce au modèle un CATALOGUE (nom : description) ; quand un skill est pertinent il
@@ -71,7 +71,7 @@ def collect_skills(
     (namespacés `plugin:nom`)."""
     skills = _scan_dir(local_dir, namespace=None)
     if plugins_root_path is not None:
-        from loom.plugins import discover_plugins
+        from loom.extend.plugins import discover_plugins
 
         for plugin in discover_plugins(plugins_root_path):
             for md in plugin.skills:

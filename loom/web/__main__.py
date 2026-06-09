@@ -5,12 +5,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from loom.client import LoomClient
+from loom.agent.client import LoomClient
 from loom.config import load_config
-from loom.context import effective_context_budget
-from loom.conversation import Conversation
+from loom.agent.context import effective_context_budget
+from loom.agent.conversation import Conversation
 from loom.permissions import evaluate
-from loom.session import SessionStore
+from loom.agent.session import SessionStore
 from loom.tools import AVAILABLE_TOOLS, build_registry
 from loom.web.app import create_app
 
@@ -64,7 +64,7 @@ def build_app(cfg):
     # là, on l'importe comme première session pour ne pas perdre l'historique.
     data_root = Path(cfg.chat.history_path).resolve().parent
 
-    from loom.plugins import plugins_root as _plugins_root
+    from loom.extend.plugins import plugins_root as _plugins_root
 
     plugins_dir = str(_plugins_root(getattr(cfg.chat, "plugins_root", None)))
 
