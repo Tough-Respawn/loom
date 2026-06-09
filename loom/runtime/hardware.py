@@ -1,4 +1,4 @@
-# loom/hardware.py
+# loom/runtime/hardware.py
 """Détection hardware et recommandation de réglages d'offload GPU."""
 
 from __future__ import annotations

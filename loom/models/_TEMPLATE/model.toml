@@ -4,7 +4,7 @@
 #
 # Place le GGUF dans le même dossier (il est gitignoré, jamais distribué). Tu peux le
 # télécharger toi-même, ou laisser Loom le récupérer depuis `repo`/`filename` ci-dessous
-# (cf. `python -m loom.models_fetch` / loom/models_fetch.py).
+# (cf. loom/runtime/models_fetch.py, appelé par loom/runtime/serve.py au 1er lancement).
 
 # --- Source du poids (pour le téléchargement auto ; sinon dépose le .gguf à la main) ---
 repo = "org/mon-modele-GGUF"                 # dépôt Hugging Face
