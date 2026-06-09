@@ -342,6 +342,14 @@ async function sendChat(text, image) {
         }
         reflectWorkdir();
         break;
+      case "session_title": {
+        // Le serveur a inféré un titre pour la session : on l'écrit dans la sidebar en
+        // direct (sinon il n'apparaîtrait qu'au prochain rechargement). La liste est du
+        // HTML rendu serveur -> on cible le bouton par son data-id.
+        const btn = document.querySelector(`.sess-pick[data-id="${evt.id}"]`);
+        if (btn) btn.textContent = evt.title;
+        break;
+      }
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancé ?)" });
         break;
