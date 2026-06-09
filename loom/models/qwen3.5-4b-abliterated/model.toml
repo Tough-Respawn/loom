@@ -1,8 +1,0 @@
-# Qwen3.5-4B abliterated (Huihui) — dense 4B 2026, TEXTE seul (pas de vision -> read_image
-# inopérant avec lui). Q4_K_M ~2,8 Go -> ~2 Go VRAM libres sur 6 Go, pas de spill, contexte
-# 24576 OK. Plus malin/agentic que Gemma E4B (cf. mémoire loom-choix-modele). id = dossier.
-repo = "mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF"
-filename = "Huihui-Qwen3.5-4B-abliterated.Q4_K_M.gguf"
-mmproj_filename = ""
-n_layers = 36
-size_mb = 2800

@@ -1,8 +1,0 @@
-# Gemma 4 E4B abliterated (uncensored) — Gemma 3n E4B (effectif ~4B). Vision via mmproj-F16.
-# PLE en RAM -> CPU-bound mais sliding-window -> KV léger -> ~1,7 Go VRAM libre, ~33 tok/s
-# STABLE, pas de spill. C'est le défaut (le plus sûr sur 6 Go). id = nom du dossier.
-repo = "mradermacher/gemma-4-E4B-it-uncensored-GGUF"
-filename = "gemma-4-E4B-it-uncensored.Q4_K_M.gguf"
-mmproj_filename = "mmproj-F16.gguf"
-n_layers = 35
-size_mb = 5340
