@@ -15,6 +15,7 @@ def build_server_args(
     gpu_tuning: bool = False,
     n_parallel: int = 1,
     cpu_moe: bool = False,
+    n_cpu_moe: int | None = None,
 ) -> list[str]:
     """Liste d'arguments pour lancer llama-server en API OpenAI-compatible local.
 
@@ -42,10 +43,13 @@ def build_server_args(
         # outil n'est passé dans la requête.
         "--jinja",
     ]
-    if cpu_moe:
-        # MoE offload : garde attention + FFN dense + expert partagé sur GPU (-ngl élevé),
-        # bascule les experts ROUTÉS en RAM. Indispensable pour faire tenir un MoE 26-35B
-        # sur 6 Go. SANS ce flag, -ngl tente tout le modèle sur le GPU -> spill -> thrash.
+    # Offload MoE : garde attention + FFN dense sur GPU (-ngl élevé), bascule les experts
+    # ROUTÉS en RAM. `--n-cpu-moe N` n'offloade que N couches (garde le reste sur GPU ->
+    # remplit la VRAM, plus rapide) ; `--cpu-moe` les offloade TOUTES. Indispensable pour
+    # faire tenir un MoE 26-35B sur 6 Go.
+    if n_cpu_moe is not None:
+        args += ["--n-cpu-moe", str(n_cpu_moe)]
+    elif cpu_moe:
         args.append("--cpu-moe")
     if gpu_tuning:
         # Réglages GPU prouvés au benchmark (RTX 2060) : Flash-Attention (attention
