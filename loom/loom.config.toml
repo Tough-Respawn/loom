@@ -33,7 +33,7 @@ swap_bin = "llama-swap"
 # threads = 8
 
 [chat]
-default_model = "gemma-uncensored"
+default_model = "gemma4-26b-a4b-uncensored"
 # system_prompt : non défini ici -> centralisé dans loom/prompts/chat.system.md
 history_path = "loom/data/conversation.json"
 web_port = 8000
