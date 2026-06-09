@@ -23,7 +23,7 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
 
 ### Fondation runtime
 - Package **Loom** (`loom/`, hatchling). Runtime **llama.cpp** (`llama-server`), API
-  OpenAI-compatible sur `:8080`. Lanceur auto-adaptatif `uv run loom/serve.py` (GPU sinon CPU,
+  OpenAI-compatible sur `:8080`. Lanceur auto-adaptatif `uv run loom/runtime/serve.py` (GPU sinon CPU,
   offload réglé selon la VRAM libre via `nvidia-smi`), `--jinja` + `--mmproj` inclus.
 - **Modèles découverts par dossier** `loom/models/<id>/` (`model.toml` + `profile.md` + GGUF) ;
   1 modèle → `llama-server` direct, 2+ → `llama-swap`. Template : `loom/models/_TEMPLATE/`.

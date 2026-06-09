@@ -181,7 +181,7 @@ def build_registry(
         if "list_plugins" in enabled:
             specs.append(make_list_plugins(plugins_root))
 
-    from loom.models_profile import load_profile
+    from loom.runtime.models_profile import load_profile
 
     profile = load_profile(active_model) if active_model else None
     return ToolRegistry(specs, profile=profile)

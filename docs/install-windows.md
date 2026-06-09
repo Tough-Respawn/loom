@@ -8,4 +8,4 @@
    [server]
    bin = "C:/tools/llama/llama-server.exe"
    ```
-5. Lancer : `uv run loom/serve.py` (télécharge le GGUF au 1er run).
+5. Lancer : `uv run loom/runtime/serve.py` (télécharge le GGUF au 1er run).

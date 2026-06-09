@@ -1,4 +1,4 @@
-# loom/serve.py
+# loom/runtime/serve.py
 """Lanceur cross-platform et auto-adaptatif de llama-server.
 
 Usage : uv run loom/serve.py
@@ -14,10 +14,14 @@ import sys
 from pathlib import Path
 
 from loom.config import RuntimeConfig, load_config
-from loom.hardware import HardwareProfile, detect_hardware, recommend_gpu_layers
-from loom.models_fetch import ensure_model
-from loom.server_args import build_server_args
-from loom.swap import build_swap_config, write_swap_yaml
+from loom.runtime.hardware import (
+    HardwareProfile,
+    detect_hardware,
+    recommend_gpu_layers,
+)
+from loom.runtime.models_fetch import ensure_model
+from loom.runtime.server_args import build_server_args
+from loom.runtime.swap import build_swap_config, write_swap_yaml
 
 LOOM_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = LOOM_DIR / "loom.config.toml"

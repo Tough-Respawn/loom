@@ -1,4 +1,4 @@
-# loom/models_fetch.py
+# loom/runtime/models_fetch.py
 """Garantit la présence locale d'un fichier GGUF (download si absent)."""
 
 from __future__ import annotations

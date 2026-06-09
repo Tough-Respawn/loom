@@ -187,7 +187,9 @@ class ToolRegistry:
 
     def __init__(self, specs: list[ToolSpec], profile=None) -> None:
         self._specs = {s.name: s for s in specs}
-        self._profile = profile  # loom.models_profile.Profile | None (duck-typed)
+        self._profile = (
+            profile  # loom.runtime.models_profile.Profile | None (duck-typed)
+        )
 
     def __len__(self) -> int:
         return len(self._specs)

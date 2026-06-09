@@ -78,7 +78,7 @@ Navigateur ──HTTP──► Loom (Flask :8000) ──OpenAI API──► llam
 - **Runtime** : [llama.cpp](https://github.com/ggml-org/llama.cpp) (`llama-server`), derrière une
   **API OpenAI-compatible**. Choix documenté dans
   [docs/adr/0001-llamacpp-vs-ollama.md](docs/adr/0001-llamacpp-vs-ollama.md).
-- **Lanceur auto-adaptatif** : `loom/serve.py` détecte le GPU (sinon CPU) et règle l'offload
+- **Lanceur auto-adaptatif** : `loom/runtime/serve.py` détecte le GPU (sinon CPU) et règle l'offload
   selon la VRAM libre (`nvidia-smi`). Inclut `--jinja` (appels d'outils) et `--mmproj` (vision).
 - **Modèles** : des **MoE 24B+** rendus jouables sur 6 Go de VRAM par **offload des experts en
   RAM** (`--cpu-moe` / `--n-cpu-moe` ; attention/dense sur GPU, experts routés en RAM). Par
@@ -94,7 +94,7 @@ Prérequis : [`uv`](https://docs.astral.sh/uv/), et le binaire `llama-server`
 ```bash
 uv sync                      # dépendances + installe le package loom
 # branche un modèle : copie loom/models/_TEMPLATE en loom/models/<id>/ et édite model.toml
-uv run loom/serve.py         # télécharge le modèle au 1er run + sert sur :8080
+uv run loom/runtime/serve.py # télécharge le modèle au 1er run + sert sur :8080
 uv run python -m loom.web    # interface chat sur :8000
 ```
 Puis ouvre **http://127.0.0.1:8000**.

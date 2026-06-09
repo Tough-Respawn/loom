@@ -1,4 +1,4 @@
-# loom/models_profile.py
+# loom/runtime/models_profile.py
 """Profils par modèle : correctifs DÉTERMINISTES propres à chaque modèle, activés par un
 profile.md dans loom/models/<id>/. Le .md ne contient PAS de logique : son frontmatter
 ACTIVE des fixes déjà codés ici (registre curaté). Chaque modèle a ses travers ; on les

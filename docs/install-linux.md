@@ -8,5 +8,5 @@
    [server]
    bin = "/opt/llama/llama-server"
    ```
-4. Lancer : `uv run loom/serve.py`. Pas de GPU -> `serve.py` bascule
+4. Lancer : `uv run loom/runtime/serve.py`. Pas de GPU -> `serve.py` bascule
    automatiquement en CPU (`n_gpu_layers = 0`) et règle les threads.
