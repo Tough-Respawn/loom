@@ -29,11 +29,6 @@ READ_TOOLS = frozenset(
         "manage_todos",
     }
 )
-# Outils INTERNES du harnais de réflexion : canaux de retour typés SANS effet de bord
-# (rangent un plan / un verdict dans un holder). Autorisés d'office, comme les lectures —
-# ils ne touchent ni fichier ni système, les soumettre au gate 'ask' les ferait refuser à
-# tort (les sous-boucles du rail n'ont pas de callback de confirmation interactive).
-INTERNAL_TOOLS = frozenset({"submit_plan", "submit_spec", "report_verdict"})
 SHELL_TOOLS = frozenset({"run_shell", "bash"})
 WRITE_TOOLS = frozenset(
     {
@@ -153,7 +148,7 @@ def _path_allowlisted(rel: str, allow_paths: list[str]) -> bool:
 
 def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
     """Décide allow/ask/deny pour un appel d'outil selon la politique."""
-    if tool_name in READ_TOOLS or tool_name in INTERNAL_TOOLS:
+    if tool_name in READ_TOOLS:
         return Decision("allow")
 
     if tool_name in SHELL_TOOLS:
