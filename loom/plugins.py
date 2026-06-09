@@ -143,6 +143,16 @@ def _git_clone(
     """Clone shallow `url` dans `dest`, checkout sha/ref si fourni. Renvoie le SHA HEAD.
     Lève PluginError sur échec (git absent, réseau, ref inconnue)."""
 
+    # url/ref viennent d'un marketplace.json TIERS : on refuse toute valeur commençant par
+    # '-' (smuggling de flag git) et on isole l'argument positionnel par '--'. Env durci :
+    # pas de prompt interactif, pas de config système (clone non interactif, reproductible).
+    def _safe(value: str, what: str) -> str:
+        if value.startswith("-"):
+            raise PluginError(f"{what} invalide (commence par '-') : {value[:60]}")
+        return value
+
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1"}
+
     def _run(args: list[str], cwd: Path | None = None) -> str:
         try:
             r = subprocess.run(
@@ -151,20 +161,22 @@ def _git_clone(
                 capture_output=True,
                 text=True,
                 timeout=300,
+                env=env,
             )
         except FileNotFoundError as exc:
             raise PluginError("git introuvable (installe git)") from exc
         except subprocess.TimeoutExpired as exc:
             raise PluginError("git clone : délai dépassé") from exc
         if r.returncode != 0:
-            raise PluginError(f"git a échoué : {(r.stderr or r.stdout)[:200]}")
+            raise PluginError(f"git a échoué : {(r.stderr or r.stdout).strip()[-200:]}")
         return r.stdout.strip()
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    _run(["git", "clone", "--depth", "1", url, str(dest)])
+    _run(["git", "clone", "--depth", "1", "--", _safe(url, "url"), str(dest)])
     target = sha or ref
     if target:
+        target = _safe(target, "ref")
         # un sha précis peut exiger un fetch non-shallow
         _run(["git", "fetch", "--depth", "1", "origin", target], cwd=dest)
-        _run(["git", "checkout", target], cwd=dest)
+        _run(["git", "checkout", target, "--"], cwd=dest)
     return _run(["git", "rev-parse", "HEAD"], cwd=dest)
