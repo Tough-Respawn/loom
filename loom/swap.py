@@ -26,10 +26,10 @@ def _model_cmd(
     # modèle > override global ([override] n_gpu_layers, ex. 99 = offload total) >
     # recommandation auto. SANS l'override ici, llama-swap laissait des couches sur CPU
     # (-ngl 30/35 pour Gemma) -> plus lent que l'offload total (33 tok/s).
-    if model.cpu_moe:
+    if model.cpu_moe or model.n_cpu_moe is not None:
         # MoE offloadé : toutes les couches DENSES sur GPU (-ngl 999), les experts routés
-        # partent en RAM via --cpu-moe (build_server_args). On ignore l'override global
-        # n_gpu_layers (pensé pour les petits modèles denses).
+        # partent en RAM via --cpu-moe / --n-cpu-moe (build_server_args). On ignore
+        # l'override global n_gpu_layers (pensé pour les petits modèles denses).
         ngl = 999
     elif model.n_gpu_layers is not None:
         ngl = model.n_gpu_layers
@@ -58,6 +58,7 @@ def _model_cmd(
         mmproj_path=mmproj,
         gpu_tuning=profile.has_gpu,
         cpu_moe=model.cpu_moe,
+        n_cpu_moe=model.n_cpu_moe,
     )
     return " ".join(str(a) for a in args).replace("\\", "/")
 
