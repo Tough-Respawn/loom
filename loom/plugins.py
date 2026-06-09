@@ -250,11 +250,22 @@ def _find_entry(root: Path, plugin: str, marketplace: str | None) -> tuple[str, 
     )
 
 
+def _resolve_within(base: Path, rel: str, what: str) -> Path:
+    """Résout `rel` SOUS `base` et refuse toute échappée (..). `source`/`path` viennent d'un
+    marketplace.json TIERS : sans ce confinement, '../../windows' copierait un dossier hors
+    de la marketplace dans le cache (lecture de fichiers arbitraires)."""
+    base = base.resolve()
+    target = (base / rel).resolve()
+    if target != base and not str(target).startswith(str(base) + os.sep):
+        raise PluginError(f"{what} sort du dossier autorisé : {rel!r}")
+    return target
+
+
 def _materialize(root: Path, mname: str, entry: dict, staging: Path) -> str:
     """Matérialise la source d'un plugin dans `staging`. Renvoie le sha git ('' si local)."""
     source = entry.get("source")
     if isinstance(source, str):  # chemin relatif au dépôt de la marketplace
-        src = (root / "marketplaces" / mname / source).resolve()
+        src = _resolve_within(root / "marketplaces" / mname, source, "source")
         if not src.is_dir():
             raise PluginError(f"source locale introuvable : {source}")
         shutil.copytree(src, staging)
@@ -270,7 +281,7 @@ def _materialize(root: Path, mname: str, entry: dict, staging: Path) -> str:
                 sha = _git_clone(
                     url, tmp / "repo", ref=source.get("ref"), sha=source.get("sha")
                 )
-                sub = (tmp / "repo" / (source.get("path") or "")).resolve()
+                sub = _resolve_within(tmp / "repo", source.get("path") or "", "path")
                 if not sub.is_dir():
                     raise PluginError(f"sous-dossier absent : {source.get('path')}")
                 shutil.copytree(sub, staging)
