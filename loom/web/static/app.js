@@ -274,6 +274,9 @@ async function sendChat(text, image) {
   const onEvent = (evt) => {
     switch (evt.type) {
       case "reasoning":
+        // Une NOUVELLE étape de réflexion clôt le texte précédent -> bulle séparée
+        // (sinon le texte d'après s'empile dans la 1re bulle, en haut, au lieu d'en bas).
+        if (asstId) { patch(asstId, { done: true }); asstId = null; }
         if (!thinkId) thinkId = push({ kind: "think", role: "", text: "", active: true }).id;
         patch(thinkId, { text: get(thinkId).text + evt.text, active: true });
         break;
@@ -296,6 +299,9 @@ async function sendChat(text, image) {
           patch(thinkId, { active: false });
           thinkId = null;
         }
+        // …et le TEXTE en cours aussi : un outil = fin de l'étape, la narration d'après
+        // doit démarrer une bulle neuve SOUS l'outil (pas remonter dans la 1re bulle).
+        if (asstId) { patch(asstId, { done: true }); asstId = null; }
         const tid = "tool:" + (evt.id || evt.name);
         if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name, pending: true });
         tools[evt.id] = tid;
