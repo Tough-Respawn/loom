@@ -29,18 +29,24 @@ from loom.tools.base import ToolError, ToolSpec
 from loom.tools.trust import untrusted
 
 
-def _blocked_host_reason(url: str) -> str | None:
-    """Anti-SSRF : refuse une URL dont l'hôte résout vers une adresse INTERNE (loopback,
-    privée, link-local 169.254.x cloud-metadata, réservée, multicast). Renvoie la raison
-    du blocage, ou None si l'hôte est public. Le modèle peut être influencé par un contenu
-    hostile (doc, page) à viser un service interne : on coupe ça à la source."""
+def _resolve_validated(url: str) -> tuple[str | None, str | None]:
+    """Anti-SSRF + anti DNS-rebinding. Résout l'hôte UNE seule fois et valide TOUTES ses
+    IP (loopback, privée, link-local 169.254.x cloud-metadata, réservée, multicast,
+    unspecified). Renvoie `(raison_blocage, ip_épinglée)` :
+    - raison non-None -> bloqué (au moins une IP interne, ou hôte introuvable) ;
+    - sinon -> ip_épinglée = l'adresse VALIDÉE à laquelle se connecter directement.
+
+    Pinner l'IP ferme le TOCTOU du rebinding : sans ça, on valide le nom puis httpx le
+    RE-résout au fetch, et un DNS hostile peut renvoyer une IP publique au contrôle puis
+    une IP interne à la connexion. Ici l'IP validée EST celle utilisée."""
     host = urlparse(url).hostname
     if not host:
-        return "url sans hôte valide"
+        return "url sans hôte valide", None
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
-        return f"hôte introuvable : {host}"
+        return f"hôte introuvable : {host}", None
+    pinned: str | None = None
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if (
@@ -51,8 +57,17 @@ def _blocked_host_reason(url: str) -> str | None:
             or ip.is_multicast
             or ip.is_unspecified
         ):
-            return f"hôte interdit (adresse interne/privée : {ip})"
-    return None
+            return f"hôte interdit (adresse interne/privée : {ip})", None
+        if pinned is None:
+            pinned = str(ip)
+    return None, pinned
+
+
+def _blocked_host_reason(url: str) -> str | None:
+    """Raison de blocage anti-SSRF d'une URL, ou None si l'hôte est public. Conservé pour
+    le refus EXPLICITE côté outils (fetch_url, check_page) ; le fetch réel pinne l'IP via
+    `_resolve_validated`."""
+    return _resolve_validated(url)[0]
 
 
 @dataclass
@@ -70,14 +85,34 @@ class WebSearchConfig:
 # --- indirections HTTP / extraction (points de monkeypatch) -------------
 
 
-def _http_get(url, params=None, headers=None, timeout=None):
+def _http_get(url, params=None, headers=None, timeout=None, pin_ip=None):
     """GET via httpx (isolé pour faciliter le monkeypatch en test).
 
     follow_redirects=False : un redirect 30x pourrait renvoyer vers une adresse interne
-    (contournement du garde anti-SSRF). On ne suit aucun saut automatiquement."""
-    return httpx.get(
-        url, params=params, headers=headers, timeout=timeout, follow_redirects=False
-    )
+    (contournement du garde anti-SSRF). On ne suit aucun saut automatiquement.
+
+    Si `pin_ip` est fourni (anti DNS-rebinding), on se connecte à CETTE IP déjà validée
+    en préservant le Host et le SNI d'origine : httpx ne re-résout pas le nom d'hôte."""
+    if pin_ip is None:
+        return httpx.get(
+            url, params=params, headers=headers, timeout=timeout, follow_redirects=False
+        )
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    host_hdr = host if parsed.port is None else f"{host}:{parsed.port}"
+    ip_lit = f"[{pin_ip}]" if ":" in pin_ip else pin_ip  # crochets pour l'IPv6
+    ip_netloc = ip_lit if parsed.port is None else f"{ip_lit}:{parsed.port}"
+    pinned_url = parsed._replace(netloc=ip_netloc).geturl()
+    hdrs = {**(headers or {}), "Host": host_hdr}
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+        req = httpx.Request(
+            "GET",
+            pinned_url,
+            params=params,
+            headers=hdrs,
+            extensions={"sni_hostname": host},
+        )
+        return client.send(req)
 
 
 def _http_post(url, json=None, headers=None, timeout=None):
@@ -200,10 +235,11 @@ def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
 
 def fetch_page(url: str, cfg: WebSearchConfig, snippet: str = "") -> str:
     """Récupère et extrait le texte principal d'une page ; replie sur snippet."""
-    if _blocked_host_reason(url):  # anti-SSRF : on ne fetch jamais un hôte interne
+    reason, pin_ip = _resolve_validated(url)  # anti-SSRF + IP épinglée (anti-rebinding)
+    if reason:  # hôte interne/introuvable : on ne fetch jamais
         return snippet
     try:
-        resp = _http_get(url, timeout=cfg.http_timeout)
+        resp = _http_get(url, timeout=cfg.http_timeout, pin_ip=pin_ip)
         resp.raise_for_status()
         text = _extract(resp.text)
     except (httpx.ConnectError, httpx.TimeoutException):

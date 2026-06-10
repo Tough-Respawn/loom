@@ -15,14 +15,55 @@ analyser, jamais des ordres (une page peut contenir « ignore tes consignes »).
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.trust import untrusted
+from loom.tools.web import _blocked_host_reason
 
 _INSTALL_HINT = (
     "playwright non installé. Lance une fois : `uv add playwright` puis "
     "`uv run playwright install chromium`."
 )
+
+# check_page REND une page dans un navigateur (exécute son JS) ; ce n'est PAS un lecteur de
+# fichiers. On le borne aux formats réellement web-rendables : sinon `check_page` sert de
+# contournement de lecture (file://.../id_rsa rendu -> contenu fuité dans le « texte visible »).
+# La vraie lecture passe par read_file/read_document, pas par le navigateur.
+_WEB_EXT = frozenset({".html", ".htm", ".xhtml", ".svg"})
+_NOT_WEB_MSG = (
+    "check_page ne rend que des pages web (.html/.htm/.xhtml/.svg). Pour lire un autre "
+    "fichier, utilise read_file (texte) ou read_document (pdf/xlsx/docx)."
+)
+
+
+def _browser_url(root: Path, target: str) -> str:
+    """Résout et VALIDE la cible d'un outil navigateur ; lève ToolError si refusée.
+
+    - http(s):// -> garde anti-SSRF (`_blocked_host_reason`, comme fetch_url) : pas d'accès
+      aux IP internes/loopback/métadonnées cloud, même si un contenu hostile l'a suggéré ;
+    - file:// ou chemin local -> confiné aux extensions web (`_WEB_EXT`) : le navigateur ne
+      peut pas servir à exfiltrer un fichier arbitraire rendu en page.
+    """
+    target = target.strip()
+    low = target.lower()
+    if low.startswith(("http://", "https://")):
+        reason = _blocked_host_reason(target)
+        if reason:
+            raise ToolError(f"url refusée (anti-SSRF) : {reason}")
+        return target
+    if low.startswith("file://"):
+        ext = Path(unquote(urlparse(target).path)).suffix.lower()
+        if ext not in _WEB_EXT:
+            raise ToolError(_NOT_WEB_MSG)
+        return target
+    # chemin local (relatif au dossier de travail ou absolu) -> file:// (Path.as_uri()).
+    path = _resolve_in_root(root, target)
+    if not path.exists():
+        raise ToolError(f"fichier introuvable : {target}")
+    if path.suffix.lower() not in _WEB_EXT:
+        raise ToolError(_NOT_WEB_MSG)
+    return path.as_uri()
 
 
 def make_check_page(workspace_dir: str) -> ToolSpec:
@@ -35,14 +76,8 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
             raise ToolError(
                 "argument 'url' manquant (URL http(s):// OU chemin d'un fichier .html)"
             )
-        # URL telle quelle, sinon chemin local -> file:// (Path.as_uri()).
-        if target.startswith(("http://", "https://", "file://")):
-            url = target
-        else:
-            path = _resolve_in_root(root, target)
-            if not path.exists():
-                raise ToolError(f"fichier introuvable : {target}")
-            url = path.as_uri()
+        # Cible validée : anti-SSRF sur http(s), extensions web sur file://chemin local.
+        url = _browser_url(root, target)
 
         wait_selector = (args.get("wait_selector") or "").strip() or None
         count_selectors = [
@@ -253,19 +288,16 @@ def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
     {url, ok, console_errors, steps:[{op,selector,ok,observed}], error}. `ok` global = 0 erreur
     console ET toutes les etapes ok. Ne leve jamais (toute panne -> ok=False + error)."""
     root = Path(workspace_dir)
-    if target.startswith(("http://", "https://", "file://")):
-        url = target
-    else:
-        path = _resolve_in_root(root, target)
-        if not path.exists():
-            return {
-                "url": target,
-                "ok": False,
-                "error": f"fichier introuvable : {target}",
-                "console_errors": [],
-                "steps": [],
-            }
-        url = path.as_uri()
+    try:
+        url = _browser_url(root, target)
+    except ToolError as exc:
+        return {
+            "url": target,
+            "ok": False,
+            "error": str(exc),
+            "console_errors": [],
+            "steps": [],
+        }
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -368,7 +400,8 @@ def make_check_interactive(workspace_dir: str) -> ToolSpec:
         else:
             verdict = "au moins une action/post-condition échoue"
         lines.append("VERDICT : " + verdict)
-        return "\n".join(lines)
+        # Le texte observé vient d'une page (potentiellement hostile) : donnée, pas des ordres.
+        return untrusted("\n".join(lines), f"page {res['url']}")
 
     return ToolSpec(
         name="check_interactive",
