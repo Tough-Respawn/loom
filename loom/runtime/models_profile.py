@@ -9,7 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-MODELS_DIR = Path(__file__).resolve().parent / "models"
+# Ce module vit dans loom/runtime/ : remonter de DEUX niveaux jusqu'à la racine loom/
+# où se trouve models/ (sinon on chercherait loom/runtime/models/, inexistant -> profils muets).
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 # Fichiers de PROSE : on n'y touche pas (les guillemets typographiques peuvent y être voulus).
 _PROSE_EXT = frozenset({".md", ".markdown", ".txt", ".rst"})

@@ -21,3 +21,7 @@ node_modules/
 
 # Config llama-swap generee par serve.py (chemins machine-specifiques)
 loom/llama-swap.yaml
+# Runtime data
+loom/runtime/data/
+# Claude Code config
+.claude/

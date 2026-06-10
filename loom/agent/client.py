@@ -91,7 +91,9 @@ def _trunc(text: str, limit: int) -> str:
 # n'est pas lisible à distance). Écrit en plus de stderr. Cible PARAMÉTRABLE : la web app
 # la pointe sur sessions/<id>/debug.log à chaque tour pour un trace PAR SESSION (au même
 # titre que session.json). Défaut global tant qu'aucune session n'est désignée.
-_DEBUG_LOG = Path(__file__).resolve().parent / "data" / "loom-debug.log"
+# client.py vit dans loom/agent/ : remonter de DEUX niveaux pour viser loom/data/
+# (et non loom/agent/data/, créé par erreur après la réorg en sous-paquets).
+_DEBUG_LOG = Path(__file__).resolve().parent.parent / "data" / "loom-debug.log"
 
 
 def set_debug_log_path(path) -> None:
