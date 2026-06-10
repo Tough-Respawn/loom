@@ -35,6 +35,13 @@ class ChatConfig:
     # (start_line). ~40000 car ≈ 10k tokens.
     read_file_max_bytes: int = 40_000
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
+    # Keep-warm : sur Windows, un llama-server inactif se fait rogner son working-set par
+    # l'OS (pages des experts MoE évincées) -> 1re requête après une pause = lente (cold
+    # start). Un ping minimal (1 token) toutes les keepwarm_interval secondes, À L'IDLE
+    # seulement, garde le modèle chargé « chaud » sans verrouiller la RAM en dur. Pinge le
+    # modèle de la session active (jamais un autre -> pas de swap llama-swap intempestif).
+    keepwarm_enabled: bool = True
+    keepwarm_interval: int = 150
 
 
 @dataclass
@@ -184,6 +191,8 @@ def load_config(
         workspace_dir=tl.get("workspace_dir", "."),
         read_file_max_bytes=int(tl.get("read_file_max_bytes", 40_000)),
         web_search=_parse_web_search(ws),
+        keepwarm_enabled=bool(ch.get("keepwarm_enabled", True)),
+        keepwarm_interval=int(ch.get("keepwarm_interval", 150)),
     )
     # Découverte par dossier (loom/models/<id>/model.toml) ; repli sur l'ancien bloc
     # [[models]] de la config si aucun dossier-modèle n'est présent (transition douce).
