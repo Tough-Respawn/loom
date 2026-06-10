@@ -137,6 +137,13 @@ def build_registry(
         from loom.tools.todo import make_manage_todos
 
         specs.append(make_manage_todos(conversation))
+    if conversation is not None:
+        from loom.tools.note import make_read_note, make_write_note
+
+        if "write_note" in enabled:
+            specs.append(make_write_note(conversation))
+        if "read_note" in enabled:
+            specs.append(make_read_note(conversation))
     if "dispatch_agent" in enabled and client is not None:
         from loom.prompts import SUBAGENT_SYSTEM
         from loom.tools.agent import make_dispatch_agent
