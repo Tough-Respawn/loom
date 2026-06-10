@@ -116,6 +116,10 @@ def _discover_models(models_root: Path) -> list[ModelConfig]:
         return []
     out: list[ModelConfig] = []
     for folder in sorted(p for p in models_root.iterdir() if p.is_dir()):
+        # Dossiers préfixés '_' = gabarits/scaffolds (ex. _TEMPLATE), pas de vrais modèles :
+        # leur model.toml porte un repo placeholder (org/mon-modele-GGUF) -> 401 au fetch.
+        if folder.name.startswith("_"):
+            continue
         toml_path = folder / "model.toml"
         if not toml_path.exists():
             continue

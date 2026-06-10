@@ -19,11 +19,13 @@ from loom.runtime.hardware import (
     detect_hardware,
     recommend_gpu_layers,
 )
-from loom.runtime.models_fetch import ensure_model
+from loom.runtime.models_fetch import ModelUnavailable, ensure_model
 from loom.runtime.server_args import build_server_args
 from loom.runtime.swap import build_swap_config, write_swap_yaml
 
-LOOM_DIR = Path(__file__).resolve().parent
+# serve.py vit dans loom/runtime/ : on remonte de DEUX niveaux pour pointer la racine
+# du package loom/ (où vivent config, models, data) — pas le dossier runtime/.
+LOOM_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = LOOM_DIR / "loom.config.toml"
 LOCAL_CONFIG_PATH = LOOM_DIR / "loom.config.local.toml"
 MODELS_DIR = LOOM_DIR / "models"
@@ -183,7 +185,13 @@ def main() -> int:
     profile = detect_hardware()
     _log(f"[loom] Profil détecté : {profile}")
 
-    ensure_all_models(cfg.models, MODELS_DIR)
+    try:
+        ensure_all_models(cfg.models, MODELS_DIR)
+    except ModelUnavailable as exc:
+        # Modèle absent et non téléchargeable : on guide l'utilisateur (quoi poser, où)
+        # et on sort proprement (code 1, sans stacktrace).
+        _log(f"[loom] {exc}")
+        return 1
     _log(f"[loom] {len(cfg.models)} modèle(s), défaut={cfg.default_model}")
 
     # Un seul modèle : pas de routeur, llama-server direct (zéro dépendance externe).
