@@ -121,17 +121,64 @@ def build_launch(
     )
 
 
-def _run(args: list[str], bin_name: str, hint: str) -> int:
-    """Lance un binaire externe ; sa sortie (stdout+stderr) va dans serve.log. Message
-    clair s'il est introuvable."""
-    _log(f"[loom] Lancement : {' '.join(args)}")
+def _terminate_tree(proc: subprocess.Popen) -> None:
+    """Tue le process lancé ET tous ses enfants. llama-swap engendre llama-server comme
+    PETIT-enfant : un simple terminate() le laisserait orphelin (15+ Go de RAM + la VRAM
+    bloqués). Sur Windows on s'appuie sur `taskkill /T` (tue l'arbre par PID) ; sur POSIX
+    on tue le groupe de session (l'enfant a été lancé avec start_new_session)."""
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        import os
+        import signal as _signal
+
+        try:
+            os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            proc.terminate()
     try:
-        SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(SERVE_LOG, "a", encoding="utf-8", errors="replace") as fh:
-            return subprocess.run(args, stdout=fh, stderr=subprocess.STDOUT).returncode
-    except FileNotFoundError:
-        _log(f"[loom] ERREUR : binaire '{bin_name}' introuvable. {hint}")
-        return 1
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def _run(args: list[str], bin_name: str, hint: str) -> int:
+    """Lance un binaire externe ; sa sortie (stdout+stderr) va dans serve.log. Message clair
+    s'il est introuvable. Sur Ctrl+C (ou toute sortie), termine PROPREMENT l'arbre de process
+    pour ne JAMAIS laisser llama-server zombie tenir la RAM/VRAM."""
+    _log(f"[loom] Lancement : {' '.join(args)}")
+    SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(SERVE_LOG, "a", encoding="utf-8", errors="replace") as fh:
+        try:
+            # start_new_session : sur POSIX, isole l'enfant dans son groupe -> killpg propre,
+            # et Ctrl+C ne le frappe pas avant nous. Sans effet sur Windows (on a taskkill /T).
+            proc = subprocess.Popen(
+                args,
+                stdout=fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=(sys.platform != "win32"),
+            )
+        except FileNotFoundError:
+            _log(f"[loom] ERREUR : binaire '{bin_name}' introuvable. {hint}")
+            return 1
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            _log(
+                "[loom] Arrêt (Ctrl+C) — terminaison de l'arbre (llama-swap + llama-server)…"
+            )
+            _terminate_tree(proc)
+            return 0
+        finally:
+            # Filet de sécurité : quelle que soit la cause de sortie, pas d'orphelin.
+            if proc.poll() is None:
+                _terminate_tree(proc)
 
 
 def launch_direct(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
