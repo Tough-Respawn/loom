@@ -276,6 +276,22 @@ def create_app(
             ).replace("<", "\\u003c"),
         }
 
+    # Garde CSRF : le serveur écoute sur 127.0.0.1 SANS auth, et tourne souvent en
+    # mode=allow (outils exécutés sans confirmation). Une page web tierce OUVERTE dans le
+    # navigateur de l'utilisateur peut POSTer en cross-origin vers 127.0.0.1 (requêtes
+    # « simples », sans preflight) et piloter l'agent local -> exécution d'outils. Le
+    # binding localhost NE protège PAS de ça. On refuse les POST dont l'en-tête
+    # Sec-Fetch-Site (envoyé par tous les navigateurs modernes) trahit une origine tierce.
+    # `same-origin`/`none` (notre propre page, barre d'adresse) passent ; un client non-
+    # navigateur (curl, tests) n'envoie pas l'en-tête -> autorisé, on ne casse rien.
+    @app.before_request
+    def _csrf_guard():
+        if request.method != "POST":
+            return None
+        if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+            return Response("requête cross-origin refusée (CSRF)", status=403)
+        return None
+
     @app.get("/")
     def index() -> str:
         return render_template("index.html", **_index_context())
