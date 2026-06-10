@@ -173,6 +173,8 @@ def create_app(
     confirm_timeout=300.0,
     workspace_dir=".",
     plugins_dir="loom/plugins",
+    keepwarm_enabled=True,
+    keepwarm_interval=150.0,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -200,6 +202,9 @@ def create_app(
     app.config["_chat_lock"] = chat_lock
     app.config["_cancel_event"] = cancel_event
     app.config["_pending"] = pending
+    # Horodatage de la dernière fin de génération (0 = jamais). Le keep-warm ne pinge
+    # qu'après une vraie activité et seulement à l'idle (cf. thread plus bas).
+    _last_activity = [0.0]
 
     # Session active : un fil persistant par projet. Tout passe par la session courante
     # (conversation + persistance) ; un seul mode, plus de legacy.
@@ -462,6 +467,7 @@ def create_app(
             except Exception as exc:  # noqa: BLE001 - on remonte l'erreur au client SSE
                 yield _sse("error", message=str(exc))
             finally:
+                _last_activity[0] = time.time()  # marque l'activité pour le keep-warm
                 chat_lock.release()
 
         return Response(generate(), mimetype="text/event-stream")
@@ -585,5 +591,43 @@ def create_app(
             _cur["session"] = None
             _session()
         return {"ok": True}
+
+    # --- Keep-warm : empêche l'OS d'évincer le modèle inactif (cold start après pause). --
+    # Thread daemon qui ping le modèle de la session ACTIVE (1 token) quand : keep-warm
+    # activé, une vraie requête a déjà eu lieu (_last_activity > 0), et on est resté idle
+    # depuis >= keepwarm_interval. `chat_lock` non bloquant => on ne ping JAMAIS pendant une
+    # génération (--parallel 1). On ne ping QUE le modèle déjà chargé => pas de swap parasite.
+    def _keepwarm_loop():
+        tick = max(15.0, min(float(keepwarm_interval) / 3.0, 60.0))
+        while True:
+            time.sleep(tick)
+            last = _last_activity[0]
+            if last <= 0 or (time.time() - last) < float(keepwarm_interval):
+                continue
+            if not chat_lock.acquire(blocking=False):
+                continue  # génération en cours => déjà chaud
+            try:
+                sess = _cur["session"]
+                model = sess.conversation.model if sess else None
+                if not model:
+                    continue
+                for _kind, _chunk in client.stream_chat(
+                    [{"role": "user", "content": "ping"}],
+                    "",
+                    1,
+                    model=model,
+                    thinking=False,
+                ):
+                    pass
+                _last_activity[0] = time.time()  # gardé chaud => relance un intervalle
+            except Exception:  # noqa: BLE001 - keep-warm best-effort, jamais bloquant
+                pass
+            finally:
+                chat_lock.release()
+
+    if keepwarm_enabled:
+        threading.Thread(
+            target=_keepwarm_loop, daemon=True, name="loom-keepwarm"
+        ).start()
 
     return app

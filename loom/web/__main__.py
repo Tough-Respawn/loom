@@ -95,6 +95,8 @@ def build_app(cfg):
         permission=permission,
         workspace_dir=cfg.chat.workspace_dir,
         plugins_dir=plugins_dir,
+        keepwarm_enabled=cfg.chat.keepwarm_enabled,
+        keepwarm_interval=cfg.chat.keepwarm_interval,
     )
     return app
 
