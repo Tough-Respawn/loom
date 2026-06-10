@@ -19,6 +19,10 @@ class Conversation:
     # Plan de tâches de manage_todos : par conversation (donc par session) et persisté
     # ici -> survit au redémarrage, ne déborde plus d'une session à l'autre.
     todos: list[dict] = field(default_factory=list)
+    # Notes de write_note/read_note : mémoire DURABLE qui échappe à la microcompaction
+    # (laquelle purge les résultats d'outils). Le modèle y consigne ses trouvailles et
+    # relit sa note plutôt que de re-lire un fichier entier. Par session, persisté ici.
+    notes: list[str] = field(default_factory=list)
 
     def add(self, role: str, content: str | list) -> None:
         self.messages.append({"role": role, "content": content})
@@ -26,6 +30,7 @@ class Conversation:
     def reset(self) -> None:
         self.messages = []
         self.todos = []  # nouvelle conversation = plan vierge
+        self.notes = []  # ...et notes vierges
 
     def set_tools(self, names: list[str]) -> None:
         self.active_tools = list(names)
@@ -48,6 +53,7 @@ class Conversation:
             "model": self.model,
             "thinking": self.thinking,
             "todos": self.todos,
+            "notes": self.notes,
         }
 
     @classmethod
@@ -60,6 +66,7 @@ class Conversation:
             model=data.get("model", ""),
             thinking=bool(data.get("thinking", True)),
             todos=list(data.get("todos", [])),
+            notes=list(data.get("notes", [])),
         )
 
     def save(self, path: str | Path) -> None:

@@ -145,6 +145,8 @@ AVAILABLE_TOOLS = [
     {"name": "check_interactive", "label": "check_interactive", "danger": False},
     {"name": "dispatch_agent", "label": "dispatch_agent", "danger": False},
     {"name": "manage_todos", "label": "manage_todos", "danger": False},
+    {"name": "write_note", "label": "write_note", "danger": False},
+    {"name": "read_note", "label": "read_note", "danger": False},
     {"name": "use_skill", "label": "use_skill", "danger": False},
     {"name": "list_plugins", "label": "list_plugins", "danger": False},
     {"name": "add_marketplace", "label": "add_marketplace", "danger": True},

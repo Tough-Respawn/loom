@@ -277,11 +277,15 @@ def _iter_turn(stream, collector: dict) -> Iterator[tuple[str, str]]:
 # par un "microcompact" SANS LLM : on vide le CONTENU des plus vieux résultats d'outils
 # (gros stdout, gros read périmés) en gardant les N derniers + toute la STRUCTURE (chaque
 # tool_call garde son tool_result). Non destructif pour le raisonnement (user/assistant
-# intacts) et bien moins risqué qu'un résumé généré par un 4B. Le modèle peut toujours
-# relire un fichier / refaire une recherche s'il a encore besoin d'un résultat effacé.
+# intacts) et bien moins risqué qu'un résumé généré par un 4B.
+# Le stub NE dit PAS « relis le fichier » : ça poussait le modèle à re-lire en boucle ce
+# qui venait d'être purgé (thrash observé en session). Il l'oriente vers write_note —
+# consigner l'essentiel AVANT que le résultat ne soit effacé, puis relire sa note (durable)
+# au lieu du fichier entier.
 _CLEARED_TOOL = (
-    "[résultat d'outil ancien retiré pour garder de la place dans le contexte ; "
-    "relis le fichier ou refais la recherche si tu en as encore besoin]"
+    "[résultat d'outil ancien retiré pour garder de la place dans le contexte. "
+    "Ne re-lis pas le fichier en boucle : si une info t'est encore utile plus tard, "
+    "consigne-la avec write_note pendant que tu l'as, puis relis ta note (read_note).]"
 )
 
 
