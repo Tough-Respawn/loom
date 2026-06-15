@@ -74,6 +74,7 @@ class SessionStore:
         default_system_prompt: str,
         default_tools: list[str] | None = None,
         default_model: str = "",
+        known_models: list[str] | None = None,
     ) -> None:
         self.root = Path(root)
         self.default_system_prompt = default_system_prompt
@@ -84,6 +85,33 @@ class SessionStore:
         # Modèle armé sur chaque session neuve. Sans ça, model="" -> llama-swap 404.
         self.default_model = default_model
         self.root.mkdir(parents=True, exist_ok=True)
+        # Mémoire du dernier modèle choisi : devient le défaut effectif des sessions
+        # neuves (prioritaire sur le config, suit l'utilisateur). Machine-local, gitignoré.
+        self._known_models = set(known_models or [])
+        self._last_model_file = self.root.parent / "last_model"
+        self._load_last_model()
+
+    def _load_last_model(self) -> None:
+        """Restaure le dernier modèle sélectionné comme défaut effectif, s'il est encore
+        connu. Prioritaire sur le default_model du config : on suit le choix utilisateur."""
+        try:
+            saved = self._last_model_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        if saved and (not self._known_models or saved in self._known_models):
+            self.default_model = saved
+
+    def set_default_model(self, model_id: str) -> None:
+        """Mémorise le modèle choisi : défaut des sessions neuves ET du prochain lancement.
+        Persistance best-effort (ne casse jamais un switch si l'écriture échoue)."""
+        model_id = (model_id or "").strip()
+        if not model_id:
+            return
+        self.default_model = model_id
+        try:
+            self._last_model_file.write_text(model_id, encoding="utf-8")
+        except OSError:
+            pass
 
     def _file(self, sid: str) -> Path:
         return self.root / sid / "session.json"

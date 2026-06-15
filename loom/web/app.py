@@ -105,8 +105,16 @@ def _build_user_content(message: str, image) -> str | list:
     if not mime.startswith("image/"):
         raise ValueError("fichier non-image")
     b64 = base64.b64encode(blob).decode("ascii")
+    # L'image est EMBARQUÉE dans le message (data URI) : le modèle multimodal la VOIT
+    # déjà. Sans ce rappel, il croit devoir l'ouvrir via read_image, DEVINE un chemin,
+    # échoue, puis cherche les images du disque. On coupe court.
+    note = (
+        "[Une image est jointe à ce message — tu la VOIS déjà directement ci-dessous. "
+        "N'utilise PAS read_image pour elle et ne devine AUCUN chemin de fichier : "
+        "analyse l'image telle qu'elle est.]\n"
+    )
     return [
-        {"type": "text", "text": message},
+        {"type": "text", "text": note + message},
         {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
     ]
 
@@ -166,6 +174,7 @@ def create_app(
     keep_recent=6,
     context_window=8192,
     models=None,
+    vision_models=None,
     interrupt_wait=15.0,
     tool_factory=None,
     available_tools=None,
@@ -191,6 +200,7 @@ def create_app(
     # ne porte que sur l'historique persisté.
     compact_after_tokens = max(1024, context_window - max_tokens - 1024)
     models = list(models or [])
+    vision_models = set(vision_models or [])  # ids des modèles avec mmproj (vision)
     available_tools = list(available_tools or [])
     chat_lock = threading.Lock()
     # Signal d'annulation : une nouvelle soumission le pose pour stopper net la
@@ -319,6 +329,23 @@ def create_app(
         # On tient le verrou : repartir d'un signal d'annulation propre.
         cancel_event.clear()
         conv, save = _ctx()
+
+        # Gate vision : une image envoyée à un modèle SANS mmproj fait planter llama-server
+        # (500 "image input not supported") en plein run. On refuse EN AMONT, message clair,
+        # plutôt qu'un crash après avoir déjà agi. (read_image suit le même garde côté tool.)
+        _img = request.files.get("image")
+        if _img and _img.filename and conv.model and conv.model not in vision_models:
+            chat_lock.release()
+            others = ", ".join(sorted(vision_models)) or "aucun (configure un mmproj)"
+            msg = (
+                f"Le modèle actif « {conv.model} » ne voit pas les images (pas de mmproj). "
+                f"Bascule sur un modèle avec vision : {others}."
+            )
+
+            def _gate():
+                yield _sse("error", message=msg)
+
+            return Response(_gate(), mimetype="text/event-stream")
 
         # Logs PAR SESSION (au même titre que session.json) : (1) trace des échanges modèle
         # routée vers sessions/<id>/debug.log ; (2) copie du log serveur modèle global
@@ -592,8 +619,11 @@ def create_app(
     @app.post("/model")
     def model_update():
         conv, save = _ctx()
-        conv.set_model(request.form.get("model", ""))
+        model = request.form.get("model", "")
+        conv.set_model(model)
         save()
+        # Mémorise ce choix : il devient le défaut des prochaines sessions / lancements.
+        session_store.set_default_model(model)
         return render_template("_models.html", models=models, current_model=conv.model)
 
     # --- Sessions : liste / nouvelle / bascule / suppression ---
