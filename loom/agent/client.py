@@ -271,6 +271,65 @@ def _iter_turn(stream, collector: dict) -> Iterator[tuple[str, str]]:
     collector["tool_calls"] = [acc[i] for i in sorted(acc)]
 
 
+# --- Filet : récupérer les appels d'outil émis en TEXTE ------------------------------
+# Certains modèles (surtout après une erreur d'outil) sortent l'appel DANS le texte au
+# lieu du canal structuré. Sans filet, tool_calls reste vide -> la boucle s'arrête sur un
+# appel "raté". On reconstruit depuis deux formats connus : Hermes/JSON et XML-ish.
+_TOOLCALL_BLOCK = re.compile(
+    r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE
+)
+_FUNC_XML = re.compile(
+    r"<function=([\w.\-]+)\s*>(.*?)</function>", re.DOTALL | re.IGNORECASE
+)
+_PARAM_XML = re.compile(
+    r"<parameter=([\w.\-]+)\s*>(.*?)</parameter>", re.DOTALL | re.IGNORECASE
+)
+
+
+def _salvage_tool_calls(text: str, reasoning: str) -> list[dict]:
+    """Reconstruit des appels d'outil émis en TEXTE (channel structuré vide). Renvoie la
+    MÊME forme que les tool_calls structurés : [{'id','name','arguments'(JSON str)}].
+    Vide si rien d'exploitable. L'exécution en aval reste soumise aux permissions."""
+    blob = f"{text}\n{reasoning}"
+    calls: list[dict] = []
+
+    def _emit(name: str, args) -> None:
+        name = (name or "").strip()
+        if not name:
+            return
+        if isinstance(args, dict):
+            arguments = json.dumps(args, ensure_ascii=False)
+        else:
+            arguments = str(args)
+        calls.append(
+            {"id": f"salvage-{len(calls)}", "name": name, "arguments": arguments}
+        )
+
+    for inner in _TOOLCALL_BLOCK.findall(blob):
+        inner = inner.strip()
+        # Hermes/JSON : {"name": "...", "arguments": {...}}
+        try:
+            obj = json.loads(inner)
+        except (json.JSONDecodeError, ValueError):
+            obj = None
+        if isinstance(obj, dict) and obj.get("name"):
+            _emit(obj["name"], obj.get("arguments", {}))
+            continue
+        # XML-ish : <function=nom> ... <parameter=clé>valeur</parameter> ...
+        m = re.search(r"<function=([\w.\-]+)", inner)
+        if m:
+            params = {k: v.strip() for k, v in _PARAM_XML.findall(inner)}
+            _emit(m.group(1), params)
+
+    # Fallback : <function=...>...</function> hors de tout <tool_call>.
+    if not calls:
+        for name, body in _FUNC_XML.findall(blob):
+            params = {k: v.strip() for k, v in _PARAM_XML.findall(body)}
+            _emit(name, params)
+
+    return calls
+
+
 # --- Microcompact INTERNE à la boucle d'outils ---------------------------------------
 # Sur une chaîne longue (refactor multi-fichiers, exploration), `convo` accumule TOUS les
 # messages role:tool et finit par approcher la fenêtre du modèle -> overflow. CC règle ça
@@ -616,6 +675,16 @@ class LoomClient:
                 return
 
             tool_calls = collector["tool_calls"]
+            # FILET : appel d'outil émis en TEXTE (channel structuré vide) ? On le récupère
+            # et on l'exécute, au lieu de s'arrêter sur un appel "raté".
+            if not tool_calls:
+                salvaged = _salvage_tool_calls(text, reasoning)
+                if salvaged:
+                    tool_calls = salvaged
+                    _debug(
+                        "SALVAGE",
+                        f"{len(salvaged)} appel(s) d'outil récupéré(s) du texte.",
+                    )
             if not tool_calls:
                 # CONTINUATION sur troncature : la réponse texte/raisonnement a été coupée
                 # par la limite de tokens (finish_reason == "length") sans appel d'outil.
