@@ -93,6 +93,7 @@ def build_app(cfg):
         tool_factory=make_registry,
         available_tools=AVAILABLE_TOOLS,
         permission=permission,
+        permission_mode=cfg.permissions.mode,
         workspace_dir=cfg.chat.workspace_dir,
         plugins_dir=plugins_dir,
         keepwarm_enabled=cfg.chat.keepwarm_enabled,
