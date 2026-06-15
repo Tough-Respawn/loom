@@ -74,6 +74,7 @@ def build_app(cfg):
         cfg.chat.system_prompt,
         default_tools=cfg.chat.tools_enabled,
         default_model=cfg.default_model,
+        known_models=[m.id for m in cfg.models],
     )
     if not store.list() and conversation.messages:
         seed = store.create(workspace=cfg.chat.workspace_dir, title="Session importée")
@@ -90,6 +91,7 @@ def build_app(cfg):
         keep_recent=cfg.chat.keep_recent_messages,
         context_window=cfg.context,
         models=[m.id for m in cfg.models],
+        vision_models=[m.id for m in cfg.models if m.mmproj_filename],
         tool_factory=make_registry,
         available_tools=AVAILABLE_TOOLS,
         permission=permission,
