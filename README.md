@@ -24,7 +24,7 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
   - **Modifier / créer** : `write_file`, `append_file`, `edit_file` (remplacement
     exact-unique), `replace_lines` / `insert_lines` (édition par ligne, indentation
     préservée), `format_code` (ruff Python / prettier web).
-  - **Exécuter** : `run_shell` (PowerShell/bash, deny-list dure, tue l'arbre au timeout).
+  - **Exécuter** : `run_shell` (PowerShell/bash, garde-fou deny-list, tue l'arbre au timeout).
   - **Web** : `web_search`, `fetch_url` (dégradés proprement hors-ligne).
   - **Vérifier le rendu** : `check_page` (charge une page HTML headless, exécute le JS,
     renvoie erreurs console + un **diagnostic de localisation** si la page hang),
@@ -36,9 +36,11 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
   répond sans appel d'outil → fini). Par-dessus, des **garde-fous** non-bloquants : plafond de
   tours et détecteur de non-progrès (anti-boucle). *Pas de mur de temps* (retiré : il
   décapitait le raisonnement).
-- 🔒 **Mode permission** : deny-list dure incontournable (`rm -rf`, `format`, `dd if=`…) +
-  confirmation interactive (Autoriser/Refuser) en mode `ask`, ou autonomie en `allow`.
-  L'installation de plugins (code tiers) est gardée `ask`.
+- 🔒 **Mode permission** : en mode `ask`, confirmation interactive (Autoriser/Refuser) avant
+  chaque écriture / commande shell ; en mode `allow`, l'agent agit sans demander. Par-dessus,
+  une **deny-list** filtre quelques commandes destructrices évidentes (`rm -rf`, `format`,
+  `dd if=`…). L'installation de plugins (code tiers) est gardée `ask`. Détails et limites :
+  voir [Sécurité](#sécurité--périmètre-de-confiance).
 - 🛡️ **Sécurité de l'ingestion** (active même hors-ligne) : garde **anti-SSRF** + **frontière
   de confiance** — tout contenu externe (URL, PDF, image, sortie d'outil) est marqué comme
   DONNÉE à analyser, jamais comme instructions à exécuter.
@@ -96,7 +98,12 @@ uv sync                      # dépendances + installe le package loom
 uv run loom/runtime/serve.py # télécharge le modèle au 1er run + sert sur :8080
 uv run python -m loom.web    # interface chat sur :8000
 ```
-Puis ouvre **http://127.0.0.1:8000**.
+Puis ouvre **http://127.0.0.1:8000**. (Deux processus : `serve.py` = le moteur llama.cpp,
+`loom.web` = l'UI de chat.)
+
+> ⚠️ Avant de t'en servir, lis [Sécurité](#sécurité--périmètre-de-confiance) : Loom donne un
+> shell et l'écriture disque au modèle. En dehors d'un environnement isolé, mets
+> `[permissions] mode = "ask"`.
 
 ## Utiliser l'agent
 
@@ -106,6 +113,34 @@ Puis ouvre **http://127.0.0.1:8000**.
   écriture et shell gardés par le **mode permission** (`allow` = autonome, `ask` = confirmation).
 - **Déléguer** : pour un gros chantier, l'agent peut lancer `dispatch_agent` — un sous-agent à
   contexte isolé qui travaille puis renvoie une synthèse.
+
+## Sécurité & périmètre de confiance
+
+Loom donne à un **modèle local** un shell et l'écriture sur ton disque. À traiter comme tel : le
+harness n'est **pas un bac à sable**.
+
+- **Le mode permission est ton vrai garde-fou.** En `ask` (recommandé), tu confirmes chaque
+  écriture et chaque commande shell. En `allow`, l'agent agit sans rien demander : à réserver à
+  un environnement que tu acceptes de voir modifié sans confirmation (VM, conteneur, compte
+  dédié). Réglage dans [loom/loom.config.toml](loom/loom.config.toml) → `[permissions] mode`.
+  Le défaut livré est `allow` ; **passe-le à `ask`** si tu n'es pas en environnement isolé.
+- **La deny-list n'est pas une frontière de sécurité.** Elle bloque quelques formes évidentes de
+  commandes destructrices (`rm -rf`, `format`, `dd if=`) pour éviter l'**accident**. Elle ne
+  résiste **pas** à un modèle hostile ou manipulé : un interpréteur (`python -c …`), un alias ou
+  un autre ordre d'arguments la contournent. Si tu n'as pas confiance dans le modèle ou dans ce
+  qu'il lit, isole l'exécution.
+- **Anti-SSRF (solide)** : `fetch_url` / `web_search` résolvent et **épinglent** l'IP validée,
+  refusent les hôtes internes (loopback, lien-local, métadonnées cloud) et ne suivent pas les
+  redirections.
+- **Frontière de confiance (défense en profondeur)** : tout contenu externe (URL, PDF, image,
+  sortie d'outil) est marqué comme **DONNÉE à analyser, jamais instruction à exécuter**. C'est un
+  rappel injecté dans le contexte, pas une contrainte dure : il réduit le risque d'injection, il
+  ne l'élimine pas.
+- **Plugins = code + instructions tiers.** Installer un plugin clone un repo et ses skills
+  deviennent appelables par le modèle. L'install est gardée `ask` ; n'ajoute que des marketplaces
+  de confiance.
+
+En clair : `ask` par défaut, et si tu veux l'autonomie `allow`, fais-le dans un environnement isolé.
 
 ## Skills & plugins
 

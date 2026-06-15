@@ -170,6 +170,7 @@ def create_app(
     tool_factory=None,
     available_tools=None,
     permission=None,
+    permission_mode="ask",
     confirm_timeout=300.0,
     workspace_dir=".",
     plugins_dir="loom/plugins",
@@ -268,6 +269,7 @@ def create_app(
             "workspace_dir": ws,
             "sessions": sessions,
             "active_session": active_id,
+            "permission_mode": permission_mode,
             # État initial pour l'hydratation côté client (Preact). On échappe '<'
             # pour ne pas pouvoir fermer la balise <script> depuis le contenu.
             "init_json": json.dumps(
