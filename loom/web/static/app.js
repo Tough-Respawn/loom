@@ -266,10 +266,15 @@ async function sendChat(text, image) {
   const tools = {}; // callId -> item id
   let thinkId = null;
   let asstId = null;
+  let lastSent = 0,
+    lastRecv = 0,
+    lastTokS = null; // derniers compteurs envoyé/reçu/débit (pour figer à la fin)
 
   const fd = new FormData();
   fd.append("message", text);
   if (image) fd.append("image", image);
+
+  setMetrics(0, 0, null); // "↑0 ↓0" pulsant dès l'envoi -> liveness immédiate avant le 1er token
 
   const onEvent = (evt) => {
     switch (evt.type) {
@@ -350,6 +355,14 @@ async function sendChat(text, image) {
         if (btn) btn.textContent = evt.title;
         break;
       }
+      case "metrics":
+        // Compteur live piloté par le backend : envoyés ↑ (prompt réel) et reçus ↓
+        // (génération, tool-calls inclus, réconciliés sur l'usage) + débit mesuré.
+        lastSent = evt.sent;
+        lastRecv = evt.recv;
+        lastTokS = evt.tok_s;
+        setMetrics(lastSent, lastRecv, lastTokS, {});
+        break;
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancé ?)" });
         break;
@@ -367,7 +380,12 @@ async function sendChat(text, image) {
     }
   } finally {
     if (thinkId) patch(thinkId, { active: false });
-    if (ac === currentAbort) currentAbort = null;
+    // Ne fige le compteur que si CETTE génération est encore l'active (une nouvelle
+    // soumission a déjà remis le compteur à zéro -> ne pas l'écraser depuis l'ancienne).
+    if (ac === currentAbort) {
+      currentAbort = null;
+      setMetrics(lastSent, lastRecv, lastTokS, { done: true });
+    }
   }
 }
 
@@ -412,6 +430,22 @@ function reflectWorkdir() {
   if (workdirPath) workdirPath.textContent = loomWorkdir;
 }
 reflectWorkdir();
+
+// --- Compteur live de génération (tokens réels + débit mesuré, piloté par le backend) ---
+const genMetrics = document.getElementById("gen-metrics");
+const gmText = document.getElementById("gm-text");
+function setMetrics(sent, recv, tokS, opts) {
+  if (!genMetrics || !gmText) return;
+  if (sent == null && recv == null) {
+    genMetrics.hidden = true;
+    genMetrics.classList.remove("done");
+    return;
+  }
+  genMetrics.hidden = false;
+  genMetrics.classList.toggle("done", !!(opts && opts.done));
+  const rate = tokS != null ? ` · ${tokS} tok/s` : "";
+  gmText.textContent = `↑ ${sent || 0} · ↓ ${recv || 0}${rate}`;
+}
 
 // --- drawer réglages ---
 const settingsBtn = document.getElementById("settings-btn");

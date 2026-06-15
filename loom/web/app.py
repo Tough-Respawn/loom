@@ -430,6 +430,13 @@ def create_app(
                 )
 
             interrupted = False
+            recv_confirmed = 0  # reçus confirmés par l'usage (tool-calls inclus)
+            cur_turn = 0  # reçus live du tour en cours (reset à chaque usage)
+            sent_tokens = 0  # envoyés (prompt) cumulés via l'usage
+            last_rate = 0.0  # dernier débit mesuré
+            burst_start = None  # début de rafale (débit hors pauses outils)
+            burst_tokens = 0
+            last_tok = None
             try:
                 for kind, payload in source:
                     if cancel_event.is_set():
@@ -456,9 +463,42 @@ def create_app(
                             actions.append(line)
                         yield _sse("tool_result", **payload)
                     elif kind == "usage":
+                        # Fin d'un tour : llama-server donne le prompt réel et le completion
+                        # EXACT (tool-calls inclus) -> on cumule envoyés/reçus à travers les
+                        # tours ET les outils, et on réconcilie le tour courant.
+                        sent_tokens += payload.get("prompt_tokens", 0) or 0
+                        recv_confirmed += payload.get("completion_tokens", 0) or 0
+                        cur_turn = 0
                         yield _sse("usage", **payload)
+                        yield _sse(
+                            "metrics",
+                            sent=sent_tokens,
+                            recv=recv_confirmed,
+                            tok_s=last_rate,
+                        )
                     elif kind == "phase":
                         yield _sse("phase", **payload)
+                    # Compteur live : chaque delta texte = 1 vrai token streamé par
+                    # llama-server. On affiche le cumul + un débit mesuré sur la rafale
+                    # courante ; le timer se réinitialise après >1s sans token (pause outil)
+                    # pour que les tok/s reflètent la génération, pas les gaps d'exécution.
+                    if kind in ("reasoning", "content"):
+                        now = time.monotonic()
+                        if last_tok is None or now - last_tok > 1.0:
+                            burst_start = now
+                            burst_tokens = 0
+                        burst_tokens += 1
+                        cur_turn += 1
+                        last_tok = now
+                        span = now - burst_start
+                        tok_s = round(burst_tokens / span, 1) if span > 0 else 0.0
+                        last_rate = tok_s
+                        yield _sse(
+                            "metrics",
+                            sent=sent_tokens,
+                            recv=recv_confirmed + cur_turn,
+                            tok_s=tok_s,
+                        )
                 if interrupted:
                     _persist()  # partiel sauvé, pas de 'done' (le client est parti)
                     return
