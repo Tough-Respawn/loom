@@ -296,11 +296,13 @@ def make_read_image(workspace_dir: str, max_bytes: int = 10 * 1024 * 1024) -> To
     return ToolSpec(
         name="read_image",
         description=(
-            "Charge une IMAGE (png/jpg/jpeg/gif/webp/bmp) et te la fait VOIR "
-            "directement : capture d'écran, photo, schéma, diagramme. Chemin relatif au "
-            "dossier de travail OU absolu. Utilise-le pour décrire une image, lire un "
-            "texte dessus, comparer un rendu. Pour un PDF/Excel/Word, read_document ; "
-            "pour du texte, read_file."
+            "Charge une IMAGE SUR DISQUE (png/jpg/jpeg/gif/webp/bmp) depuis son CHEMIN "
+            "et te la fait VOIR : capture, photo, schéma, diagramme. UNIQUEMENT pour un "
+            "fichier déjà présent sur disque dont tu connais le chemin (relatif au dossier "
+            "de travail ou absolu). Une image COLLÉE/jointe au chat, tu la vois DÉJÀ : "
+            "n'appelle PAS read_image pour elle et ne devine aucun chemin. Sert à décrire, "
+            "lire un texte, comparer un rendu. PDF/Excel/Word -> read_document ; texte -> "
+            "read_file."
         ),
         parameters={
             "type": "object",
