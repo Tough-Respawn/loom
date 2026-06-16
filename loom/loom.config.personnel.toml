@@ -1,0 +1,27 @@
+# Config PERSONNELLE : surcharge loom.config.toml avec les valeurs propres à TA machine
+# (chemins des binaires, offload GPU). Adapte-les — ces valeurs sont celles d'une RTX 2060 ;
+# une autre carte (ex. RTX 3090) voudra d'autres réglages. Ce fichier EST suivi par git
+# comme exemple de référence : édite-le en place, ne le supprime pas.
+[server]
+# b9442 : build de référence (le plus rapide sur cette RTX 2060). Le b9596 avait été installé
+# UNIQUEMENT pour charger le drafter MTP (arch gemma4-assistant, mergée le 2026-06-07) ;
+# MTP abandonné le 2026-06-15, et b9596 régresse -18% pp / -7% tg ici sans contrepartie hors
+# MTP -> retour b9442. Le b9596 reste dispo dans C:/tools/llama-b9596. Cf. docs/bench-llama.md.
+bin = "C:/tools/llama/llama-server.exe"
+# Routeur multi-modèles (hot-swap par le sélecteur de l'UI). Installé via le zip
+# llama-swap v223 (github.com/mostlygeek/llama-swap).
+swap_bin = "C:/tools/llama/llama-swap.exe"
+
+# Offload COMPLET (toutes couches + output/embeddings) : -ngl 99. Couplé au
+# gpu_tuning (Flash-Attn + KV q8_0 + batch) côté serve.py. Benchmark RTX 2060 :
+# single-stream 12->17.8 tok/s (+47%), 4 flux concurrents ~100 tok/s (×3), GPU 83%.
+# (cf. docs/perf-gpu.md). VRAM ~4 Go/6 -> pas de spill.
+[override]
+n_gpu_layers = 99
+
+[tools]
+# Périmètre des outils sur CETTE machine : racine de tes projets. La lecture est
+# sans risque (Loom est offline, aucune exfiltration possible). Pour write/shell,
+# le garde-fou reste le mode permission (deny-list + confirmation à venir) :
+# n'active write/edit/run_shell que sur un dossier de confiance.
+workspace_dir = "C:/Users/Amine/Documents"

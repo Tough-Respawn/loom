@@ -154,7 +154,8 @@ En clair : `ask` par défaut, et si tu veux l'autonomie `allow`, fais-le dans un
 
 Tout est dans [loom/loom.config.toml](loom/loom.config.toml) (`default_model`, contexte, ports,
 outils armés, permissions). Les réglages spécifiques à une machine (chemin du binaire, override
-GPU) vont dans `loom/loom.config.local.toml` (gitignoré).
+GPU) vont dans [loom/loom.config.personnel.toml](loom/loom.config.personnel.toml) — suivi par git
+comme exemple, à adapter à ta machine (les valeurs livrées sont celles d'une RTX 2060).
 
 ## Statut
 
