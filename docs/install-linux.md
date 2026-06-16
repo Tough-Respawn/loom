@@ -3,7 +3,7 @@
 1. Build CPU ou release Linux de llama.cpp ; placer `llama-server` dans le PATH
    ou un dossier connu.
 2. Vérifier : `llama-server --version`.
-3. (Optionnel) `loom/loom.config.local.toml` si le binaire n'est pas dans le PATH :
+3. (Optionnel) `loom/loom.config.personnel.toml` si le binaire n'est pas dans le PATH :
    ```toml
    [server]
    bin = "/opt/llama/llama-server"

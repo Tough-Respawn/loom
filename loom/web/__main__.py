@@ -16,7 +16,7 @@ from loom.web.app import create_app
 
 RUNTIME_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = RUNTIME_DIR / "loom.config.toml"
-LOCAL_CONFIG_PATH = RUNTIME_DIR / "loom.config.local.toml"
+PERSONAL_CONFIG_PATH = RUNTIME_DIR / "loom.config.personnel.toml"
 
 
 def build_app(cfg):
@@ -105,7 +105,7 @@ def build_app(cfg):
 
 
 def main() -> None:
-    cfg = load_config(CONFIG_PATH, LOCAL_CONFIG_PATH)
+    cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
     app = build_app(cfg)
     print(
         f"[loom-chat] http://127.0.0.1:{cfg.chat.web_port}  (modèle: http://127.0.0.1:{cfg.port}/v1)"

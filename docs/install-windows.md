@@ -3,7 +3,7 @@
 1. Récupérer la release Windows CUDA de llama.cpp (`...-bin-win-cuda-x64.zip`).
 2. Extraire dans `C:\tools\llama\`.
 3. Vérifier : `& "C:\tools\llama\llama-server.exe" --version`.
-4. Créer `loom/loom.config.local.toml` :
+4. Adapter `loom/loom.config.personnel.toml` (présent dans le repo) :
    ```toml
    [server]
    bin = "C:/tools/llama/llama-server.exe"
