@@ -482,6 +482,8 @@ def create_app(
                         yield _sse("tool_request", **payload)
                     elif kind == "tool_begin":
                         yield _sse("tool_begin", **payload)
+                    elif kind == "tool_args":
+                        yield _sse("tool_args", **payload)
                     elif kind == "tool_stream":
                         yield _sse("tool_stream", **payload)
                     elif kind == "tool_result":
@@ -505,11 +507,13 @@ def create_app(
                         )
                     elif kind == "phase":
                         yield _sse("phase", **payload)
-                    # Compteur live : chaque delta texte = 1 vrai token streamé par
-                    # llama-server. On affiche le cumul + un débit mesuré sur la rafale
-                    # courante ; le timer se réinitialise après >1s sans token (pause outil)
-                    # pour que les tok/s reflètent la génération, pas les gaps d'exécution.
-                    if kind in ("reasoning", "content"):
+                    # Compteur live : chaque delta (texte OU arguments d'un tool_call) =
+                    # 1 vrai token streamé par llama-server. On compte aussi tool_args
+                    # pour que le compteur avance pendant la génération d'un appel (gros
+                    # write_file inclus) au lieu de se figer. On affiche le cumul + un débit
+                    # mesuré sur la rafale courante ; le timer se réinitialise après >1s sans
+                    # token (pause d'exécution) pour que les tok/s reflètent la génération.
+                    if kind in ("reasoning", "content", "tool_args"):
                         now = time.monotonic()
                         if last_tok is None or now - last_tok > 1.0:
                             burst_start = now

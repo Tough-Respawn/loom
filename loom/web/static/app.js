@@ -16,7 +16,34 @@ import {
 
 // marked + DOMPurify sont chargés en global (scripts classiques avant ce module).
 marked.setOptions({ breaks: true });
-const md = (raw) => DOMPurify.sanitize(marked.parse(raw || ""));
+// Protège les spans LaTeX ($…$, $$…$$, \(…\), \[…\]) du parseur markdown — sinon il mange
+// \lim_{x}, \frac, etc. On remplace par des jetons avant marked, on restaure (échappés
+// HTML pour bloquer toute injection) après. MathJax les rend en SVG dans enhance().
+function _protectMath(raw) {
+  const maths = [];
+  const stash = (delim, tex) => {
+    maths.push(delim + tex + delim);
+    return `@@MATH${maths.length - 1}@@`;
+  };
+  let s = raw;
+  s = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, t) => stash("$$", t));
+  s = s.replace(/\\\[([\s\S]+?)\\\]/g, (_, t) => stash("$$", t.trim()));
+  s = s.replace(/\\\(([\s\S]+?)\\\)/g, (_, t) => stash("$", t.trim()));
+  s = s.replace(/(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_, t) => stash("$", t));
+  return { text: s, maths };
+}
+const _escHtml = (s) =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+const md = (raw) => {
+  const { text, maths } = _protectMath(raw || "");
+  const out = DOMPurify.sanitize(marked.parse(text));
+  return out.replace(/@@MATH(\d+)@@/g, (_, i) => _escHtml(maths[+i] || ""));
+};
 const esc = (s) => (s || "").replace(/</g, "&lt;");
 const fmtSecs = (ms) => (ms / 1000).toFixed(1) + "s";
 
@@ -80,7 +107,7 @@ function ToolPill({ it }) {
   const [open, setOpen] = useState(false);
   const hasDetail = !!it.detail;
   const status = it.pending
-    ? "…"
+    ? (it.chars ? "… " + it.chars + " car." : "…")
     : (it.ok ? "✓ " : "✕ ") + (it.preview || "").split("\n")[0];
   return html`<div class=${"tool-chip" + (it.pending ? "" : it.ok ? " ok" : " ko") + (hasDetail ? " has-detail" : "")}>
     <div class="tool-row" onClick=${() => hasDetail && setOpen(!open)}>
@@ -184,6 +211,10 @@ function enhance(el, raw) {
       setTimeout(() => (btn.textContent = "copier"), 1200);
     };
     el.appendChild(btn);
+  }
+  // Rend les formules LaTeX en SVG sur le DOM réel (MathJax tex-svg), après le markdown.
+  if (window.MathJax && window.MathJax.typesetPromise) {
+    window.MathJax.typesetPromise([el]).catch(() => {});
   }
 }
 
@@ -312,6 +343,15 @@ async function sendChat(text, image) {
         tools[evt.id] = tid;
         break;
       }
+      case "tool_args": {
+        // Deltas d'arguments d'un tool_call (contenu de write_file, params de tout outil) :
+        // on cumule la taille pour la voir grossir sur la pastille pendant la génération.
+        // Le compteur ↓ global, lui, est piloté par l'event "metrics" du backend.
+        const tid = "tool:" + (evt.id || evt.name);
+        if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name, pending: true });
+        patch(tid, { chars: (get(tid).chars || 0) + (evt.n || 0) });
+        break;
+      }
       case "tool_stream": {
         // Activité live d'un outil streamant (sous-agent) : on accumule dans `stream`,
         // affiché dans la pastille tant qu'elle n'est pas dépliée.
@@ -406,6 +446,16 @@ state.timeline.forEach((it) => {
   if (it.kind === "assistant" && typeof it.content === "string") it.raw = it.content;
 });
 scheduleRender();
+
+// MathJax charge en async : re-typeset les bulles déjà rendues (historique) une fois prêt.
+function _typesetAll() {
+  if (!(window.MathJax && window.MathJax.typesetPromise)) return;
+  document
+    .querySelectorAll(".msg.assistant")
+    .forEach((el) => window.MathJax.typesetPromise([el]).catch(() => {}));
+}
+if (window.__mathjaxReady) _typesetAll();
+else document.addEventListener("mathjax-ready", _typesetAll);
 
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("sendBtn");
