@@ -255,17 +255,22 @@ def _iter_turn(stream, collector: dict) -> Iterator[tuple[str, str]]:
             if getattr(tc, "id", None):
                 slot["id"] = tc.id
             fn = getattr(tc, "function", None)
-            if fn is not None:
-                if getattr(fn, "name", None):
-                    slot["name"] = fn.name
-                if getattr(fn, "arguments", None):
-                    slot["arguments"] += fn.arguments
-            # Annonce le DÉBUT de l'appel dès id+name connus (avant que les arguments
-            # — le contenu du fichier — finissent de streamer) : l'UI montre alors
-            # l'écriture EN COURS au lieu d'apparaître seulement une fois terminée.
+            if fn is not None and getattr(fn, "name", None):
+                slot["name"] = fn.name
+            # Annonce le DÉBUT de l'appel dès id+name connus, AVANT de streamer les
+            # arguments : la pastille existe déjà quand ses deltas d'arguments arrivent.
             if tc.index not in announced and slot["id"] and slot["name"]:
                 announced.add(tc.index)
                 yield ("tool_begin", {"id": slot["id"], "name": slot["name"]})
+            # Arguments streamés morceau par morceau (pour write_file le CONTENU du
+            # fichier ; pour tout outil ses paramètres). Chaque fragment est un vrai
+            # token généré par le modèle -> on le remonte (tool_args) pour que le
+            # compteur live avance et que la pastille montre la taille qui grossit, au
+            # lieu de rester muette pendant la génération de l'appel.
+            if fn is not None and getattr(fn, "arguments", None):
+                slot["arguments"] += fn.arguments
+                if slot["id"]:
+                    yield ("tool_args", {"id": slot["id"], "n": len(fn.arguments)})
         if getattr(choice, "finish_reason", None):
             collector["finish_reason"] = choice.finish_reason
     collector["tool_calls"] = [acc[i] for i in sorted(acc)]
