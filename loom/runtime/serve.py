@@ -27,7 +27,7 @@ from loom.runtime.swap import build_swap_config, write_swap_yaml
 # du package loom/ (où vivent config, models, data) — pas le dossier runtime/.
 LOOM_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = LOOM_DIR / "loom.config.toml"
-LOCAL_CONFIG_PATH = LOOM_DIR / "loom.config.local.toml"
+PERSONAL_CONFIG_PATH = LOOM_DIR / "loom.config.personnel.toml"
 MODELS_DIR = LOOM_DIR / "models"
 SWAP_YAML = MODELS_DIR.parent / "llama-swap.yaml"
 # Log PERSISTANT du serveur modèle (le terminal est éphémère / illisible à distance).
@@ -191,7 +191,7 @@ def launch_direct(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
     return _run(
         args,
         cfg.server_bin,
-        "Renseigne 'bin' dans loom.config.local.toml (voir docs/install-windows.md).",
+        "Renseigne 'bin' dans loom.config.personnel.toml (voir docs/install-windows.md).",
     )
 
 
@@ -228,7 +228,7 @@ def main() -> int:
         SERVE_LOG.write_text("", encoding="utf-8")
     except OSError:
         pass
-    cfg = load_config(CONFIG_PATH, LOCAL_CONFIG_PATH)
+    cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
     profile = detect_hardware()
     _log(f"[loom] Profil détecté : {profile}")
 
