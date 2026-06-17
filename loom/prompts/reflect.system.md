@@ -18,7 +18,7 @@ Pour un SKILL (new_skills), trois champs, tous remplis pour de vrai (ne recopie 
 
 Réponds EXCLUSIVEMENT par un objet JSON (toutes les clés présentes, listes vides si rien) :
 {
-  "new_skills":      [{"name": "...", "description": "Se déclenche quand ...", "body": "# <vrai titre>\n<étapes et commandes généralisables>"}],
+  "new_skills":      [{"name": "kebab-case", "description": "Se déclenche quand ...", "body": "# <vrai titre>\n<étapes et commandes généralisables>"}],
   "improved_skills": [{"name": "learned:<nom-existant>", "body": "# <vrai titre>\n<corps réécrit, généralisable>"}],
   "episodes":        [{"text": "leçon/observation dense, autonome"}],
   "memory_updates":  ["fait durable général (convention, environnement, consigne) → MEMORY.md"],
