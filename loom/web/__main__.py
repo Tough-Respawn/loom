@@ -31,6 +31,20 @@ def build_app(cfg):
         timeout=cfg.chat.request_timeout,
         max_retries=cfg.chat.max_retries,
     )
+    # Mémoire persistante : provider (store épisodique) + chemins identité (SOUL/USER/MEMORY).
+    # `memory` est passé à build_registry (outils recall/remember) ; `mem_paths` sert aussi
+    # à injecter le bloc identité au system prompt (create_app).
+    from types import SimpleNamespace
+
+    from loom.memory import get_provider
+
+    mem_provider = get_provider(cfg.memory.provider, db_path=cfg.memory.db_path)
+    mem_paths = {
+        "memory_md_path": cfg.memory.memory_md_path,
+        "user_path": cfg.memory.user_path,
+        "soul_path": cfg.memory.soul_path,
+    }
+    memory = SimpleNamespace(provider=mem_provider, paths=mem_paths)
     budget = effective_context_budget(
         cfg.chat.context_token_budget, cfg.context, cfg.chat.max_tokens
     )
@@ -53,6 +67,7 @@ def build_app(cfg):
             active_model=(conversation.model if conversation else cfg.default_model),
             skills_dir=cfg.chat.skills_dir,
             plugins_root=plugins_dir,
+            memory=memory,
         )
 
     # Amorce les outils de la conversation depuis la config au 1er lancement.
@@ -100,6 +115,8 @@ def build_app(cfg):
         plugins_dir=plugins_dir,
         keepwarm_enabled=cfg.chat.keepwarm_enabled,
         keepwarm_interval=cfg.chat.keepwarm_interval,
+        identity_paths=mem_paths,
+        identity_max_tokens=cfg.chat.identity_max_tokens,
     )
     return app
 
