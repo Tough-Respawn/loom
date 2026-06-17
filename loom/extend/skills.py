@@ -18,25 +18,40 @@ class Skill:
     description: str
     body: str
     base_dir: str = ""  # dossier du SKILL.md (pour résoudre references/)
+    # Champs optionnels des skills AUTO-APPRIS (namespace `learned`). Absents des skills
+    # officiels/plugins -> défauts, rétro-compat totale.
+    learned: bool = False
+    uses: int = 0
+    created_at: str = ""
+    updated_at: str = ""
 
 
-def _parse_skill_md(text: str, fallback_name: str) -> tuple[str, str, str]:
-    """Parse frontmatter (name/description) + corps. Renvoie (name, description, body)."""
+def _parse_skill_md(text: str, fallback_name: str) -> tuple[str, str, str, dict]:
+    """Parse frontmatter + corps. Renvoie (name, description, body, meta) où meta porte les
+    champs optionnels des skills appris (learned/uses/created_at/updated_at) avec défauts."""
     name, description, body = fallback_name, "", text
+    meta = {"learned": False, "uses": 0, "created_at": "", "updated_at": ""}
     if text.startswith("---"):
         end = text.find("\n---", 3)
         if end != -1:
             front = text[3:end]
             body = text[end + 4 :].lstrip("\r\n")
             for line in front.splitlines():
-                if ":" in line:
-                    key, _, val = line.partition(":")
-                    key, val = key.strip().lower(), val.strip()
-                    if key == "name" and val:
-                        name = val
-                    elif key == "description":
-                        description = val
-    return name, description, body
+                if ":" not in line:
+                    continue
+                key, _, val = line.partition(":")
+                key, val = key.strip().lower(), val.strip()
+                if key == "name" and val:
+                    name = val
+                elif key == "description":
+                    description = val
+                elif key == "learned":
+                    meta["learned"] = val.lower() in ("true", "1", "yes", "oui")
+                elif key == "uses":
+                    meta["uses"] = int(val) if val.isdigit() else 0
+                elif key in ("created_at", "updated_at"):
+                    meta[key] = val
+    return name, description, body, meta
 
 
 def _load_skill_file(md: Path, namespace: str | None) -> Skill | None:
@@ -44,10 +59,12 @@ def _load_skill_file(md: Path, namespace: str | None) -> Skill | None:
         text = md.read_text(encoding="utf-8")
     except OSError:
         return None
-    name, desc, body = _parse_skill_md(text, md.parent.name)
+    name, desc, body, meta = _parse_skill_md(text, md.parent.name)
     if namespace:
         name = f"{namespace}:{name}"
-    return Skill(name=name, description=desc, body=body, base_dir=str(md.parent))
+    return Skill(
+        name=name, description=desc, body=body, base_dir=str(md.parent), **meta
+    )
 
 
 def _scan_dir(skills_dir: str | Path, namespace: str | None) -> list[Skill]:
@@ -65,11 +82,15 @@ def _scan_dir(skills_dir: str | Path, namespace: str | None) -> list[Skill]:
 
 
 def collect_skills(
-    local_dir: str | Path, plugins_root_path: str | Path | None = None
+    local_dir: str | Path,
+    plugins_root_path: str | Path | None = None,
+    learned_dir: str | Path | None = None,
 ) -> list[Skill]:
-    """Agrège les skills locaux (non namespacés) + ceux des plugins installés
-    (namespacés `plugin:nom`)."""
+    """Agrège les skills locaux (non namespacés) + AUTO-APPRIS (namespace `learned`) + ceux
+    des plugins installés (namespacés `plugin:nom`)."""
     skills = _scan_dir(local_dir, namespace=None)
+    if learned_dir is not None:
+        skills += _scan_dir(learned_dir, namespace="learned")
     if plugins_root_path is not None:
         from loom.extend.plugins import discover_plugins
 
@@ -95,7 +116,8 @@ def render_catalog(skills: list[Skill]) -> str:
         desc = " ".join(s.description.split())
         if len(desc) > 220:
             desc = desc[:217] + "…"
-        lines.append(f"- {s.name} : {desc}")
+        mark = " ⟳" if getattr(s, "learned", False) else ""
+        lines.append(f"- {s.name}{mark} : {desc}")
     return "\n".join(lines)
 
 
