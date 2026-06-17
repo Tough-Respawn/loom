@@ -23,5 +23,7 @@ node_modules/
 loom/llama-swap.yaml
 # Runtime data
 loom/runtime/data/
+# Sorties des runs d'éval (transcripts, report.json, logs) — pas le harnais lui-même
+evals/out/
 # Claude Code config
 .claude/
