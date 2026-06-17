@@ -53,7 +53,9 @@ def validate_reflect_json(obj) -> ReflectResult | None:
         name = str(s.get("name", "")).strip().lower()
         body = str(s.get("body", "")).strip()
         desc = str(s.get("description", "")).strip()
-        if _NAME_RE.match(name) and len(body) >= _MIN_SKILL_BODY:
+        # Description OBLIGATOIRE : c'est elle qui s'affiche au catalogue et permet au modèle
+        # de RETROUVER le skill. Sans elle, le skill est invisible/indéclenchable -> on rejette.
+        if _NAME_RE.match(name) and len(body) >= _MIN_SKILL_BODY and len(desc) >= 12:
             res.new_skills.append({"name": name, "description": desc, "body": body})
     for s in obj.get("improved_skills") or []:
         if not isinstance(s, dict):

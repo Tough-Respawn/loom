@@ -28,3 +28,5 @@ evals/out/
 evals/out_review/
 # Claude Code config
 .claude/
+# Skills auto-appris (reflect) : artefacts runtime par machine, comme loom/data
+loom/skills_learned/
