@@ -72,6 +72,7 @@ def build_registry(
     skills_dir: str | None = None,
     plugins_root: str | None = None,
     memory=None,
+    learned_skills_dir: str | None = None,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
@@ -190,7 +191,13 @@ def build_registry(
         from loom.extend.skills import collect_skills
         from loom.tools.skills import make_use_skill
 
-        specs.append(make_use_skill(lambda: collect_skills(skills_dir, plugins_root)))
+        specs.append(
+            make_use_skill(
+                lambda: collect_skills(
+                    skills_dir, plugins_root, learned_dir=learned_skills_dir
+                )
+            )
+        )
     if plugins_root is not None:
         from loom.tools.plugins import (
             make_add_marketplace,
