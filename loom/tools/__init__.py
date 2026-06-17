@@ -33,6 +33,9 @@ __all__ = [
 # (anti-récursion) et manage_todos (le plan reste celui du fil principal). Le sous-agent
 # peut écrire/exécuter — un ouvrier en lecture seule ne sert à rien ; la deny-list dure
 # de run_shell et la politique de permission s'appliquent comme au fil principal.
+# SYNCHRO : cette liste est décrite dans prompts/subagent.system.md (section TES OUTILS).
+# Si tu ajoutes/retires un outil ici, mets ce prompt à jour — sinon le sous-agent ignore
+# un outil qu'il a (ou en invoque un qu'il n'a pas).
 _SUBAGENT_TOOLS = [
     "find_files",
     "search_text",
