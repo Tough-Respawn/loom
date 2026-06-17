@@ -42,6 +42,19 @@ class ChatConfig:
     # modèle de la session active (jamais un autre -> pas de swap llama-swap intempestif).
     keepwarm_enabled: bool = True
     keepwarm_interval: int = 150
+    # Mémoire/identité : budget du bloc identité always-on injecté au prompt (SOUL/USER/MEMORY).
+    identity_max_tokens: int = 400
+
+
+@dataclass
+class MemoryConfig:
+    """Config de la mémoire (design §9). v1 : provider 'local' uniquement (offline)."""
+
+    provider: str = "local"
+    db_path: str = "loom/data/memory.db"
+    soul_path: str = "loom/data/SOUL.md"
+    user_path: str = "loom/data/USER.md"
+    memory_md_path: str = "loom/data/MEMORY.md"
 
 
 @dataclass
@@ -79,6 +92,7 @@ class RuntimeConfig:
     override_n_gpu_layers: int | None
     override_threads: int | None
     chat: ChatConfig
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     # Slots de llama-server (--parallel). Loom est mono-flux -> 1 (cf. loom.config.toml).
     n_parallel: int = 1
     # Marge VRAM (Mo) réservée hors couches offloadées : couvre le cache KV + les buffers
@@ -193,6 +207,15 @@ def load_config(
         web_search=_parse_web_search(ws),
         keepwarm_enabled=bool(ch.get("keepwarm_enabled", True)),
         keepwarm_interval=int(ch.get("keepwarm_interval", 150)),
+        identity_max_tokens=int(ch.get("identity_max_tokens", 400)),
+    )
+    me = data.get("memory", {})
+    memory = MemoryConfig(
+        provider=me.get("provider", "local"),
+        db_path=me.get("db_path", "loom/data/memory.db"),
+        soul_path=me.get("soul_path", "loom/data/SOUL.md"),
+        user_path=me.get("user_path", "loom/data/USER.md"),
+        memory_md_path=me.get("memory_md_path", "loom/data/MEMORY.md"),
     )
     # Découverte par dossier (loom/models/<id>/model.toml) ; repli sur l'ancien bloc
     # [[models]] de la config si aucun dossier-modèle n'est présent (transition douce).
@@ -216,5 +239,6 @@ def load_config(
         override_n_gpu_layers=o.get("n_gpu_layers"),
         override_threads=o.get("threads"),
         chat=chat,
+        memory=memory,
         permissions=parse_permissions(data),
     )
