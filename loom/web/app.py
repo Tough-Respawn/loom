@@ -424,6 +424,18 @@ def create_app(
                     "Si on te demande quel modèle/moteur tu utilises, réponds-le "
                     "honnêtement et directement (ce nom), sans esquiver."
                 )
+            # Dossier de travail courant : le modèle l'IGNORE sinon et le devine en sondant
+            # (git rev-parse à l'aveugle, list_dir…) -> tours gaspillés. On le lui dit, avec
+            # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git.
+            _ws = _session().workspace
+            system_prompt += (
+                f"\n\n# Dossier de travail courant\nTes commandes (run_shell) tournent dans "
+                f"`{_ws}` et les chemins relatifs s'y résolvent — n'y répète pas le nom de ce "
+                "dossier dans tes chemins. Si une commande git échoue par « not a git "
+                "repository », c'est que CE dossier n'est pas un repo : fais UN list_dir pour "
+                "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
+                "même commande à l'identique."
+            )
             # Identité always-on (SOUL/USER/MEMORY) : injectée dans le SYSTEM prompt, donc
             # elle survit toujours à la microcompaction/summarization (qui ne touchent que
             # l'historique). Bornée par identity_max_tokens. Cf. design §5.6.
