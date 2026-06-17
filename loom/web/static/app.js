@@ -103,23 +103,38 @@ function Think({ it }) {
   </details>`;
 }
 
-function ToolPill({ it }) {
+function IORow({ tag, text }) {
+  // Une ligne IN ou OUT : aperçu 1 ligne, clic pour déplier le bloc complet.
   const [open, setOpen] = useState(false);
-  const hasDetail = !!it.detail;
-  const status = it.pending
-    ? (it.chars ? "… " + it.chars + " car." : "…")
-    : (it.ok ? "✓ " : "✕ ") + (it.preview || "").split("\n")[0];
-  return html`<div class=${"tool-chip" + (it.pending ? "" : it.ok ? " ok" : " ko") + (hasDetail ? " has-detail" : "")}>
-    <div class="tool-row" onClick=${() => hasDetail && setOpen(!open)}>
-      <span class="tool-main">${it.name || "outil"}${it.cmd ? " → " + it.cmd : it.path ? " → " + it.path : ""}</span>
-      <span class="tool-status">${status}</span>
-      <span class="tool-caret">${hasDetail ? (open ? "▾" : "▸") : ""}</span>
+  const full = text == null ? "" : String(text);
+  if (!full) return null;
+  const first = full.split("\n")[0];
+  const multi = full.indexOf("\n") >= 0 || first.length > 90;
+  return html`<div class="tool-io">
+    <div class="tool-io-row" onClick=${() => multi && setOpen(!open)}>
+      <span class=${"io-tag io-" + tag.toLowerCase()}>${tag}</span>
+      <span class="io-line">${open ? "" : first}</span>
+      <span class="tool-caret">${multi ? (open ? "▾" : "▸") : ""}</span>
     </div>
-    ${it.stream && !open
+    ${open ? html`<pre class="tool-io-body">${full}</pre>` : null}
+  </div>`;
+}
+
+function ToolPill({ it }) {
+  // Vue façon IN/OUT : en-tête = nom du tool + état ; puis la commande/entrée (IN) et la
+  // sortie (OUT), chacune dépliable pour voir tout, bloc par bloc.
+  const inText = it.in_full != null ? it.in_full : it.cmd || it.path || "";
+  const outText = it.out_full != null ? it.out_full : it.preview || "";
+  const status = it.pending ? (it.chars ? it.chars + " car." : "…") : it.ok ? "✓" : "✕";
+  return html`<div class=${"tool-chip" + (it.pending ? "" : it.ok ? " ok" : " ko")}>
+    <div class="tool-head">
+      <span class="tool-name">${it.name || "outil"}</span>
+      <span class="tool-status">${status}</span>
+    </div>
+    <${IORow} tag="IN" text=${inText} />
+    ${it.pending ? null : html`<${IORow} tag="OUT" text=${outText} />`}
+    ${it.stream && it.pending
       ? html`<pre class="tool-stream">${it.stream.slice(-1400)}</pre>`
-      : null}
-    ${hasDetail && open
-      ? html`<pre class="tool-detail">${it.detail}</pre>`
       : null}
   </div>`;
 }
@@ -363,7 +378,7 @@ async function sendChat(text, image) {
       case "tool_result": {
         const tid = "tool:" + (evt.id || evt.name);
         if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name });
-        patch(tid, { name: evt.name, path: evt.path, cmd: evt.cmd, ok: evt.ok, preview: evt.preview, detail: evt.detail, pending: false });
+        patch(tid, { name: evt.name, path: evt.path, cmd: evt.cmd, ok: evt.ok, preview: evt.preview, detail: evt.detail, in_full: evt.in_full, out_full: evt.out_full, pending: false });
         break;
       }
       case "phase":
