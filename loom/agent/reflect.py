@@ -60,7 +60,14 @@ def validate_reflect_json(obj) -> ReflectResult | None:
             continue
         name = str(s.get("name", "")).strip()
         body = str(s.get("body", "")).strip()
-        if name.startswith("learned:") and len(body) >= _MIN_SKILL_BODY:
+        base = name.split(":", 1)[1] if ":" in name else ""
+        # MÊME validation kebab-case que new_skills sur la base : sans elle, un nom
+        # « learned:../../x » s'échapperait du dossier à l'écriture (traversée de chemin).
+        if (
+            name.startswith("learned:")
+            and _NAME_RE.match(base)
+            and len(body) >= _MIN_SKILL_BODY
+        ):
             res.improved_skills.append({"name": name, "body": body})
     for e in obj.get("episodes") or []:
         text = (e.get("text", "") if isinstance(e, dict) else str(e)).strip()
@@ -86,7 +93,15 @@ def _write_learned_skill(
     learned_dir: str, name: str, description: str, body: str, *, improve: bool
 ) -> None:
     base = name.split(":", 1)[1] if name.startswith("learned:") else name
-    d = Path(learned_dir) / base
+    # Défense en profondeur (traversée de chemin) : nom borné kebab-case ET dossier résolu
+    # confiné sous learned_dir. Le JSON de reflect vient du modèle (trajectoire potentiellement
+    # influencée par du contenu ingéré) -> on ne fait JAMAIS confiance au nom pour un chemin.
+    if not _NAME_RE.match(base):
+        return
+    root = Path(learned_dir).resolve()
+    d = (root / base).resolve()
+    if d != root and root not in d.parents:
+        return
     d.mkdir(parents=True, exist_ok=True)
     md = d / "SKILL.md"
     uses, created = 0, _now()
