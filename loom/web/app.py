@@ -185,6 +185,8 @@ def create_app(
     plugins_dir="loom/plugins",
     keepwarm_enabled=True,
     keepwarm_interval=150.0,
+    identity_paths=None,
+    identity_max_tokens=400,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -395,6 +397,20 @@ def create_app(
                     "Si on te demande quel modèle/moteur tu utilises, réponds-le "
                     "honnêtement et directement (ce nom), sans esquiver."
                 )
+            # Identité always-on (SOUL/USER/MEMORY) : injectée dans le SYSTEM prompt, donc
+            # elle survit toujours à la microcompaction/summarization (qui ne touchent que
+            # l'historique). Bornée par identity_max_tokens. Cf. design §5.6.
+            if identity_paths:
+                from loom.memory.identity import identity_block
+
+                _idblk = identity_block(
+                    identity_paths["soul_path"],
+                    identity_paths["user_path"],
+                    identity_paths["memory_md_path"],
+                    max_tokens=identity_max_tokens,
+                )
+                if _idblk:
+                    system_prompt += f"\n\n{_idblk}"
         except ValueError as exc:
             chat_lock.release()
             return Response(str(exc), status=400)
