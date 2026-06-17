@@ -592,7 +592,7 @@ def create_app(
                     try:
                         from loom.agent.reflect import reflect as _reflect
 
-                        _reflect(
+                        _res = _reflect(
                             conv.to_messages(),
                             actions,
                             answer,
@@ -602,8 +602,24 @@ def create_app(
                             paths=reflect_stores.paths,
                             learned_dir=reflect_stores.learned_dir,
                         )
-                    except Exception:  # noqa: BLE001 - apprentissage best-effort, jamais bloquant
-                        pass
+                        # Trace VISIBLE (console/serve.log) : sinon l'apprentissage est une
+                        # boîte noire — on ne sait pas s'il a tourné ni ce qu'il a retenu.
+                        if _res is None:
+                            print(
+                                "[reflect] rien retenu (tour peu généralisable)",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"[reflect] retenu : {len(_res.new_skills)} skill(s), "
+                                f"{len(_res.improved_skills)} amélioré(s), "
+                                f"{len(_res.episodes)} épisode(s), "
+                                f"{len(_res.memory_updates) + len(_res.user_updates) + len(_res.soul_updates)} "
+                                "note(s) identité",
+                                flush=True,
+                            )
+                    except Exception as _e:  # noqa: BLE001 - best-effort, jamais bloquant
+                        print(f"[reflect] erreur ignorée : {_e}", flush=True)
                 # Auto-titre : à la 1re vraie réponse, nommer la session (le modèle infère
                 # le sujet) au lieu de la laisser « Nouvelle session ».
                 _sess = _session()
