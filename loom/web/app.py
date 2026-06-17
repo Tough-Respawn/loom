@@ -30,10 +30,15 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PATH_RE = re.compile(r"""(?:[A-Za-z]:[\\/]|[\\/])[^\s"'`<>|*?]*""")
 
 
-def _detect_workspace(message: str) -> str | None:
+def _detect_workspace(message: str, root: str | None = None) -> str | None:
     """Renvoie le dossier EXISTANT le plus spécifique cité dans `message` (résolu absolu),
     ou None. Un fichier existant -> son dossier parent. N'adopte QUE du réel (isdir/isfile),
-    donc un chemin de référence faux n'a aucun effet."""
+    donc un chemin de référence faux n'a aucun effet.
+
+    Si `root` est fourni, on accepte aussi un PROJET cité par son seul NOM quand c'est un
+    sous-dossier direct de `root` (ex. « ... pour energy-data-platform » sans le chemin
+    complet). Match EXACT sur un sous-dossier réel -> pas de faux positif sur un mot courant.
+    """
     found: list[str] = []
     for raw in _PATH_RE.findall(message):
         p = raw.rstrip(".,;:!?)]}»\"'`").strip()
@@ -46,6 +51,19 @@ def _detect_workspace(message: str) -> str | None:
                 found.append(os.path.dirname(p))
         except OSError:
             continue
+    if root:
+        try:
+            subdirs = {
+                e.name.lower(): os.path.join(root, e.name)
+                for e in os.scandir(root)
+                if e.is_dir()
+            }
+        except OSError:
+            subdirs = {}
+        for tok in re.findall(r"[A-Za-z0-9][\w.-]{2,}", message):
+            hit = subdirs.get(tok.lower())
+            if hit:
+                found.append(hit)
     if not found:
         return None
     best = max(found, key=len)  # le chemin le plus long = le plus spécifique
@@ -373,7 +391,7 @@ def create_app(
         # la session l'adopte avant le tour -> run_shell tourne dedans et les chemins
         # relatifs s'y résolvent, sans que l'utilisateur ait à pointer le dossier dans l'UI.
         adopted_ws = None
-        detected = _detect_workspace(message)
+        detected = _detect_workspace(message, workspace_dir)
         if detected:
             sess = _session()
             if detected != sess.workspace:
