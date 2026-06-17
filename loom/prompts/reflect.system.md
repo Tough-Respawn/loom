@@ -11,10 +11,15 @@ CRITÈRES DE RÉTENTION (n'écris que ce qui les satisfait) :
 
 Ne propose un skill que pour une PROCÉDURE réutilisable et non triviale (pas pour réinventer un outil existant comme read_file ou run_shell).
 
-Réponds EXCLUSIVEMENT par un objet JSON sur ce schéma (toutes les clés présentes, listes éventuellement vides) :
+Pour un SKILL (new_skills), trois champs, tous remplis pour de vrai (ne recopie aucun gabarit) :
+- "name" : kebab-case court et parlant (ex. générer-changelog-git).
+- "description" : OBLIGATOIRE, une phrase « Se déclenche quand … » — c'est ce qui s'affiche au catalogue et permet de RETROUVER le skill. JAMAIS vide, ce n'est pas le corps.
+- "body" : la procédure RÉUTILISABLE, généralisable à tout repo/cas — un vrai titre (pas « # Titre »), les étapes/commandes exactes, ZÉRO chemin absolu d'un repo précis (paramètre-le).
+
+Réponds EXCLUSIVEMENT par un objet JSON (toutes les clés présentes, listes vides si rien) :
 {
-  "new_skills":      [{"name": "kebab-case", "description": "…", "body": "# Titre\n…instructions…"}],
-  "improved_skills": [{"name": "learned:nom-existant", "body": "# Titre\n…corps réécrit…"}],
+  "new_skills":      [{"name": "...", "description": "Se déclenche quand ...", "body": "# <vrai titre>\n<étapes et commandes généralisables>"}],
+  "improved_skills": [{"name": "learned:<nom-existant>", "body": "# <vrai titre>\n<corps réécrit, généralisable>"}],
   "episodes":        [{"text": "leçon/observation dense, autonome"}],
   "memory_updates":  ["fait durable général (convention, environnement, consigne) → MEMORY.md"],
   "user_updates":    ["fait stable sur l'utilisateur (préférence, façon de bosser) → USER.md"],
