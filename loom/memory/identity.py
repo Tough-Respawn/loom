@@ -12,17 +12,34 @@ ni modèle -> testable en isolation.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # ~4 caractères par token (même heuristique que loom/agent/context.py).
 _CHARS_PER_TOKEN = 4
 
+# Cache mémoire {path: (mtime, contenu)} : on ne RELIT le disque que si le fichier a changé.
+# Évite 3 lectures par tour pour rien, tout en gardant l'édition à chaud (un write -> mtime
+# bouge -> relu au tour suivant, sans redémarrage). Une écriture via append_unique invalide
+# l'entrée explicitement.
+_cache: dict[str, tuple[float, str]] = {}
+
 
 def read_md(path: str) -> str:
     try:
-        return Path(path).read_text(encoding="utf-8").strip()
+        mtime = os.path.getmtime(path)
+    except OSError:
+        _cache.pop(path, None)
+        return ""
+    hit = _cache.get(path)
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
+    try:
+        content = Path(path).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+    _cache[path] = (mtime, content)
+    return content
 
 
 def append_unique(path: str, line: str) -> None:
@@ -38,6 +55,7 @@ def append_unique(path: str, line: str) -> None:
         return
     body = (existing + "\n" + line).strip() if existing else line
     p.write_text(body + "\n", encoding="utf-8")
+    _cache.pop(path, None)  # force la relecture (mtime Windows parfois trop grossier)
 
 
 def identity_block(
