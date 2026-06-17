@@ -79,17 +79,25 @@
                  padding: 3px 10px; transition: border-color .15s; }
     .tool-chip.ko { color: #f0c2a8; background: #20140f; border-color: #5a3a2a; }
     .tool-chip.rev { color: #f0d9a0; background: #1f1a10; border-color: #5a4520; }
-    .tool-row { display: flex; align-items: center; gap: 8px; }
-    .tool-chip.has-detail .tool-row { cursor: pointer; }
-    .tool-chip.has-detail:hover { border-color: #2f6f4f; }
-    .tool-chip .tool-main { font-weight: 600; white-space: nowrap; }
-    .tool-chip .tool-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-                              opacity: .9; }
-    .tool-chip .tool-caret { margin-left: auto; color: #6f8f7f; }
-    .tool-detail { margin: 6px 0 1px; padding: 8px 10px; background: #0a120d;
-                   border: 1px solid #1d3a2c; border-radius: 6px; max-height: 320px;
-                   overflow: auto; white-space: pre-wrap; font-family: ui-monospace, monospace;
-                   font-size: 11px; color: #b8d6c8; }
+    .tool-head { display: flex; align-items: center; gap: 8px; }
+    .tool-chip .tool-name { font-weight: 600; white-space: nowrap; }
+    .tool-chip .tool-status { margin-left: auto; opacity: .9; }
+    .tool-chip .tool-caret { color: #6f8f7f; }
+    /* Lignes IN / OUT : aperçu cliquable, dépliable bloc par bloc */
+    .tool-io { margin-top: 4px; }
+    .tool-io-row { display: flex; align-items: center; gap: 8px; }
+    .tool-io-row:hover .io-line { color: #cfeede; }
+    .io-tag { font-weight: 700; font-size: 10px; letter-spacing: .5px; padding: 1px 6px;
+              border-radius: 4px; background: #0a120d; border: 1px solid #1d3a2c;
+              color: #7fae97; cursor: pointer; }
+    .io-out { color: #9ab0d8; border-color: #2a3a5a; }
+    .io-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; opacity: .85; font-family: ui-monospace, monospace;
+               cursor: pointer; }
+    .tool-io-body { margin: 4px 0 1px; padding: 8px 10px; background: #0a120d;
+                    border: 1px solid #1d3a2c; border-radius: 6px; max-height: 360px;
+                    overflow: auto; white-space: pre-wrap; font-family: ui-monospace, monospace;
+                    font-size: 11px; color: #b8d6c8; }
     /* Flux live du codeur (sortie du fichier en cours de génération) */
     .tool-stream { margin: 6px 0 1px; padding: 8px 10px; background: #0a120d;
                    border: 1px dashed #2a4a3a; border-radius: 6px; max-height: 200px;

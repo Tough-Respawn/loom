@@ -907,6 +907,22 @@ class LoomClient:
                     detail = f"- {args.get('old_string', '')}\n+ {args.get('new_string', '')}"
                 else:
                     detail = tool_content
+                # Vue IN/OUT de la pastille : in_full = ce que l'outil a REÇU (commande shell,
+                # contenu écrit, diff, ou chemin/args), out_full = ce qu'il a RENVOYÉ. La preview
+                # (1 ligne) reste pour l'état replié ; detail conservé pour rétro-compat.
+                if name == "run_shell":
+                    in_full = args.get("command") or ""
+                elif name in ("write_file", "append_file"):
+                    in_full = f"{args.get('path', '')}\n{args.get('content', '')}"
+                elif name == "edit_file":
+                    in_full = (
+                        f"{args.get('path', '')}\n- {args.get('old_string', '')}"
+                        f"\n+ {args.get('new_string', '')}"
+                    )
+                else:
+                    import json as _json
+
+                    in_full = args.get("path") or _json.dumps(args, ensure_ascii=False)
                 yield (
                     "tool_result",
                     {
@@ -919,6 +935,8 @@ class LoomClient:
                         # pastille (sinon on ne voit que le résultat, pas ce qui a tourné).
                         "cmd": args.get("command"),
                         "detail": detail[:4000] if detail else None,
+                        "in_full": str(in_full)[:8000],
+                        "out_full": str(tool_content)[:8000],
                     },
                 )
                 if name in _SERIAL_WRITE:
