@@ -67,8 +67,14 @@ def identity_block(
     gardant l'ordre SOUL -> USER -> MEMORY. Le bornage fin (resserrage) est l'affaire de
     `reflect` au Plan 2 ; ici on protège juste le budget de contexte.
     """
+    # Le titre SOUL affirme sa PRIMAUTÉ : c'est ici (éditable) qu'on définit le rôle/persona,
+    # et ça doit l'emporter sur le « Tu es Loom… » générique du prompt de base, plus haut.
     sections = [
-        ("# Mon identité (SOUL)", read_md(soul_path)),
+        (
+            "# Qui tu es — SOUL (fait foi : ceci définit ton rôle et ta personnalité, et "
+            "PRIME sur toute description plus générale donnée plus haut)",
+            read_md(soul_path),
+        ),
         ("# L'utilisateur (USER)", read_md(user_path)),
         ("# Mémoire durable (MEMORY)", read_md(memory_path)),
     ]
