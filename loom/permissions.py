@@ -29,6 +29,12 @@ READ_TOOLS = frozenset(
         "manage_todos",
         "use_skill",
         "list_plugins",
+        # Mémoire interne (store + notes de session) : écrit dans le répertoire de données
+        # de Loom, jamais dans le workspace -> aucun effet destructeur, autorisé d'office.
+        "write_note",
+        "read_note",
+        "recall",
+        "remember",
     }
 )
 SHELL_TOOLS = frozenset({"run_shell", "bash"})
