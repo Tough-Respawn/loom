@@ -44,6 +44,10 @@ class ChatConfig:
     keepwarm_interval: int = 150
     # Mémoire/identité : budget du bloc identité always-on injecté au prompt (SOUL/USER/MEMORY).
     identity_max_tokens: int = 400
+    # Apprentissage (boucle fermée) : skills auto-appris + étape reflect post-tour.
+    learned_skills_dir: str = "loom/skills_learned"
+    reflect_enabled: bool = True
+    reflect_min_actions: int = 1
 
 
 @dataclass
@@ -55,6 +59,8 @@ class MemoryConfig:
     soul_path: str = "loom/data/SOUL.md"
     user_path: str = "loom/data/USER.md"
     memory_md_path: str = "loom/data/MEMORY.md"
+    recall_summarize: bool = True
+    recall_summarize_threshold: int = 5
 
 
 @dataclass
@@ -208,6 +214,9 @@ def load_config(
         keepwarm_enabled=bool(ch.get("keepwarm_enabled", True)),
         keepwarm_interval=int(ch.get("keepwarm_interval", 150)),
         identity_max_tokens=int(ch.get("identity_max_tokens", 400)),
+        learned_skills_dir=ch.get("learned_skills_dir", "loom/skills_learned"),
+        reflect_enabled=bool(ch.get("reflect_enabled", True)),
+        reflect_min_actions=int(ch.get("reflect_min_actions", 1)),
     )
     me = data.get("memory", {})
     memory = MemoryConfig(
@@ -216,6 +225,8 @@ def load_config(
         soul_path=me.get("soul_path", "loom/data/SOUL.md"),
         user_path=me.get("user_path", "loom/data/USER.md"),
         memory_md_path=me.get("memory_md_path", "loom/data/MEMORY.md"),
+        recall_summarize=bool(me.get("recall_summarize", True)),
+        recall_summarize_threshold=int(me.get("recall_summarize_threshold", 5)),
     )
     # Découverte par dossier (loom/models/<id>/model.toml) ; repli sur l'ancien bloc
     # [[models]] de la config si aucun dossier-modèle n'est présent (transition douce).
