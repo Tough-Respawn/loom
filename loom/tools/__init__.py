@@ -71,6 +71,7 @@ def build_registry(
     active_model: str | None = None,
     skills_dir: str | None = None,
     plugins_root: str | None = None,
+    memory=None,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
@@ -147,6 +148,19 @@ def build_registry(
             specs.append(make_write_note(conversation))
         if "read_note" in enabled:
             specs.append(make_read_note(conversation))
+    if memory is not None:
+        from loom.tools.memory import make_recall, make_remember
+
+        if "recall" in enabled:
+            specs.append(
+                make_recall(
+                    memory.provider,
+                    summarize=getattr(memory, "summarize", None),
+                    threshold=getattr(memory, "threshold", 5),
+                )
+            )
+        if "remember" in enabled:
+            specs.append(make_remember(memory.provider, memory.paths))
     if "dispatch_agent" in enabled and client is not None:
         from loom.prompts import SUBAGENT_SYSTEM
         from loom.tools.agent import make_dispatch_agent
