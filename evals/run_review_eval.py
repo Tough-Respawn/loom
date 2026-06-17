@@ -60,7 +60,7 @@ def _git_show(rel: str) -> str:
 
 
 def _skill_body(text: str) -> str:
-    _name, _desc, body = _parse_skill_md(text, "code-review")
+    _name, _desc, body, _meta = _parse_skill_md(text, "code-review")
     return body
 
 
