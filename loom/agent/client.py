@@ -351,9 +351,11 @@ def _salvage_tool_calls(text: str, reasoning: str) -> list[dict]:
 # consigner l'essentiel AVANT que le résultat ne soit effacé, puis relire sa note (durable)
 # au lieu du fichier entier.
 _CLEARED_TOOL = (
-    "[résultat d'outil ancien retiré pour garder de la place dans le contexte. "
-    "Ne re-lis pas le fichier en boucle : si une info t'est encore utile plus tard, "
-    "consigne-la avec write_note pendant que tu l'as, puis relis ta note (read_note).]"
+    "[résultat d'outil ancien allégé pour tenir dans le contexte — son contenu n'est plus "
+    "ici. NE refais PAS le travail déjà fait (ne re-liste pas, ne re-lis pas en boucle) : "
+    "reprends depuis tes NOTES (read_note) et ton PLAN (manage_todos). Et désormais, dès "
+    "qu'un résultat te servira à une étape ULTÉRIEURE, consigne-le avec write_note PENDANT "
+    "que tu l'as encore.]"
 )
 
 
