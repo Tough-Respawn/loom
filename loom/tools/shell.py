@@ -140,16 +140,26 @@ def make_run_shell(
                 "erreur, ou un test des fonctions de logique), ou laisse l'utilisateur "
                 "l'ouvrir lui-même. Pour une page web, utilise check_page."
             )
-        stdout = stdout or ""
-        stderr = stderr or ""
-        body = _truncate(
-            f"exit={proc.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}", max_output
-        )
-        # Statut fiable : un exit non-nul = ÉCHEC. On rejoint la convention "erreur:"
-        # des autres outils pour que la boucle calcule ok=False (sinon le reviewer
-        # croit qu'une commande de test ratée a réussi). Le corps reste exploitable.
+        stdout = (stdout or "").strip("\r\n")
+        stderr = (stderr or "").strip("\r\n")
+        # Sortie D'ABORD (comme un vrai terminal) : le modèle ET la pastille doivent voir CE
+        # QUI EST SORTI, pas un « exit=0 » opaque. stderr étiqueté seulement s'il y a du
+        # contenu. En SUCCÈS, le corps = la sortie brute (rien à parser).
+        if stdout and stderr:
+            body = f"{stdout}\n--- stderr ---\n{stderr}"
+        elif stderr:
+            body = stderr
+        else:
+            body = stdout or "(aucune sortie)"
+        body = _truncate(body, max_output)
+        # Statut fiable : un exit non-nul = ÉCHEC. On garde le préfixe "erreur:" (la boucle
+        # en déduit ok=False) MAIS on met la vraie erreur sur la 1re ligne (stderr/stdout),
+        # pas un « exit 1 » opaque -> l'aperçu de la pastille montre ce qui a foiré.
         if proc.returncode != 0:
-            return f"erreur: commande échouée (exit {proc.returncode}).\n{body}"
+            head = (stderr or stdout or "").strip().split("\n")[0][
+                :200
+            ] or "commande échouée"
+            return f"erreur: exit {proc.returncode} — {head}\n{body}"
         return body
 
     return ToolSpec(
