@@ -44,7 +44,37 @@ def build_app(cfg):
         "user_path": cfg.memory.user_path,
         "soul_path": cfg.memory.soul_path,
     }
+
+    def _recall_summarizer(query, hits):
+        # Condense les hits FTS5 en une note dense (modèle local) : un recall brut noierait
+        # un petit modèle. Câblé seulement si cfg.memory.recall_summarize (design §6.6).
+        joined = "\n".join(f"- {h.text}" for h in hits)
+        prompt = (
+            f"Question : {query}\n\nSouvenirs bruts :\n{joined}\n\n"
+            "Condense ces souvenirs en une synthèse dense et fidèle (3-5 lignes max), "
+            "centrée sur la question. Cite les faits utiles, ignore le bruit."
+        )
+        out = ""
+        for kind, chunk in client.stream_chat(
+            [{"role": "user", "content": prompt}],
+            "Tu condenses des souvenirs en une note dense.",
+            max_tokens=300,
+            model=cfg.default_model,
+            thinking=False,
+        ):
+            if kind == "content":
+                out += chunk
+        return "Synthèse mémoire :\n" + out.strip()
+
     memory = SimpleNamespace(provider=mem_provider, paths=mem_paths)
+    if cfg.memory.recall_summarize:
+        memory.summarize = _recall_summarizer
+        memory.threshold = cfg.memory.recall_summarize_threshold
+    reflect_stores = SimpleNamespace(
+        provider=mem_provider,
+        paths=mem_paths,
+        learned_dir=cfg.chat.learned_skills_dir,
+    )
     budget = effective_context_budget(
         cfg.chat.context_token_budget, cfg.context, cfg.chat.max_tokens
     )
@@ -68,6 +98,7 @@ def build_app(cfg):
             skills_dir=cfg.chat.skills_dir,
             plugins_root=plugins_dir,
             memory=memory,
+            learned_skills_dir=cfg.chat.learned_skills_dir,
         )
 
     # Amorce les outils de la conversation depuis la config au 1er lancement.
@@ -117,6 +148,11 @@ def build_app(cfg):
         keepwarm_interval=cfg.chat.keepwarm_interval,
         identity_paths=mem_paths,
         identity_max_tokens=cfg.chat.identity_max_tokens,
+        learned_skills_dir=cfg.chat.learned_skills_dir,
+        reflect_stores=reflect_stores,
+        reflect_enabled=cfg.chat.reflect_enabled,
+        reflect_min_actions=cfg.chat.reflect_min_actions,
+        reflect_model=cfg.default_model,
     )
     return app
 

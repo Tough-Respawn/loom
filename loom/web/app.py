@@ -187,6 +187,11 @@ def create_app(
     keepwarm_interval=150.0,
     identity_paths=None,
     identity_max_tokens=400,
+    learned_skills_dir=None,
+    reflect_stores=None,
+    reflect_enabled=False,
+    reflect_min_actions=1,
+    reflect_model=None,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -272,7 +277,9 @@ def create_app(
         active_id = sess.id
         return {
             "messages": conv.messages,
-            "skills": collect_skills(skills_dir, plugins_dir),
+            "skills": collect_skills(
+                skills_dir, plugins_dir, learned_dir=learned_skills_dir
+            ),
             "models": models,
             "current_model": conv.model,
             "thinking": conv.thinking,
@@ -383,7 +390,9 @@ def create_app(
             if context.summarize(conv, client, context_budget, keep_recent):
                 save()
 
-            skills = collect_skills(skills_dir, plugins_dir)
+            skills = collect_skills(
+                skills_dir, plugins_dir, learned_dir=learned_skills_dir
+            )
             catalog = render_catalog(skills)
             system_prompt = (
                 f"{conv.system_prompt}\n\n{catalog}" if catalog else conv.system_prompt
@@ -553,6 +562,30 @@ def create_app(
                     answer = "(le modèle a seulement réfléchi — augmente max_tokens)"
                     yield _sse("text", text=answer)
                 _persist()
+                # Apprentissage post-tour (HORS de la loop d'action) : ne s'exécute que si le
+                # tour a fait du vrai travail (>= reflect_min_actions). Toute défaillance est
+                # avalée — la réponse utilisateur est déjà rendue (design §6, §11).
+                if (
+                    reflect_enabled
+                    and reflect_stores is not None
+                    and saved
+                    and len(actions) >= reflect_min_actions
+                ):
+                    try:
+                        from loom.agent.reflect import reflect as _reflect
+
+                        _reflect(
+                            conv.to_messages(),
+                            actions,
+                            answer,
+                            client=client,
+                            model=conv.model or reflect_model,
+                            provider=reflect_stores.provider,
+                            paths=reflect_stores.paths,
+                            learned_dir=reflect_stores.learned_dir,
+                        )
+                    except Exception:  # noqa: BLE001 - apprentissage best-effort, jamais bloquant
+                        pass
                 # Auto-titre : à la 1re vraie réponse, nommer la session (le modèle infère
                 # le sujet) au lieu de la laisser « Nouvelle session ».
                 _sess = _session()
