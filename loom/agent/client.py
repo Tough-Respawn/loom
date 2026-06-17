@@ -152,8 +152,12 @@ def _debug_messages(model: str, messages: list[dict]) -> None:
         extra = ""
         if m.get("tool_calls"):
             extra = " +tool_calls=" + json.dumps(m["tool_calls"], ensure_ascii=False)
-        lines.append(f"  [{m.get('role')}] {_trunc((content or '') + extra, 1500)}")
-    _debug("REQUETE -> modele", "\n".join(lines), limit=20000)
+        # System prompt affiché EN ENTIER (on veut pouvoir l'inspecter : catalogue, dossier
+        # de travail, identité SOUL/USER/MEMORY) ; les autres messages (contenus de fichiers,
+        # sorties d'outils) restent bornés pour ne pas noyer le log.
+        cap = 40000 if m.get("role") == "system" else 1500
+        lines.append(f"  [{m.get('role')}] {_trunc((content or '') + extra, cap)}")
+    _debug("REQUETE -> modele", "\n".join(lines), limit=60000)
 
 
 def _sub_activity_line(kind: str, payload) -> str:
