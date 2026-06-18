@@ -21,7 +21,7 @@ from loom.agent.inline_image import (
 
 # Écritures à GROS contenu intégral : sérialisées (1/tour) pour qu'un batch de N ne
 # sature pas max_tokens et ne tronque pas les derniers (P1.1). On NE sérialise QUE
-# celles-ci : les éditions par bloc (edit_file/replace_lines) écrivent peu
+# celles-ci : les éditions par bloc (edit_file) écrivent peu
 # -> pas de risque d'overflow, et les laisser passer ensemble réduit le nombre de tours
 # d'un refactor multi-fichiers (cf. plafond max_iters).
 _SERIAL_WRITE = frozenset({"write_file", "append_file"})
@@ -485,7 +485,7 @@ def _intends_to_act(text: str, executed: bool) -> bool:
 #   A. il revendique un FICHIER (créé/contient) qui n'existe pas -> artefact inventé ;
 #   B. il rapporte un RÉSULTAT D'EXÉCUTION sans avoir lancé run_shell ni dispatch_agent.
 _WRITE_TOOLS = frozenset(
-    {"write_file", "append_file", "edit_file", "replace_lines"}
+    {"write_file", "append_file", "edit_file"}
 )
 # Outils dont un ECHEC = signal de BUG (execution / verification), par opposition aux erreurs
 # d'usage d'outil (ligne hors limite, etc.). Une cascade ici impose la methode debug.
