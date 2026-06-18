@@ -34,6 +34,9 @@ class ChatConfig:
     # tokens) : un seul gros fichier ne doit pas le faire déborder -> on lit par tranches
     # (start_line). ~40000 car ≈ 10k tokens.
     read_file_max_bytes: int = 40_000
+    # Timeout run_shell (s) : assez long pour npm install / next build (qui depassent 30s et se
+    # faisaient tuer -> cascade). La commande reste tuee au-dela (anti-hang).
+    shell_timeout: int = 180
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     # Keep-warm : sur Windows, un llama-server inactif se fait rogner son working-set par
     # l'OS (pages des experts MoE évincées) -> 1re requête après une pause = lente (cold
@@ -212,6 +215,7 @@ def load_config(
         tools_enabled=list(tl.get("enabled", [])),
         workspace_dir=tl.get("workspace_dir", "."),
         read_file_max_bytes=int(tl.get("read_file_max_bytes", 40_000)),
+        shell_timeout=int(tl.get("shell_timeout", 180)),
         web_search=_parse_web_search(ws),
         keepwarm_enabled=bool(ch.get("keepwarm_enabled", True)),
         keepwarm_interval=int(ch.get("keepwarm_interval", 150)),

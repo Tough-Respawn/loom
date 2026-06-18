@@ -73,6 +73,7 @@ def build_registry(
     plugins_root: str | None = None,
     memory=None,
     learned_skills_dir: str | None = None,
+    shell_timeout: int = 180,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
@@ -121,7 +122,7 @@ def build_registry(
 
         specs.append(make_format_code(workspace_dir))
     if "run_shell" in enabled:
-        specs.append(make_run_shell(workspace_dir))
+        specs.append(make_run_shell(workspace_dir, timeout=shell_timeout))
     if "check_page" in enabled:
         from loom.tools.browser import make_check_page
 
