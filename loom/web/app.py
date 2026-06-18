@@ -412,9 +412,27 @@ def create_app(
                 skills_dir, plugins_dir, learned_dir=learned_skills_dir
             )
             catalog = render_catalog(skills)
+            # Identité always-on (SOUL/USER/MEMORY) EN TÊTE : c'est la définition qui FAIT FOI
+            # de qui est Loom (rôle, persona, style). Le mode d'emploi opérationnel (outils,
+            # règles) de chat.system.md vient APRÈS et s'y conforme — on ne plante plus un
+            # cadrage générique d'abord pour le corriger 12k caractères plus loin. Always-on =>
+            # survit toujours à la microcompaction/summarization (qui ne touchent que
+            # l'historique). Bornée par identity_max_tokens. Cf. design §5.6.
+            _idblk = ""
+            if identity_paths:
+                from loom.memory.identity import identity_block
+
+                _idblk = identity_block(
+                    identity_paths["soul_path"],
+                    identity_paths["user_path"],
+                    identity_paths["memory_md_path"],
+                    max_tokens=identity_max_tokens,
+                )
             system_prompt = (
-                f"{conv.system_prompt}\n\n{catalog}" if catalog else conv.system_prompt
+                f"{_idblk}\n\n{conv.system_prompt}" if _idblk else conv.system_prompt
             )
+            if catalog:
+                system_prompt += f"\n\n{catalog}"
             # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
             # "Tu es Loom") -> il baratine quand on lui demande "quel modèle ?". On lui
             # injecte son modèle courant pour qu'il réponde honnêtement.
@@ -426,7 +444,8 @@ def create_app(
                 )
             # Dossier de travail courant : le modèle l'IGNORE sinon et le devine en sondant
             # (git rev-parse à l'aveugle, list_dir…) -> tours gaspillés. On le lui dit, avec
-            # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git.
+            # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git. Reste EN BAS
+            # (contexte volatil, près de l'action).
             _ws = _session().workspace
             system_prompt += (
                 f"\n\n# Dossier de travail courant\nTes commandes (run_shell) tournent dans "
@@ -436,20 +455,6 @@ def create_app(
                 "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
                 "même commande à l'identique."
             )
-            # Identité always-on (SOUL/USER/MEMORY) : injectée dans le SYSTEM prompt, donc
-            # elle survit toujours à la microcompaction/summarization (qui ne touchent que
-            # l'historique). Bornée par identity_max_tokens. Cf. design §5.6.
-            if identity_paths:
-                from loom.memory.identity import identity_block
-
-                _idblk = identity_block(
-                    identity_paths["soul_path"],
-                    identity_paths["user_path"],
-                    identity_paths["memory_md_path"],
-                    max_tokens=identity_max_tokens,
-                )
-                if _idblk:
-                    system_prompt += f"\n\n{_idblk}"
         except ValueError as exc:
             chat_lock.release()
             return Response(str(exc), status=400)
