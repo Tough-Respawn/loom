@@ -59,6 +59,14 @@ def _classify_api_error(exc: APIError) -> str:
     status = getattr(exc, "status_code", None)
     if status == 404:
         return "model_not_found"
+    # Débordement de la FENÊTRE DE CONTEXTE (entrée) : llama.cpp/llama-swap le renvoie en
+    # 400 « request (N tokens) exceeds the available context size ». C'est RÉCUPÉRABLE (on
+    # compacte l'historique et on relance), à ne pas confondre avec une vraie 4xx cliente.
+    msg = str(getattr(exc, "message", "") or exc).lower()
+    if "context" in msg and (
+        "exceed" in msg or "size" in msg or "length" in msg or "too long" in msg
+    ):
+        return "context_overflow"
     if status is not None and status < 500:
         return "other"
     return "overflow"
@@ -222,12 +230,44 @@ def build_create_kwargs(
     }
     if tools:
         kwargs["tools"] = tools
+    # Anti-boucle de dégénérescence : llama.cpp ne pénalise PAS la répétition par défaut, et un
+    # modèle peut se verrouiller à répéter le même paragraphe à l'infini (observé : « Je vais
+    # créer les fichiers… » en boucle, ~30k tokens gaspillés). repeat_penalty / repeat_last_n
+    # sont natifs llama.cpp (extra_body). Valeurs modérées (1.1 sur les 64 derniers tokens) :
+    # assez pour casser un cycle, pas pour gêner la répétition LÉGITIME du code (accolades,
+    # mots-clés, imports).
+    extra_body: dict = {"repeat_penalty": 1.1, "repeat_last_n": 64}
     if not thinking:
-        # Désactive la réflexion préalable du modèle (chat template). Vérifié
-        # empiriquement sur Gemma : réponse directe au lieu d'un long "Thinking
-        # Process". Passe par extra_body car c'est un champ non-standard OpenAI.
-        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+        # Désactive la réflexion préalable du modèle (chat template). Vérifié empiriquement
+        # sur Gemma : réponse directe au lieu d'un long "Thinking Process". Champ non-standard
+        # OpenAI -> extra_body.
+        extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+    kwargs["extra_body"] = extra_body
     return kwargs
+
+
+# Coupe-circuit anti-boucle (filet par-dessus le sampling) : une ligne « longue » répétée
+# autant de fois = dégénérescence du décodage. Seuils prudents pour ne pas couper du code
+# légitime : on ne compte que les lignes >= _LOOP_MIN_LEN car. (les phrases en boucle font
+# 30-40 car. ; les `},` / `</div>` du code sont ignorés), et il en faut _LOOP_THRESHOLD.
+_LOOP_THRESHOLD = 10
+_LOOP_MIN_LEN = 24
+
+
+def _scan_repeat(buf: str, counts: dict[str, int]) -> tuple[str, str | None]:
+    """Découpe `buf` sur les sauts de ligne, met à jour `counts` pour chaque ligne normalisée
+    assez longue, et renvoie (reste_incomplet, ligne_en_boucle|None). La ligne en boucle est
+    renvoyée dès qu'elle atteint _LOOP_THRESHOLD occurrences."""
+    if "\n" not in buf:
+        return buf, None
+    *complete, rest = buf.split("\n")
+    for ln in complete:
+        norm = ln.strip()
+        if len(norm) >= _LOOP_MIN_LEN:
+            counts[norm] = counts.get(norm, 0) + 1
+            if counts[norm] >= _LOOP_THRESHOLD:
+                return rest, norm
+    return rest, None
 
 
 def _iter_turn(stream, collector: dict) -> Iterator[tuple[str, str]]:
@@ -236,9 +276,15 @@ def _iter_turn(stream, collector: dict) -> Iterator[tuple[str, str]]:
     Les tool_calls arrivent fragmentés : chaque morceau porte un `.index`, et
     `function.arguments` est une chaîne concaténée morceau par morceau. On les
     regroupe par index, puis on les expose dans `collector["tool_calls"]`.
+
+    Filet anti-boucle : si la sortie (réflexion + contenu) répète la même ligne, on coupe
+    le flux et on pose `collector["looped"]` — la boucle d'outils relancera avec un ordre
+    ferme d'agir, au lieu de laisser brûler max_tokens sur un cycle.
     """
     acc: dict[int, dict] = {}
     announced: set[int] = set()
+    rep_counts: dict[str, int] = {}
+    rep_buf = ""
     for chunk in stream:
         usage = getattr(chunk, "usage", None)
         if usage is not None:
@@ -251,9 +297,18 @@ def _iter_turn(stream, collector: dict) -> Iterator[tuple[str, str]]:
         reasoning = getattr(delta, "reasoning_content", None)
         if reasoning:
             yield ("reasoning", reasoning)
+            rep_buf += reasoning
         content = getattr(delta, "content", None)
         if content:
             yield ("content", content)
+            rep_buf += content
+        # Détection de dégénérescence (réflexion ET contenu) : on coupe net si une ligne
+        # se répète. Pas de tool_call dans ce cas -> on peut sortir sans rien perdre.
+        if "looped" not in collector:
+            rep_buf, looped = _scan_repeat(rep_buf, rep_counts)
+            if looped:
+                collector["looped"] = looped[:80]
+                break
         for tc in getattr(delta, "tool_calls", None) or []:
             slot = acc.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
             if getattr(tc, "id", None):
@@ -565,6 +620,7 @@ class LoomClient:
         keep_recent_tools: int = 4,
         max_act_nudges: int = 2,
         max_length_continues: int = 30,
+        max_loop_breaks: int = 2,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
 
@@ -596,15 +652,19 @@ class LoomClient:
         files_written: set[str] = set()  # chemins écrits avec succès ce tour (couche A)
         act_nudges = 0  # nb de relances « passe de la parole à l'acte » déjà émises
         length_continues = 0  # nb de relances « continue » sur troncature max_tokens
+        loop_breaks = 0  # nb de coupes « tu répètes la même phrase, agis » déjà émises
         for _ in range(max_iters):
             # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
             # résultats d'outils AVANT d'appeler le modèle (évite l'overflow sur une
             # chaîne longue). Estimation grossière ~4 car./token, comme loom.context.
             if compact_after_tokens:
+                # ~3 car./token (et non 4) : code/TSX/JSON tokenise plus dense que de la prose.
+                # Surestimer fait déclencher la compaction PLUS TÔT — biais voulu (on ne vide
+                # que les vieux résultats), pour ne pas heurter la fenêtre par sous-comptage.
                 approx = (
                     len(system_prompt)
                     + sum(_msg_chars(m.get("content")) for m in convo)
-                ) // 4
+                ) // 3
                 if approx > compact_after_tokens:
                     cleared = _microcompact_tools(convo, keep_recent_tools)
                     if cleared:
@@ -647,6 +707,42 @@ class LoomClient:
                 )
             except APIError as exc:
                 kind = _classify_api_error(exc)
+                # DÉBORDEMENT D'ENTRÉE : la requête (prompt + historique + résultats d'outils
+                # accumulés) dépasse la fenêtre de contexte. On NE crashe PAS et on ne demande
+                # PAS « écris plus court » (ça vise la sortie) : on COMPACTE DUR — on vide TOUS
+                # les vieux résultats d'outils (pas seulement au-delà des 4 derniers), de plus
+                # en plus agressivement à chaque retry — puis on RELANCE le même tour. Le modèle
+                # reprend avec SES messages (ce qu'il a déjà fait) intacts ; les gros résultats
+                # d'outils deviennent le placeholder _CLEARED_TOOL (qui dit de ne pas refaire).
+                if kind == "context_overflow":
+                    if overflow_retries >= max_overflow_retries:
+                        yield (
+                            "content",
+                            "\n[génération interrompue : contexte saturé même après "
+                            "compaction. Le travail déjà écrit est conservé ; relance une "
+                            "demande plus ciblée pour continuer.]",
+                        )
+                        return
+                    overflow_retries += 1
+                    keep = 1 if overflow_retries == 1 else 0  # 2e retry : on vide tout
+                    cleared = _microcompact_tools(convo, keep)
+                    _debug(
+                        "CONTEXT_OVERFLOW",
+                        f"compaction dure (keep={keep}) : {cleared} résultat(s) d'outil vidé(s), "
+                        f"retry {overflow_retries}/{max_overflow_retries}.",
+                    )
+                    yield (
+                        "tool_result",
+                        {
+                            "name": "(compaction)",
+                            "ok": True,
+                            "preview": (
+                                f"Contexte saturé : {cleared} ancien(s) résultat(s) d'outil "
+                                "résumé(s) pour libérer de la place. Je reprends où j'en étais."
+                            ),
+                        },
+                    )
+                    continue
                 # OVERFLOW : tool_call vraisemblablement tronqué par max_tokens (5xx ou
                 # erreur sans statut). On NE crashe PAS : on demande de découper et on
                 # relance (reprise bornée par max_overflow_retries), sinon stop propre.
@@ -697,6 +793,36 @@ class LoomClient:
                         f"{len(salvaged)} appel(s) d'outil récupéré(s) du texte.",
                     )
             if not tool_calls:
+                # BOUCLE DE DÉGÉNÉRESCENCE (détectée au streaming) : le modèle a répété la
+                # même phrase sans agir. À traiter AVANT la continuation 'length' : lui dire
+                # « continue où tu t'es arrêté » ne ferait qu'alimenter le cycle. On coupe et
+                # on relance avec un ordre FERME d'émettre un appel d'outil, borné.
+                if collector.get("looped"):
+                    if loop_breaks >= max_loop_breaks:
+                        yield (
+                            "content",
+                            "\n[génération interrompue : le modèle tournait en boucle (même "
+                            "phrase répétée) sans agir. Reformule ou découpe la demande.]",
+                        )
+                        return
+                    loop_breaks += 1
+                    nudge = (
+                        "Tu répètes la même phrase en boucle sans rien faire. ARRÊTE de "
+                        "planifier en prose. Émets MAINTENANT un seul appel d'outil — "
+                        "manage_todos pour poser le plan, OU directement le premier write_file "
+                        "— sans aucun texte avant. Un seul outil, tout de suite."
+                    )
+                    convo.append({"role": "user", "content": nudge})
+                    _debug(
+                        "LOOP_BREAK",
+                        f"boucle détectée ({collector.get('looped')!r}), "
+                        f"relance {loop_breaks}/{max_loop_breaks}",
+                    )
+                    yield (
+                        "tool_result",
+                        {"name": "(boucle)", "ok": False, "preview": nudge},
+                    )
+                    continue
                 # CONTINUATION sur troncature : la réponse texte/raisonnement a été coupée
                 # par la limite de tokens (finish_reason == "length") sans appel d'outil.
                 # Plutôt que de rendre une réponse tronquée, on relance le modèle pour qu'il
