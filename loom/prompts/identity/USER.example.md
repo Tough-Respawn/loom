@@ -1,0 +1,5 @@
+- Rôle : <ex. développeur solo, data engineer…>. Projets en cours : <noms + une ligne chacun>.
+- Machine : <OS + shell, ex. Windows 11 + PowerShell>. Langages/outils : <ex. Python via uv, lint ruff>.
+- Style attendu : <ex. concis et factuel, pas de gras décoratif, pas d'emojis ; LaTeX pour les maths>.
+- Conventions : <ex. commits courts Conventional Commits ; pas de pytest, vérif par smoke + lint>.
+- Attentes de comportement : <ex. agir et rapporter le résultat plutôt que poser des questions>.

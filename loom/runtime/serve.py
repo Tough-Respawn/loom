@@ -25,14 +25,17 @@ from loom.runtime.swap import build_swap_config, write_swap_yaml
 
 # serve.py vit dans loom/runtime/ : on remonte de DEUX niveaux pour pointer la racine
 # du package loom/ (où vivent config, models, data) — pas le dossier runtime/.
-LOOM_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = LOOM_DIR / "loom.config.toml"
-PERSONAL_CONFIG_PATH = LOOM_DIR / "loom.config.personnel.toml"
+LOOM_DIR = Path(__file__).resolve().parent.parent  # = loom/ (le package)
+REPO_ROOT = LOOM_DIR.parent
+# Config à la racine du repo (config/), modèles dans le package (loom/models), état machine
+# sous var/ (gitignored : llama-swap.yaml généré + logs).
+CONFIG_PATH = REPO_ROOT / "config" / "defaults.toml"
+PERSONAL_CONFIG_PATH = REPO_ROOT / "config" / "local.toml"
 MODELS_DIR = LOOM_DIR / "models"
-SWAP_YAML = MODELS_DIR.parent / "llama-swap.yaml"
+SWAP_YAML = REPO_ROOT / "var" / "cache" / "llama-swap.yaml"
 # Log PERSISTANT du serveur modèle (le terminal est éphémère / illisible à distance).
 # La web app en recopie une vue dans chaque session active. Repart à neuf à chaque lancement.
-SERVE_LOG = LOOM_DIR / "data" / "serve.log"
+SERVE_LOG = REPO_ROOT / "var" / "logs" / "serve.log"
 
 
 def _log(msg: str) -> None:
@@ -191,7 +194,7 @@ def launch_direct(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
     return _run(
         args,
         cfg.server_bin,
-        "Renseigne 'bin' dans loom.config.personnel.toml (voir docs/install-windows.md).",
+        "Renseigne 'bin' dans config/local.toml (voir docs/install-windows.md).",
     )
 
 

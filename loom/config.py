@@ -47,7 +47,7 @@ class ChatConfig:
     # durable (négligeable sur une fenêtre de 24576). Le projet-spécifique va en épisodique.
     identity_max_tokens: int = 600
     # Apprentissage (boucle fermée) : skills auto-appris + étape reflect post-tour.
-    learned_skills_dir: str = "loom/skills_learned"
+    learned_skills_dir: str = "var/skills_learned"
     reflect_enabled: bool = True
     reflect_min_actions: int = 1
 
@@ -57,10 +57,10 @@ class MemoryConfig:
     """Config de la mémoire (design §9). v1 : provider 'local' uniquement (offline)."""
 
     provider: str = "local"
-    db_path: str = "loom/data/memory.db"
-    soul_path: str = "loom/data/SOUL.md"
-    user_path: str = "loom/data/USER.md"
-    memory_md_path: str = "loom/data/MEMORY.md"
+    db_path: str = "var/memory/memory.db"
+    soul_path: str = "var/identity/SOUL.md"
+    user_path: str = "var/identity/USER.md"
+    memory_md_path: str = "var/identity/MEMORY.md"
     recall_summarize: bool = True
     recall_summarize_threshold: int = 5
 
@@ -200,7 +200,7 @@ def load_config(
     ws = data.get("web_search", {})
     chat = ChatConfig(
         system_prompt=ch.get("system_prompt", DEFAULT_SYSTEM_PROMPT),
-        history_path=ch.get("history_path", "loom/data/conversation.json"),
+        history_path=ch.get("history_path", "var/conversation.json"),
         web_port=int(ch.get("web_port", 8000)),
         skills_dir=ch.get("skills_dir", "loom/skills"),
         plugins_root=ch.get("plugins_root", "loom/plugins"),
@@ -216,23 +216,25 @@ def load_config(
         keepwarm_enabled=bool(ch.get("keepwarm_enabled", True)),
         keepwarm_interval=int(ch.get("keepwarm_interval", 150)),
         identity_max_tokens=int(ch.get("identity_max_tokens", 600)),
-        learned_skills_dir=ch.get("learned_skills_dir", "loom/skills_learned"),
+        learned_skills_dir=ch.get("learned_skills_dir", "var/skills_learned"),
         reflect_enabled=bool(ch.get("reflect_enabled", True)),
         reflect_min_actions=int(ch.get("reflect_min_actions", 1)),
     )
     me = data.get("memory", {})
     memory = MemoryConfig(
         provider=me.get("provider", "local"),
-        db_path=me.get("db_path", "loom/data/memory.db"),
-        soul_path=me.get("soul_path", "loom/data/SOUL.md"),
-        user_path=me.get("user_path", "loom/data/USER.md"),
-        memory_md_path=me.get("memory_md_path", "loom/data/MEMORY.md"),
+        db_path=me.get("db_path", "var/memory/memory.db"),
+        soul_path=me.get("soul_path", "var/identity/SOUL.md"),
+        user_path=me.get("user_path", "var/identity/USER.md"),
+        memory_md_path=me.get("memory_md_path", "var/identity/MEMORY.md"),
         recall_summarize=bool(me.get("recall_summarize", True)),
         recall_summarize_threshold=int(me.get("recall_summarize_threshold", 5)),
     )
     # Découverte par dossier (loom/models/<id>/model.toml) ; repli sur l'ancien bloc
     # [[models]] de la config si aucun dossier-modèle n'est présent (transition douce).
-    models = _discover_models(Path(path).parent / "models")
+    # NB : résolu contre le PACKAGE (loom/models), pas contre le fichier de config — celui-ci
+    # vit désormais dans config/ à la racine du repo, alors que les modèles restent dans loom/.
+    models = _discover_models(Path(__file__).resolve().parent / "models")
     if not models:
         models = [_parse_model(rm) for rm in data.get("models", [])]
     if not models:

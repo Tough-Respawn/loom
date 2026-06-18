@@ -1,7 +1,7 @@
 # Config Loom — paramètres NON liés au hardware.
 # Les valeurs hardware (n_gpu_layers, threads) sont auto-détectées par serve.py ;
 # on ne les met ici (section [override]) que pour forcer/plafonner.
-# Le chemin du binaire spécifique à une machine va dans loom.config.personnel.toml.
+# Le chemin du binaire spécifique à une machine va dans config/local.toml.
 
 # Les MODÈLES sont désormais découverts par dossier : loom/models/<id>/model.toml
 # (+ profile.md + le GGUF). Plus de bloc [[models]] ici. default_model (section [chat])
@@ -35,7 +35,7 @@ swap_bin = "llama-swap"
 [chat]
 default_model = "gemma4-26b-a4b-uncensored"
 # system_prompt : non défini ici -> centralisé dans loom/prompts/chat.system.md
-history_path = "loom/data/conversation.json"
+history_path = "var/conversation.json"
 web_port = 8000
 skills_dir = "loom/skills"
 # Racine du store de plugins (défaut loom/plugins). Contenu installé git-ignoré.
@@ -66,7 +66,7 @@ enabled = [
     "use_skill", "list_plugins", "add_marketplace", "install_plugin",
 ]
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
-# loom.config.personnel.toml pour pointer la vraie racine de la machine.
+# config/local.toml pour pointer la vraie racine de la machine.
 workspace_dir = "."
 # Cap par appel read_file (caractères) : bas devant le contexte (24576) -> un gros
 # fichier se lit par tranches (start_line) au lieu de tout charger et déborder.

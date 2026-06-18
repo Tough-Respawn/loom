@@ -376,10 +376,10 @@ def create_app(
 
         # Logs PAR SESSION (au même titre que session.json) : (1) trace des échanges modèle
         # routée vers sessions/<id>/debug.log ; (2) copie du log serveur modèle global
-        # (loom/data/serve.log) dans la session — doublon assumé, pour tout avoir sous la main.
+        # (var/logs/serve.log) dans la session — doublon assumé, pour tout avoir sous la main.
         _sdir = session_store.session_dir(_session().id)
         set_debug_log_path(_sdir / "debug.log")
-        _serve_log = session_store.root.parent / "serve.log"
+        _serve_log = session_store.root.parent / "logs" / "serve.log"
         if _serve_log.exists():
             try:
                 _sdir.mkdir(parents=True, exist_ok=True)
