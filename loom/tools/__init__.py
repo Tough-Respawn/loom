@@ -49,7 +49,6 @@ _SUBAGENT_TOOLS = [
     "append_file",
     "edit_file",
     "replace_lines",
-    "insert_lines",
     "format_code",
     "run_shell",
     "check_page",
@@ -87,8 +86,7 @@ def build_registry(
     from loom.tools.fs import (
         make_append_file,
         make_edit_file,
-        make_insert_lines,
-        make_replace_lines,
+            make_replace_lines,
         make_write_file,
     )
     from loom.tools.search import make_find_files, make_list_dir, make_search_text
@@ -108,15 +106,13 @@ def build_registry(
     if "read_image" in enabled:
         specs.append(make_read_image(workspace_dir))
     if "write_file" in enabled:
-        specs.append(make_write_file(workspace_dir, max_bytes))
+        specs.append(make_write_file(workspace_dir, max_bytes, max_tokens=sub_max_tokens))
     if "append_file" in enabled:
-        specs.append(make_append_file(workspace_dir, max_bytes))
+        specs.append(make_append_file(workspace_dir, max_bytes, max_tokens=sub_max_tokens))
     if "edit_file" in enabled:
         specs.append(make_edit_file(workspace_dir))
     if "replace_lines" in enabled:
         specs.append(make_replace_lines(workspace_dir))
-    if "insert_lines" in enabled:
-        specs.append(make_insert_lines(workspace_dir))
     if "format_code" in enabled:
         from loom.tools.format import make_format_code
 

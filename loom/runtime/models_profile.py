@@ -37,7 +37,6 @@ _CONTENT_KEYS = {
     "write_file": ("content",),
     "append_file": ("content",),
     "replace_lines": ("content",),
-    "insert_lines": ("content",),
     "edit_file": ("old_string", "new_string"),
 }
 
