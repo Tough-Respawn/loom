@@ -61,7 +61,7 @@ enabled = [
     "dispatch_agent", "manage_todos", "write_note", "read_note",
     "recall", "remember",
     "write_file", "append_file", "edit_file",
-    "replace_lines", "insert_lines", "format_code", "run_shell",
+    "replace_lines", "format_code", "run_shell",
     "check_page", "check_interactive",
     "use_skill", "list_plugins", "add_marketplace", "install_plugin",
 ]

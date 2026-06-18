@@ -1,6 +1,5 @@
 # loom/tools/indent.py
-"""Aides à l'indentation pour les éditions par numéro de ligne (replace_lines /
-insert_lines). Fonctions PURES (aucune I/O).
+"""Aides à l'indentation pour les éditions par numéro de ligne (replace_lines). Fonctions PURES (aucune I/O).
 
 But : une édition par plage de lignes ne doit jamais transformer un fichier Python qui
 compilait en fichier cassé pour cause d'indentation, et l'erreur courante « bloc collé

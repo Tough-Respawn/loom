@@ -17,7 +17,6 @@ LIRE :
 
 MODIFIER / CRÉER (via les numéros de read_file) :
 - replace_lines(path, start, end, content) : remplace les lignes start..end. Ton outil par défaut pour corriger un bloc — tu n'écris que le nouveau.
-- insert_lines(path, after_line, content) : insère après une ligne, sans rien remplacer.
 - edit_file(path, old_string, new_string) : remplacement par texte exact, réservé à un extrait court et unique (sinon replace_lines).
 - append_file(path, content) : ajoute à la fin (gros fichier en morceaux, sans te faire couper par la limite de tokens).
 - write_file(path, content) : nouveau fichier, ou réécrit entièrement un petit fichier.

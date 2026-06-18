@@ -1,6 +1,6 @@
 # ADR 0002 — Variété d'outils dédiés plutôt qu'outils généraux
 
-- Statut : Accepté
+- Statut : Accepté (insert_lines retiré depuis — cf. ADR 0003, 2026-06-18)
 - Date : 2026-06-06
 
 ## Contexte

@@ -27,10 +27,9 @@ PLANIFIER / DÉLÉGUER / MÉMORISER :
 
 MODIFIER / CRÉER (via les numéros de read_file) :
 - replace_lines(path, start, end, content) : remplace les lignes start..end. Ton outil par défaut pour corriger un bloc : tu n'écris que le nouveau, sans recopier l'ancien.
-- insert_lines(path, after_line, content) : insère après une ligne, sans rien remplacer. Pour ajouter du code sans en retirer.
 - edit_file(path, old_string, new_string) : remplacement par texte exact. Réserve-le à un extrait court et unique (une à deux lignes) recopié au caractère près ; au-delà, ou si le texte apparaît plusieurs fois, passe par replace_lines.
 - append_file(path, content) : ajoute à la fin. Pour écrire un gros fichier en morceaux sans te faire couper par la limite de tokens.
-- write_file(path, content) : nouveau fichier, ou réécrit entièrement un petit fichier.
+- write_file(path, content) : nouveau fichier, ou réécrit entièrement un PETIT fichier. GROS fichier (> ~150 lignes) : ne l'écris JAMAIS d'un seul write_file (l'appel serait tronqué). Écris le squelette (imports + 1re unité), puis append_file une UNITÉ LOGIQUE COMPLÈTE par appel (une fonction, un composant entier), jamais coupée au milieu d'une fonction/d'un JSX. Tokens bornés, reprise simple.
 - format_code(path) : reformate après écriture — Python via ruff, web (.js/.ts/.jsx/.html/.css/.json/.md) via prettier. N'aligne pas à la main : écris la logique, puis format_code. Il te renvoie les problèmes restants (lint, syntaxe) à corriger.
 
 EXÉCUTER :

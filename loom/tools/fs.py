@@ -1,5 +1,5 @@
 # loom/tools/fs.py
-"""Outils d'écriture/édition. Cinq outils DÉLIBÉRÉMENT distincts (cf. ADR 0002) :
+"""Outils d'écriture/édition. Quatre outils DÉLIBÉRÉMENT distincts (cf. ADR 0002, révisé par ADR 0003 : insert_lines retiré) :
 chacun neutralise une contrainte précise d'un petit modèle sur un contexte étroit.
 
 - write_file   : créer / réécrire un petit fichier (baseline).
@@ -8,7 +8,6 @@ chacun neutralise une contrainte précise d'un petit modèle sur un contexte ét
 - replace_lines: contourner la RECOPIE EXACTE — un 4B ne recopie pas un bloc au
                  caractère près ; on adresse par NUMÉROS de ligne (read_file). Outil
                  d'édition principal pour un bloc au milieu.
-- insert_lines : ajouter au MILIEU sans rien remplacer (adressage par ligne).
 - edit_file    : petit remplacement UNIQUE par string exacte (un nom, un token).
 
 Ne PAS consolider par goût du minimalisme : moins d'outils = chaque outil restant
@@ -58,9 +57,16 @@ def _atomic_write(path: Path, content: str) -> None:
     os.replace(tmp, path)
 
 
-def make_write_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
+def make_write_file(
+    workspace_dir: str, max_bytes: int, max_tokens: int = 8192
+) -> ToolSpec:
     """Outil write_file borné au workspace, taille plafonnée, écriture atomique."""
     root = Path(workspace_dir)
+    # Plafond « un seul write » DÉRIVÉ du budget de sortie (max_tokens), pas codé en dur : un
+    # contenu plus gros risque d'être tronqué par la limite de tokens AVANT d'arriver ici (JSON
+    # d'appel cassé). Au-delà -> on impose le découpage par UNITÉ LOGIQUE. ~1.75 car./token (la
+    # moitié du budget réservée au raisonnement).
+    one_shot_cap = int(max_tokens * 1.75)
 
     def run(args: dict) -> str:
         rel = (args.get("path") or "").strip()
@@ -71,6 +77,14 @@ def make_write_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
             raise ToolError("argument 'content' manquant")
         if len(content.encode("utf-8")) > max_bytes:
             raise ToolError(f"contenu trop volumineux (> {max_bytes} octets)")
+        if len(content) > one_shot_cap:
+            raise ToolError(
+                f"fichier trop gros pour un seul write_file ({len(content)} car. > "
+                f"{one_shot_cap}) : l'appel serait probablement tronqué par la limite de "
+                "tokens. Écris le SQUELETTE ici (imports + la 1re fonction/composant COMPLET), "
+                "puis ajoute chaque unité suivante via append_file — une fonction / un composant "
+                "ENTIER par appel, jamais coupé au milieu."
+            )
         path = _resolve_in_root(root, rel)
         _atomic_write(path, content)
         return f"écrit : {rel} ({len(content)} caractères)"
@@ -103,7 +117,9 @@ def make_write_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
     )
 
 
-def make_append_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
+def make_append_file(
+    workspace_dir: str, max_bytes: int, max_tokens: int = 8192
+) -> ToolSpec:
     """Outil append_file : AJOUTE du contenu à la fin d'un fichier (le crée si absent).
 
     Clé du « chunking » : un gros fichier dont le contenu entier ne tient pas dans la
@@ -111,6 +127,7 @@ def make_append_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
     écrit en PLUSIEURS petits appels. Pas d'écriture atomique (mode append) : on accumule.
     """
     root = Path(workspace_dir)
+    one_shot_cap = int(max_tokens * 1.75)  # un morceau = une unité logique, pas un dump
 
     def run(args: dict) -> str:
         rel = (args.get("path") or "").strip()
@@ -122,6 +139,11 @@ def make_append_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
         if len(content.encode("utf-8")) > max_bytes:
             raise ToolError(
                 f"morceau trop volumineux (> {max_bytes} octets) — découpe en plus petit"
+            )
+        if len(content) > one_shot_cap:
+            raise ToolError(
+                f"morceau trop gros ({len(content)} car. > {one_shot_cap}) : append UNE unité "
+                "logique complète à la fois (une fonction / un composant), pas plus."
             )
         path = _resolve_in_root(root, rel)
         _guard_write_path(path)  # append n'utilise pas _atomic_write : garde explicite
@@ -412,97 +434,3 @@ def make_replace_lines(workspace_dir: str) -> ToolSpec:
         run=run,
     )
 
-
-def make_insert_lines(workspace_dir: str) -> ToolSpec:
-    """Outil insert_lines : insère `content` APRÈS la ligne `after_line` (0 = au début).
-    Pour AJOUTER du code au milieu sans rien remplacer."""
-    root = Path(workspace_dir)
-
-    def run(args: dict) -> str:
-        rel = (args.get("path") or "").strip()
-        if not rel:
-            raise ToolError("argument 'path' manquant")
-        try:
-            after = int(args.get("after_line"))
-        except (TypeError, ValueError):
-            raise ToolError(
-                "'after_line' doit être un entier (0 = au tout début)"
-            ) from None
-        content = args.get("content")
-        if not content:
-            raise ToolError("argument 'content' manquant")
-        path = _resolve_in_root(root, rel)
-        if not path.exists():
-            raise ToolError(f"fichier introuvable : {rel}")
-        if path.is_dir():
-            raise ToolError(f"'{rel}' est un répertoire, pas un fichier")
-        lines, nl = _lines_and_nl(path, rel)
-        n = len(lines)
-        if after < 0 or after > n:
-            raise ToolError(
-                f"after_line={after} hors fichier : {rel} a {n} lignes (0..{n})"
-            )
-        before_text = "".join(lines)
-        suffix = path.suffix
-        # Ancre = la ligne qui SUIVRA le bloc inséré (lines[after], 0-based), sinon la
-        # précédente : target_indent gère le repli + le cas « après un ':' ».
-        target = target_indent(lines, after, suffix)
-        new_content = snap_indent(content, target)
-        snapped = new_content != content.replace("\r\n", "\n").replace("\r", "\n")
-        content = new_content
-        head = lines[:after]
-        # si la dernière ligne gardée n'a pas de fin de ligne, l'ajouter (sinon collage)
-        if head and not head[-1].endswith(("\n", "\r")):
-            head = head[:-1] + [head[-1] + nl]
-        new_text = "".join(head) + _new_block(content, nl) + "".join(lines[after:])
-        if is_python(suffix) and py_compiles(before_text):
-            err = indent_error(new_text)
-            if err:
-                return (
-                    f"erreur: ton insertion casse l'indentation ({err}) — {rel} n'a PAS "
-                    "été modifié. Réémets avec la bonne indentation."
-                    + _render_context(
-                        before_text,
-                        after,
-                        after + 1,
-                        note=f"État actuel (INCHANGÉ) de {rel} au point d'insertion :",
-                    )
-                )
-        _atomic_write(path, new_text)
-        k = content.count("\n") + 1
-        msg = f"inséré : {rel} après ligne {after} (+{k} lignes)"
-        if snapped:
-            msg += " (bloc ré-indenté pour coller au contexte)"
-        # La zone insérée occupe les lignes [after+1 .. after+k] dans le nouveau fichier.
-        tail = _context_after_edit(path, after + 1, after + k)
-        if is_python(suffix) and not py_compiles(new_text):
-            tail += "\nnote: le fichier ne compile pas encore — poursuis tes edits."
-        return msg + tail
-
-    return ToolSpec(
-        name="insert_lines",
-        description=(
-            "Insère `content` APRÈS la ligne `after_line` (numéros vus dans read_file ; "
-            "0 = tout au début). Pour AJOUTER du code au MILIEU d'un fichier sans rien "
-            "remplacer. Pour ajouter à la toute fin, append_file est plus simple."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Chemin du fichier (relatif au dossier de travail ou absolu).",
-                },
-                "after_line": {
-                    "type": "integer",
-                    "description": "Insère après cette ligne (0 = au tout début).",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Contenu à insérer (lignes).",
-                },
-            },
-            "required": ["path", "after_line", "content"],
-        },
-        run=run,
-    )

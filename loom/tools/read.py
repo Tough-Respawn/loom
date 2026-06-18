@@ -101,7 +101,7 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
             i += 1
         last = i  # index exclusif -> dernière ligne affichée = i (1-based)
         # NUMÉROS DE LIGNE (format `  12→contenu`), ABSOLUS : le modèle les référence pour
-        # éditer via replace_lines/insert_lines, au lieu de recopier le texte au caractère
+        # éditer via replace_lines, au lieu de recopier le texte au caractère
         # près. NE PAS recopier le préfixe `N→` dans le contenu d'une écriture.
         width = max(2, len(str(last)))
         numbered = "\n".join(
@@ -113,9 +113,9 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
         if last >= total:
             footer = (
                 f"\n[FIN DU FICHIER — lignes {start}–{total} sur {total}. Pour éditer : "
-                "replace_lines/insert_lines avec ces numéros. Si le code s'arrête net, "
+                "replace_lines avec ces numéros. Si le code s'arrête net, "
                 "c'est LE FICHIER qui est incomplet (pas ta lecture) : complète-le "
-                "(append_file pour la fin, insert_lines au milieu) — ne relis pas en boucle.]"
+                "(append_file pour la fin) — ne relis pas en boucle.]"
             )
         else:
             footer = (
