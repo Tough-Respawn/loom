@@ -14,9 +14,11 @@ from loom.agent.session import SessionStore
 from loom.tools import AVAILABLE_TOOLS, build_registry
 from loom.web.app import create_app
 
-RUNTIME_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = RUNTIME_DIR / "loom.config.toml"
-PERSONAL_CONFIG_PATH = RUNTIME_DIR / "loom.config.personnel.toml"
+RUNTIME_DIR = Path(__file__).resolve().parent.parent  # = loom/ (le package)
+# La config vit désormais à la racine du repo : config/defaults.toml (versionné) +
+# config/local.toml (surcharge machine, gitignored).
+CONFIG_PATH = RUNTIME_DIR.parent / "config" / "defaults.toml"
+PERSONAL_CONFIG_PATH = RUNTIME_DIR.parent / "config" / "local.toml"
 
 
 def build_app(cfg):
