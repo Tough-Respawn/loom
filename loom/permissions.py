@@ -47,7 +47,6 @@ WRITE_TOOLS = frozenset(
         "write_file",
         "append_file",
         "edit_file",
-        "replace_lines",
         "format_code",
     }
 )
