@@ -101,6 +101,7 @@ def build_app(cfg):
             plugins_root=plugins_dir,
             memory=memory,
             learned_skills_dir=cfg.chat.learned_skills_dir,
+            shell_timeout=cfg.chat.shell_timeout,
         )
 
     # Amorce les outils de la conversation depuis la config au 1er lancement.

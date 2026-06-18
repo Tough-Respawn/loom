@@ -68,7 +68,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 def make_run_shell(
-    workspace_dir: str, timeout: int = 30, max_output: int = 8000
+    workspace_dir: str, timeout: int = 180, max_output: int = 8000
 ) -> ToolSpec:
     """Outil run_shell borné au workspace, deny-list dure, timeout (tue l'arbre) et troncature."""
     root = Path(workspace_dir)
