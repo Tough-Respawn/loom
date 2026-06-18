@@ -67,12 +67,14 @@ def identity_block(
     gardant l'ordre SOUL -> USER -> MEMORY. Le bornage fin (resserrage) est l'affaire de
     `reflect` au Plan 2 ; ici on protège juste le budget de contexte.
     """
-    # Le titre SOUL affirme sa PRIMAUTÉ : c'est ici (éditable) qu'on définit le rôle/persona,
-    # et ça doit l'emporter sur le « Tu es Loom… » générique du prompt de base, plus haut.
+    # Le bloc identité ouvre le system prompt (injecté EN TÊTE par l'app) : SOUL est donc la
+    # première chose lue, la définition qui fait foi. Le mode d'emploi opérationnel (outils,
+    # règles) vient après et s'y conforme — plus besoin de « PRIME sur ce qui est plus haut ».
     sections = [
         (
-            "# Qui tu es — SOUL (fait foi : ceci définit ton rôle et ta personnalité, et "
-            "PRIME sur toute description plus générale donnée plus haut)",
+            "# Qui tu es — SOUL (fait foi : ceci définit ton rôle, ta personnalité et ton "
+            "style. Tout ce qui suit dans ce prompt est ton mode d'emploi — tes outils et tes "
+            "règles — au service de cette identité.)",
             read_md(soul_path),
         ),
         ("# L'utilisateur (USER)", read_md(user_path)),

@@ -43,7 +43,9 @@ class ChatConfig:
     keepwarm_enabled: bool = True
     keepwarm_interval: int = 150
     # Mémoire/identité : budget du bloc identité always-on injecté au prompt (SOUL/USER/MEMORY).
-    identity_max_tokens: int = 400
+    # SOUL+USER+MEMORY propres pèsent ~450 tokens : 600 laisse de la marge sans tronquer le
+    # durable (négligeable sur une fenêtre de 24576). Le projet-spécifique va en épisodique.
+    identity_max_tokens: int = 600
     # Apprentissage (boucle fermée) : skills auto-appris + étape reflect post-tour.
     learned_skills_dir: str = "loom/skills_learned"
     reflect_enabled: bool = True
@@ -213,7 +215,7 @@ def load_config(
         web_search=_parse_web_search(ws),
         keepwarm_enabled=bool(ch.get("keepwarm_enabled", True)),
         keepwarm_interval=int(ch.get("keepwarm_interval", 150)),
-        identity_max_tokens=int(ch.get("identity_max_tokens", 400)),
+        identity_max_tokens=int(ch.get("identity_max_tokens", 600)),
         learned_skills_dir=ch.get("learned_skills_dir", "loom/skills_learned"),
         reflect_enabled=bool(ch.get("reflect_enabled", True)),
         reflect_min_actions=int(ch.get("reflect_min_actions", 1)),
