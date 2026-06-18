@@ -71,10 +71,14 @@ def summarize(conversation, client, budget: int, keep_recent: int) -> bool:
         return False
     old, recent = msgs[:-keep_recent], msgs[-keep_recent:]
     prompt = SUMMARY_INSTRUCTION + _render(old)
+    # Le résumé tourne sur le modèle de la SESSION. Sans ça, stream_chat retombe sur le
+    # placeholder self.model = "local" (jamais chargé), que llama-swap rejette -> 500 sur
+    # /chat dès que le fil dépasse le budget de contexte.
+    model = getattr(conversation, "model", None)
     summary = "".join(
         text
         for kind, text in client.stream_chat(
-            [{"role": "user", "content": prompt}], SUMMARY_SYSTEM
+            [{"role": "user", "content": prompt}], SUMMARY_SYSTEM, model=model
         )
         if kind == "content"
     )
