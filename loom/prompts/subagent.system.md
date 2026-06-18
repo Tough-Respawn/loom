@@ -16,8 +16,7 @@ LIRE :
 - read_document(path) : texte d'un PDF / .xlsx / .docx. read_image(path) : voir une image.
 
 MODIFIER / CRÉER (via les numéros de read_file) :
-- replace_lines(path, start, end, content) : remplace les lignes start..end. Ton outil par défaut pour corriger un bloc — tu n'écris que le nouveau.
-- edit_file(path, old_string, new_string) : remplacement par texte exact, réservé à un extrait court et unique (sinon replace_lines).
+- edit_file(path, old_string, new_string) : modifie un bloc existant — lis le fichier, copie l'extrait EXACT dans old_string, remplacement dans new_string (unique, sinon replace_all). Grosse portion → write_file.
 - append_file(path, content) : ajoute à la fin (gros fichier en morceaux, sans te faire couper par la limite de tokens).
 - write_file(path, content) : nouveau fichier, ou réécrit entièrement un petit fichier.
 - format_code(path) : reformate après écriture (Python via ruff, web via prettier) et te signale les problèmes de lint/syntaxe restants.

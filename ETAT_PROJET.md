@@ -47,7 +47,7 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   - localiser : `find_files`, `search_text`, `list_dir` ;
   - lire : `read_file`, `read_document` (PDF/xlsx/docx), `read_image` (vision sur fichier) ;
   - planifier/déléguer : `manage_todos`, `dispatch_agent` (sous-agent isolé, anti-récursion) ;
-  - modifier/créer : `write_file`, `append_file`, `edit_file`, `replace_lines`
+  - modifier/créer : `write_file`, `append_file`, `edit_file`
     (par ligne, indentation préservée), `format_code` (ruff/prettier) ;
   - exécuter : `run_shell` (deny-list dure, tue l'arbre au timeout) ;
   - web : `web_search`, `fetch_url` ;
