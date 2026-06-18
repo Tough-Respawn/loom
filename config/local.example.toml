@@ -1,0 +1,20 @@
+# Gabarit de surcharge MACHINE. Copie-le en `config/local.toml` (gitignored) et adapte :
+#   cp config/local.example.toml config/local.toml
+# local.toml surcharge config/defaults.toml avec ce qui est propre à TA machine (chemins des
+# binaires, offload GPU, racine des projets). Les valeurs ci-dessous sont celles d'une RTX
+# 2060 — une autre carte (ex. RTX 3090) voudra d'autres réglages.
+[server]
+# Binaire llama-server. Mets le chemin absolu si pas dans le PATH.
+bin = "C:/tools/llama/llama-server.exe"
+# Routeur multi-modèles (hot-swap par le sélecteur de l'UI), github.com/mostlygeek/llama-swap.
+swap_bin = "C:/tools/llama/llama-swap.exe"
+
+# Offload COMPLET (toutes couches + output/embeddings) : -ngl 99. Couplé au gpu_tuning
+# (Flash-Attn + KV q8_0 + batch) côté serve.py. Benchmark RTX 2060 : single 12->17.8 tok/s,
+# 4 flux ~100 tok/s. VRAM ~4 Go/6 -> pas de spill. cf. docs/perf-gpu.md.
+[override]
+n_gpu_layers = 99
+
+[tools]
+# Périmètre des outils sur CETTE machine : racine de tes projets.
+workspace_dir = "C:/Users/<toi>/Documents"

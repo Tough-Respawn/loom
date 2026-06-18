@@ -5,8 +5,10 @@ loom/models/**/*.gguf
 # en copiant _TEMPLATE/). Seul le template est suivi ; loom/models/README.md aussi (fichier).
 loom/models/*/
 !loom/models/_TEMPLATE/
-loom/data/
-# Surcharges machine
+# État machine : identité, mémoire, sessions, skills appris, logs, cache (tout var/).
+var/
+# Config : surcharge machine (config/local.toml) + tout *.local.toml
+config/local.toml
 *.local.toml
 # Python / uv
 .venv/
@@ -19,14 +21,8 @@ node_modules/
 # Traces de playwright-mcp (debug UI)
 .playwright-mcp/
 
-# Config llama-swap generee par serve.py (chemins machine-specifiques)
-loom/llama-swap.yaml
-# Runtime data
-loom/runtime/data/
 # Sorties des runs d'éval (transcripts, report.json, logs) — pas le harnais lui-même
 evals/out/
 evals/out_review/
 # Claude Code config
 .claude/
-# Skills auto-appris (reflect) : artefacts runtime par machine, comme loom/data
-loom/skills_learned/

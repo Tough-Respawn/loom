@@ -94,4 +94,6 @@ def dump_yaml(config: dict) -> str:
 
 
 def write_swap_yaml(config: dict, path: str | Path) -> None:
-    Path(path).write_text(dump_yaml(config), encoding="utf-8")
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)  # var/cache/ absent sur un clone neuf
+    p.write_text(dump_yaml(config), encoding="utf-8")
