@@ -613,7 +613,7 @@ class LoomClient:
         model: str | None = None,
         registry=None,
         thinking: bool = True,
-        max_iters: int = 30,
+        max_iters: int = 500,
         permission=None,
         confirm=None,
         max_overflow_retries: int = 2,
@@ -633,7 +633,8 @@ class LoomClient:
         L'ARRÊT est piloté par le modèle (stop naturel) : dès qu'il répond SANS
         tool_call, on sort. Par-dessus, deux garde-fous non-négociables (best
         practice agentic : le modèle, surtout petit, ne sait pas toujours s'arrêter) :
-        - `max_iters` : plafond dur de tours d'outils (anti-runaway) ;
+        - `max_iters` : backstop ANTI-RUNAWAY tres haut (defaut 500) — PAS un cap de
+          progression ; l'arret normal vient du non-progres (repeat_limit) et du coupe-circuit anti-boucle ;
         - `repeat_limit` : non-progrès — si le modèle réémet `repeat_limit` fois de
           suite EXACTEMENT le même jeu d'appels (mêmes outils + mêmes args), il
           tourne en rond, on coupe. Chaque garde-fou émet un message d'arrêt EXPLICITE
@@ -1086,8 +1087,8 @@ class LoomClient:
             convo.extend(image_followups)  # images vues au tour suivant
         yield (
             "content",
-            f"\n(arrêt : garde-fou anti-boucle après {max_iters} tours d'outils — "
-            "la tâche n'est peut-être pas terminée).",
+            f"\n(arrêt : backstop anti-runaway atteint après {max_iters} tours d'outils — "
+            "cas anormal ; relance pour reprendre là où ça s'est arrêté).",
         )
 
 
