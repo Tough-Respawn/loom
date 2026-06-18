@@ -487,6 +487,22 @@ def _intends_to_act(text: str, executed: bool) -> bool:
 _WRITE_TOOLS = frozenset(
     {"write_file", "append_file", "edit_file", "replace_lines", "insert_lines"}
 )
+# Outils dont un ECHEC = signal de BUG (execution / verification), par opposition aux erreurs
+# d'usage d'outil (ligne hors limite, etc.). Une cascade ici impose la methode debug.
+_BUG_SIGNAL_TOOLS = frozenset(
+    {"run_shell", "check_page", "check_interactive", "format_code"}
+)
+_DEBUG_FORCE = (
+    "STOP — plusieurs erreurs s'enchainent et corriger au coup par coup ne regle pas la "
+    "cause. Methode debug OBLIGATOIRE maintenant, ne patche plus au hasard :\n"
+    "1. REPRODUIRE : relance la commande/page qui echoue, lis l'erreur EN ENTIER (fichier, ligne, code).\n"
+    "2. LOCALISER avec les outils : read_file l'etat reel, search_text la definition, run_shell/check_page "
+    "pour VOIR — remonte jusqu'a la SOURCE de la mauvaise valeur, pas la ou elle explose.\n"
+    "3. CAUSE RACINE unique : formule UNE hypothese verifiable (X echoue PARCE QUE...).\n"
+    "4. UN seul changement minimal a la cause, puis RELANCE la repro et CONSTATE la preuve.\n"
+    "Un fix qui ne regle pas -> retour a LOCALISER, jamais un autre patch au hasard. Si chaque "
+    "fix en revele un autre, la base est pourrie : reecris proprement le fichier en cause."
+)
 _EXEC_CLAIM = (
     "a affiche",
     "a retourne",
@@ -656,6 +672,8 @@ class LoomClient:
         act_nudges = 0  # nb de relances « passe de la parole à l'acte » déjà émises
         length_continues = 0  # nb de relances « continue » sur troncature max_tokens
         loop_breaks = 0  # nb de coupes « tu répètes la même phrase, agis » déjà émises
+        fail_count = 0  # échecs cumulés d'outils d'exécution/vérif ce tour (cascade de bugs)
+        debug_forced = False  # méthode debug déjà imposée ce tour ? (anti-nag)
         for _ in range(max_iters):
             # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
             # résultats d'outils AVANT d'appeler le modèle (évite l'overflow sur une
@@ -1084,7 +1102,24 @@ class LoomClient:
                     executed = True
                 if ok and name in _WRITE_TOOLS and args.get("path"):
                     files_written.add(args["path"])
+                # Cascade de bugs : on compte les échecs des outils d'EXÉCUTION/VÉRIF (pas les
+                # erreurs d'usage type ligne hors limite). Au 2e échec, on IMPOSE la méthode debug.
+                if not ok and name in _BUG_SIGNAL_TOOLS:
+                    fail_count += 1
             convo.extend(image_followups)  # images vues au tour suivant
+            # Forçage debugging (déterministe) : le modèle n'appelle jamais use_skill seul ; à
+            # la 2e erreur d'exécution on injecte la méthode systématique, une seule fois par tour.
+            if fail_count >= 2 and not debug_forced:
+                debug_forced = True
+                convo.append({"role": "user", "content": _DEBUG_FORCE})
+                yield (
+                    "tool_result",
+                    {
+                        "name": "(debug)",
+                        "ok": True,
+                        "preview": "Cascade d'erreurs — méthode debug imposée (cause racine, pas symptôme).",
+                    },
+                )
         yield (
             "content",
             f"\n(arrêt : backstop anti-runaway atteint après {max_iters} tours d'outils — "
