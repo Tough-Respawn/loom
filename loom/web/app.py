@@ -148,7 +148,6 @@ _TRACE_VERB = {
     "append_file": "complété",
     "edit_file": "modifié",
     "replace_lines": "modifié",
-    "insert_lines": "modifié",
     "run_shell": "exécuté",
     "dispatch_agent": "délégué",
 }
@@ -157,7 +156,6 @@ _WRITE_NAMES = {
     "append_file",
     "edit_file",
     "replace_lines",
-    "insert_lines",
 }
 
 
