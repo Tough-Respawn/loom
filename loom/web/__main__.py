@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from loom.agent.client import LoomClient
@@ -28,10 +29,25 @@ def build_app(cfg):
     conversation = Conversation.load(cfg.chat.history_path, cfg.chat.system_prompt)
     if not conversation.model:
         conversation.set_model(cfg.default_model)
+    # Routes vers les modèles distants (API OpenAI-compatible) : la clé vient du TOML en clair
+    # ou d'une variable d'env (api_key_env). Un modèle sans clé résolue reste routé mais
+    # échouera à l'appel (401) — message clair côté client, pas de crash au démarrage.
+    routes = {}
+    for rm in cfg.remote_models:
+        key = rm.api_key or (
+            os.environ.get(rm.api_key_env, "") if rm.api_key_env else ""
+        )
+        routes[rm.id] = {
+            "base_url": rm.base_url,
+            "api_key": key,
+            "model": rm.model,
+            "enable_thinking_param": rm.enable_thinking_param,
+        }
     client = LoomClient(
         base_url=base_url,
         timeout=cfg.chat.request_timeout,
         max_retries=cfg.chat.max_retries,
+        routes=routes,
     )
     # Mémoire persistante : provider (store épisodique) + chemins identité (SOUL/USER/MEMORY).
     # `memory` est passé à build_registry (outils recall/remember) ; `mem_paths` sert aussi
@@ -93,7 +109,10 @@ def build_app(cfg):
             web_cfg=cfg.chat.web_search,
             client=client,
             conversation=conversation,
-            model=cfg.default_model,
+            # dispatch_agent tourne sur le modèle SÉLECTIONNÉ (celui de la conversation),
+            # pas sur un défaut figé au démarrage : sélectionner un modèle dans l'UI le
+            # propage donc aussi aux sous-agents. Repli sur le défaut hors session.
+            model=(conversation.model if conversation else cfg.default_model),
             sub_max_tokens=cfg.chat.max_tokens,
             permission=permission,
             active_model=(conversation.model if conversation else cfg.default_model),
@@ -123,7 +142,7 @@ def build_app(cfg):
         cfg.chat.system_prompt,
         default_tools=cfg.chat.tools_enabled,
         default_model=cfg.default_model,
-        known_models=[m.id for m in cfg.models],
+        known_models=[m.id for m in cfg.models] + [rm.id for rm in cfg.remote_models],
     )
     if not store.list() and conversation.messages:
         seed = store.create(workspace=cfg.chat.workspace_dir, title="Session importée")
@@ -131,6 +150,17 @@ def build_app(cfg):
         store.save(seed)
 
     permission = lambda name, args: evaluate(name, args, cfg.permissions)  # noqa: E731
+    # Fenêtre et plafond de sortie PAR MODÈLE : un modèle local garde sa fenêtre (override
+    # model.toml sinon le global) ; un modèle distant exploite SA grande fenêtre + son
+    # max_tokens. Sert au seuil de microcompact (côté app) -> on profite du contexte du
+    # provider sans déborder le local.
+    model_contexts = {m.id: (m.context or cfg.context) for m in cfg.models}
+    model_contexts.update(
+        {rm.id: (rm.context or cfg.context) for rm in cfg.remote_models}
+    )
+    model_max_tokens = {
+        rm.id: rm.max_tokens for rm in cfg.remote_models if rm.max_tokens
+    }
     app = create_app(
         client,
         cfg.chat.skills_dir,
@@ -139,8 +169,9 @@ def build_app(cfg):
         context_budget=budget,
         keep_recent=cfg.chat.keep_recent_messages,
         context_window=cfg.context,
-        models=[m.id for m in cfg.models],
-        vision_models=[m.id for m in cfg.models if m.mmproj_filename],
+        models=[m.id for m in cfg.models] + [rm.id for rm in cfg.remote_models],
+        vision_models=[m.id for m in cfg.models if m.mmproj_filename]
+        + [rm.id for rm in cfg.remote_models if rm.vision],
         tool_factory=make_registry,
         available_tools=AVAILABLE_TOOLS,
         permission=permission,
@@ -156,6 +187,8 @@ def build_app(cfg):
         reflect_enabled=cfg.chat.reflect_enabled,
         reflect_min_actions=cfg.chat.reflect_min_actions,
         reflect_model=cfg.default_model,
+        model_contexts=model_contexts,
+        model_max_tokens=model_max_tokens,
     )
     return app
 
