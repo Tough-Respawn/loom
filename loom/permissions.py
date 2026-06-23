@@ -37,7 +37,7 @@ READ_TOOLS = frozenset(
         "remember",
     }
 )
-SHELL_TOOLS = frozenset({"run_shell", "bash"})
+SHELL_TOOLS = frozenset({"run_shell", "bash", "serve_and_check"})
 # Outils d'INSTALLATION de plugins : clonent du code tiers + écrivent sur disque -> gardés
 # comme les écritures (ask par défaut). Le modèle peut proposer/lancer l'install, pas sans
 # accord en mode 'ask'.
