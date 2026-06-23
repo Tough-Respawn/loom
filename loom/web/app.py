@@ -206,6 +206,8 @@ def create_app(
     reflect_enabled=False,
     reflect_min_actions=1,
     reflect_model=None,
+    model_contexts=None,
+    model_max_tokens=None,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -216,10 +218,20 @@ def create_app(
     workspace_dir = str(workspace_dir)
     plugins_dir = str(plugins_dir)
     # Seuil de microcompact INTERNE à la boucle d'outils : on vide les vieux résultats
-    # d'outils quand le contexte vivant approche la fenêtre du modèle (en réservant la
-    # place de la réponse). Distinct du résumé inter-tours (context_budget) qui, lui,
-    # ne porte que sur l'historique persisté.
-    compact_after_tokens = max(1024, context_window - max_tokens - 1024)
+    # d'outils quand le contexte vivant approche la fenêtre du modèle (en réservant la place
+    # de la réponse). Distinct du résumé inter-tours (context_budget) qui ne porte que sur
+    # l'historique persisté. Calculé PAR MODÈLE (_model_limits) : un modèle distant à grande
+    # fenêtre exploite SA fenêtre + son max_tokens au lieu du global, sans toucher au réglage
+    # local. Repli sur le global pour tout id non listé.
+    model_contexts = dict(model_contexts or {})
+    model_max_tokens = dict(model_max_tokens or {})
+
+    def _model_limits(model_id):
+        """(max_tokens effectif, seuil de microcompact) pour `model_id`."""
+        win = model_contexts.get(model_id) or context_window
+        mt = model_max_tokens.get(model_id) or max_tokens
+        return mt, max(1024, win - mt - 1024)
+
     models = list(models or [])
     vision_models = set(vision_models or [])  # ids des modèles avec mmproj (vision)
     available_tools = list(available_tools or [])
@@ -491,23 +503,25 @@ def create_app(
             ws = _session().workspace
             registry = tool_factory(conv.active_tools, ws, conv)
             use_tools = registry is not None and len(registry)
+            # Limites du modèle courant (distant = sa grande fenêtre ; local = global).
+            eff_max_tokens, eff_compact = _model_limits(conv.model)
             if use_tools:
                 source = client.stream_chat_tools(
                     conv.to_messages(),
                     system_prompt,
-                    max_tokens,
+                    eff_max_tokens,
                     model=conv.model or None,
                     registry=registry,
                     thinking=conv.thinking,
                     permission=permission,
                     confirm=_confirm,
-                    compact_after_tokens=compact_after_tokens,
+                    compact_after_tokens=eff_compact,
                 )
             else:
                 source = client.stream_chat(
                     conv.to_messages(),
                     system_prompt,
-                    max_tokens,
+                    eff_max_tokens,
                     model=conv.model or None,
                     thinking=conv.thinking,
                 )

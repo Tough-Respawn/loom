@@ -62,7 +62,7 @@ enabled = [
     "recall", "remember",
     "write_file", "append_file", "edit_file",
     "format_code", "run_shell",
-    "check_page", "check_interactive",
+    "check_page", "check_interactive", "serve_and_check",
     "use_skill", "list_plugins", "add_marketplace", "install_plugin",
 ]
 # Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
@@ -84,3 +84,24 @@ fetch_pages = false
 # (rm -rf, Remove-Item -Recurse -Force, format, dd if=…) reste incontournable même
 # en allow. Repasser à "ask" pour ré-activer la confirmation.
 mode = "allow"
+
+# MODÈLES DISTANTS (API OpenAI-compatible) — exemple, à RECOPIER dans config/local.toml
+# (gitignored) avec la vraie clé. Chaque entrée s'ajoute au sélecteur de modèles, au même
+# titre qu'un modèle local : tu bascules dessus quand tu veux, les outils tournent toujours
+# en local, seules les requêtes du modèle partent à l'API. Tester le HARNAIS avec un très
+# gros modèle, sans grosse stack locale.
+#
+# ATTENTION résidence des données : le contenu de tes fichiers locaux part dans le prompt
+# vers le provider. Zhipu/GLM = Chine ; OpenAI/OpenRouter = souvent US ; UE = Mistral / Azure
+# région EU. Vérifie avant d'y envoyer du code sensible.
+#
+# [[remote_models]]
+# id = "glm-distant"                              # nom affiché dans le menu
+# base_url = "https://open.bigmodel.cn/api/paas/v4"  # endpoint OpenAI-compatible du provider
+# model = "glm-4.6"                              # id du modèle CÔTÉ provider (à vérifier)
+# api_key_env = "GLM_API_KEY"                    # nom de la variable d'env qui porte la clé
+# # api_key = "sk-…"                             # …ou la clé en clair (uniquement dans local.toml)
+# context = 131072                               # fenêtre du modèle (informatif)
+# vision = false                                 # true si le modèle accepte les images
+# enable_thinking_param = false                  # true SEULEMENT pour un backend llama.cpp/vLLM
+#                                                # auto-hébergé (envoie repeat_penalty + thinking)

@@ -93,6 +93,32 @@ class ModelConfig:
 
 
 @dataclass
+class RemoteModelConfig:
+    """Modèle servi par une API externe OpenAI-compatible (Zhipu/GLM, OpenAI, OpenRouter,
+    Mistral…). Sélectionnable dans le menu au même titre qu'un modèle local : Loom route
+    les requêtes de CE modèle vers son endpoint, les outils tournent toujours en local.
+    Le secret se met dans config/local.toml (gitignored) ou via api_key_env (variable
+    d'environnement) — jamais dans defaults.toml versionné."""
+
+    id: str  # nom affiché dans le sélecteur (ex. "glm-distant")
+    base_url: (
+        str  # endpoint OpenAI-compatible (ex. https://open.bigmodel.cn/api/paas/v4)
+    )
+    model: str  # id du modèle CÔTÉ provider (ex. "glm-4.6")
+    api_key: str = ""  # clé en clair (préfère local.toml)…
+    api_key_env: str = ""  # …ou nom d'une variable d'env qui la porte
+    context: int | None = (
+        None  # fenêtre du modèle -> seuil de microcompact (profite du max)
+    )
+    max_tokens: int | None = None  # plafond de sortie/tour (défaut = global si absent)
+    vision: bool = False  # le modèle accepte-t-il les images
+    # Une API hébergée rejette souvent un extra_body inconnu (chat_template_kwargs) ->
+    # par défaut on NE l'envoie PAS pour un modèle distant. Mets True seulement si
+    # l'endpoint gère ce champ (vLLM auto-hébergé…) pour piloter le thinking au template.
+    enable_thinking_param: bool = False
+
+
+@dataclass
 class RuntimeConfig:
     models: list[ModelConfig]
     default_model: str
@@ -105,6 +131,9 @@ class RuntimeConfig:
     chat: ChatConfig
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     # Slots de llama-server (--parallel). Loom est mono-flux -> 1 (cf. loom.config.toml).
+    # Modèles distants (API OpenAI-compatible) : s'ajoutent aux modèles locaux dans le
+    # sélecteur. Vide par défaut (tout-local) ; déclarés dans config/local.toml.
+    remote_models: list[RemoteModelConfig] = field(default_factory=list)
     n_parallel: int = 1
     # Marge VRAM (Mo) réservée hors couches offloadées : couvre le cache KV + les buffers
     # de calcul. Plus elle est BASSE, plus on offloade de couches sur GPU (perf), mais trop
@@ -160,6 +189,21 @@ def _discover_models(models_root: Path) -> list[ModelConfig]:
         m.dir = str(folder)
         out.append(m)
     return out
+
+
+def _parse_remote_model(d: dict) -> RemoteModelConfig:
+    """Construit un RemoteModelConfig depuis une table TOML [[remote_models]]."""
+    return RemoteModelConfig(
+        id=d["id"],
+        base_url=str(d["base_url"]).rstrip("/"),
+        model=d["model"],
+        api_key=d.get("api_key", ""),
+        api_key_env=d.get("api_key_env", ""),
+        context=d.get("context"),
+        max_tokens=d.get("max_tokens"),
+        vision=bool(d.get("vision", False)),
+        enable_thinking_param=bool(d.get("enable_thinking_param", False)),
+    )
 
 
 def _parse_web_search(d: dict) -> WebSearchConfig:
@@ -245,10 +289,12 @@ def load_config(
         raise ValueError(
             "aucun modèle : crée loom/models/<id>/model.toml (ou un bloc [[models]])"
         )
+    remote_models = [_parse_remote_model(rm) for rm in data.get("remote_models", [])]
     default_model = ch.get("default_model") or models[0].id
     return RuntimeConfig(
         models=models,
         default_model=default_model,
+        remote_models=remote_models,
         context=int(s["context"]),
         port=int(s["port"]),
         server_bin=s["bin"],

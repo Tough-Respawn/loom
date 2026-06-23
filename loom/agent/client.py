@@ -195,6 +195,28 @@ def _usage_dict(usage) -> dict:
     }
 
 
+def _estimate_usage(system_prompt, messages, text, reasoning, tool_calls) -> dict:
+    """Usage ESTIMÉ (≈3 car./token) pour un provider qui n'honore pas include_usage : sans
+    lui, le compteur ↑/↓ resterait figé à 0 sur une API distante. Approximatif mais bien
+    mieux que zéro ; le local (llama.cpp) renvoie toujours l'usage réel -> jamais utilisé là.
+    Marqué estimated=True (les compteurs restent fonctionnels, l'UI peut le nuancer)."""
+    prompt_chars = len(system_prompt or "") + sum(
+        _msg_chars(m.get("content")) for m in messages
+    )
+    out_chars = (
+        len(text or "")
+        + len(reasoning or "")
+        + sum(len(tc.get("arguments") or "") for tc in (tool_calls or []))
+    )
+    p, c = prompt_chars // 3, out_chars // 3
+    return {
+        "prompt_tokens": p,
+        "completion_tokens": c,
+        "total_tokens": p + c,
+        "estimated": True,
+    }
+
+
 def _iter_events(stream) -> Iterator[tuple[str, object]]:
     """Yield ('reasoning'|'content', txt) par delta, et ('usage', dict) en fin de
     stream si le serveur renvoie l'usage (stream_options.include_usage)."""
@@ -221,6 +243,7 @@ def build_create_kwargs(
     max_tokens: int,
     thinking: bool = True,
     tools: list[dict] | None = None,
+    native_extras: bool = True,
 ) -> dict:
     kwargs = {
         "model": model,
@@ -232,19 +255,21 @@ def build_create_kwargs(
     }
     if tools:
         kwargs["tools"] = tools
-    # Anti-boucle de dégénérescence : llama.cpp ne pénalise PAS la répétition par défaut, et un
-    # modèle peut se verrouiller à répéter le même paragraphe à l'infini (observé : « Je vais
-    # créer les fichiers… » en boucle, ~30k tokens gaspillés). repeat_penalty / repeat_last_n
-    # sont natifs llama.cpp (extra_body). Valeurs modérées (1.1 sur les 64 derniers tokens) :
-    # assez pour casser un cycle, pas pour gêner la répétition LÉGITIME du code (accolades,
-    # mots-clés, imports).
-    extra_body: dict = {"repeat_penalty": 1.1, "repeat_last_n": 64}
-    if not thinking:
-        # Désactive la réflexion préalable du modèle (chat template). Vérifié empiriquement
-        # sur Gemma : réponse directe au lieu d'un long "Thinking Process". Champ non-standard
-        # OpenAI -> extra_body.
-        extra_body["chat_template_kwargs"] = {"enable_thinking": False}
-    kwargs["extra_body"] = extra_body
+    # extra_body = paramètres spécifiques au backend llama.cpp LOCAL. On ne les envoie PAS à
+    # une API distante (native_extras=False) : une API hébergée OpenAI-compatible rejette
+    # souvent un extra_body inconnu (400 sur repeat_penalty / chat_template_kwargs).
+    if native_extras:
+        # Anti-boucle de dégénérescence : llama.cpp ne pénalise PAS la répétition par défaut,
+        # un modèle peut se verrouiller à répéter le même paragraphe à l'infini (observé :
+        # « Je vais créer les fichiers… » en boucle, ~30k tokens gaspillés). repeat_penalty /
+        # repeat_last_n sont natifs llama.cpp. Valeurs modérées (1.1 sur les 64 derniers
+        # tokens) : assez pour casser un cycle, pas pour gêner la répétition LÉGITIME du code.
+        extra_body: dict = {"repeat_penalty": 1.1, "repeat_last_n": 64}
+        if not thinking:
+            # Désactive la réflexion préalable du modèle (chat template). Vérifié sur Gemma :
+            # réponse directe au lieu d'un long "Thinking Process". Champ non-standard OpenAI.
+            extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+        kwargs["extra_body"] = extra_body
     return kwargs
 
 
@@ -484,9 +509,7 @@ def _intends_to_act(text: str, executed: bool) -> bool:
 # produit. Garde de vérité, pas orchestrateur. Deux vérifs déterministes au stop :
 #   A. il revendique un FICHIER (créé/contient) qui n'existe pas -> artefact inventé ;
 #   B. il rapporte un RÉSULTAT D'EXÉCUTION sans avoir lancé run_shell ni dispatch_agent.
-_WRITE_TOOLS = frozenset(
-    {"write_file", "append_file", "edit_file"}
-)
+_WRITE_TOOLS = frozenset({"write_file", "append_file", "edit_file"})
 # Outils dont un ECHEC = signal de BUG (execution / verification), par opposition aux erreurs
 # d'usage d'outil (ligne hors limite, etc.). Une cascade ici impose la methode debug.
 _BUG_SIGNAL_TOOLS = frozenset(
@@ -583,6 +606,7 @@ class LoomClient:
         model: str = "local",
         timeout: int = 120,
         max_retries: int = 6,
+        routes: dict | None = None,
     ) -> None:
         self.base_url = base_url
         self.model = model
@@ -594,6 +618,31 @@ class LoomClient:
             timeout=timeout,
             max_retries=max_retries,
         )
+        # Routes vers des modèles DISTANTS (API OpenAI-compatible) : id de modèle ->
+        # {base_url, api_key, model, enable_thinking_param}. Tout modèle absent de cette
+        # table part vers l'endpoint LOCAL (_client). Un client openai par endpoint, monté
+        # une fois ici. Le reste du code appelle toujours `model=<id>` : le routage est interne.
+        self._routes: dict[str, dict] = {}
+        for rid, spec in (routes or {}).items():
+            self._routes[rid] = {
+                "client": OpenAI(
+                    base_url=spec["base_url"],
+                    api_key=spec.get("api_key") or "none",
+                    timeout=timeout,
+                    max_retries=max_retries,
+                ),
+                "model": spec.get("model") or rid,
+                "enable_thinking_param": bool(spec.get("enable_thinking_param", False)),
+            }
+
+    def _resolve(self, model: str | None):
+        """(client_openai, model_api, native_extras) pour le modèle demandé. Un modèle
+        distant (présent dans routes) part vers son endpoint, SANS les extra_body llama.cpp ;
+        sinon l'endpoint local avec les extras natifs."""
+        if model and model in self._routes:
+            r = self._routes[model]
+            return r["client"], r["model"], r["enable_thinking_param"]
+        return self._client, (model or self.model), True
 
     def stream_chat(
         self,
@@ -604,19 +653,33 @@ class LoomClient:
         thinking: bool = True,
     ) -> Iterator[tuple[str, str]]:
         """Yield les events (reasoning|content), system prompt injecté en tête."""
+        oai, api_model, native = self._resolve(model)
         kwargs = build_create_kwargs(
-            model or self.model, messages, system_prompt, max_tokens, thinking
+            api_model,
+            messages,
+            system_prompt,
+            max_tokens,
+            thinking,
+            native_extras=native,
         )
         _debug_messages(kwargs["model"], kwargs["messages"])
-        stream = self._client.chat.completions.create(**kwargs)
+        stream = oai.chat.completions.create(**kwargs)
         reasoning, content = "", ""
+        saw_usage = False
         try:
             for kind, chunk in _iter_events(stream):
                 if kind == "reasoning":
                     reasoning += chunk
                 elif kind == "content":
                     content += chunk
+                elif kind == "usage":
+                    saw_usage = True
                 yield (kind, chunk)
+            if not saw_usage:
+                yield (
+                    "usage",
+                    _estimate_usage(system_prompt, messages, content, reasoning, []),
+                )
         finally:
             _close(stream)
             _debug("REPONSE <- modele", {"reasoning": reasoning, "content": content})
@@ -661,6 +724,9 @@ class LoomClient:
         de tours et le NON-PROGRÈS, jamais l'horloge.
         """
         convo = list(messages)
+        # Résolu une fois : le modèle est fixe pour tout l'appel. Route vers l'endpoint
+        # local ou distant selon l'id, et coupe les extra_body llama.cpp si distant.
+        oai, api_model, native = self._resolve(model)
         tools = registry.openai_tools() if registry else None
         overflow_retries = 0
         prev_sig_set = None  # jeu d'appels du tour précédent (détecteur de non-progrès)
@@ -672,7 +738,9 @@ class LoomClient:
         act_nudges = 0  # nb de relances « passe de la parole à l'acte » déjà émises
         length_continues = 0  # nb de relances « continue » sur troncature max_tokens
         loop_breaks = 0  # nb de coupes « tu répètes la même phrase, agis » déjà émises
-        fail_count = 0  # échecs cumulés d'outils d'exécution/vérif ce tour (cascade de bugs)
+        fail_count = (
+            0  # échecs cumulés d'outils d'exécution/vérif ce tour (cascade de bugs)
+        )
         debug_forced = False  # méthode debug déjà imposée ce tour ? (anti-nag)
         for _ in range(max_iters):
             # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
@@ -695,28 +763,44 @@ class LoomClient:
                             f"> seuil {compact_after_tokens}).",
                         )
             kwargs = build_create_kwargs(
-                model or self.model,
+                api_model,
                 convo,
                 system_prompt,
                 max_tokens,
                 thinking,
                 tools=tools,
+                native_extras=native,
             )
             _debug_messages(kwargs["model"], kwargs["messages"])
             collector: dict = {"tool_calls": [], "finish_reason": None}
             text = ""
             reasoning = ""
+            saw_usage = False
             try:
-                stream = self._client.chat.completions.create(**kwargs)
+                stream = oai.chat.completions.create(**kwargs)
                 try:
                     for kind, chunk in _iter_turn(stream, collector):
                         if kind == "content":
                             text += chunk
                         elif kind == "reasoning":
                             reasoning += chunk
+                        elif kind == "usage":
+                            saw_usage = True
                         yield (kind, chunk)
                 finally:
                     _close(stream)
+                if not saw_usage:
+                    # Provider sans include_usage : estimation pour garder ↑/↓ vivants.
+                    yield (
+                        "usage",
+                        _estimate_usage(
+                            system_prompt,
+                            convo,
+                            text,
+                            reasoning,
+                            collector["tool_calls"],
+                        ),
+                    )
                 _debug(
                     "REPONSE <- modele",
                     {
