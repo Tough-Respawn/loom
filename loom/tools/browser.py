@@ -1,34 +1,42 @@
 # loom/tools/browser.py
-"""Outil check_page : donne des YEUX à Loom sur une page web rendue (Playwright headless).
+"""Outils navigateur : check_page (yeux sur une page rendue), check_interactive (preuve de
+jouabilite) et serve_and_check (demarre un serveur, verifie, l'arrete).
 
-Sans ça, le modèle édite du HTML/JS à l'aveugle et confabule « ça marche » : il ne voit
+Sans ca, le modele edite du HTML/JS a l'aveugle et confabule « ca marche » : il ne voit
 ni l'erreur console qui plante le jeu, ni que la grille ne s'affiche pas. check_page charge
-la page dans Chromium headless, EXÉCUTE le JS, et renvoie les ERREURS CONSOLE, le compte
-d'éléments (count_selectors) et un extrait du texte visible — le modèle VOIT le crash / la
-grille manquante et peut itérer jusqu'à « 0 erreur ». Lazy-import de playwright : message
-clair et actionnable si la lib (ou le navigateur) n'est pas installée.
+la page dans Chromium headless, EXECUTE le JS, et renvoie les ERREURS CONSOLE, le compte
+d'elements (count_selectors) et un extrait du texte visible. Lazy-import de playwright :
+message clair et actionnable si la lib (ou le navigateur) n'est pas installee.
 
-Le contenu d'une page est EXTERNE/non fiable -> renvoyé via untrusted() : donnée à
+Le contenu d'une page est EXTERNE/non fiable -> renvoye via untrusted() : donnee a
 analyser, jamais des ordres (une page peut contenir « ignore tes consignes »).
 """
 
 from __future__ import annotations
 
+import ipaddress
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from loom.permissions import _is_hard_denied
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
+from loom.tools.shell import _kill_tree, _shell_argv
 from loom.tools.trust import untrusted
-from loom.tools.web import _blocked_host_reason
 
 _INSTALL_HINT = (
-    "playwright non installé. Lance une fois : `uv add playwright` puis "
+    "playwright non installe. Lance une fois : `uv add playwright` puis "
     "`uv run playwright install chromium`."
 )
 
-# check_page REND une page dans un navigateur (exécute son JS) ; ce n'est PAS un lecteur de
-# fichiers. On le borne aux formats réellement web-rendables : sinon `check_page` sert de
-# contournement de lecture (file://.../id_rsa rendu -> contenu fuité dans le « texte visible »).
+# check_page REND une page dans un navigateur (execute son JS) ; ce n'est PAS un lecteur de
+# fichiers. On le borne aux formats reellement web-rendables : sinon `check_page` sert de
+# contournement de lecture (file://.../id_rsa rendu -> contenu fuite dans le « texte visible »).
 # La vraie lecture passe par read_file/read_document, pas par le navigateur.
 _WEB_EXT = frozenset({".html", ".htm", ".xhtml", ".svg"})
 _NOT_WEB_MSG = (
@@ -37,20 +45,45 @@ _NOT_WEB_MSG = (
 )
 
 
-def _browser_url(root: Path, target: str) -> str:
-    """Résout et VALIDE la cible d'un outil navigateur ; lève ToolError si refusée.
+def _browser_http_blocked(url: str) -> str | None:
+    """Garde anti-SSRF DEDIE au navigateur. Contrairement a fetch_url (contenu externe
+    arbitraire), check_page/serve_and_check sont des outils de VERIF LOCALE : leur usage
+    normal EST de viser un serveur de dev sur localhost (127.0.0.1/::1) ou le LAN prive
+    (192.168.x). On AUTORISE donc loopback + prive, et on ne bloque que les cibles sans
+    usage dev legitime : metadonnees cloud (link-local 169.254.x), reserve, multicast, non
+    specifie. Renvoie la raison de blocage, ou None si la cible est acceptable."""
+    host = urlparse(url).hostname
+    if not host:
+        return "url sans hote valide"
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return f"hote introuvable : {host}"
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        # Loopback (127.0.0.1/::1) et LAN prive (192.168.x) AUTORISES : c'est l'usage
+        # meme de l'outil. On ne bloque que ce qui n'a aucun usage dev : metadonnees
+        # cloud (link-local 169.254.x / fe80::), multicast, adresse non specifiee.
+        if ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+            return f"hote interdit (adresse speciale : {ip})"
+    return None
 
-    - http(s):// -> garde anti-SSRF (`_blocked_host_reason`, comme fetch_url) : pas d'accès
-      aux IP internes/loopback/métadonnées cloud, même si un contenu hostile l'a suggéré ;
-    - file:// ou chemin local -> confiné aux extensions web (`_WEB_EXT`) : le navigateur ne
-      peut pas servir à exfiltrer un fichier arbitraire rendu en page.
+
+def _browser_url(root: Path, target: str) -> str:
+    """Resout et VALIDE la cible d'un outil navigateur ; leve ToolError si refusee.
+
+    - http(s):// -> garde de navigateur (`_browser_http_blocked`) : loopback/LAN prive
+      AUTORISES (c'est l'usage : verifier un dev server), seules les adresses speciales
+      (metadonnees cloud) sont bloquees ;
+    - file:// ou chemin local -> confine aux extensions web (`_WEB_EXT`) : le navigateur ne
+      peut pas servir a exfiltrer un fichier arbitraire rendu en page.
     """
     target = target.strip()
     low = target.lower()
     if low.startswith(("http://", "https://")):
-        reason = _blocked_host_reason(target)
+        reason = _browser_http_blocked(target)
         if reason:
-            raise ToolError(f"url refusée (anti-SSRF) : {reason}")
+            raise ToolError(f"url refusee : {reason}")
         return target
     if low.startswith("file://"):
         ext = Path(unquote(urlparse(target).path)).suffix.lower()
@@ -66,8 +99,91 @@ def _browser_url(root: Path, target: str) -> str:
     return path.as_uri()
 
 
+def _render_page(
+    url: str, wait_selector: str | None, count_selectors: list[str]
+) -> str:
+    """Charge `url` dans Chromium headless, EXECUTE son JS et renvoie un rapport TEXTE :
+    erreurs console, comptes d'elements, extrait visible, diagnostic de localisation. Ne
+    leve PAS pour une page injoignable (renvoie un diagnostic) ; leve ToolError seulement
+    si Playwright (lib ou navigateur) est absent. Partage par check_page et serve_and_check."""
+    try:
+        from playwright.sync_api import TimeoutError as PWTimeout
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise ToolError(_INSTALL_HINT) from exc
+
+    console: list[tuple[str, str]] = []
+    page_errors: list[str] = []
+    title = ""
+    body_text = ""
+    counts: dict[str, int] = {}
+    note = ""  # diagnostic de localisation (timeout, lecture interrompue, echec)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_default_timeout(5000)  # borne les lectures (pas de hang 30s)
+            page.on("console", lambda m: console.append((m.type, m.text)))
+            page.on("pageerror", lambda e: page_errors.append(str(e)))
+            try:
+                page.goto(url, wait_until="load", timeout=15000)
+                loaded = True
+            except PWTimeout:
+                # Chargement non termine : on NE LIT PAS la page (le thread JS peut etre
+                # gele -> nouveaux timeouts). On garde les preuves deja captees + un indice.
+                loaded = False
+                note = (
+                    "chargement non termine en 15s -> script bloquant probable "
+                    "(ex. boucle infinie a l'init). Desactive les scripts un par un pour "
+                    "bisecter ; les erreurs console ci-dessus pointent souvent la cause."
+                )
+            if loaded:
+                if wait_selector:
+                    try:
+                        page.wait_for_selector(wait_selector, timeout=5000)
+                    except Exception:  # noqa: BLE001 - absence = info, pas un crash
+                        pass
+                page.wait_for_timeout(1200)  # laisse le JS d'init s'executer
+                try:
+                    title = page.title()
+                    body = page.query_selector("body")
+                    body_text = body.inner_text()[:2000] if body else ""
+                    counts = {
+                        sel: len(page.query_selector_all(sel))
+                        for sel in count_selectors
+                    }
+                except Exception as exc:  # noqa: BLE001 - lecture partiellement bloquee
+                    note = f"lecture de la page interrompue : {str(exc)[:120]}"
+            browser.close()
+    except Exception as exc:  # noqa: BLE001 - navigateur absent / page injoignable
+        msg = str(exc)
+        if "Executable doesn't exist" in msg or "playwright install" in msg:
+            raise ToolError(_INSTALL_HINT) from exc
+        # On NE jette PAS les preuves : diagnostic structure plutot qu'une exception seche.
+        note = note or f"echec du chargement : {msg[:200]}"
+
+    errors = [t for (k, t) in console if k == "error"] + page_errors
+    warnings = [t for (k, t) in console if k == "warning"]
+    lines = [
+        f"page : {title!r} ({url})" if title else f"page : ({url})",
+        f"console : {len(errors)} erreur(s), {len(warnings)} warning(s)",
+    ]
+    for e in errors[:8]:
+        lines.append(f"  [erreur] {e[:200]}")
+    if counts:
+        lines.append("elements : " + " - ".join(f"{s} x{n}" for s, n in counts.items()))
+    visible = " ".join(body_text.split())
+    if visible:
+        lines.append(f"texte visible : {visible[:400]}")
+    if note:
+        lines.append(f"DIAGNOSTIC : {note}")
+    elif not errors and not page_errors:
+        lines.append("(aucune erreur console - la page s'est chargee et executee)")
+    return "\n".join(lines)
+
+
 def make_check_page(workspace_dir: str) -> ToolSpec:
-    """Outil check_page borné au workspace pour les chemins relatifs (absolus acceptés)."""
+    """Outil check_page borne au workspace pour les chemins relatifs (absolus acceptes)."""
     root = Path(workspace_dir)
 
     def run(args: dict) -> str:
@@ -76,104 +192,31 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
             raise ToolError(
                 "argument 'url' manquant (URL http(s):// OU chemin d'un fichier .html)"
             )
-        # Cible validée : anti-SSRF sur http(s), extensions web sur file://chemin local.
+        # Cible validee : loopback/LAN prive AUTORISES (verif locale), extensions web sur
+        # file:// (le navigateur ne sert pas a exfiltrer un fichier arbitraire).
         url = _browser_url(root, target)
-
         wait_selector = (args.get("wait_selector") or "").strip() or None
         count_selectors = [
             s.strip()
             for s in (args.get("count_selectors") or "").split(",")
             if s.strip()
         ]
-
-        try:
-            from playwright.sync_api import TimeoutError as PWTimeout
-            from playwright.sync_api import sync_playwright
-        except ImportError as exc:
-            raise ToolError(_INSTALL_HINT) from exc
-
-        console: list[tuple[str, str]] = []
-        page_errors: list[str] = []
-        title = ""
-        body_text = ""
-        counts: dict[str, int] = {}
-        note = ""  # diagnostic de localisation (timeout, lecture interrompue, échec)
-        try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.set_default_timeout(5000)  # borne les lectures (pas de hang 30s)
-                page.on("console", lambda m: console.append((m.type, m.text)))
-                page.on("pageerror", lambda e: page_errors.append(str(e)))
-                try:
-                    page.goto(url, wait_until="load", timeout=15000)
-                    loaded = True
-                except PWTimeout:
-                    # Chargement non terminé : on NE LIT PAS la page (le thread JS peut être
-                    # gelé -> nouveaux timeouts). On garde les preuves déjà captées + un indice
-                    # de localisation au lieu d'un timeout muet.
-                    loaded = False
-                    note = (
-                        "chargement non terminé en 15s → script bloquant probable "
-                        "(ex. boucle infinie à l'init). Désactive les scripts un par un pour "
-                        "bisecter ; les erreurs console ci-dessus pointent souvent la cause."
-                    )
-                if loaded:
-                    if wait_selector:
-                        try:
-                            page.wait_for_selector(wait_selector, timeout=5000)
-                        except Exception:  # noqa: BLE001 - absence = info, pas un crash
-                            pass
-                    page.wait_for_timeout(1200)  # laisse le JS d'init s'exécuter
-                    try:
-                        title = page.title()
-                        body = page.query_selector("body")
-                        body_text = body.inner_text()[:2000] if body else ""
-                        counts = {
-                            sel: len(page.query_selector_all(sel))
-                            for sel in count_selectors
-                        }
-                    except Exception as exc:  # noqa: BLE001 - lecture partiellement bloquée
-                        note = f"lecture de la page interrompue : {str(exc)[:120]}"
-                browser.close()
-        except Exception as exc:  # noqa: BLE001 - navigateur absent / page injoignable
-            msg = str(exc)
-            if "Executable doesn't exist" in msg or "playwright install" in msg:
-                raise ToolError(_INSTALL_HINT) from exc
-            # On NE jette PAS les preuves : diagnostic structuré plutôt qu'une exception sèche.
-            note = note or f"échec du chargement : {msg[:200]}"
-
-        errors = [t for (k, t) in console if k == "error"] + page_errors
-        warnings = [t for (k, t) in console if k == "warning"]
-        lines = [
-            f"page : {title!r} ({url})" if title else f"page : ({url})",
-            f"console : {len(errors)} erreur(s), {len(warnings)} warning(s)",
-        ]
-        for e in errors[:8]:
-            lines.append(f"  [erreur] {e[:200]}")
-        if counts:
-            lines.append(
-                "éléments : " + " · ".join(f"{s} ×{n}" for s, n in counts.items())
-            )
-        visible = " ".join(body_text.split())
-        if visible:
-            lines.append(f"texte visible : {visible[:400]}")
-        if note:
-            lines.append(f"DIAGNOSTIC : {note}")
-        elif not errors and not page_errors:
-            lines.append("(aucune erreur console — la page s'est chargée et exécutée)")
-        return untrusted("\n".join(lines), f"page {url}")
+        return untrusted(
+            _render_page(url, wait_selector, count_selectors), f"page {url}"
+        )
 
     return ToolSpec(
         name="check_page",
         description=(
             "Charge une page web (URL http(s):// OU chemin d'un fichier .html local) dans "
-            "un navigateur headless, EXÉCUTE son JavaScript, et renvoie : les ERREURS de "
-            "la console, le nombre d'éléments correspondant à count_selectors (ex "
-            "'.cell,#board'), et un extrait du texte visible. SERS-T'EN pour VÉRIFIER "
-            "qu'une page HTML que tu viens d'écrire s'affiche et fonctionne (0 erreur "
-            "console, éléments attendus présents) AU LIEU de supposer que ça marche. Si des "
-            "erreurs apparaissent, corrige puis relance check_page jusqu'à 0 erreur."
+            "un navigateur headless, EXECUTE son JavaScript, et renvoie : les ERREURS de "
+            "la console, le nombre d'elements correspondant a count_selectors (ex "
+            "'.cell,#board'), et un extrait du texte visible. SERS-T'EN pour VERIFIER "
+            "qu'une page HTML que tu viens d'ecrire s'affiche et fonctionne (0 erreur "
+            "console, elements attendus presents) AU LIEU de supposer que ca marche. Pour "
+            "une appli servie par un SERVEUR (Next.js, Vite, Flask) qui n'est pas encore "
+            "lance, utilise plutot serve_and_check. Si des erreurs apparaissent, corrige "
+            "puis relance jusqu'a 0 erreur."
         ),
         parameters={
             "type": "object",
@@ -188,18 +231,208 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
                 "wait_selector": {
                     "type": "string",
                     "description": (
-                        "Sélecteur CSS à attendre avant de lire la page (optionnel)."
+                        "Selecteur CSS a attendre avant de lire la page (optionnel)."
                     ),
                 },
                 "count_selectors": {
                     "type": "string",
                     "description": (
-                        "Sélecteurs CSS à compter, séparés par des virgules (ex "
-                        "'.cell,.flag') — pour vérifier que des éléments sont bien rendus."
+                        "Selecteurs CSS a compter, separes par des virgules (ex "
+                        "'.cell,.flag') - pour verifier que des elements sont bien rendus."
                     ),
                 },
             },
             "required": ["url"],
+        },
+        run=run,
+    )
+
+
+def _wait_for_port(proc: subprocess.Popen, host: str, port: int, timeout: int) -> bool:
+    """Attend qu'un port TCP accepte une connexion (serveur pret). Renvoie False si le
+    delai expire OU si le process serveur meurt avant (crash au demarrage)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if proc.poll() is not None:
+            return False  # le serveur s'est arrete tout seul -> demarrage en echec
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return True
+        except OSError:
+            time.sleep(0.5)
+    return False
+
+
+def make_serve_and_check(workspace_dir: str) -> ToolSpec:
+    """Outil serve_and_check : demarre un serveur en arriere-plan, attend son port, charge
+    la page (comme check_page), PUIS tue tout l'arbre de process. run_shell ne peut pas
+    garder un serveur vivant (il le tue au timeout) et check_page seul n'a rien a viser tant
+    que rien n'ecoute : cet outil ferme ce trou pour Next.js/Vite/Flask."""
+    root = Path(workspace_dir)
+
+    def run(args: dict) -> str:
+        command = (args.get("command") or "").strip()
+        if not command:
+            raise ToolError(
+                "argument 'command' manquant (commande qui demarre le serveur, "
+                "ex. 'npm run dev -- --port 3000')"
+            )
+        target = (args.get("url") or "").strip()
+        if not target:
+            raise ToolError(
+                "argument 'url' manquant (URL du serveur a verifier, "
+                "ex. 'http://127.0.0.1:3000')"
+            )
+        if not target.lower().startswith(("http://", "https://")):
+            raise ToolError("'url' doit etre une URL http(s):// du serveur local")
+        # Barriere de securite (comme run_shell) : commande destructrice refusee avant lancement.
+        if _is_hard_denied(command, []):
+            raise ToolError("commande interdite par la politique de securite")
+        # localhost resout en ::1 (IPv6) chez certains serveurs lies en IPv4 seulement (et
+        # l'inverse) -> faux negatifs. On normalise sur 127.0.0.1 pour l'attente ET la verif.
+        url = target.replace("://localhost", "://127.0.0.1")
+        reason = _browser_http_blocked(url)
+        if reason:
+            raise ToolError(f"url refusee : {reason}")
+        parsed = urlparse(url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+        cwd = (args.get("cwd") or "").strip()
+        workdir = _resolve_in_root(root, cwd) if cwd else root
+        if not Path(workdir).is_dir():
+            raise ToolError(f"dossier de travail introuvable : {workdir}")
+
+        try:
+            ready_timeout = int(args.get("ready_timeout") or 45)
+        except (TypeError, ValueError):
+            ready_timeout = 45
+        ready_timeout = max(5, min(ready_timeout, 120))
+
+        wait_selector = (args.get("wait_selector") or "").strip() or None
+        count_selectors = [
+            s.strip()
+            for s in (args.get("count_selectors") or "").split(",")
+            if s.strip()
+        ]
+
+        # Serveur DETACHE : sa sortie va dans un fichier temporaire (lu en cas d'echec de
+        # demarrage). On NE communicate() PAS (il ne rend jamais la main) : on poll le port.
+        fd, logpath = tempfile.mkstemp(prefix="loom-serve-", suffix=".log")
+        os.close(fd)
+        logf = open(logpath, "w", encoding="utf-8", errors="replace")
+        popen_kwargs: dict = {}
+        if not sys.platform.startswith("win"):
+            popen_kwargs["start_new_session"] = True
+        try:
+            proc = subprocess.Popen(
+                _shell_argv(command),
+                cwd=str(workdir),
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+                **popen_kwargs,
+            )
+        except OSError as exc:
+            logf.close()
+            try:
+                os.unlink(logpath)
+            except OSError:
+                pass
+            raise ToolError(f"impossible de lancer le serveur : {exc}") from exc
+
+        try:
+            ready = _wait_for_port(proc, host, port, ready_timeout)
+            if ready:
+                report = _render_page(url, wait_selector, count_selectors)
+                body = f"serveur demarre, port {port} pret - verification de {url} :\n{report}"
+            else:
+                try:
+                    logf.flush()
+                    tail = Path(logpath).read_text(encoding="utf-8", errors="replace")[
+                        -1200:
+                    ]
+                except OSError:
+                    tail = ""
+                if proc.poll() is not None:
+                    diag = (
+                        f"le serveur s'est ARRETE tout seul (exit {proc.returncode}) avant "
+                        f"d'ecouter sur {host}:{port} - demarrage en echec."
+                    )
+                else:
+                    diag = (
+                        f"le port {host}:{port} n'a pas repondu en {ready_timeout}s. Verifie "
+                        "que la commande demarre bien un serveur sur CE port (option --port), "
+                        "ou augmente ready_timeout."
+                    )
+                body = (
+                    f"serve_and_check : {diag}\n--- sortie serveur ---\n"
+                    f"{tail or '(aucune sortie)'}"
+                )
+        finally:
+            _kill_tree(proc)
+            logf.close()
+            try:
+                os.unlink(logpath)
+            except OSError:
+                pass
+
+        return untrusted(body, f"page {url}")
+
+    return ToolSpec(
+        name="serve_and_check",
+        description=(
+            "Demarre un serveur local en ARRIERE-PLAN (dev/preview : 'npm run dev', "
+            "'vite', 'flask run', 'python -m http.server'...), attend que son port reponde, "
+            "charge la page dans un navigateur headless (memes preuves que check_page : "
+            "erreurs console, elements, texte visible) PUIS arrete le serveur et tue tout "
+            "l'arbre de process. SERS-T'EN pour prouver qu'une appli a SERVEUR (Next.js, "
+            "Vite, Flask) s'affiche : run_shell ne peut PAS garder un serveur vivant (il le "
+            "tue au timeout) et check_page seul n'a rien a viser tant que rien n'ecoute. "
+            "Donne 'command' (qui demarre le serveur) et 'url' (ou le joindre, ex. "
+            "http://127.0.0.1:3000). Pour une page .html STATIQUE (sans serveur), prefere "
+            "check_page directement."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": (
+                        "Commande qui demarre le serveur (ex. 'npm run dev -- --port 3000'). "
+                        "Elle sera lancee en arriere-plan puis arretee a la fin."
+                    ),
+                },
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "URL http(s):// ou joindre le serveur (ex. 'http://127.0.0.1:3000')."
+                    ),
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": (
+                        "Dossier ou lancer la commande (relatif au dossier de travail ou "
+                        "absolu). Defaut : le dossier de travail."
+                    ),
+                },
+                "wait_selector": {
+                    "type": "string",
+                    "description": "Selecteur CSS a attendre avant de lire la page (optionnel).",
+                },
+                "count_selectors": {
+                    "type": "string",
+                    "description": (
+                        "Selecteurs CSS a compter, separes par des virgules (ex '.card,nav')."
+                    ),
+                },
+                "ready_timeout": {
+                    "type": "integer",
+                    "description": (
+                        "Secondes max d'attente que le port reponde (defaut 45, max 120)."
+                    ),
+                },
+            },
+            "required": ["command", "url"],
         },
         run=run,
     )
@@ -364,13 +597,13 @@ def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
 
 
 def make_check_interactive(workspace_dir: str) -> ToolSpec:
-    """Outil check_interactive : joue une séquence d'actions sur une page et vérifie le DOM
-    après chaque action. Pour PROUVER qu'une page est jouable (pas seulement « 0 erreur »)."""
+    """Outil check_interactive : joue une sequence d'actions sur une page et verifie le DOM
+    apres chaque action. Pour PROUVER qu'une page est jouable (pas seulement « 0 erreur »)."""
 
     def run(args: dict) -> str:
         target = (args.get("url") or "").strip()
         if not target:
-            raise ToolError("argument 'url' manquant (page HTML à tester)")
+            raise ToolError("argument 'url' manquant (page HTML a tester)")
         steps = args.get("steps")
         if not isinstance(steps, list) or not steps:
             raise ToolError(
@@ -384,9 +617,9 @@ def make_check_interactive(workspace_dir: str) -> ToolSpec:
         for e in res.get("console_errors", [])[:5]:
             lines.append(f"  [erreur] {e[:160]}")
         for i, s in enumerate(res.get("steps", []), 1):
-            mark = "ok" if s["ok"] else "ÉCHEC"
+            mark = "ok" if s["ok"] else "ECHEC"
             lines.append(
-                f"  étape {i} [{mark}] {s['op']} {s['selector']} -> {s['observed']}"
+                f"  etape {i} [{mark}] {s['op']} {s['selector']} -> {s['observed']}"
             )
         if res.get("note"):
             lines.append(f"NOTE : {res['note']}")
@@ -394,23 +627,23 @@ def make_check_interactive(workspace_dir: str) -> ToolSpec:
             verdict = "toutes les actions passent, 0 erreur"
         elif res.get("note"):
             verdict = (
-                "preuve INSUFFISANTE — ajoute un `expect` testable (selector + check) sur "
-                "au moins une étape pour prouver le comportement"
+                "preuve INSUFFISANTE - ajoute un `expect` testable (selector + check) sur "
+                "au moins une etape pour prouver le comportement"
             )
         else:
-            verdict = "au moins une action/post-condition échoue"
+            verdict = "au moins une action/post-condition echoue"
         lines.append("VERDICT : " + verdict)
-        # Le texte observé vient d'une page (potentiellement hostile) : donnée, pas des ordres.
+        # Le texte observe vient d'une page (potentiellement hostile) : donnee, pas des ordres.
         return untrusted("\n".join(lines), f"page {res['url']}")
 
     return ToolSpec(
         name="check_interactive",
         description=(
-            "Prouve qu'une page HTML est JOUABLE : joue une séquence d'actions réelles "
-            "(click, rightclick, dblclick, hover, type) sur des sélecteurs CSS et vérifie, "
-            "APRÈS chaque action, une post-condition dans le DOM. Va plus loin que check_page "
+            "Prouve qu'une page HTML est JOUABLE : joue une sequence d'actions reelles "
+            "(click, rightclick, dblclick, hover, type) sur des selecteurs CSS et verifie, "
+            "APRES chaque action, une post-condition dans le DOM. Va plus loin que check_page "
             "(qui ne fait que charger). Utilise-le pour prouver « cliquer une cellule la "
-            "révèle », « clic droit pose un drapeau », « restart réinitialise »."
+            "revele », « clic droit pose un drapeau », « restart reinitialise »."
         ),
         parameters={
             "type": "object",
@@ -421,7 +654,7 @@ def make_check_interactive(workspace_dir: str) -> ToolSpec:
                 },
                 "steps": {
                     "type": "array",
-                    "description": "Actions à jouer dans l'ordre.",
+                    "description": "Actions a jouer dans l'ordre.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -442,11 +675,11 @@ def make_check_interactive(workspace_dir: str) -> ToolSpec:
                             },
                             "text": {
                                 "type": "string",
-                                "description": "Texte à saisir (op=type).",
+                                "description": "Texte a saisir (op=type).",
                             },
                             "expect": {
                                 "type": "object",
-                                "description": "Post-condition DOM après l'action.",
+                                "description": "Post-condition DOM apres l'action.",
                                 "properties": {
                                     "selector": {"type": "string"},
                                     "check": {

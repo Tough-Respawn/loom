@@ -138,7 +138,7 @@ def make_run_shell(
                 "interface, teste-le SANS lancer sa boucle d'événements (ex. "
                 '`python -c "import minesweeper"` pour confirmer qu\'il se construit sans '
                 "erreur, ou un test des fonctions de logique), ou laisse l'utilisateur "
-                "l'ouvrir lui-même. Pour une page web, utilise check_page."
+                "l'ouvrir lui-même. Pour une page web servie par un SERVEUR (Next.js/Vite/Flask), utilise serve_and_check (il demarre le serveur, verifie, puis l'arrete). Pour une page .html statique, utilise check_page."
             )
         stdout = (stdout or "").strip("\r\n")
         stderr = (stderr or "").strip("\r\n")
@@ -167,7 +167,7 @@ def make_run_shell(
         description=(
             "Exécute une commande shell dans le workspace (PowerShell sous "
             "Windows, bash sinon) et renvoie le code de sortie, stdout et "
-            "stderr. La commande doit TERMINER (pas de GUI ni de serveur qui tourne en "
+            "stderr. Pour DEMARRER-VERIFIER-ARRETER un serveur web (Next.js/Vite/Flask), utilise serve_and_check. La commande doit TERMINER (pas de GUI ni de serveur qui tourne en "
             "boucle : ils seront tués au timeout). Les commandes destructrices sont refusées."
         ),
         parameters={
