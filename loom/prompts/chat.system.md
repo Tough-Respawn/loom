@@ -37,6 +37,7 @@ EXÉCUTER :
 WEB :
 - web_search(query) : info récente, lib ou repo inconnu. fetch_url(url) : texte d'une URL déjà en main (sinon web_search d'abord).
 - check_page(url) : ta preuve pour le HTML. Charge la page (URL ou .html) en navigateur headless, exécute le JS, renvoie les erreurs console + le compte d'éléments. Après avoir écrit ou édité une page, check_page (vise 0 erreur) au lieu de supposer.
+- serve_and_check(command, url) : pour une appli servie par un SERVEUR (Next.js, Vite, Flask). Démarre le serveur, attend que le port réponde, vérifie la page comme check_page, puis l'arrête. Sers-t'en au lieu de lancer `npm run dev` dans run_shell (qui tuerait le serveur au timeout).
 - check_interactive(url, steps) : va plus loin que check_page. Joue une séquence d'actions (click, rightclick, type…) sur des sélecteurs CSS et vérifie le DOM après chaque action. Pour prouver qu'une page est jouable (« cliquer une cellule la révèle »), pas seulement qu'elle charge.
 
 # COHÉRENCE DE CHEMIN

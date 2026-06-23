@@ -52,6 +52,7 @@ _SUBAGENT_TOOLS = [
     "run_shell",
     "check_page",
     "check_interactive",
+    "serve_and_check",
 ]
 
 
@@ -104,9 +105,13 @@ def build_registry(
     if "read_image" in enabled:
         specs.append(make_read_image(workspace_dir))
     if "write_file" in enabled:
-        specs.append(make_write_file(workspace_dir, max_bytes, max_tokens=sub_max_tokens))
+        specs.append(
+            make_write_file(workspace_dir, max_bytes, max_tokens=sub_max_tokens)
+        )
     if "append_file" in enabled:
-        specs.append(make_append_file(workspace_dir, max_bytes, max_tokens=sub_max_tokens))
+        specs.append(
+            make_append_file(workspace_dir, max_bytes, max_tokens=sub_max_tokens)
+        )
     if "edit_file" in enabled:
         specs.append(make_edit_file(workspace_dir))
     if "format_code" in enabled:
@@ -123,6 +128,10 @@ def build_registry(
         from loom.tools.browser import make_check_interactive
 
         specs.append(make_check_interactive(workspace_dir))
+    if "serve_and_check" in enabled:
+        from loom.tools.browser import make_serve_and_check
+
+        specs.append(make_serve_and_check(workspace_dir))
     if "web_search" in enabled or "fetch_url" in enabled:
         from loom.tools.web import WebSearchConfig, make_fetch_url, make_web_search
 
