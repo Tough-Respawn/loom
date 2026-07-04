@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import unicodedata
 from collections.abc import Iterator
@@ -112,16 +113,23 @@ def _trunc(text: str, limit: int) -> str:
 # titre que session.json). Défaut global tant qu'aucune session n'est désignée.
 # client.py vit dans loom/agent/ : remonter de TROIS niveaux (loom/agent -> loom -> repo)
 # pour viser l'état machine sous var/logs/ (gitignored).
-_DEBUG_LOG = (
+_DEBUG_LOG_DEFAULT = (
     Path(__file__).resolve().parent.parent.parent / "var" / "logs" / "loom-debug.log"
 )
+# Chemin du log debug PAR THREAD (donc par génération) : avec plusieurs sessions qui
+# génèrent EN PARALLÈLE, un chemin global entremêlerait leurs traces. Chaque requête /chat
+# (un thread) pose le sien via set_debug_log_path -> les logs restent séparés par session.
+_debug_local = threading.local()
 
 
 def set_debug_log_path(path) -> None:
-    """Redirige le trace debug vers `path` (ex. sessions/<id>/debug.log). Le dossier est
-    créé à l'écriture. Appelé par la web app au début de chaque tour."""
-    global _DEBUG_LOG
-    _DEBUG_LOG = Path(path)
+    """Redirige le trace debug de CE thread vers `path` (ex. sessions/<id>/debug.log). Le
+    dossier est créé à l'écriture. Appelé par la web app au début de chaque tour."""
+    _debug_local.path = Path(path)
+
+
+def _current_debug_log() -> Path:
+    return getattr(_debug_local, "path", None) or _DEBUG_LOG_DEFAULT
 
 
 def _emit(text: str) -> None:
@@ -139,8 +147,9 @@ def _emit(text: str) -> None:
     except Exception:  # noqa: BLE001 - le debug est best-effort, jamais bloquant
         pass
     try:
-        _DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(_DEBUG_LOG, "a", encoding="utf-8", errors="replace") as fh:
+        path = _current_debug_log()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8", errors="replace") as fh:
             fh.write(text + "\n")
     except Exception:  # noqa: BLE001 - best-effort
         pass
