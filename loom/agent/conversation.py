@@ -34,6 +34,32 @@ class Conversation:
     # sur disque (ça, c'est « enregistrer pour toutes les sessions »). Le catalogue et use_skill
     # utilisent ce texte à la place du fichier pour cette session uniquement.
     skill_overrides: dict[str, str] = field(default_factory=dict)
+    # Compteurs de consommation RÉELS, cumulés sur toute la session (persistés). Une API sans
+    # état refacture TOUT le contexte en INPUT à chaque appel d'outil : `tokens_in` explose vs
+    # l'output visible. On somme donc input/output/coût sur TOUS les appels (pas par tour).
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
+    api_calls: int = 0
+
+    def add_usage(
+        self, prompt: int, completion: int, price_in: float, price_out: float
+    ) -> None:
+        """Cumule un appel API dans les compteurs de session + le coût ($ / M tokens)."""
+        self.tokens_in += int(prompt or 0)
+        self.tokens_out += int(completion or 0)
+        self.api_calls += 1
+        self.cost_usd += (prompt or 0) / 1e6 * price_in + (
+            completion or 0
+        ) / 1e6 * price_out
+
+    def usage_totals(self) -> dict:
+        return {
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "cost_usd": round(self.cost_usd, 4),
+            "api_calls": self.api_calls,
+        }
 
     def add(self, role: str, content: str | list) -> None:
         self.messages.append({"role": role, "content": content})
@@ -43,6 +69,11 @@ class Conversation:
         self.todos = []  # nouvelle conversation = plan vierge
         self.notes = []  # ...et notes vierges
         self.goal = ""  # ...et objectif effacé
+        # Compteur de consommation remis à zéro : le fil repart, le cumul aussi.
+        self.tokens_in = 0
+        self.tokens_out = 0
+        self.cost_usd = 0.0
+        self.api_calls = 0
 
     def set_goal(self, goal: str) -> None:
         self.goal = (goal or "").strip()
@@ -82,6 +113,10 @@ class Conversation:
             "goal": self.goal,
             "disabled_skills": self.disabled_skills,
             "skill_overrides": self.skill_overrides,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "cost_usd": self.cost_usd,
+            "api_calls": self.api_calls,
         }
 
     @classmethod
@@ -98,6 +133,10 @@ class Conversation:
             goal=data.get("goal", ""),
             disabled_skills=list(data.get("disabled_skills", [])),
             skill_overrides=dict(data.get("skill_overrides", {})),
+            tokens_in=int(data.get("tokens_in", 0) or 0),
+            tokens_out=int(data.get("tokens_out", 0) or 0),
+            cost_usd=float(data.get("cost_usd", 0.0) or 0.0),
+            api_calls=int(data.get("api_calls", 0) or 0),
         )
 
     def save(self, path: str | Path) -> None:

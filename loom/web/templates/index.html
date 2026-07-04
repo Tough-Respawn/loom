@@ -321,6 +321,20 @@
     .gen-metrics.done .gm-dot { animation: none; background: var(--text-faint); }
     @keyframes gmpulse { 0%,100%{opacity:1} 50%{opacity:.2} }
     .topbar-spacer { flex: 1; }
+    /* Compteur de consommation RÉELLE cumulée de la session (input rejoué + output + coût).
+       Distinct de gen-metrics (per-tour) : muet, pas de pulse — c'est un total persistant. */
+    .usage-meter {
+      display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
+      color: var(--text-dim); background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: 6px; padding: 3px 9px; font-variant-numeric: tabular-nums; cursor: default;
+    }
+    .usage-meter[hidden] { display: none; }
+    .usage-meter .um-lab { color: var(--text-faint); font-weight: 600; }
+    .usage-meter .um-unit { color: var(--text-faint); font-size: 9.5px; margin-left: -2px; }
+    .usage-meter #um-in { color: var(--warn); }
+    .usage-meter #um-out { color: var(--accent); }
+    .usage-meter .um-calls { color: var(--text-faint); }
+    .usage-meter .um-cost { color: var(--text); font-weight: 600; margin-left: 3px; }
     .sidebar-toggle {
       display: none; background: var(--bg-elev); border: 1px solid var(--border);
       color: var(--text-dim); padding: 6px 10px; border-radius: 6px; cursor: pointer;
@@ -527,6 +541,14 @@
         <span class="gm-dot"></span><span id="gm-text"></span>
       </span>
       <span class="topbar-spacer"></span>
+      <span class="usage-meter" id="usage-meter" hidden
+            title="Consommation RÉELLE cumulée de la session : l'API refacture TOUT le contexte en INPUT à chaque appel d'outil. Le coût suit ce total (surtout l'input), PAS les tokens qui défilent à l'écran (l'output seul).">
+        <span class="um-lab">&Sigma;</span>
+        <span id="um-in">0</span><span class="um-unit">in</span>
+        <span id="um-out">0</span><span class="um-unit">out</span>
+        <span class="um-calls" id="um-calls"></span>
+        <span class="um-cost" id="um-cost"></span>
+      </span>
     </div>
     <div class="messages-wrap" id="messages-wrap">
       <div id="messages"></div>
