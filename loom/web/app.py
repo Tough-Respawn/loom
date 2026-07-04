@@ -648,6 +648,13 @@ def create_app(
                     "messages": conv.messages,
                     "thinking": conv.thinking,
                     "usage_totals": conv.usage_totals(),
+                    # Onglet initial : la session active (id/titre/modèle/workspace) + toutes
+                    # les sessions (pour la sidebar). Le multi-onglets s'hydrate là-dessus.
+                    "active_session": active_id,
+                    "title": sess.title,
+                    "model": conv.model,
+                    "workspace": ws,
+                    "sessions": sessions,
                 },
                 ensure_ascii=False,
             ).replace("<", "\\u003c"),
@@ -1633,6 +1640,27 @@ def create_app(
             "active": active,
         }
 
+    @app.get("/session_state")
+    def session_state():
+        # État CLIENT d'une session, pour OUVRIR un onglet sans recharger la page : messages,
+        # modèle, thinking, workspace, outils actifs, compteur. Le multi-onglets s'appuie
+        # dessus (chaque onglet hydrate sa session à l'ouverture).
+        sid = (request.args.get("id") or "").strip()
+        sess = _get_session(sid)
+        if sess is None:
+            return Response("session inconnue", status=404)
+        conv = sess.conversation
+        return {
+            "id": sess.id,
+            "title": sess.title,
+            "workspace": sess.workspace,
+            "messages": conv.messages,
+            "thinking": conv.thinking,
+            "model": conv.model,
+            "active_tools": conv.active_tools,
+            "usage_totals": conv.usage_totals(),
+        }
+
     @app.post("/session/new")
     def session_new():
 
@@ -1641,6 +1669,9 @@ def create_app(
         title = (request.form.get("title") or "").strip()
 
         sess = session_store.create(workspace=ws, title=title)
+
+        with _gen_guard:
+            _sessions_cache[sess.id] = sess
 
         _cur["session"] = sess
 
@@ -1651,7 +1682,7 @@ def create_app(
 
         sid = (request.form.get("id") or "").strip()
 
-        loaded = session_store.load(sid)
+        loaded = _get_session(sid)
 
         if loaded is None:
             return Response("session inconnue", status=404)
