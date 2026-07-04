@@ -278,6 +278,24 @@ _GOAL_CLEAR_WORDS = {
 }
 
 
+def _init_message(target_display: str) -> str:
+    """Consigne dépliée par la commande /init : fait explorer le dossier `target_display`
+    et écrire `target_display/loom.md` (fiche projet). Fonction pure (testable)."""
+    return (
+        f"Génère la fiche projet du dossier de travail « {target_display} ». Explore-le "
+        "avec tes outils (list_dir, find_files, read_file) — n'invente RIEN, base-toi "
+        "seulement sur ce que tu lis vraiment. Repère : le but du projet, la "
+        "stack/langages/frameworks, l'arborescence importante, comment l'installer / le "
+        "lancer / le tester, et les conventions (lint, gestionnaire de paquets, CI/CD). "
+        "Puis ÉCRIS le fichier avec write_file au chemin EXACT "
+        f"« {target_display}/loom.md » (à la racine de CE dossier, nulle part ailleurs), "
+        "en markdown structuré : titre du projet, puis les sections `## But`, `## Stack`, "
+        "`## Arborescence`, `## Lancer / Tester`, `## Conventions`, `## Points d'attention`. "
+        "Concis et factuel ; si une info manque, dis-le plutôt que de la deviner. Termine "
+        "en confirmant le chemin écrit."
+    )
+
+
 # Verbe compact par outil pour la TRACE D'ACTIONS persistée (anti-amnésie). Les outils
 
 # de navigation (find/search/list) en sont absents : on mémorise les LECTURES et les
@@ -721,6 +739,26 @@ def create_app(
                     yield _sse("done")
 
                 return Response(_goal_ack(), mimetype="text/event-stream")
+
+        # Commande /init : génère une fiche projet `loom.md` À LA RACINE DU DOSSIER DE TRAVAIL
+        # de la session (celui défini dans l'UI, ou ciblé par « /init <chemin> »). Macro de
+        # prompt (pas de scanner figé) : on déplie une consigne et la boucle tool-use explore
+        # puis écrit le fichier. `/init <dossier existant>` adopte d'abord ce dossier comme
+        # workspace (exploration + écriture cohérentes).
+        if message == "/init" or message.startswith("/init "):
+            arg = message[len("/init") :].strip()
+            _sess = _session()
+            target_dir = _sess.workspace
+            if arg:
+                cand = Path(arg).expanduser()
+                if cand.is_dir():
+                    target_dir = str(cand.resolve())
+                    if target_dir != _sess.workspace:
+                        _sess.workspace = target_dir
+                        session_store.save(_sess)
+            target_display = str(Path(target_dir)).replace("\\", "/")
+            message = _init_message(target_display)
+            # (pas de return : le flux normal ci-dessous exécute la consigne)
 
         # Plus de garde bloquant : un modèle texte-only ne reçoit PAS l'image inline (qui
 
