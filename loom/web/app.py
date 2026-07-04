@@ -793,6 +793,30 @@ def create_app(
 
         return Response(generate(), mimetype="text/event-stream")
 
+    @app.post("/fork")
+    def fork():
+        """Repart d'un message utilisateur : tronque l'historique APRES ce message (exclus),
+        renvoie son texte pour pre-remplir l'input. user_index = N-ieme message user (0-based)."""
+        user_index = int(request.form.get("user_index", "-1"))
+        conv, save = _ctx()
+        msgs = conv.messages
+        # Trouve le N-ieme message user dans l'historique persiste
+        user_msgs = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+        if user_index < 0 or user_index >= len(user_msgs):
+            return Response("index invalide", status=400)
+        target_idx = user_msgs[user_index]
+        content = msgs[target_idx].get("content", "")
+        if isinstance(content, list):
+            text = " ".join(
+                p.get("text", "") for p in content if p.get("type") == "text"
+            )
+        else:
+            text = str(content)
+        # Tronque : garde jusqu'au message user (inclus), efface la suite
+        conv.messages = msgs[: target_idx + 1]
+        save()
+        return {"text": text}
+
     @app.post("/cancel")
     def cancel():
         # Bouton Stop : pose le signal d'annulation que la boucle de /chat vérifie à
