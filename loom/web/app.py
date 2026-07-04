@@ -386,6 +386,7 @@ def create_app(
     model_max_tokens=None,
     remote_model_ids=None,
     remote_model_names=None,
+    model_prices=None,
 ) -> Flask:
 
     app = Flask(__name__)
@@ -444,6 +445,11 @@ def create_app(
     model_contexts = dict(model_contexts or {})
 
     model_max_tokens = dict(model_max_tokens or {})
+    # Prix par modèle ($/M tokens) : id -> (input, output). Local ou id absent -> (0, 0).
+    model_prices = dict(model_prices or {})
+
+    def _price_of(model_id):
+        return model_prices.get(model_id, (0.0, 0.0))
 
     def _model_limits(model_id):
         """(max_tokens effectif, seuil de microcompact) pour `model_id`."""
@@ -597,6 +603,7 @@ def create_app(
         return {
             "messages": conv.messages,
             **_skills_ctx(conv),
+            "usage_totals": conv.usage_totals(),
             "models": models,
             "remote_model_ids": remote_model_ids,
             "current_model": conv.model,
@@ -610,7 +617,11 @@ def create_app(
             # État initial pour l'hydratation côté client (Preact). On échappe '<'
             # pour ne pas pouvoir fermer la balise <script> depuis le contenu.
             "init_json": json.dumps(
-                {"messages": conv.messages, "thinking": conv.thinking},
+                {
+                    "messages": conv.messages,
+                    "thinking": conv.thinking,
+                    "usage_totals": conv.usage_totals(),
+                },
                 ensure_ascii=False,
             ).replace("<", "\\u003c"),
         }
@@ -1131,11 +1142,20 @@ def create_app(
 
                         # tours ET les outils, et on réconcilie le tour courant.
 
-                        sent_tokens += payload.get("prompt_tokens", 0) or 0
+                        _p = payload.get("prompt_tokens", 0) or 0
+                        _c = payload.get("completion_tokens", 0) or 0
 
-                        recv_confirmed += payload.get("completion_tokens", 0) or 0
+                        sent_tokens += _p
+
+                        recv_confirmed += _c
 
                         cur_turn = 0
+
+                        # Cumul RÉEL de la session : chaque appel refacture tout le contexte en
+                        # INPUT -> on somme input/output/coût sur TOUS les appels (persisté),
+                        # pas seulement le tour. C'est LA vraie somme facturée.
+                        _pin, _pout = _price_of(conv.model)
+                        conv.add_usage(_p, _c, _pin, _pout)
 
                         yield _sse("usage", **payload)
 
@@ -1145,6 +1165,8 @@ def create_app(
                             recv=recv_confirmed,
                             tok_s=last_rate,
                         )
+
+                        yield _sse("totals", **conv.usage_totals())
 
                     elif kind == "phase":
                         yield _sse("phase", **payload)
