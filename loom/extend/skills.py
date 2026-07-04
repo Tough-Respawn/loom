@@ -121,6 +121,68 @@ def render_catalog(skills: list[Skill]) -> str:
     return "\n".join(lines)
 
 
+def effective_skills(
+    skills: list[Skill],
+    *,
+    overrides: dict[str, str] | None = None,
+    disabled: list[str] | None = None,
+) -> list[Skill]:
+    """Skills EFFECTIFS pour une session : applique les overrides (texte SKILL.md édité,
+    re-parsé) et RETIRE les skills désactivés. Sert au catalogue ET à use_skill, pour que
+    le modèle ne voie/charge que ce qui est actif, avec le contenu de session s'il existe.
+
+    L'override ne peut PAS changer l'identité (name) du skill : on garde le nom d'origine
+    quoi que dise le frontmatter édité (sinon on casserait le lien catalogue <-> use_skill)."""
+    overrides = overrides or {}
+    skip = set(disabled or [])
+    out: list[Skill] = []
+    for s in skills:
+        if s.name in skip:
+            continue
+        raw = overrides.get(s.name)
+        if raw is None:
+            out.append(s)
+            continue
+        _, desc, body, meta = _parse_skill_md(raw, s.name)
+        out.append(
+            Skill(name=s.name, description=desc, body=body, base_dir=s.base_dir, **meta)
+        )
+    return out
+
+
+def skill_source_path(skill: Skill) -> Path | None:
+    """Chemin du fichier SKILL.md d'un skill (pour lire/écrire son texte brut)."""
+    if not skill.base_dir:
+        return None
+    return Path(skill.base_dir) / "SKILL.md"
+
+
+def read_skill_source(skill: Skill) -> str:
+    """Texte brut du SKILL.md sur disque (frontmatter + corps), pour l'éditeur.
+
+    Repli : si le fichier est illisible, reconstitue un document minimal depuis les
+    champs connus (ne perd pas la main sur l'édition)."""
+    p = skill_source_path(skill)
+    if p is not None:
+        try:
+            return p.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    name = skill.name.split(":")[-1]
+    return f"---\nname: {name}\ndescription: {skill.description}\n---\n\n{skill.body}"
+
+
+def write_skill_source(skill: Skill, text: str) -> Path:
+    """Écrit le texte brut dans le SKILL.md sur disque (« enregistrer pour toutes les
+    sessions »). Renvoie le chemin écrit. Lève OSError si non écrivable."""
+    p = skill_source_path(skill)
+    if p is None:
+        raise OSError(f"skill '{skill.name}' sans fichier source (base_dir absent)")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
 def load_skill_body(skills: list[Skill], name: str) -> str | None:
     """Corps d'un skill par nom (préfixé du dossier de base pour lire references/)."""
     for s in skills:

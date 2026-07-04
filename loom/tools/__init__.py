@@ -198,16 +198,25 @@ def build_registry(
             )
         )
     if "use_skill" in enabled and skills_dir is not None:
-        from loom.extend.skills import collect_skills
+        from loom.extend.skills import collect_skills, effective_skills
         from loom.tools.skills import make_use_skill
 
-        specs.append(
-            make_use_skill(
-                lambda: collect_skills(
-                    skills_dir, plugins_root, learned_dir=learned_skills_dir
-                )
+        def _skills_provider() -> list:
+            # Skills EFFECTIFS de la session : overrides (édition de session) appliqués et
+            # skills désactivés retirés -> use_skill ne charge que ce que voit le catalogue.
+            # Sous-agent (pas de conversation) -> tous les skills du disque.
+            all_skills = collect_skills(
+                skills_dir, plugins_root, learned_dir=learned_skills_dir
             )
-        )
+            if conversation is None:
+                return all_skills
+            return effective_skills(
+                all_skills,
+                overrides=getattr(conversation, "skill_overrides", None),
+                disabled=getattr(conversation, "disabled_skills", None),
+            )
+
+        specs.append(make_use_skill(_skills_provider))
     if plugins_root is not None:
         from loom.tools.plugins import (
             make_add_marketplace,

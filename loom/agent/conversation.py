@@ -27,6 +27,13 @@ class Conversation:
     # travail jusqu'à ce qu'un évaluateur la juge atteinte (façon /goal de Claude Code). Vide =
     # pas d'objectif. Effacé quand atteint. Par session, persisté ici.
     goal: str = ""
+    # Skills DÉSACTIVÉS pour cette session : retirés du catalogue et de use_skill. Vide = tous
+    # actifs (défaut, rétro-compat). Par session -> on module la surface de skills par projet.
+    disabled_skills: list[str] = field(default_factory=list)
+    # Overrides de skill AU NIVEAU SESSION : nom -> texte SKILL.md édité. N'écrit PAS le fichier
+    # sur disque (ça, c'est « enregistrer pour toutes les sessions »). Le catalogue et use_skill
+    # utilisent ce texte à la place du fichier pour cette session uniquement.
+    skill_overrides: dict[str, str] = field(default_factory=dict)
 
     def add(self, role: str, content: str | list) -> None:
         self.messages.append({"role": role, "content": content})
@@ -39,6 +46,16 @@ class Conversation:
 
     def set_goal(self, goal: str) -> None:
         self.goal = (goal or "").strip()
+
+    def set_disabled_skills(self, names: list[str]) -> None:
+        self.disabled_skills = list(names)
+
+    def set_skill_override(self, name: str, body: str | None) -> None:
+        """Pose (ou retire si body=None) l'override de session d'un skill."""
+        if body is None:
+            self.skill_overrides.pop(name, None)
+        else:
+            self.skill_overrides[name] = body
 
     def set_tools(self, names: list[str]) -> None:
         self.active_tools = list(names)
@@ -63,6 +80,8 @@ class Conversation:
             "todos": self.todos,
             "notes": self.notes,
             "goal": self.goal,
+            "disabled_skills": self.disabled_skills,
+            "skill_overrides": self.skill_overrides,
         }
 
     @classmethod
@@ -77,6 +96,8 @@ class Conversation:
             todos=list(data.get("todos", [])),
             notes=list(data.get("notes", [])),
             goal=data.get("goal", ""),
+            disabled_skills=list(data.get("disabled_skills", [])),
+            skill_overrides=dict(data.get("skill_overrides", {})),
         )
 
     def save(self, path: str | Path) -> None:
