@@ -653,6 +653,43 @@ class LoomClient:
             return r["client"], r["model"], r["enable_thinking_param"]
         return self._client, (model or self.model), True
 
+    def describe_image(self, data_uri: str, question: str, model: str) -> str:
+        """Fait décrire une image par un modèle VISION (`model`) pour un modèle de raisonnement
+        qui ne voit pas (ex. glm-5.2). Appel court NON streamé. Renvoie une description texte
+        (exhaustive, structurée). Sert au routage de read_image (approche « VLM comme outil » :
+        le raisonneur interroge l'image à la demande). En cas d'erreur : message clair, jamais
+        d'exception qui casserait la boucle."""
+        oai, api_model, _ = self._resolve(model)
+        sys_p = (
+            "Tu décris une image pour un AUTRE modèle qui ne la voit pas. Sois exhaustif, "
+            "structuré et FIDÈLE : transcris le texte lisible tel quel, décris le layout, la "
+            "hiérarchie, les couleurs, les composants et leur position. Pas d'interprétation "
+            "gratuite ni de conseil — juste ce qui est réellement dans l'image."
+        )
+        q = (question or "").strip() or (
+            "Décris cette image exhaustivement (texte, layout, couleurs, éléments)."
+        )
+        content = [
+            {"type": "text", "text": q},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ]
+        try:
+            resp = oai.chat.completions.create(
+                model=api_model,
+                messages=[
+                    {"role": "system", "content": sys_p},
+                    {"role": "user", "content": content},
+                ],
+                max_tokens=1500,
+                stream=False,
+            )
+            return (
+                resp.choices[0].message.content or ""
+            ).strip() or "(le VLM n'a rien renvoyé)"
+        except Exception as exc:  # noqa: BLE001 - décrire une image ne doit jamais crasher
+            _debug("DESCRIBE_IMAGE_ERR", str(exc))
+            return f"[description d'image indisponible via le modèle vision : {str(exc)[:160]}]"
+
     def stream_chat(
         self,
         messages: list[dict],
