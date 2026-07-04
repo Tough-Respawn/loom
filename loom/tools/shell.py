@@ -106,6 +106,12 @@ def make_run_shell(
         popen_kwargs: dict = {}
         if not sys.platform.startswith("win"):
             popen_kwargs["start_new_session"] = True
+        # Force le child à ÉMETTRE de l'UTF-8. Sur Windows FR, un python lancé en pipe encode
+        # sa sortie avec la locale (CP1252) -> une fois décodée UTF-8 côté Loom, les accents
+        # deviennent du mojibake (observé sur un test qui imprime des accents). PYTHONUTF8 (mode
+        # UTF-8) + PYTHONIOENCODING règlent proprement le cas courant des scripts python ; on
+        # décode déjà en UTF-8 ci-dessous, les deux bouts sont alors cohérents.
+        _env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
         try:
             proc = subprocess.Popen(
                 _shell_argv(command),
@@ -114,6 +120,7 @@ def make_run_shell(
                 stderr=subprocess.PIPE,
                 encoding="utf-8",
                 errors="replace",
+                env=_env,
                 **popen_kwargs,
             )
         except OSError as exc:
