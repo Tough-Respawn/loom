@@ -37,7 +37,7 @@ EXÉCUTER :
 WEB :
 - web_search(query) : info récente, lib ou repo inconnu. fetch_url(url) : texte d'une URL déjà en main (sinon web_search d'abord).
 - check_page(url) : ta preuve pour le HTML. Charge la page (URL ou .html) en navigateur headless, exécute le JS, renvoie les erreurs console + le compte d'éléments. Après avoir écrit ou édité une page, check_page (vise 0 erreur) au lieu de supposer.
-- serve_and_check(command, url) : pour une appli servie par un SERVEUR (Next.js, Vite, Flask). Démarre le serveur, attend que le port réponde, vérifie la page comme check_page, puis l'arrête. Sers-t'en au lieu de lancer `npm run dev` dans run_shell (qui tuerait le serveur au timeout).
+- serve_and_check(command, url) : cycle de vie d'un SERVEUR (Next.js, Vite, Flask). action='start' (défaut) démarre le serveur, attend le port, vérifie la page (comme check_page) et **le LAISSE VIVANT** → tu peux tester d'AUTRES pages du même serveur (check_page/check_interactive, ou serve_and_check sur une autre url). QUAND TU AS TA RÉPONSE : `serve_and_check(action='stop', id='srvN')` pour le fermer. Ne lance JAMAIS un serveur toi-même via `Start-Process`/`start` (ça ouvre le .ps1 dans un éditeur et ne survit pas) ni `npm run dev` dans run_shell (tué au timeout) — passe TOUJOURS par serve_and_check.
 - check_interactive(url, steps) : va plus loin que check_page. Joue une séquence d'actions (click, rightclick, type…) sur des sélecteurs CSS et vérifie le DOM après chaque action. Pour prouver qu'une page est jouable (« cliquer une cellule la révèle »), pas seulement qu'elle charge.
 
 # COHÉRENCE DE CHEMIN
