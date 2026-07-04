@@ -205,8 +205,18 @@
       background: var(--bg-elev); border-left: 2px solid var(--accent-dim);
       border-radius: 0 var(--radius) var(--radius) 0; padding: 10px 14px;
       white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; font-size: 13px;
+      position: relative; cursor: pointer; transition: border-color .12s;
     }
+    .msg.user:hover { border-left-color: var(--accent); }
     .msg.user img { max-width: 200px; border-radius: 6px; margin-top: 6px; display: block; }
+    .msg-fork {
+      position: absolute; top: 2px; right: 4px; padding: 2px 7px; font-size: 10px;
+      background: var(--bg-panel); color: var(--accent); border: 1px solid var(--border);
+      border-radius: 4px; cursor: pointer; opacity: 0; transition: opacity .15s; font-family: inherit;
+      white-space: nowrap;
+    }
+    .msg.user:hover .msg-fork { opacity: 0.8; }
+    .msg-fork:hover { opacity: 1 !important; background: var(--accent-dim); color: #fff; }
     .msg.assistant { padding: 6px 0; overflow-wrap: anywhere; position: relative; }
     .msg.assistant.streaming { white-space: pre-wrap; }
     .msg.assistant.streaming::after {
