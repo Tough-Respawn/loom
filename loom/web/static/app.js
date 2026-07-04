@@ -568,7 +568,6 @@ function updateUsageMeter(t) {
   if (!usageMeter || !t) return;
   const inEl = document.getElementById("um-in");
   const outEl = document.getElementById("um-out");
-  const costEl = document.getElementById("um-cost");
   if (inEl) inEl.textContent = fmtTok(t.tokens_in);
   if (outEl) outEl.textContent = fmtTok(t.tokens_out);
   // Taux de cache = part de l'input servie par le cache de préfixe. C'est LA mesure : haut
@@ -583,9 +582,8 @@ function updateUsageMeter(t) {
   // levier d'optimisation n°1. « · 58× » se lit « input payé 58 fois ».
   const callsEl = document.getElementById("um-calls");
   if (callsEl) callsEl.textContent = t.api_calls > 0 ? "· " + t.api_calls + "×" : "";
-  const cost = t.cost_usd || 0;
-  if (costEl) costEl.textContent = cost > 0 ? "$" + cost.toFixed(cost < 1 ? 3 : 2) : "";
-  // Visible dès qu'il y a eu au moins un appel (même coût 0 si prix non configuré).
+  // Coût volontairement PAS affiché : sans tarif réel il polluerait. Le backend le cumule
+  // toujours (cost_usd), prêt à réafficher quand on aura les vrais chiffres du provider.
   usageMeter.hidden = !(t.api_calls > 0 || t.tokens_in > 0 || t.tokens_out > 0);
 }
 updateUsageMeter(INIT.usage_totals);
