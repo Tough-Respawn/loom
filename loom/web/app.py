@@ -475,25 +475,32 @@ def create_app(
 
     available_tools = list(available_tools or [])
 
-    chat_lock = threading.Lock()
+    # Concurrence PAR SESSION : chaque session a son propre verrou de génération et son
+    # signal d'annulation -> plusieurs sessions (onglets) génèrent EN PARALLÈLE. Une nouvelle
+    # soumission n'interrompt QUE la génération de SA session (pas les autres). Verrou GLOBAL
+    # `_local_gen_lock` en plus pour les modèles LOCAUX : llama-swap n'en sert qu'un à la fois
+    # -> deux générations locales se sérialisent (limitation machine connue, signalée à l'UI).
+    _gen_guard = threading.Lock()
+    _sess_locks: dict[str, threading.Lock] = {}
+    _sess_cancel: dict[str, threading.Event] = {}
+    _local_gen_lock = threading.Lock()
+    # Événement d'annulation de la génération EN COURS sur CE thread (pour _confirm, qui tourne
+    # dans le thread de génération) — posé au début de /chat.
+    _confirm_local = threading.local()
 
-    # Signal d'annulation : une nouvelle soumission le pose pour stopper net la
+    def _lock_for(sid: str) -> threading.Lock:
+        with _gen_guard:
+            return _sess_locks.setdefault(sid, threading.Lock())
 
-    # génération en cours (la boucle le vérifie à chaque token). Plus fiable que
-
-    # d'attendre la détection de déconnexion par le serveur WSGI.
-
-    cancel_event = threading.Event()
+    def _cancel_for(sid: str) -> threading.Event:
+        with _gen_guard:
+            return _sess_cancel.setdefault(sid, threading.Event())
 
     # Décisions de confirmation en attente : tool_call_id -> {event, approved}.
 
     # Renseignées par la route /tool_decision (autre thread), consommées par _confirm.
 
     pending: dict = {}
-
-    app.config["_chat_lock"] = chat_lock
-
-    app.config["_cancel_event"] = cancel_event
 
     app.config["_pending"] = pending
 
@@ -511,27 +518,42 @@ def create_app(
 
     app.config["_session_holder"] = _cur
 
-    def _session():
+    # Cache d'OBJETS session en mémoire : UNE instance par session, partagée entre requêtes
+    # (onglets) -> pas de sauvegardes qui se clobberent quand plusieurs sessions tournent en
+    # parallèle. `_cur` pointe la session FOCUS (défaut de l'index).
+    _sessions_cache: dict = {}
 
-        if _cur["session"] is None:
-            _cur["session"] = session_store.active() or session_store.create(
+    def _ensure_model(sess):
+        # Une session neuve peut naître sans modèle -> requête model="" -> llama-swap renvoie
+        # 404. On garantit un modèle valide (le 1er = défaut) ; corrige aussi les vides.
+        if sess is not None and not sess.conversation.model and models:
+            sess.conversation.set_model(models[0])
+            session_store.save(sess)
+        return sess
+
+    def _get_session(sid: str):
+        """Session par id, depuis le cache (une instance) ou chargée du disque. None si absente."""
+        if not sid:
+            return None
+        with _gen_guard:
+            s = _sessions_cache.get(sid)
+        if s is None:
+            s = session_store.load(sid)
+            if s is not None:
+                with _gen_guard:
+                    s = _sessions_cache.setdefault(sid, s)
+        return _ensure_model(s)
+
+    def _session():
+        cur = _cur["session"]
+        if cur is None:
+            cur = session_store.active() or session_store.create(
                 workspace=workspace_dir
             )
-
-        sess = _cur["session"]
-
-        # Une session neuve peut naître sans modèle -> requête model="" -> llama-swap
-
-        # renvoie 404 'no router for requested model'. On garantit un modèle valide
-
-        # (le 1er = défaut) ; corrige aussi les sessions déjà créées vides.
-
-        if not sess.conversation.model and models:
-            sess.conversation.set_model(models[0])
-
-            session_store.save(sess)
-
-        return sess
+            with _gen_guard:
+                cur = _sessions_cache.setdefault(cur.id, cur)
+            _cur["session"] = cur
+        return _ensure_model(cur)
 
     def _ctx():
         """Renvoie (conversation, save) : la conversation de la session active et sa
@@ -559,9 +581,14 @@ def create_app(
 
         deadline = time.monotonic() + confirm_timeout
 
+        # Annulation de LA session dont on exécute la génération (thread-local, posé par /chat).
+        cancel_ev = getattr(_confirm_local, "ev", None)
+
         try:
             while not ev.wait(0.2):
-                if cancel_event.is_set() or time.monotonic() > deadline:
+                if (cancel_ev is not None and cancel_ev.is_set()) or (
+                    time.monotonic() > deadline
+                ):
                     return False
 
             return bool(pending[tool_id]["approved"])
@@ -677,21 +704,30 @@ def create_app(
         if not message or len(message) > 5000:
             return Response("message invalide", status=400)
 
-        if not chat_lock.acquire(blocking=False):
-            # Un échange est en cours : on demande son annulation (interruption
+        # Session CIBLE : par `session_id` (onglet) sinon la session focus. Chaque session a
+        # son verrou : une nouvelle soumission n'interrompt QUE la génération de SA session,
+        # les autres onglets continuent en parallèle.
+        req_sid = (request.form.get("session_id") or "").strip()
+        sess = _get_session(req_sid) or _session()
+        _cur["session"] = sess  # focus (défaut de l'index)
+        sid = sess.id
+        chat_lock = _lock_for(sid)
+        cancel_event = _cancel_for(sid)
 
-            # par nouvelle soumission) et on attend qu'il libère le verrou.
+        if not chat_lock.acquire(blocking=False):
+            # Une génération de CETTE session tourne déjà : on l'annule et on attend le verrou.
 
             cancel_event.set()
 
             if not chat_lock.acquire(timeout=interrupt_wait):
-                return Response("occupé : un échange est déjà en cours", status=429)
+                return Response("occupé : cette session génère déjà", status=429)
 
         # On tient le verrou : repartir d'un signal d'annulation propre.
 
         cancel_event.clear()
 
-        conv, save = _ctx()
+        conv = sess.conversation
+        save = lambda: session_store.save(sess)  # noqa: E731
 
         # Commande /goal : pilote l'OBJECTIF de complétion de la session.
 
@@ -976,6 +1012,12 @@ def create_app(
 
         def generate():
 
+            # Annulation de CETTE session, lue par _confirm (même thread de génération).
+            _confirm_local.ev = cancel_event
+            # Verrou modèle LOCAL : pris dans le try ci-dessous (avant le 1er appel modèle),
+            # libéré au finally. Distant -> jamais pris (vrai parallèle entre onglets).
+            _local_held = False
+
             # Profil du modèle : correctifs déterministes (cadratins, guillemets
 
             # typographiques) appliqués au texte streamé du chat. Le profil existe
@@ -1092,6 +1134,22 @@ def create_app(
             last_tok = None
 
             try:
+                # Modèle LOCAL : llama-swap n'en sert qu'UN à la fois -> on sérialise via le
+                # verrou global (limitation machine connue, signalée à l'UI). Modèle DISTANT :
+                # pas de verrou -> cette session génère EN PARALLÈLE des autres onglets.
+                if conv.model and conv.model not in remote_model_ids:
+                    if not _local_gen_lock.acquire(blocking=False):
+                        yield _sse(
+                            "notice",
+                            text=(
+                                "modèle local occupé : une autre session génère déjà sur la "
+                                "machine — mise en file (le parallèle réel n'existe qu'avec un "
+                                "modèle distant)."
+                            ),
+                        )
+                        _local_gen_lock.acquire()
+                    _local_held = True
+
                 for kind, payload in source:
                     if cancel_event.is_set():
                         # Une nouvelle soumission demande l'arrêt : on stoppe net
@@ -1308,6 +1366,9 @@ def create_app(
             finally:
                 _last_activity[0] = time.time()  # marque l'activité pour le keep-warm
 
+                if _local_held:
+                    _local_gen_lock.release()
+
                 chat_lock.release()
 
         return Response(generate(), mimetype="text/event-stream")
@@ -1354,13 +1415,14 @@ def create_app(
     @app.post("/cancel")
     def cancel():
 
-        # Bouton Stop : pose le signal d'annulation que la boucle de /chat vérifie à
+        # Bouton Stop : pose le signal d'annulation de LA session ciblée (par session_id, sinon
+        # la session focus) -> SA boucle /chat s'arrête net et libère son verrou. Les AUTRES
+        # sessions (onglets) ne sont PAS touchées. Sans effet si rien ne tourne pour elle.
 
-        # chaque token -> la génération s'arrête net et libère le verrou de chat. Sans
-
-        # effet si rien ne tourne (le prochain /chat le remet à zéro avant de générer).
-
-        cancel_event.set()
+        req_sid = (request.form.get("session_id") or "").strip()
+        sess = _get_session(req_sid) if req_sid else _cur["session"]
+        if sess is not None:
+            _cancel_for(sess.id).set()
 
         return Response("", status=204)
 
@@ -1644,9 +1706,9 @@ def create_app(
 
     # activé, une vraie requête a déjà eu lieu (_last_activity > 0), et on est resté idle
 
-    # depuis >= keepwarm_interval. `chat_lock` non bloquant => on ne ping JAMAIS pendant une
+    # depuis >= keepwarm_interval. `_local_gen_lock` non bloquant => on ne ping JAMAIS pendant
 
-    # génération (--parallel 1). On ne ping QUE le modèle déjà chargé => pas de swap parasite.
+    # une génération LOCALE (--parallel 1). On ne ping QUE le modèle déjà chargé => pas de swap.
 
     def _keepwarm_loop():
 
@@ -1660,8 +1722,8 @@ def create_app(
             if last <= 0 or (time.time() - last) < float(keepwarm_interval):
                 continue
 
-            if not chat_lock.acquire(blocking=False):
-                continue  # génération en cours => déjà chaud
+            if not _local_gen_lock.acquire(blocking=False):
+                continue  # génération locale en cours => déjà chaud
 
             try:
                 sess = _cur["session"]
@@ -1692,7 +1754,7 @@ def create_app(
                 pass
 
             finally:
-                chat_lock.release()
+                _local_gen_lock.release()
 
     if keepwarm_enabled:
         threading.Thread(
