@@ -7,8 +7,10 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
@@ -157,6 +159,37 @@ def _debug(label: str, payload, limit: int = 4000) -> None:
     )
     _emit(f"\n===== [LOOM_DEBUG] {label} =====")
     _emit(_trunc(body, limit))
+
+
+# --- Flux d'événements STRUCTURÉ (façon Claude Code) : une ligne par événement, horodatée --
+# `<ISO-Z> [LEVEL] event key=val …`. Complète les blocs _debug (dump complet requête/réponse)
+# par une trace fine et lisible : timing (1er byte, durée d'outil), tokens, garde-fous, erreurs.
+# Même gate LOOM_DEBUG, même fichier (sessions/<id>/debug.log), best-effort.
+def _ts() -> str:
+    """Horodatage ISO 8601 UTC à la milliseconde, suffixe Z (comme Claude Code)."""
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _fmt_val(v) -> str:
+    """Rend une valeur de champ compacte : chaîne tronquée+échappée (quotée si espace),
+    base64 masqué. Nombres/bools tels quels."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        s = _trunc(v.replace("\n", "\\n").replace("\r", ""), 140)
+        return f'"{s}"' if (not s or " " in s or "=" in s) else s
+    return str(v)
+
+
+def log_event(event: str, level: str = "DEBUG", **fields) -> None:
+    """Écrit une ligne d'événement structurée. No-op si LOOM_DEBUG désactivé ; ne lève jamais."""
+    if not _debug_on():
+        return
+    line = f"{_ts()} [{level}] {event}"
+    if fields:
+        line += " " + " ".join(f"{k}={_fmt_val(val)}" for k, val in fields.items())
+    _emit(line)
 
 
 def _debug_messages(model: str, messages: list[dict]) -> None:
@@ -823,16 +856,37 @@ class LoomClient:
             text = ""
             reasoning = ""
             saw_usage = False
+            _first_byte = True
+            log_event(
+                "turn.request",
+                model=api_model,
+                msgs=len(convo),
+                tools=bool(tools),
+                thinking=thinking,
+            )
+            _t_req = time.monotonic()
             try:
                 stream = oai.chat.completions.create(**kwargs)
                 try:
                     for kind, chunk in _iter_turn(stream, collector):
+                        if _first_byte:
+                            _first_byte = False
+                            log_event(
+                                "stream.first_byte",
+                                ms=round((time.monotonic() - _t_req) * 1000),
+                            )
                         if kind == "content":
                             text += chunk
                         elif kind == "reasoning":
                             reasoning += chunk
                         elif kind == "usage":
                             saw_usage = True
+                            log_event(
+                                "usage",
+                                prompt=chunk.get("prompt_tokens"),
+                                completion=chunk.get("completion_tokens"),
+                                total=chunk.get("total_tokens"),
+                            )
                         yield (kind, chunk)
                 finally:
                     _close(stream)
@@ -859,6 +913,7 @@ class LoomClient:
                 )
             except APIError as exc:
                 kind = _classify_api_error(exc)
+                log_event("api.error", level="WARN", kind=kind, msg=str(exc)[:140])
                 # DÉBORDEMENT D'ENTRÉE : la requête (prompt + historique + résultats d'outils
                 # accumulés) dépasse la fenêtre de contexte. On NE crashe PAS et on ne demande
                 # PAS « écris plus court » (ça vise la sortie) : on COMPACTE DUR — on vide TOUS
@@ -878,6 +933,13 @@ class LoomClient:
                     overflow_retries += 1
                     keep = 1 if overflow_retries == 1 else 0  # 2e retry : on vide tout
                     cleared = _microcompact_tools(convo, keep)
+                    log_event(
+                        "guard",
+                        level="WARN",
+                        kind="context_overflow",
+                        retry=overflow_retries,
+                        cleared=cleared,
+                    )
                     _debug(
                         "CONTEXT_OVERFLOW",
                         f"compaction dure (keep={keep}) : {cleared} résultat(s) d'outil vidé(s), "
@@ -907,6 +969,12 @@ class LoomClient:
                         )
                         return
                     overflow_retries += 1
+                    log_event(
+                        "guard",
+                        level="WARN",
+                        kind="output_overflow",
+                        retry=overflow_retries,
+                    )
                     note = (
                         "Ta réponse précédente était trop longue et a été tronquée par "
                         "la limite de tokens. Écris des fichiers PLUS PETITS : un seul "
@@ -1046,6 +1114,7 @@ class LoomClient:
                         label = "ACT_NUDGE"
                     convo.append({"role": "user", "content": nudge})
                     _debug(label, nudge)
+                    log_event("guard", kind=label)
                     continue
                 return  # réponse finale déjà streamée (stop naturel du modèle)
 
@@ -1071,6 +1140,7 @@ class LoomClient:
                 # petit modèle, la répétition = dégénérescence ; sur un fort, c'est presque
                 # toujours du légitime (le juger « bloqué » l'interrompt à tort).
                 if not strong and repeat_streak >= repeat_limit - 1:
+                    log_event("guard", level="WARN", kind="repeat_stop")
                     yield (
                         "content",
                         "\n(arrêt : le modèle réémet les mêmes appels sans progresser).",
@@ -1104,6 +1174,8 @@ class LoomClient:
             for tc in tool_calls:
                 name = tc["name"]
                 yield ("tool_call", {"id": tc["id"], "name": name})
+                log_event("tool.call", name=name, args_len=len(tc["arguments"] or ""))
+                _t_tool = time.monotonic()
                 try:
                     args = json.loads(tc["arguments"] or "{}")
                 except json.JSONDecodeError:
@@ -1227,6 +1299,13 @@ class LoomClient:
                     import json as _json
 
                     in_full = args.get("path") or _json.dumps(args, ensure_ascii=False)
+                log_event(
+                    "tool.result",
+                    name=name,
+                    ok=ok,
+                    ms=round((time.monotonic() - _t_tool) * 1000),
+                    preview=str(tool_content)[:90],
+                )
                 yield (
                     "tool_result",
                     {
