@@ -73,6 +73,8 @@ def build_registry(
     memory=None,
     learned_skills_dir: str | None = None,
     shell_timeout: int = 180,
+    vision_describer=None,
+    active_is_vision: bool = True,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
@@ -103,7 +105,13 @@ def build_registry(
     if "read_document" in enabled:
         specs.append(make_read_document(workspace_dir))
     if "read_image" in enabled:
-        specs.append(make_read_image(workspace_dir))
+        specs.append(
+            make_read_image(
+                workspace_dir,
+                describer=vision_describer,
+                active_is_vision=active_is_vision,
+            )
+        )
     if "write_file" in enabled:
         specs.append(
             make_write_file(workspace_dir, max_bytes, max_tokens=sub_max_tokens)
