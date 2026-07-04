@@ -445,11 +445,11 @@ def create_app(
     model_contexts = dict(model_contexts or {})
 
     model_max_tokens = dict(model_max_tokens or {})
-    # Prix par modèle ($/M tokens) : id -> (input, output). Local ou id absent -> (0, 0).
+    # Prix par modèle ($/M tokens) : id -> (input, output, cached). Local/absent -> (0,0,0).
     model_prices = dict(model_prices or {})
 
     def _price_of(model_id):
-        return model_prices.get(model_id, (0.0, 0.0))
+        return model_prices.get(model_id, (0.0, 0.0, 0.0))
 
     def _model_limits(model_id):
         """(max_tokens effectif, seuil de microcompact) pour `model_id`."""
@@ -1144,6 +1144,7 @@ def create_app(
 
                         _p = payload.get("prompt_tokens", 0) or 0
                         _c = payload.get("completion_tokens", 0) or 0
+                        _cached = payload.get("cached_tokens", 0) or 0
 
                         sent_tokens += _p
 
@@ -1152,10 +1153,11 @@ def create_app(
                         cur_turn = 0
 
                         # Cumul RÉEL de la session : chaque appel refacture tout le contexte en
-                        # INPUT -> on somme input/output/coût sur TOUS les appels (persisté),
-                        # pas seulement le tour. C'est LA vraie somme facturée.
-                        _pin, _pout = _price_of(conv.model)
-                        conv.add_usage(_p, _c, _pin, _pout)
+                        # INPUT -> on somme input/output/cache/coût sur TOUS les appels
+                        # (persisté), pas seulement le tour. C'est LA vraie somme facturée, et
+                        # `cached` mesure si le prompt caching du provider mord.
+                        _pin, _pout, _pcached = _price_of(conv.model)
+                        conv.add_usage(_p, _c, _cached, _pin, _pout, _pcached)
 
                         yield _sse("usage", **payload)
 

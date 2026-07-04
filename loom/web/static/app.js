@@ -571,6 +571,14 @@ function updateUsageMeter(t) {
   const costEl = document.getElementById("um-cost");
   if (inEl) inEl.textContent = fmtTok(t.tokens_in);
   if (outEl) outEl.textContent = fmtTok(t.tokens_out);
+  // Taux de cache = part de l'input servie par le cache de préfixe. C'est LA mesure : haut
+  // (vert) = le prompt caching mord ; ~0 (rouge) = préfixe instable, on repaie tout plein pot.
+  const cacheEl = document.getElementById("um-cache");
+  if (cacheEl) {
+    const pct = t.cache_pct || 0;
+    cacheEl.textContent = t.tokens_in > 0 ? "· cache " + pct + "%" : "";
+    cacheEl.classList.toggle("miss", t.tokens_in > 0 && pct < 20);
+  }
   // Nombre d'appels API = le MULTIPLICATEUR (le contexte est rejoué à chaque appel) : le
   // levier d'optimisation n°1. « · 58× » se lit « input payé 58 fois ».
   const callsEl = document.getElementById("um-calls");

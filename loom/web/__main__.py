@@ -212,8 +212,12 @@ def build_app(cfg):
         model_max_tokens=model_max_tokens,
         remote_model_ids=[rm.id for rm in cfg.remote_models],
         remote_model_names={rm.id: rm.model for rm in cfg.remote_models},
-        # Prix ($/M tokens) par modèle distant -> compteur de coût réel de la session.
-        model_prices={rm.id: (rm.price_in, rm.price_out) for rm in cfg.remote_models},
+        # Prix ($/M tokens) par modèle distant : (input, output, cached) -> coût réel + mesure
+        # de l'effet du cache de préfixe sur la session.
+        model_prices={
+            rm.id: (rm.price_in, rm.price_out, rm.price_cached)
+            for rm in cfg.remote_models
+        },
     )
     return app
 

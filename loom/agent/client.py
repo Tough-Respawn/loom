@@ -229,11 +229,25 @@ def _sub_activity_line(kind: str, payload) -> str:
 
 
 def _usage_dict(usage) -> dict:
-    """Normalise l'usage (tokens réels) renvoyé par le serveur en fin de stream."""
+    """Normalise l'usage (tokens réels) renvoyé par le serveur en fin de stream.
+
+    Capture aussi `cached_tokens` (sous-ensemble de prompt_tokens facturé ~÷5 quand le
+    provider a un cache hit de préfixe) : c'est LA mesure qui dit si le prompt caching
+    marche. Il vit dans `prompt_tokens_details.cached_tokens` (OpenAI/GLM/DeepSeek…) ou
+    parfois à plat ; 0 si le provider ne le renvoie pas (aucun hit ou pas de cache)."""
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = 0
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens", 0) or 0
+    elif details is not None:
+        cached = getattr(details, "cached_tokens", 0) or 0
+    if not cached:
+        cached = getattr(usage, "cached_tokens", 0) or 0
     return {
         "completion_tokens": getattr(usage, "completion_tokens", None) or 0,
         "prompt_tokens": getattr(usage, "prompt_tokens", None) or 0,
         "total_tokens": getattr(usage, "total_tokens", None) or 0,
+        "cached_tokens": int(cached or 0),
     }
 
 
