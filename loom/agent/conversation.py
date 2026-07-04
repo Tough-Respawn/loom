@@ -23,6 +23,10 @@ class Conversation:
     # (laquelle purge les résultats d'outils). Le modèle y consigne ses trouvailles et
     # relit sa note plutôt que de re-lire un fichier entier. Par session, persisté ici.
     notes: list[str] = field(default_factory=list)
+    # Objectif de complétion (commande /goal) : condition vérifiable qui maintient l'agent au
+    # travail jusqu'à ce qu'un évaluateur la juge atteinte (façon /goal de Claude Code). Vide =
+    # pas d'objectif. Effacé quand atteint. Par session, persisté ici.
+    goal: str = ""
 
     def add(self, role: str, content: str | list) -> None:
         self.messages.append({"role": role, "content": content})
@@ -31,6 +35,10 @@ class Conversation:
         self.messages = []
         self.todos = []  # nouvelle conversation = plan vierge
         self.notes = []  # ...et notes vierges
+        self.goal = ""  # ...et objectif effacé
+
+    def set_goal(self, goal: str) -> None:
+        self.goal = (goal or "").strip()
 
     def set_tools(self, names: list[str]) -> None:
         self.active_tools = list(names)
@@ -54,6 +62,7 @@ class Conversation:
             "thinking": self.thinking,
             "todos": self.todos,
             "notes": self.notes,
+            "goal": self.goal,
         }
 
     @classmethod
@@ -67,6 +76,7 @@ class Conversation:
             thinking=bool(data.get("thinking", True)),
             todos=list(data.get("todos", [])),
             notes=list(data.get("notes", [])),
+            goal=data.get("goal", ""),
         )
 
     def save(self, path: str | Path) -> None:

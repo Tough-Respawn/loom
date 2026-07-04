@@ -711,6 +711,7 @@ class LoomClient:
         max_act_nudges: int = 2,
         max_length_continues: int = 30,
         max_loop_breaks: int = 2,
+        strong: bool = False,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
 
@@ -971,10 +972,15 @@ class LoomClient:
                 # produit ? (A) artefact fichier inventé, (B) résultat d'exécution sans
                 # run_shell/dispatch, ou intention/affirmation sans exécution réelle. On le
                 # relance pour qu'il FASSE vraiment (borné). Garde de vérité, pas orchestrateur.
+                # COUPÉ pour un modèle FORT (distant) : ces relances de comportement, utiles à
+                # un petit modèle qui confabule, ne font que sur-piloter un modèle qui se vérifie
+                # déjà seul (cf. GLM qui doutait de sa propre preuve correcte).
                 missing = _claims_missing_artifact(text, files_written)
                 exec_confab = not executed and _claims_execution(text)
-                if act_nudges < max_act_nudges and (
-                    missing or exec_confab or _intends_to_act(text, executed)
+                if (
+                    not strong
+                    and act_nudges < max_act_nudges
+                    and (missing or exec_confab or _intends_to_act(text, executed))
                 ):
                     act_nudges += 1
                     convo.append({"role": "assistant", "content": text or "..."})
@@ -1024,7 +1030,10 @@ class LoomClient:
             else:
                 repeat_streak = repeat_streak + 1 if sig_set == prev_sig_set else 0
                 prev_sig_set = sig_set
-                if repeat_streak >= repeat_limit - 1:
+                # COUPÉ pour un modèle FORT (distant) : le seul backstop reste max_iters. Sur un
+                # petit modèle, la répétition = dégénérescence ; sur un fort, c'est presque
+                # toujours du légitime (le juger « bloqué » l'interrompt à tort).
+                if not strong and repeat_streak >= repeat_limit - 1:
                     yield (
                         "content",
                         "\n(arrêt : le modèle réémet les mêmes appels sans progresser).",
