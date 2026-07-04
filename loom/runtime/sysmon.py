@@ -1,11 +1,20 @@
 # loom/runtime/sysmon.py
 """Monitoring système LIVE (CPU / RAM / GPU) pour l'indicateur affiché quand un modèle
-LOCAL est sélectionné. CPU/RAM via psutil (dégradation propre s'il manque) ; GPU via
-nvidia-smi (comme la détection matérielle). Lecture GPU mise en cache ~0.8 s : nvidia-smi
-coûte ~50-200 ms, on ne le relance pas à chaque client/poll rapproché."""
+LOCAL est sélectionné. CPU/RAM via psutil (dégradation propre s'il manque).
+
+GPU, deux sources, dans l'ordre :
+1. `nvidia-smi` (NVIDIA) — le plus riche (util, VRAM, température, puissance).
+2. Repli GÉNÉRIQUE Windows (AMD / Intel / NVIDIA) via les COMPTEURS DE PERFORMANCE Windows
+   (ceux du Gestionnaire des tâches, agnostiques du vendeur) : nom + util + VRAM used/total.
+   Température/puissance indisponibles par cette voie -> None (le front affiche ce qu'il a).
+
+Lecture GPU mise en cache court : ces sondes coûtent 50-500 ms, on ne les relance pas à
+chaque poll rapproché."""
 
 from __future__ import annotations
 
+import base64
+import json
 import shutil
 import subprocess
 import threading
@@ -94,13 +103,108 @@ def _read_gpu_raw() -> dict | None:
     }
 
 
+# --- Repli GÉNÉRIQUE Windows (AMD / Intel) via les compteurs de performance -----------------
+# Script PowerShell auto-suffisant -> JSON {name, mem_total_mb, mem_used_mb, util}. Nom +
+# VRAM totale : WMI + registre (qwMemorySize, fiable au-delà de 4 Go, contrairement à
+# AdapterRAM). VRAM utilisée + utilisation : compteurs `GPU Adapter Memory` / `GPU Engine`
+# (agnostiques du vendeur, comme le Gestionnaire des tâches). Passé en -EncodedCommand
+# (base64 UTF-16LE) pour éviter tout souci de quoting.
+_WIN_GPU_PS = r"""
+$ErrorActionPreference='SilentlyContinue'
+$best = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notmatch 'Basic Display|Remote|Meta|Parsec' } | Select-Object -First 1
+$name = if($best){$best.Name}else{''}
+$total = 0
+Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}' | ForEach-Object {
+  $v = (Get-ItemProperty $_.PSPath -Name 'HardwareInformation.qwMemorySize').'HardwareInformation.qwMemorySize'
+  if($v -and $v -gt $total){ $total = [int64]$v }
+}
+$used = 0
+try { $used = ((Get-Counter '\GPU Adapter Memory(*)\Dedicated Usage' -EA Stop).CounterSamples | Measure-Object CookedValue -Sum).Sum } catch {}
+$util = 0
+try { $util = ((Get-Counter '\GPU Engine(*)\Utilization Percentage' -EA Stop).CounterSamples | Measure-Object CookedValue -Sum).Sum } catch {}
+if($util -gt 100){ $util = 100 }
+[pscustomobject]@{ name=$name; mem_total_mb=[math]::Round($total/1MB); mem_used_mb=[math]::Round($used/1MB); util=[math]::Round($util,1) } | ConvertTo-Json -Compress
+"""
+
+_win_gpu: dict = {"ts": 0.0, "data": None}
+_win_last_req = {"t": 0.0}
+_win_started = {"on": False}
+
+
+def _read_gpu_windows_raw() -> dict | None:
+    from loom.runtime.platform_info import detect
+
+    if not detect().is_windows:
+        return None
+    enc = base64.b64encode(_WIN_GPU_PS.encode("utf-16-le")).decode()
+    try:
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", enc],
+            capture_output=True,
+            text=True,
+            timeout=12,
+        )
+        out = (res.stdout or "").strip()
+        d = json.loads(out) if out else None
+    except (subprocess.SubprocessError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not d:
+        return None
+    mt = d.get("mem_total_mb")
+    if not mt:  # sans VRAM totale fiable, l'indicateur perd son sens -> pas de GPU
+        return None
+    util = d.get("util")
+    mu = d.get("mem_used_mb")
+    return {
+        "name": d.get("name") or "GPU",
+        "util": float(util) if util is not None else None,
+        "mem_used": float(mu) if mu is not None else None,
+        "mem_total": float(mt),
+        "temp": None,  # indisponible via les compteurs Windows
+        "power": None,
+    }
+
+
+def _win_gpu_sampler() -> None:  # pragma: no cover - boucle daemon
+    # Échantillonne toutes les ~2,5 s, mais SEULEMENT si le widget est actif (une lecture a eu
+    # lieu depuis < 8 s) : pas de PowerShell perpétuel quand aucun modèle local n'est affiché.
+    while True:
+        if time.monotonic() - _win_last_req["t"] < 8.0:
+            data = _read_gpu_windows_raw()
+            with _GPU_LOCK:
+                _win_gpu["data"] = data
+                _win_gpu["ts"] = time.monotonic()
+        time.sleep(2.5)
+
+
+def _read_gpu_windows() -> dict | None:
+    """GPU générique Windows via un sampler gaté (démarré à la 1re demande). La 1re lecture
+    est synchrone pour ne pas afficher un GPU vide au premier coup."""
+    _win_last_req["t"] = time.monotonic()
+    if not _win_started["on"]:
+        _win_started["on"] = True
+        data = _read_gpu_windows_raw()
+        with _GPU_LOCK:
+            _win_gpu["data"] = data
+            _win_gpu["ts"] = time.monotonic()
+        threading.Thread(
+            target=_win_gpu_sampler, daemon=True, name="loom-gpu-win"
+        ).start()
+        return data
+    with _GPU_LOCK:
+        return _win_gpu["data"]
+
+
 def _read_gpu() -> dict | None:
-    """Lecture GPU avec cache court (thread-safe) pour ne pas spammer nvidia-smi."""
+    """Lecture GPU avec cache court (thread-safe). nvidia-smi d'abord (riche), sinon repli
+    générique Windows (AMD/Intel). Le cache évite de spammer les sondes."""
     now = time.monotonic()
     with _GPU_LOCK:
         if now - _gpu_cache["ts"] < _GPU_TTL:
             return _gpu_cache["data"]
     data = _read_gpu_raw()
+    if data is None:
+        data = _read_gpu_windows()
     with _GPU_LOCK:
         _gpu_cache["ts"] = time.monotonic()
         _gpu_cache["data"] = data

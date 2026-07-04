@@ -44,6 +44,7 @@ from loom.extend.skills import (
 )
 
 from loom.prompts import CHAT_SYSTEM_STRONG
+from loom.runtime.platform_info import detect as platform_detect
 
 from loom.runtime.models_profile import load_profile
 
@@ -870,6 +871,13 @@ def create_app(
                         "Si on te demande quel modèle/moteur tu utilises, réponds-le "
                         "honnêtement et directement (ce nom), sans esquiver."
                     )
+
+            # Système : Loom détecte SEUL l'OS et injecte ses conventions (shell, commandes,
+            # chemins) -> le modèle produit du PowerShell sous Windows, du bash/unix sous
+            # macOS/Linux, sans qu'on code l'OS en dur dans le prompt. Source unique partagée
+            # avec run_shell (loom.runtime.platform_info) : jamais de divergence.
+
+            system_prompt += "\n\n" + platform_detect().prompt_block()
 
             # Dossier de travail courant : le modèle l'IGNORE sinon et le devine en sondant
 

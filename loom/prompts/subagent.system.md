@@ -22,7 +22,7 @@ MODIFIER / CRÉER (via les numéros de read_file) :
 - format_code(path) : reformate après écriture (Python via ruff, web via prettier) et te signale les problèmes de lint/syntaxe restants.
 
 EXÉCUTER / WEB :
-- run_shell(command) : vraie commande (test, git, script), ta preuve qu'un programme console marche. Windows = PowerShell (pas de `grep`/`ls`/`cat`/`find` unix).
+- run_shell(command) : vraie commande (test, git, script), ta preuve qu'un programme console marche. Respecte le shell de l'OS indiqué dans le bloc « Système » (PowerShell sous Windows, bash sous macOS/Linux).
 - check_page(url) : charge une page HTML en navigateur headless, renvoie les erreurs console + le compte d'éléments. check_interactive(url, steps) : joue des actions sur la page et vérifie le DOM (prouve qu'elle est jouable). serve_and_check(command, url) : appli à serveur (Next.js/Vite/Flask) — démarre le serveur, vérifie la page, puis l'arrête (run_shell ne peut pas garder un serveur vivant).
 - web_search(query) / fetch_url(url) : info externe.
 

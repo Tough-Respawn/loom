@@ -9,19 +9,19 @@ Le plus dangereux des outils. Double barrière de sécurité :
    tout l'arbre de process (une GUI/serveur qui ne rend pas la main ne doit pas
    figer la boucle ni laisser d'orphelin).
 
-Détection d'OS via `sys.platform` : PowerShell sous Windows, bash ailleurs.
+Détection d'OS centralisée dans `loom.runtime.platform_info` (source de vérité unique,
+partagée avec le prompt système) : PowerShell sous Windows, bash sous macOS/Linux.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import signal
 import subprocess
-import sys
 from pathlib import Path
 
 from loom.permissions import _is_hard_denied
+from loom.runtime.platform_info import detect
 from loom.tools.base import AVAILABLE_TOOLS, ToolError, ToolSpec
 
 # Noms des OUTILS Loom. Le modèle confond parfois un outil (check_page, format_code, …)
@@ -32,11 +32,8 @@ _LOOM_TOOL_NAMES = frozenset(t["name"] for t in AVAILABLE_TOOLS)
 
 
 def _shell_argv(command: str) -> list[str]:
-    """Renvoie l'argv adapté à l'OS. Préfère pwsh (PowerShell 7+, supporte `&&`)."""
-    if sys.platform.startswith("win"):
-        exe = shutil.which("pwsh") or "powershell"
-        return [exe, "-NoProfile", "-NonInteractive", "-Command", command]
-    return ["/bin/bash", "-lc", command]
+    """argv adapté à l'OS courant (délègue à la détection centrale)."""
+    return detect().shell_argv(command)
 
 
 def _truncate(text: str, max_output: int) -> str:
@@ -52,7 +49,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     tourner et bloque). On tue tout l'arbre : `taskkill /T` sous Windows, le groupe de
     process (start_new_session) sinon. Best-effort : ne lève jamais."""
     try:
-        if sys.platform.startswith("win"):
+        if detect().is_windows:
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 capture_output=True,
@@ -90,13 +87,9 @@ def make_run_shell(
                 "(ex. check_page avec url=<chemin .html> ; format_code avec path=<fichier>). "
                 "run_shell est réservé aux VRAIES commandes système (python, git, npm, …)."
             )
-        # PowerShell 5.1 (pas de pwsh) ne supporte pas '&&'/'||' -> erreur exploitable
-        # par le modèle plutôt qu'un parse error opaque.
-        if (
-            sys.platform.startswith("win")
-            and not shutil.which("pwsh")
-            and ("&&" in command or "||" in command)
-        ):
+        # PowerShell 5.1 (pas pwsh) ne supporte pas '&&'/'||' -> erreur exploitable par le
+        # modèle plutôt qu'un parse error opaque. (pwsh 7 et bash les gèrent.)
+        if detect().shell_kind == "powershell" and ("&&" in command or "||" in command):
             raise ToolError(
                 "PowerShell 5.1 ne supporte pas '&&'/'||'. Utilise ';' entre les "
                 "commandes (et teste $LASTEXITCODE), ou fais des appels run_shell séparés."
@@ -104,7 +97,7 @@ def make_run_shell(
         # Popen + groupe de process isolé : permet de tuer TOUTE la descendance au timeout
         # (subprocess.run ne tue que le process direct, pas une GUI lancée par le shell).
         popen_kwargs: dict = {}
-        if not sys.platform.startswith("win"):
+        if not detect().is_windows:
             popen_kwargs["start_new_session"] = True
         # Force le child à ÉMETTRE de l'UTF-8. Sur Windows FR, un python lancé en pipe encode
         # sa sortie avec la locale (CP1252) -> une fois décodée UTF-8 côté Loom, les accents
@@ -172,10 +165,11 @@ def make_run_shell(
     return ToolSpec(
         name="run_shell",
         description=(
-            "Exécute une commande shell dans le workspace (PowerShell sous "
-            "Windows, bash sinon) et renvoie le code de sortie, stdout et "
-            "stderr. Pour DEMARRER-VERIFIER-ARRETER un serveur web (Next.js/Vite/Flask), utilise serve_and_check. La commande doit TERMINER (pas de GUI ni de serveur qui tourne en "
-            "boucle : ils seront tués au timeout). Les commandes destructrices sont refusées."
+            f"Exécute une commande shell ({detect().shell_label}) dans le workspace et "
+            "renvoie le code de sortie, stdout et stderr. Pour DEMARRER-VERIFIER-ARRETER "
+            "un serveur web (Next.js/Vite/Flask), utilise serve_and_check. La commande doit "
+            "TERMINER (pas de GUI ni de serveur qui tourne en boucle : ils seront tués au "
+            "timeout). Les commandes destructrices sont refusées."
         ),
         parameters={
             "type": "object",
