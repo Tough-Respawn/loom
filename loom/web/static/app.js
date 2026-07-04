@@ -297,15 +297,16 @@ async function streamSSE(url, fd, onEvent, signal) {
 // ----------------------------------------------------------------------------
 let currentAbort = null;
 
-async function sendChat(text, image) {
+async function sendChat(text, images) {
   state.pin = true;
   if (currentAbort) currentAbort.abort();
   const ac = new AbortController();
   currentAbort = ac;
 
-  if (image) {
-    const url = URL.createObjectURL(image);
-    push({ kind: "user", content: [{ type: "text", text }, { type: "image_url", image_url: { url } }] });
+  if (images && images.length) {
+    const parts = [{ type: "text", text }];
+    for (const im of images) parts.push({ type: "image_url", image_url: { url: URL.createObjectURL(im) } });
+    push({ kind: "user", content: parts });
   } else {
     push({ kind: "user", content: text });
   }
@@ -318,7 +319,7 @@ async function sendChat(text, image) {
 
   const fd = new FormData();
   fd.append("message", text);
-  if (image) fd.append("image", image);
+  for (const im of images || []) fd.append("image", im); // multi-images : le back fait getlist
 
   setMetrics(0, 0, null); // "↑0 ↓0" pulsant dès l'envoi -> liveness immédiate avant le 1er token
 
@@ -475,8 +476,8 @@ else document.addEventListener("mathjax-ready", _typesetAll);
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("sendBtn");
 const fileInput = document.getElementById("file");
-let pendingImage = null;
-const preview = document.getElementById("preview");
+let pendingImages = []; // images jointes au prochain message (max MAX_IMAGES)
+const MAX_IMAGES = 6;
 const previewWrap = document.getElementById("previewWrap");
 
 // ----------------------------------------------------------------------------
@@ -590,15 +591,39 @@ if (pickFolderBtn) {
   });
 }
 
-function setImage(file) {
-  if (!file || !file.type.startsWith("image/")) return;
-  pendingImage = file;
-  preview.src = URL.createObjectURL(file);
-  previewWrap.style.display = "flex";
+function renderPreviews() {
+  previewWrap.innerHTML = "";
+  pendingImages.forEach((file, i) => {
+    const wrap = document.createElement("div");
+    wrap.className = "thumb";
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(file);
+    img.alt = file.name || "image";
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "✕";
+    rm.title = "Retirer";
+    rm.addEventListener("click", () => removeImage(i));
+    wrap.append(img, rm);
+    previewWrap.append(wrap);
+  });
+  previewWrap.style.display = pendingImages.length ? "flex" : "none";
 }
-function clearImage() {
-  pendingImage = null;
-  previewWrap.style.display = "none";
+function addImages(files) {
+  for (const f of files) {
+    if (!f || !f.type.startsWith("image/")) continue;
+    if (pendingImages.length >= MAX_IMAGES) break; // limite : les suivantes sont ignorées
+    pendingImages.push(f);
+  }
+  renderPreviews();
+}
+function removeImage(i) {
+  pendingImages.splice(i, 1);
+  renderPreviews();
+}
+function clearImages() {
+  pendingImages = [];
+  renderPreviews();
 }
 
 // Scroll collant : on suit le bas seulement si l'utilisateur y est déjà.
@@ -615,12 +640,12 @@ async function submitChat() {
   if (!text) return;
   history.push(text);
   histIdx = -1;
-  const img = pendingImage;
+  const imgs = pendingImages.slice();
   input.value = "";
-  clearImage();
+  clearImages();
   sendBtn.textContent = "Stop";
   try {
-    await sendChat(text, img);
+    await sendChat(text, imgs);
   } finally {
     sendBtn.textContent = "Envoyer";
     input.focus();
@@ -669,16 +694,20 @@ input.addEventListener("keydown", (e) => {
   }
 });
 
-// --- image ---
-if (fileInput) fileInput.addEventListener("change", () => setImage(fileInput.files[0]));
+// --- images (plusieurs, jusqu'à MAX_IMAGES) ---
+if (fileInput)
+  fileInput.addEventListener("change", () => {
+    addImages([...fileInput.files]);
+    fileInput.value = ""; // permet de re-sélectionner le même fichier ensuite
+  });
 const fileBtn = document.getElementById("fileBtn");
 if (fileBtn) fileBtn.addEventListener("click", () => fileInput.click());
-const clearImgBtn = document.getElementById("clearImgBtn");
-if (clearImgBtn) clearImgBtn.addEventListener("click", clearImage);
 window.addEventListener("paste", (e) => {
+  const files = [];
   for (const item of e.clipboardData.items) {
-    if (item.type.startsWith("image/")) setImage(item.getAsFile());
+    if (item.type.startsWith("image/")) files.push(item.getAsFile());
   }
+  if (files.length) addImages(files);
 });
 
 // --- toggle réflexion ---

@@ -97,11 +97,30 @@ def build_app(cfg):
         cfg.chat.context_token_budget, cfg.context, cfg.chat.max_tokens
     )
 
+    # Modèles VISION (voient les images) : locaux avec mmproj + distants marqués vision.
+    # DESCRIPTEUR d'image (approche « VLM comme outil ») : quand le modèle actif ne voit pas,
+    # read_image route vers ce VLM pour obtenir une description texte. On préfère un VLM
+    # DISTANT (pas besoin du serveur local allumé), sinon un local mmproj. Vide => read_image
+    # renverra une erreur claire à un modèle texte-only.
+    vision_model_ids = [m.id for m in cfg.models if m.mmproj_filename] + [
+        rm.id for rm in cfg.remote_models if rm.vision
+    ]
+    _describer_order = [rm.id for rm in cfg.remote_models if rm.vision] + [
+        m.id for m in cfg.models if m.mmproj_filename
+    ]
+    describer_model = _describer_order[0] if _describer_order else ""
+
     # Factory : le registre est (re)construit selon les outils cochés dans l'UI pour la
     # conversation courante. `workspace` optionnel : à défaut, celui de la config.
     # `client`/`model` arment dispatch_agent (sous-boucle tool-use) ; `conversation` arme
     # manage_todos, dont le plan vit dans `conversation.todos` (par session, persisté).
     def make_registry(active, workspace=None, conversation=None):
+        _model = conversation.model if conversation else cfg.default_model
+        _describer = (
+            (lambda uri, q: client.describe_image(uri, q, describer_model))
+            if describer_model
+            else None
+        )
         return build_registry(
             workspace_dir=workspace or cfg.chat.workspace_dir,
             max_bytes=cfg.chat.read_file_max_bytes,
@@ -112,15 +131,17 @@ def build_app(cfg):
             # dispatch_agent tourne sur le modèle SÉLECTIONNÉ (celui de la conversation),
             # pas sur un défaut figé au démarrage : sélectionner un modèle dans l'UI le
             # propage donc aussi aux sous-agents. Repli sur le défaut hors session.
-            model=(conversation.model if conversation else cfg.default_model),
+            model=_model,
             sub_max_tokens=cfg.chat.max_tokens,
             permission=permission,
-            active_model=(conversation.model if conversation else cfg.default_model),
+            active_model=_model,
             skills_dir=cfg.chat.skills_dir,
             plugins_root=plugins_dir,
             memory=memory,
             learned_skills_dir=cfg.chat.learned_skills_dir,
             shell_timeout=cfg.chat.shell_timeout,
+            vision_describer=_describer,
+            active_is_vision=(_model in vision_model_ids),
         )
 
     # Amorce les outils de la conversation depuis la config au 1er lancement.

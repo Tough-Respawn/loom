@@ -261,12 +261,21 @@ def make_read_document(workspace_dir: str, max_chars: int = 20000) -> ToolSpec:
     )
 
 
-def make_read_image(workspace_dir: str, max_bytes: int = 10 * 1024 * 1024) -> ToolSpec:
-    """Outil read_image : fait VOIR une image du workspace au modèle multimodal.
+def make_read_image(
+    workspace_dir: str,
+    max_bytes: int = 10 * 1024 * 1024,
+    describer=None,
+    active_is_vision: bool = True,
+) -> ToolSpec:
+    """Outil read_image : fait accéder le modèle à une image du disque.
 
-    Le serveur sert déjà la vision (mmproj). L'image ne peut pas transiter par un
-    message `tool` (texte seul) : l'outil renvoie une chaîne sentinelle (cf.
-    loom.inline_image) que la boucle tool-use convertit en message `user` multimodal.
+    - Modèle VISION (mmproj / VLM natif, active_is_vision=True) : l'image ne peut pas
+      transiter par un message `tool` (texte seul) -> on renvoie une sentinelle (cf.
+      loom.inline_image) que la boucle convertit en message `user` multimodal (il la VOIT).
+    - Modèle TEXTE-ONLY (active_is_vision=False) avec un `describer` (routage vers un VLM) :
+      le modèle ne voit rien, alors read_image lui renvoie une DESCRIPTION texte produite par
+      le VLM (approche « VLM comme outil » : il interroge l'image à la demande, avec une
+      question ciblée). Sans describer configuré : erreur claire.
     """
     root = Path(workspace_dir)
 
@@ -291,18 +300,29 @@ def make_read_image(workspace_dir: str, max_bytes: int = 10 * 1024 * 1024) -> To
                 f"image trop volumineuse ({len(data)} octets > {max_bytes})"
             )
         b64 = base64.b64encode(data).decode("ascii")
-        return wrap_image(f"data:{mime};base64,{b64}", rel)
+        data_uri = f"data:{mime};base64,{b64}"
+        # Modèle qui ne voit pas : on route vers le VLM descripteur et on renvoie du TEXTE.
+        if not active_is_vision:
+            if describer is None:
+                raise ToolError(
+                    "ton modèle ne voit pas les images et aucun modèle vision n'est configuré "
+                    "pour les décrire. Ajoute un modèle vision (ex. glm-5v-turbo, vision=true) "
+                    "dans config/local.toml, ou bascule sur un modèle multimodal."
+                )
+            desc = describer(data_uri, (args.get("question") or "").strip())
+            return untrusted(desc, f"image {rel} (décrite par le modèle vision)")
+        return wrap_image(data_uri, rel)
 
     return ToolSpec(
         name="read_image",
         description=(
-            "Charge une IMAGE SUR DISQUE (png/jpg/jpeg/gif/webp/bmp) depuis son CHEMIN "
-            "et te la fait VOIR : capture, photo, schéma, diagramme. UNIQUEMENT pour un "
-            "fichier déjà présent sur disque dont tu connais le chemin (relatif au dossier "
-            "de travail ou absolu). Une image COLLÉE/jointe au chat, tu la vois DÉJÀ : "
-            "n'appelle PAS read_image pour elle et ne devine aucun chemin. Sert à décrire, "
-            "lire un texte, comparer un rendu. PDF/Excel/Word -> read_document ; texte -> "
-            "read_file."
+            "Accède à une IMAGE SUR DISQUE (png/jpg/jpeg/gif/webp/bmp) depuis son CHEMIN. Si "
+            "tu es un modèle multimodal, tu la VOIS ; sinon, un modèle vision te la DÉCRIT en "
+            "texte (tu peux poser une `question` ciblée : « quel est le texte exact ? », "
+            "« décris le layout »). Pour un fichier présent sur disque dont tu connais le "
+            "chemin (relatif au dossier de travail ou absolu), y compris les images jointes au "
+            "chat qui te sont signalées avec leur chemin. Sert à décrire, lire un texte, "
+            "comparer un rendu. PDF/Excel/Word -> read_document ; texte -> read_file."
         ),
         parameters={
             "type": "object",
@@ -313,7 +333,15 @@ def make_read_image(workspace_dir: str, max_bytes: int = 10 * 1024 * 1024) -> To
                         "Chemin de l'image : relatif au dossier de travail ou absolu "
                         "(ex: 'C:/Users/moi/Desktop/capture.png')."
                     ),
-                }
+                },
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "Optionnel : ce que tu veux savoir de l'image (ignoré si tu la vois "
+                        "directement ; utilisé pour cibler la description quand un modèle "
+                        "vision la décrit pour toi)."
+                    ),
+                },
             },
             "required": ["path"],
         },

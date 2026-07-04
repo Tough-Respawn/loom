@@ -23,6 +23,7 @@ from loom.extend.skills import collect_skills, render_catalog
 from loom.prompts import CHAT_SYSTEM_STRONG
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGES = 6  # nb max d'images jointes à un message (au-delà : ignorées)
 
 # Détection d'un chemin ABSOLU dans un message (Windows `C:\...` / `C:/...` ou POSIX
 # `/...`). Sert à l'auto-adoption du dossier de travail : si l'utilisateur désigne un
@@ -110,32 +111,60 @@ def _infer_title(client, model, message: str) -> str:
     return title
 
 
-def _build_user_content(message: str, image) -> str | list:
-    """Construit le contenu du message user : texte seul, ou multimodal si image.
+def _build_user_content(message, images, *, is_vision, stash_dir) -> str | list:
+    """Construit le contenu du message user à partir de N images jointes (max MAX_IMAGES).
 
-    Lève ValueError (-> 400) si l'image est trop grande ou n'est pas une image.
+    - Modèle VISION : images EMBARQUÉES (data URI) dans un message multimodal — il les VOIT.
+    - Modèle TEXTE-ONLY : images ENREGISTRÉES sur disque (stash_dir) ; le message reste du
+      texte, avec les chemins + consigne d'inspecter via read_image (qui route vers un VLM).
+
+    Lève ValueError (-> 400) si une image est trop grande ou n'est pas une image.
     """
-    if not (image and image.filename):
+    imgs = [im for im in (images or []) if im and im.filename][:MAX_IMAGES]
+    if not imgs:
         return message
-    blob = image.read()
-    if len(blob) > MAX_IMAGE_BYTES:
-        raise ValueError("image trop grande")
-    mime = image.mimetype or "image/png"
-    if not mime.startswith("image/"):
-        raise ValueError("fichier non-image")
-    b64 = base64.b64encode(blob).decode("ascii")
-    # L'image est EMBARQUÉE dans le message (data URI) : le modèle multimodal la VOIT
-    # déjà. Sans ce rappel, il croit devoir l'ouvrir via read_image, DEVINE un chemin,
-    # échoue, puis cherche les images du disque. On coupe court.
+    read: list[tuple[str, str, bytes]] = []  # (nom, mime, octets)
+    for im in imgs:
+        blob = im.read()
+        if len(blob) > MAX_IMAGE_BYTES:
+            raise ValueError(f"image trop grande : {im.filename}")
+        mime = im.mimetype or "image/png"
+        if not mime.startswith("image/"):
+            raise ValueError(f"fichier non-image : {im.filename}")
+        read.append((im.filename, mime, blob))
+
+    if is_vision:
+        # EMBARQUÉES : le modèle multimodal les VOIT déjà. Sans ce rappel, il croit devoir
+        # les rouvrir via read_image, devine un chemin, échoue.
+        note = (
+            f"[{len(read)} image(s) jointe(s) à ce message — tu les VOIS déjà directement "
+            "ci-dessous. N'utilise PAS read_image pour elles, ne devine aucun chemin.]\n"
+        )
+        parts: list = [{"type": "text", "text": note + message}]
+        for _name, mime, blob in read:
+            b64 = base64.b64encode(blob).decode("ascii")
+            parts.append(
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+            )
+        return parts
+
+    # TEXTE-ONLY : on enregistre sur disque et on donne les chemins ; read_image (routé vers
+    # un VLM) décrira à la demande. Le modèle ne voit rien inline, inutile de l'embarquer.
+    stash_dir = Path(stash_dir)
+    stash_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[str] = []
+    for i, (name, _mime, blob) in enumerate(read):
+        safe = re.sub(r"[^\w.\-]", "_", name) or f"image{i}"
+        p = stash_dir / f"{i:02d}_{safe}"
+        p.write_bytes(blob)
+        paths.append(str(p.resolve()))
+    listing = "\n".join(f"- {p}" for p in paths)
     note = (
-        "[Une image est jointe à ce message — tu la VOIS déjà directement ci-dessous. "
-        "N'utilise PAS read_image pour elle et ne devine AUCUN chemin de fichier : "
-        "analyse l'image telle qu'elle est.]\n"
+        f"[{len(paths)} image(s) jointe(s) à ce message, enregistrée(s) sur disque. Ton "
+        "modèle ne les voit pas directement : inspecte-les avec read_image(path[, question]) "
+        "— un modèle vision te les décrira. Chemins :\n" + listing + "]\n"
     )
-    return [
-        {"type": "text", "text": note + message},
-        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-    ]
+    return note + message
 
 
 # Mots qui EFFACENT l'objectif de session via « /goal <mot> » (façon /goal de Claude Code).
@@ -230,6 +259,10 @@ def create_app(
     # redémarrer le serveur (sinon Jinja sert la version compilée au démarrage).
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.jinja_env.auto_reload = True
+    # Pas de cache navigateur sur les statiques (app.js/css) : éditer le frontend prend effet
+    # au simple rechargement, sans hard-refresh. Sinon un app.js mis à jour reste servi depuis
+    # le cache et diverge du template rechargé côté serveur (bugs fantômes).
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     skills_dir = str(skills_dir)
     workspace_dir = str(workspace_dir)
     plugins_dir = str(plugins_dir)
@@ -424,22 +457,9 @@ def create_app(
 
                 return Response(_goal_ack(), mimetype="text/event-stream")
 
-        # Gate vision : une image envoyée à un modèle SANS mmproj fait planter llama-server
-        # (500 "image input not supported") en plein run. On refuse EN AMONT, message clair,
-        # plutôt qu'un crash après avoir déjà agi. (read_image suit le même garde côté tool.)
-        _img = request.files.get("image")
-        if _img and _img.filename and conv.model and conv.model not in vision_models:
-            chat_lock.release()
-            others = ", ".join(sorted(vision_models)) or "aucun (configure un mmproj)"
-            msg = (
-                f"Le modèle actif « {conv.model} » ne voit pas les images (pas de mmproj). "
-                f"Bascule sur un modèle avec vision : {others}."
-            )
-
-            def _gate():
-                yield _sse("error", message=msg)
-
-            return Response(_gate(), mimetype="text/event-stream")
+        # Plus de garde bloquant : un modèle texte-only ne reçoit PAS l'image inline (qui
+        # ferait planter un llama-server sans mmproj) — on la stocke sur disque et il l'inspecte
+        # via read_image, routé vers un modèle vision (cf. _build_user_content plus bas).
 
         # Logs PAR SESSION (au même titre que session.json) : (1) trace des échanges modèle
         # routée vers sessions/<id>/debug.log ; (2) copie du log serveur modèle global
@@ -467,7 +487,12 @@ def create_app(
                 adopted_ws = detected
 
         try:
-            content = _build_user_content(message, request.files.get("image"))
+            content = _build_user_content(
+                message,
+                request.files.getlist("image"),
+                is_vision=bool(conv.model and conv.model in vision_models),
+                stash_dir=_sdir / "uploads",
+            )
             conv.add("user", content)
             save()
 
