@@ -7,10 +7,39 @@ dossier de travail ; ignorent les dossiers lourds ; PLAFONNÉS (pas d'étouffeme
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
+
+
+@lru_cache(maxsize=1)
+def _rg_path() -> str | None:
+    """Chemin de l'exécutable ripgrep s'il est installé, sinon None (repli Python).
+
+    Résolu une seule fois : `rg` est plus rapide et respecte .gitignore. On tombe
+    proprement sur le scanner Python pur si `rg` est absent (Loom reste autonome).
+
+    PATH d'abord ; en repli l'emplacement d'install winget (Windows), car winget ne met
+    pas toujours son shim sur le PATH du process courant -> Loom trouve quand même `rg`.
+    Glob indépendant de la version installée."""
+    found = shutil.which("rg")
+    if found:
+        return found
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        pkgs = Path(local) / "Microsoft" / "WinGet" / "Packages"
+        try:
+            for exe in sorted(pkgs.glob("*ripgrep*/**/rg.exe"), reverse=True):
+                return str(exe)
+        except OSError:
+            pass
+    return None
+
 
 # Dossiers jamais parcourus : ils noient le résultat et étouffent le scan.
 # .claude : worktrees d'agents (chacun une copie COMPLÈTE du projet) + config interne
@@ -163,6 +192,120 @@ def make_find_files(workspace_dir: str, *, max_results: int = 200) -> ToolSpec:
     )
 
 
+_RG_LINE = re.compile(r"^(.*?):(\d+):(.*)$")
+
+
+def _rg_search(
+    rg: str,
+    base: Path,
+    search_dir: Path,
+    pattern: str,
+    gpat: str,
+    max_matches: int,
+    max_file_bytes: int,
+) -> str | None:
+    """Recherche via ripgrep. Renvoie le texte de résultat, ou None si `rg` échoue
+    (motif incompatible avec la regex Rust, erreur d'exécution) -> repli Python.
+
+    On lance `rg` avec cwd=search_dir et chemin `.` : les chemins sortis sont RELATIFS
+    (pas de `C:` initial qui casserait le parsing `fichier:ligne:texte` sous Windows).
+    On les réabsolutise pour l'affichage relatif-à-base, comme le repli Python."""
+    cmd = [
+        rg,
+        "--line-number",
+        "--no-heading",
+        "--color",
+        "never",
+        "--max-filesize",
+        str(max_file_bytes),
+        "-e",
+        pattern,
+    ]
+    if gpat:
+        cmd += ["-g", gpat]
+    else:
+        for d in _SKIP_DIRS:
+            cmd += ["-g", f"!{d}"]
+    cmd.append(".")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(search_dir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # 0 = correspondances, 1 = aucune (tous deux valides) ; 2+ = erreur -> repli.
+    if proc.returncode not in (0, 1):
+        return None
+    out: list[str] = []
+    for raw in proc.stdout.splitlines():
+        m = _RG_LINE.match(raw)
+        if not m:
+            continue
+        rel, ln, content = m.group(1), m.group(2), m.group(3)
+        shown = _display((search_dir / rel).resolve(), base)
+        if _skipped(Path(shown)):
+            continue
+        out.append(f"{shown}:{ln}: {content.strip()[:200]}")
+        if len(out) >= max_matches:
+            break
+    if not out:
+        return f"aucune correspondance pour : {pattern}"
+    return "\n".join(out)
+
+
+def _py_search(
+    base: Path,
+    pattern: str,
+    globf: str,
+    max_matches: int,
+    max_file_bytes: int,
+    max_files_scanned: int,
+) -> str:
+    """Scanner regex pur Python (repli quand ripgrep est absent/incompatible)."""
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        raise ToolError(f"expression régulière invalide : {exc}") from exc
+    if globf:
+        gbase, gpat = _glob_base_and_pattern(base, globf)
+        files = gbase.glob(gpat)
+    else:
+        files = base.rglob("*")
+    out: list[str] = []
+    scanned = 0
+    for p in files:
+        if len(out) >= max_matches or scanned >= max_files_scanned:
+            break
+        if not p.is_file():
+            continue
+        shown = _display(p, base)
+        if _skipped(Path(shown)):
+            continue
+        if not globf and p.suffix.lower() not in _TEXT_EXT:
+            continue
+        try:
+            if p.stat().st_size > max_file_bytes:
+                continue
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        scanned += 1
+        for i, line in enumerate(text.splitlines(), 1):
+            if rx.search(line):
+                out.append(f"{shown}:{i}: {line.strip()[:200]}")
+                if len(out) >= max_matches:
+                    break
+    if not out:
+        return f"aucune correspondance pour : {pattern}"
+    return "\n".join(out)
+
+
 def make_search_text(
     workspace_dir: str,
     *,
@@ -170,7 +313,10 @@ def make_search_text(
     max_file_bytes: int = 1_000_000,
     max_files_scanned: int = 3000,
 ) -> ToolSpec:
-    """Outil search_text : grep regex sur le contenu des fichiers du workspace."""
+    """Outil search_text : grep regex sur le contenu des fichiers du workspace.
+
+    Utilise ripgrep (`rg`) s'il est installé — rapide, respecte .gitignore — sinon un
+    scanner Python pur (Loom reste autonome sans dépendance externe)."""
     root = Path(workspace_dir)
 
     def run(args: dict) -> str:
@@ -178,43 +324,26 @@ def make_search_text(
         if not pattern:
             raise ToolError("argument 'pattern' manquant")
         globf = (args.get("glob") or "").strip()
+        # Valide la regex tôt pour un message clair (rg fait le vrai match côté Rust).
         try:
-            rx = re.compile(pattern)
+            re.compile(pattern)
         except re.error as exc:
             raise ToolError(f"expression régulière invalide : {exc}") from exc
         base = root.resolve()
         if globf:
-            gbase, gpat = _glob_base_and_pattern(base, globf)
-            files = gbase.glob(gpat)
+            search_dir, gpat = _glob_base_and_pattern(base, globf)
         else:
-            files = base.rglob("*")
-        out: list[str] = []
-        scanned = 0
-        for p in files:
-            if len(out) >= max_matches or scanned >= max_files_scanned:
-                break
-            if not p.is_file():
-                continue
-            shown = _display(p, base)
-            if _skipped(Path(shown)):
-                continue
-            if not globf and p.suffix.lower() not in _TEXT_EXT:
-                continue
-            try:
-                if p.stat().st_size > max_file_bytes:
-                    continue
-                text = p.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-            scanned += 1
-            for i, line in enumerate(text.splitlines(), 1):
-                if rx.search(line):
-                    out.append(f"{shown}:{i}: {line.strip()[:200]}")
-                    if len(out) >= max_matches:
-                        break
-        if not out:
-            return f"aucune correspondance pour : {pattern}"
-        return "\n".join(out)
+            search_dir, gpat = base, ""
+        rg = _rg_path()
+        if rg:
+            res = _rg_search(
+                rg, base, Path(search_dir), pattern, gpat, max_matches, max_file_bytes
+            )
+            if res is not None:
+                return res
+        return _py_search(
+            base, pattern, globf, max_matches, max_file_bytes, max_files_scanned
+        )
 
     return ToolSpec(
         name="search_text",
