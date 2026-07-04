@@ -54,12 +54,23 @@ const INIT = JSON.parse(
 // ----------------------------------------------------------------------------
 // État + rendu
 // ----------------------------------------------------------------------------
+// Multi-ONGLETS : chaque session ouverte = un onglet avec SA timeline, SA génération (flux
+// concurrent), SON Stop et SON compteur. La sidebar garde TOUTES les sessions ; fermer un
+// onglet ne supprime pas la session. `state.active` = onglet affiché.
 const state = {
-  timeline: [], // items : {kind, id, ...}
+  tabs: {}, // sid -> { sid, title, timeline:[], streaming, abort, model, thinking, workspace, meter, metrics }
+  order: [], // ordre des onglets ouverts
+  active: null, // sid de l'onglet affiché
   pin: true, // auto-scroll collant
 };
 let _seq = 0;
 const uid = () => "i" + ++_seq;
+function tab(sid) {
+  return state.tabs[sid];
+}
+function activeTab() {
+  return state.tabs[state.active] || null;
+}
 
 const root = document.getElementById("messages");
 const scrollWrap = document.getElementById("messages-wrap");
@@ -75,24 +86,32 @@ function scheduleRender() {
   });
 }
 
-// Mutations de la timeline (toujours suivies d'un re-render).
-function push(item) {
-  item.id = item.id || uid();
-  state.timeline.push(item);
-  scheduleRender();
-  return item;
+// Mutations liées à la timeline d'un ONGLET précis. Un re-render n'a lieu que si cet onglet
+// est actif (les onglets en arrière-plan génèrent sans redessiner l'écran). Deux flux
+// concurrents mutent chacun SA timeline sans se marcher dessus.
+function opsFor(sid) {
+  const tl = () => (state.tabs[sid] ? state.tabs[sid].timeline : []);
+  const get = (id) => tl().find((i) => i.id === id);
+  const push = (item) => {
+    item.id = item.id || uid();
+    tl().push(item);
+    if (sid === state.active) scheduleRender();
+    return item;
+  };
+  const patch = (id, fields) => {
+    const it = get(id);
+    if (it) {
+      Object.assign(it, fields);
+      if (sid === state.active) scheduleRender();
+    }
+    return it;
+  };
+  return { get, push, patch };
 }
-function get(id) {
-  return state.timeline.find((i) => i.id === id);
-}
-function patch(id, fields) {
-  const it = get(id);
-  if (it) {
-    Object.assign(it, fields);
-    scheduleRender();
-  }
-  return it;
-}
+// Ops de l'onglet ACTIF (hydratation, rendu direct).
+const push = (item) => opsFor(state.active).push(item);
+const get = (id) => opsFor(state.active).get(id);
+const patch = (id, fields) => opsFor(state.active).patch(id, fields);
 
 // ----------------------------------------------------------------------------
 // Composants
@@ -180,9 +199,12 @@ function UserMsg({ it, userIndex }) {
       const r = await fetch("/fork", { method: "POST", body: fd });
       if (!r.ok) return;
       const j = await r.json();
-      // Tronque la timeline UI : garde jusqu'a CET item user (inclus)
-      const idx = state.timeline.indexOf(it);
-      if (idx >= 0) state.timeline = state.timeline.slice(0, idx + 1);
+      // Tronque la timeline de l'onglet actif : garde jusqu'a CET item user (inclus)
+      const at = activeTab();
+      if (at) {
+        const idx = at.timeline.indexOf(it);
+        if (idx >= 0) at.timeline = at.timeline.slice(0, idx + 1);
+      }
       // Pre-remplit l'input
       const inp = document.getElementById("input");
       if (inp) {
@@ -280,19 +302,22 @@ function Item({ it, userIndex }) {
       return html`<div class="msg assistant err">${it.message}</div>`;
     case "phase":
       return html`<div class="phase-sep">&#9658; ${it.name}${it.detail ? " — " + it.detail : ""}</div>`;
+    case "notice":
+      return html`<div class="notice-line">${it.text}</div>`;
     default:
       return null;
   }
 }
 
 function App() {
-  if (!state.timeline.length) {
+  const t = activeTab();
+  if (!t || !t.timeline.length) {
     return html`<div class="empty-state">
       Écris une demande. Loom agit avec ses outils (lire, écrire, exécuter, chercher).
     </div>`;
   }
   let _ui = 0;
-  return state.timeline.map((it) => {
+  return t.timeline.map((it) => {
     let userIndex = null;
     if (it.kind === "user") {
       userIndex = _ui++;
@@ -333,13 +358,21 @@ async function streamSSE(url, fd, onEvent, signal) {
 // ----------------------------------------------------------------------------
 // Chat (1 tour, boucle tool-use)
 // ----------------------------------------------------------------------------
-let currentAbort = null;
-
-async function sendChat(text, images) {
+async function sendChat(sid, text, images) {
+  const t = tab(sid);
+  if (!t) return;
   state.pin = true;
-  if (currentAbort) currentAbort.abort();
+  // Interrompt UNIQUEMENT la génération de CET onglet (les autres continuent).
+  if (t.abort) t.abort.abort();
   const ac = new AbortController();
-  currentAbort = ac;
+  t.abort = ac;
+  t.streaming = true;
+  renderTabs();
+  if (sid === state.active) syncComposer();
+
+  // Ops liées à la timeline de CET onglet (les events du flux mutent SA timeline, même s'il
+  // n'est pas à l'écran).
+  const { push, get, patch } = opsFor(sid);
 
   if (images && images.length) {
     const parts = [{ type: "text", text }];
@@ -357,9 +390,10 @@ async function sendChat(text, images) {
 
   const fd = new FormData();
   fd.append("message", text);
+  fd.append("session_id", sid); // cible la session de l'onglet (génération concurrente)
   for (const im of images || []) fd.append("image", im); // multi-images : le back fait getlist
 
-  setMetrics(0, 0, null); // "↑0 ↓0" pulsant dès l'envoi -> liveness immédiate avant le 1er token
+  if (sid === state.active) setMetrics(0, 0, null); // liveness immédiate si onglet affiché
 
   const onEvent = (evt) => {
     switch (evt.type) {
@@ -430,36 +464,44 @@ async function sendChat(text, images) {
       case "tool_request":
         push({ kind: "perm", callId: evt.id, name: evt.name, summary: evt.summary });
         break;
+      case "notice":
+        // Signal du harnais (ex. « modèle local occupé, mise en file ») : ligne discrète.
+        push({ kind: "notice", text: evt.text });
+        break;
       case "workspace":
-        // Le serveur a adopté le dossier de travail désigné dans le message : on
-        // reflète la nouvelle pastille (l'utilisateur n'a rien eu à pointer).
-        loomWorkdir = evt.path;
-        try {
-          localStorage.loomWorkdir = loomWorkdir;
-        } catch (e) {
-          /* localStorage indispo : sans effet */
+        // Le serveur a adopté le dossier de travail : mémorisé sur l'onglet, pastille MAJ
+        // seulement si c'est l'onglet affiché.
+        t.workspace = evt.path;
+        if (sid === state.active) {
+          loomWorkdir = evt.path;
+          try {
+            localStorage.loomWorkdir = loomWorkdir;
+          } catch (e) {
+            /* localStorage indispo : sans effet */
+          }
+          reflectWorkdir();
         }
-        reflectWorkdir();
         break;
       case "session_title": {
-        // Le serveur a inféré un titre pour la session : on l'écrit dans la sidebar en
-        // direct (sinon il n'apparaîtrait qu'au prochain rechargement). La liste est du
-        // HTML rendu serveur -> on cible le bouton par son data-id.
+        // Titre inféré : MAJ de l'onglet, de la sidebar et de la barre d'onglets.
+        if (t) t.title = evt.title;
         const btn = document.querySelector(`.sess-pick[data-id="${evt.id}"]`);
         if (btn) btn.textContent = evt.title;
+        renderTabs();
         break;
       }
       case "metrics":
-        // Compteur live piloté par le backend : envoyés ↑ (prompt réel) et reçus ↓
-        // (génération, tool-calls inclus, réconciliés sur l'usage) + débit mesuré.
+        // Compteur live du backend : mémorisé sur l'onglet, affiché seulement si actif.
         lastSent = evt.sent;
         lastRecv = evt.recv;
         lastTokS = evt.tok_s;
-        setMetrics(lastSent, lastRecv, lastTokS, {});
+        t.metrics = { sent: lastSent, recv: lastRecv, tokS: lastTokS };
+        if (sid === state.active) setMetrics(lastSent, lastRecv, lastTokS, {});
         break;
       case "totals":
-        // Cumul RÉEL de la session (input rejoué à chaque appel + output + coût), persisté.
-        updateUsageMeter(evt);
+        // Cumul RÉEL de la session : mémorisé sur l'onglet, compteur affiché si actif.
+        t.meter = evt;
+        if (sid === state.active) updateUsageMeter(evt);
         break;
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancé ?)" });
@@ -478,31 +520,218 @@ async function sendChat(text, images) {
     }
   } finally {
     if (thinkId) patch(thinkId, { active: false });
-    // Ne fige le compteur que si CETTE génération est encore l'active (une nouvelle
-    // soumission a déjà remis le compteur à zéro -> ne pas l'écraser depuis l'ancienne).
-    if (ac === currentAbort) {
-      currentAbort = null;
-      setMetrics(lastSent, lastRecv, lastTokS, { done: true });
+    // Fin de CE flux : si c'est encore le flux courant de l'onglet (pas remplacé par une
+    // nouvelle soumission), on marque l'onglet non-générant et on fige son compteur.
+    if (t.abort === ac) {
+      t.abort = null;
+      t.streaming = false;
+      renderTabs();
+      if (sid === state.active) {
+        setMetrics(lastSent, lastRecv, lastTokS, { done: true });
+        syncComposer();
+      }
     }
   }
 }
 
 // ----------------------------------------------------------------------------
+// Onglets (barre navigateur) : ouvrir / activer / fermer. La sidebar garde TOUTES les
+// sessions ; un onglet = une session ouverte ; fermer un onglet ne supprime pas la session.
+// ----------------------------------------------------------------------------
+const tabbarEl = document.getElementById("tabbar");
+
+function renderTabs() {
+  if (!tabbarEl) return;
+  tabbarEl.hidden = state.order.length === 0;
+  tabbarEl.innerHTML = "";
+  for (const sid of state.order) {
+    const t = state.tabs[sid];
+    if (!t) continue;
+    const el = document.createElement("div");
+    el.className = "tab" + (sid === state.active ? " active" : "");
+    el.title = t.title || "session";
+    const dot = document.createElement("span");
+    dot.className = "tab-dot " + (t.streaming ? "gen" : "idle");
+    const title = document.createElement("span");
+    title.className = "tab-title";
+    title.textContent = t.title || "session";
+    const x = document.createElement("button");
+    x.className = "tab-x";
+    x.type = "button";
+    x.textContent = "✕";
+    x.title = "Fermer l'onglet (la session reste dans la sidebar)";
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTab(sid);
+    });
+    el.append(dot, title, x);
+    el.addEventListener("click", () => activateTab(sid));
+    tabbarEl.append(el);
+  }
+  const plus = document.createElement("button");
+  plus.className = "tab-new";
+  plus.type = "button";
+  plus.textContent = "+";
+  plus.title = "Nouvelle session";
+  plus.addEventListener("click", newSessionTab);
+  tabbarEl.append(plus);
+}
+
+function _hydrateTimeline(t, messages) {
+  (messages || []).forEach((m) =>
+    t.timeline.push({
+      kind: m.role === "user" ? "user" : "assistant",
+      id: uid(),
+      content: m.content,
+      raw: typeof m.content === "string" ? m.content : "",
+      done: true,
+    }),
+  );
+}
+
+async function openTab(sid) {
+  if (!state.tabs[sid]) {
+    let d;
+    try {
+      d = await (await fetch("/session_state?id=" + encodeURIComponent(sid))).json();
+    } catch {
+      return;
+    }
+    const t = {
+      sid,
+      title: d.title || "session",
+      timeline: [],
+      streaming: false,
+      abort: null,
+      model: d.model || "",
+      thinking: d.thinking !== false,
+      workspace: d.workspace || "",
+      meter: d.usage_totals || null,
+      metrics: null,
+    };
+    _hydrateTimeline(t, d.messages);
+    state.tabs[sid] = t;
+    state.order.push(sid);
+  }
+  activateTab(sid);
+}
+
+function activateTab(sid) {
+  const t = state.tabs[sid];
+  if (!t) return;
+  state.active = sid;
+  // Le serveur suit ce focus (pour /model, /tools, /reset, /pick-folder qui opèrent sur _cur).
+  postForm("/session/activate", { id: sid }).catch(() => {});
+  // Synchronise les contrôles de la sidebar/topbar à cet onglet.
+  const sel = document.getElementById("model-select");
+  if (sel && t.model) sel.value = t.model;
+  const think = document.getElementById("thinking-cb");
+  if (think) think.checked = !!t.thinking;
+  if (t.workspace) {
+    loomWorkdir = t.workspace;
+    try {
+      localStorage.loomWorkdir = t.workspace;
+    } catch (e) {
+      /* sans effet */
+    }
+    reflectWorkdir();
+  }
+  if (t.meter) updateUsageMeter(t.meter);
+  if (t.metrics)
+    setMetrics(t.metrics.sent, t.metrics.recv, t.metrics.tokS, { done: !t.streaming });
+  else setMetrics(null, null, null);
+  // Surligne la session active dans la sidebar.
+  document
+    .querySelectorAll(".session-item")
+    .forEach((li) => li.classList.remove("active"));
+  const li = document
+    .querySelector(`.sess-pick[data-id="${sid}"]`)
+    ?.closest(".session-item");
+  if (li) li.classList.add("active");
+  state.pin = true;
+  scheduleRender();
+  renderTabs();
+  syncComposer();
+}
+
+function closeTab(sid) {
+  const t = state.tabs[sid];
+  if (t && t.abort) t.abort.abort(); // stoppe le flux de l'onglet fermé (la session reste)
+  delete state.tabs[sid];
+  state.order = state.order.filter((s) => s !== sid);
+  if (state.active === sid) {
+    state.active = state.order[state.order.length - 1] || null;
+    if (state.active) activateTab(state.active);
+    else {
+      scheduleRender();
+      renderTabs();
+    }
+  } else {
+    renderTabs();
+  }
+}
+
+async function newSessionTab() {
+  const wd = document.getElementById("workdir-path");
+  const r = await postForm("/session/new", {
+    workspace: wd ? wd.textContent.trim() : "",
+  });
+  const d = await r.json();
+  state.tabs[d.id] = {
+    sid: d.id,
+    title: d.title || "session",
+    timeline: [],
+    streaming: false,
+    abort: null,
+    model: "",
+    thinking: true,
+    workspace: d.workspace || "",
+    meter: null,
+    metrics: null,
+  };
+  state.order.push(d.id);
+  addSidebarSession(d);
+  activateTab(d.id);
+}
+
+function addSidebarSession(d) {
+  const list = document.querySelector(".session-list");
+  if (!list || list.querySelector(`.sess-pick[data-id="${d.id}"]`)) return;
+  const li = document.createElement("li");
+  li.className = "session-item";
+  li.innerHTML =
+    `<button type="button" class="sess-pick" data-id="${d.id}" title="${d.workspace || ""}">${d.title || "session"}</button>` +
+    `<button type="button" class="sess-del" data-id="${d.id}" title="Supprimer">✕</button>`;
+  list.prepend(li);
+}
+
+// ----------------------------------------------------------------------------
 // Hydratation + câblage des contrôles (formulaires, image, historique, toggles)
 // ----------------------------------------------------------------------------
-(INIT.messages || []).forEach((m) =>
-  state.timeline.push({
-    kind: m.role === "user" ? "user" : "assistant",
-    id: uid(),
-    content: m.content,
-    raw: typeof m.content === "string" ? m.content : "",
-    done: true,
-  }),
-);
-// Les messages assistant persistés portent leur markdown dans `content` (string).
-state.timeline.forEach((it) => {
-  if (it.kind === "assistant" && typeof it.content === "string") it.raw = it.content;
-});
+// Onglet de départ = la session active (hydratée depuis INIT). La sidebar rendue par le
+// serveur liste toutes les sessions ; on n'ouvre QUE l'active au chargement.
+{
+  const sid = INIT.active_session;
+  if (sid) {
+    const t0 = {
+      sid,
+      title: INIT.title || "session",
+      timeline: [],
+      streaming: false,
+      abort: null,
+      model: INIT.model || "",
+      thinking: INIT.thinking !== false,
+      workspace: INIT.workspace || "",
+      meter: INIT.usage_totals || null,
+      metrics: null,
+    };
+    _hydrateTimeline(t0, INIT.messages);
+    state.tabs[sid] = t0;
+    state.order.push(sid);
+    state.active = sid;
+  }
+}
+renderTabs();
 scheduleRender();
 
 // MathJax charge en async : re-typeset les bulles déjà rendues (historique) une fois prêt.
@@ -616,35 +845,31 @@ async function postForm(url, data) {
   for (const k in data) fd.append(k, data[k]);
   return fetch(url, { method: "POST", body: fd });
 }
+// Délégation (les items de la sidebar peuvent être ajoutés dynamiquement) : cliquer une
+// session l'OUVRE comme onglet (ou l'active si déjà ouverte) — plus de rechargement de page.
 const sessionNew = document.getElementById("session-new");
-if (sessionNew) {
-  sessionNew.addEventListener("click", async () => {
-    const wd = document.getElementById("workdir-path");
-    await postForm("/session/new", { workspace: wd ? wd.textContent.trim() : "" });
-    location.reload();
-  });
-}
-document.querySelectorAll(".sess-pick").forEach((b) => {
-  b.addEventListener("click", async () => {
-    await postForm("/session/activate", { id: b.dataset.id });
-    location.reload();
-  });
-});
-document.querySelectorAll(".sess-del").forEach((b) => {
-  b.addEventListener("click", (e) => {
+if (sessionNew) sessionNew.addEventListener("click", newSessionTab);
+document.querySelector(".session-list")?.addEventListener("click", (e) => {
+  const del = e.target.closest(".sess-del");
+  if (del) {
     e.stopPropagation();
+    const sid = del.dataset.id;
     showToast("Supprimer cette session ?", [
       {
         label: "Supprimer",
         kind: "danger",
         onClick: async () => {
-          await postForm("/session/delete", { id: b.dataset.id });
-          location.reload();
+          await postForm("/session/delete", { id: sid });
+          if (state.tabs[sid]) closeTab(sid); // ferme l'onglet si ouvert
+          del.closest(".session-item")?.remove(); // retire de la sidebar
         },
       },
       { label: "Annuler" },
     ]);
-  });
+    return;
+  }
+  const pick = e.target.closest(".sess-pick");
+  if (pick) openTab(pick.dataset.id);
 });
 
 // --- sélecteur de dossier natif ---
@@ -726,33 +951,36 @@ if (sidebarToggle && sidebarEl) {
 // --- formulaire : un seul chemin, l'agent tool-use (/chat) ---
 const chatForm = document.getElementById("chat");
 
-async function submitChat() {
+// Le bouton reflète l'état de l'onglet ACTIF (Stop si SA génération tourne, sinon Envoyer).
+function syncComposer() {
+  if (sendBtn) sendBtn.textContent = activeTab()?.streaming ? "Stop" : "Envoyer";
+}
+
+function submitChat() {
   const text = input.value.trim();
-  if (!text) return;
+  if (!text || !state.active) return;
   history.push(text);
   histIdx = -1;
   const imgs = pendingImages.slice();
   input.value = "";
   clearImages();
-  sendBtn.textContent = "Stop";
-  try {
-    await sendChat(text, imgs);
-  } finally {
-    sendBtn.textContent = "Envoyer";
-    input.focus();
-  }
+  // Envoi sur l'onglet actif (flux concurrent) ; le bouton passe à Stop via syncComposer.
+  sendChat(state.active, text, imgs).finally(() => input.focus());
+  syncComposer();
 }
 
-// Stop : coupe l'affichage côté client (abort) ET la génération côté serveur
-// (/cancel pose cancel_event). Pas de message vide envoyé -> plus de 429.
+// Stop : coupe l'affichage de l'onglet actif (abort) ET sa génération serveur (/cancel avec
+// son session_id). Les autres onglets ne sont pas touchés.
 function stopChat() {
-  if (currentAbort) currentAbort.abort();
-  fetch("/cancel", { method: "POST" }).catch(() => {});
+  const t = activeTab();
+  if (t && t.abort) t.abort.abort();
+  if (state.active) postForm("/cancel", { session_id: state.active }).catch(() => {});
+  syncComposer();
 }
 chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
-  // Pendant une génération, le bouton « Stop » arrête au lieu de soumettre.
-  if (currentAbort) {
+  // Si l'onglet actif génère, le bouton « Stop » arrête au lieu de soumettre.
+  if (activeTab()?.streaming) {
     stopChat();
     return;
   }
@@ -805,6 +1033,7 @@ window.addEventListener("paste", (e) => {
 const thinkingCb = document.getElementById("thinking-cb");
 if (thinkingCb) {
   thinkingCb.addEventListener("change", () => {
+    if (activeTab()) activeTab().thinking = thinkingCb.checked;
     const fd = new FormData();
     fd.append("thinking", thinkingCb.checked ? "1" : "0");
     fetch("/thinking", { method: "POST", body: fd });
@@ -815,8 +1044,16 @@ if (thinkingCb) {
 const resetBtn = document.getElementById("reset-btn");
 if (resetBtn) {
   resetBtn.addEventListener("click", async () => {
+    // /reset opère sur la session focus (_cur = onglet actif via /session/activate).
     await fetch("/reset", { method: "POST" });
-    state.timeline = [];
+    const at = activeTab();
+    if (at) {
+      at.timeline = [];
+      at.meter = null;
+      at.metrics = null;
+      updateUsageMeter({});
+      setMetrics(null, null, null);
+    }
     scheduleRender();
   });
 }
@@ -857,8 +1094,8 @@ document.addEventListener("change", (e) => {
       .forEach((c) => (c.checked = on));
     postSkillsToggle();
   } else if (t.id === "model-select") {
-    // Changer de modèle déclenche le load/unload côté serveur (POST /model via HTMX).
-    // On suit l'état machine ; scheduleMachineRefresh re-sonde le temps que le POST persiste.
+    // Mémorise le modèle sur l'onglet actif (sinon figé au switch), puis suit l'état machine.
+    if (activeTab()) activeTab().model = t.value;
     scheduleMachineRefresh();
   }
 });
