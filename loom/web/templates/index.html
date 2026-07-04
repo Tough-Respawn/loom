@@ -333,6 +333,8 @@
     .usage-meter .um-unit { color: var(--text-faint); font-size: 9.5px; margin-left: -2px; }
     .usage-meter #um-in { color: var(--warn); }
     .usage-meter #um-out { color: var(--accent); }
+    .usage-meter .um-cache { color: var(--accent); }
+    .usage-meter .um-cache.miss { color: var(--err); }
     .usage-meter .um-calls { color: var(--text-faint); }
     .usage-meter .um-cost { color: var(--text); font-weight: 600; margin-left: 3px; }
     .sidebar-toggle {
@@ -545,6 +547,7 @@
             title="Consommation RÉELLE cumulée de la session : l'API refacture TOUT le contexte en INPUT à chaque appel d'outil. Le coût suit ce total (surtout l'input), PAS les tokens qui défilent à l'écran (l'output seul).">
         <span class="um-lab">&Sigma;</span>
         <span id="um-in">0</span><span class="um-unit">in</span>
+        <span class="um-cache" id="um-cache"></span>
         <span id="um-out">0</span><span class="um-unit">out</span>
         <span class="um-calls" id="um-calls"></span>
         <span class="um-cost" id="um-cost"></span>
