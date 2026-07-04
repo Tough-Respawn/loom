@@ -26,6 +26,15 @@ from loom.agent.inline_image import (
 # d'un refactor multi-fichiers (cf. plafond max_iters).
 _SERIAL_WRITE = frozenset({"write_file", "append_file"})
 
+# Outils d'EXÉCUTION / VÉRIFICATION : relancer LE MÊME appel N fois est légitime (« relance
+# jusqu'à 3 runs verts », re-tester après un fix, confirmer une stabilité). Le détecteur de
+# non-progrès les EXCLUT donc de sa signature : sinon il coupe un modèle qui fait exactement
+# ce qu'on lui demande (observé sur le test LRU). Les vraies boucles à attraper sont les
+# re-edit_file / re-write_file / re-read_file à l'identique — elles, restent comptées.
+_VERIFY_TOOLS = frozenset(
+    {"run_shell", "check_page", "serve_and_check", "check_interactive"}
+)
+
 
 def _safe_args(raw: str) -> str:
     """Renvoie des arguments JSON VALIDES pour l'historique. Si l'appel a été tronqué
@@ -997,18 +1006,30 @@ class LoomClient:
                     continue
                 return  # réponse finale déjà streamée (stop naturel du modèle)
 
-            # Non-progrès : même jeu d'appels (outils+args) que le tour précédent ?
+            # Non-progrès : même jeu d'appels (outils+args) que le tour précédent ? On EXCLUT
+            # les outils d'exécution/vérification (_VERIFY_TOOLS) : re-lancer la même preuve est
+            # légitime. Un tour PUREMENT de vérif -> signature vide -> compté comme progrès (on
+            # ne coupe pas, on remet le compteur à zéro). Backstop ultime contre le vrai runaway :
+            # max_iters. Les boucles dégénérées (re-edit/re-write/re-read identiques) restent prises.
             sig_set = frozenset(
-                f"{tc['name']}\x00{tc['arguments']}" for tc in tool_calls
+                f"{tc['name']}\x00{tc['arguments']}"
+                for tc in tool_calls
+                if tc["name"] not in _VERIFY_TOOLS
             )
-            repeat_streak = repeat_streak + 1 if sig_set == prev_sig_set else 0
-            prev_sig_set = sig_set
-            if repeat_streak >= repeat_limit - 1:
-                yield (
-                    "content",
-                    "\n(arrêt : le modèle réémet les mêmes appels sans progresser).",
-                )
-                return
+            if not sig_set:
+                # Tour purement exécution/vérif : progrès légitime, on ne coupe pas et on
+                # laisse passer vers l'exécution des outils (surtout PAS de continue ici).
+                repeat_streak = 0
+                prev_sig_set = None
+            else:
+                repeat_streak = repeat_streak + 1 if sig_set == prev_sig_set else 0
+                prev_sig_set = sig_set
+                if repeat_streak >= repeat_limit - 1:
+                    yield (
+                        "content",
+                        "\n(arrêt : le modèle réémet les mêmes appels sans progresser).",
+                    )
+                    return
 
             convo.append(
                 {
