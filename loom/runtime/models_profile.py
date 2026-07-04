@@ -15,11 +15,13 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 # Fichiers de PROSE : on n'y touche pas (les guillemets typographiques peuvent y être voulus).
 _PROSE_EXT = frozenset({".md", ".markdown", ".txt", ".rst"})
-_SMART_QUOTES = {"’": "'", "‘": "'", "“": '"', "”": '"'}
+_SMART_QUOTES = {"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"'}
+# Cadratin (em-dash U+2014) et demi-cadratin (en-dash U+2013) -> tiret ASCII.
+_DASHES = {"\u2014": "-", "\u2013": "-"}
 
 
 def _normalize_quotes(content: str, suffix: str) -> str:
-    """Remplace ’ ‘ ” “ par ' et " — sauf dans les fichiers de prose."""
+    """Remplace les guillemets typographiques par ASCII, sauf dans les fichiers de prose."""
     if suffix.lower() in _PROSE_EXT:
         return content
     for bad, good in _SMART_QUOTES.items():
@@ -27,9 +29,19 @@ def _normalize_quotes(content: str, suffix: str) -> str:
     return content
 
 
+def _normalize_dashes(content: str, suffix: str) -> str:
+    """Remplace les cadratins (U+2014) et demi-cadratins (U+2013) par des tirets ASCII."""
+    if suffix.lower() in _PROSE_EXT:
+        return content
+    for bad, good in _DASHES.items():
+        content = content.replace(bad, good)
+    return content
+
+
 # Registre curaté : nom de fix -> fonction (content, suffix) -> content.
 FIXES = {
     "normalize_quotes": _normalize_quotes,
+    "normalize_dashes": _normalize_dashes,
 }
 
 # Outils d'écriture et les clés d'arguments qui portent du contenu à corriger.
@@ -60,6 +72,21 @@ class Profile:
                         v = fn(v, suffix)
                 out[k] = v
         return out
+
+    def apply_to_text(self, text: str) -> str:
+        """Applique les fixes actifs au texte streamé du chat (réponses du modèle).
+
+        Contrairement à `apply` (outils d'écriture), ici on ne connait pas de suffixe
+        de fichier : on applique les fixes SANS exception de prose (le chat n'est jamais
+        un fichier .md/.txt qu'on écrit sur disque).
+        """
+        if not self.fixes or not isinstance(text, str):
+            return text
+        for name in self.fixes:
+            fn = FIXES.get(name)
+            if fn:
+                text = fn(text, suffix="")
+        return text
 
 
 _EMPTY = Profile("", ())
