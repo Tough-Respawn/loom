@@ -86,6 +86,19 @@
       cursor: pointer; padding: 0; text-transform: none; letter-spacing: 0;
     }
     .sb-label button:hover { color: #8fd9b0; }
+    /* Sections repliables (Skills / Outils) : entête cliquable + caret, repliées par défaut
+       pour que la sidebar ne soit pas un mur de cases. Clic sur l'entête = tout dérouler. */
+    details.sb-fold > summary.sb-label {
+      cursor: pointer; list-style: none; user-select: none;
+    }
+    details.sb-fold > summary.sb-label::-webkit-details-marker { display: none; }
+    details.sb-fold > summary.sb-label::before {
+      content: "▸"; margin-right: 6px; font-size: 9px; color: var(--text-faint);
+      transition: transform .12s ease;
+    }
+    details.sb-fold[open] > summary.sb-label::before { content: "▾"; }
+    details.sb-fold > summary.sb-label:hover { color: var(--text-dim); }
+    details.sb-fold > *:not(summary) { margin-top: 4px; }
     .session-list { list-style: none; display: flex; flex-direction: column; gap: 1px; }
     .session-item {
       display: flex; align-items: center; border-radius: 6px;
@@ -113,12 +126,135 @@
       font-size: 12px; font-family: inherit; cursor: pointer;
     }
     #model-select:focus { outline: none; border-color: var(--accent-dim); }
-    #skills-panel { display: flex; flex-wrap: wrap; gap: 4px; }
-    .skill-ro {
-      display: inline-flex; align-items: center; background: var(--bg-elev);
-      border: 1px solid var(--border); border-radius: 5px; padding: 2px 7px;
-      font-size: 11px; color: var(--text-dim);
+    /* Indicateur d'état du modèle SUR LA MACHINE (chargé / en cours / libre / serveur off) */
+    .machine-chip {
+      display: flex; align-items: center; gap: 6px; margin-top: 6px; padding: 0 2px;
+      font-size: 10.5px; color: var(--text-faint); min-height: 14px;
     }
+    .machine-chip::before {
+      content: ""; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--text-faint); flex: none;
+    }
+    .machine-chip.on::before { background: var(--accent); }
+    .machine-chip.busy::before { background: var(--warn); animation: mc-pulse 1s ease-in-out infinite; }
+    .machine-chip.free::before { background: var(--text-faint); }
+    .machine-chip.off::before { background: var(--err); }
+    @keyframes mc-pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+    #skills-panel { display: flex; flex-direction: column; gap: 3px; }
+    #skills-panel .skill {
+      display: flex; align-items: center; gap: 6px; background: var(--bg-elev);
+      border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px;
+      font-size: 12px; color: var(--text-dim);
+    }
+    #skills-panel .skills-all { border-style: dashed; }
+    #skills-panel .skill-name {
+      flex: 1; min-width: 0; text-align: left; background: none; border: none;
+      color: var(--text-dim); font: inherit; cursor: pointer; padding: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #skills-panel .skill-name:hover { color: var(--accent); text-decoration: underline; }
+    #skills-panel .skill-row.has-override .skill-name::after {
+      content: ' •'; color: var(--warn);
+    }
+    /* --- éditeur de skill (drawer latéral) --- */
+    #skill-scrim {
+      position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 40;
+    }
+    #skill-drawer {
+      position: fixed; top: 0; right: 0; height: 100%; width: min(640px, 92vw);
+      background: var(--bg); border-left: 1px solid var(--border); z-index: 41;
+      display: flex; flex-direction: column; box-shadow: -8px 0 24px rgba(0,0,0,.4);
+    }
+    /* L'attribut `hidden` doit l'emporter sur le `display:flex` ci-dessus (sinon le
+       drawer reste affiché en permanence). Sélecteur [hidden] = spécificité supérieure. */
+    #skill-drawer[hidden], #skill-scrim[hidden] { display: none; }
+    .skdr-head {
+      display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .skdr-titles { flex: 1; min-width: 0; }
+    .skdr-name { font-size: 13px; font-weight: 600; color: var(--text); word-break: break-all; }
+    .skdr-desc { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; line-height: 1.4; }
+    #skdr-close {
+      background: none; border: none; color: var(--text-dim); font-size: 15px;
+      cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    }
+    #skdr-close:hover { background: var(--bg-hover); color: var(--text); }
+    #skdr-body {
+      flex: 1; margin: 12px 16px; padding: 12px; resize: none;
+      background: var(--bg-elev); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 12.5px; line-height: 1.55; tab-size: 2;
+    }
+    #skdr-body:focus { outline: none; border-color: var(--accent-dim); }
+    .skdr-foot {
+      display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+      border-top: 1px solid var(--border);
+    }
+    .skdr-status { flex: 1; font-size: 11.5px; color: var(--text-faint); }
+    .skdr-actions { display: flex; gap: 8px; }
+    .skdr-actions button {
+      background: var(--bg-elev); color: var(--text-dim); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 12px; font-size: 12px; font-family: inherit;
+      cursor: pointer;
+    }
+    .skdr-actions button:hover { background: var(--bg-hover); color: var(--text); }
+    .skdr-actions button.primary { background: var(--accent-dim); color: #fff; border-color: transparent; }
+    .skdr-actions button.primary:hover { filter: brightness(1.12); }
+    /* --- moniteur système live (CPU/RAM/GPU), coin haut-droit, modèle LOCAL --- */
+    #sysmon {
+      position: fixed; top: 10px; right: 12px; z-index: 30; width: 194px;
+      background: rgba(17, 20, 27, .82); backdrop-filter: blur(9px);
+      -webkit-backdrop-filter: blur(9px);
+      border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px 8px;
+      display: flex; flex-direction: column; gap: 6px;
+      box-shadow: 0 6px 22px rgba(0, 0, 0, .38);
+      font-size: 10.5px; color: var(--text-dim);
+      animation: sm-in .18s ease;
+    }
+    #sysmon[hidden] { display: none; }
+    @keyframes sm-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+    .sm-head {
+      font-size: 9px; text-transform: uppercase; letter-spacing: 1px;
+      color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sm-row, .sm-bar-row { display: flex; align-items: center; gap: 8px; height: 15px; }
+    .sm-label { width: 30px; color: var(--text-faint); font-size: 9px; letter-spacing: .5px; }
+    .sm-spark { flex: 1; height: 22px; display: block; }
+    .sm-val {
+      width: 58px; text-align: right; color: var(--text);
+      font-variant-numeric: tabular-nums; font-size: 10px;
+    }
+    .sm-bar { flex: 1; height: 5px; background: var(--bg-elev); border-radius: 3px; overflow: hidden; }
+    .sm-bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width .35s ease; }
+    .sm-bar-fill.sm-vram { background: var(--warn); }
+    .sm-foot {
+      display: flex; justify-content: space-between; margin-top: 1px;
+      color: var(--text-faint); font-size: 9.5px; font-variant-numeric: tabular-nums;
+    }
+    /* --- toasts (remplacent les popups natifs confirm/alert) --- */
+    #toast-host {
+      position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+      z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: center;
+    }
+    .toast {
+      display: flex; align-items: center; gap: 14px; max-width: 92vw;
+      background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 14px; box-shadow: 0 8px 24px rgba(0,0,0,.45);
+      font-size: 12.5px; color: var(--text);
+      animation: toast-in .16s ease;
+    }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    .toast.leaving { opacity: 0; transform: translateY(8px); transition: all .16s ease; }
+    .toast-msg { line-height: 1.4; }
+    .toast-actions { display: flex; gap: 6px; }
+    .toast-actions button {
+      background: none; border: 1px solid var(--border); color: var(--text-dim);
+      border-radius: 5px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer;
+    }
+    .toast-actions button:hover { background: var(--bg-hover); color: var(--text); }
+    .toast-actions button.danger { border-color: transparent; background: var(--err-bg); color: var(--err); }
+    .toast-actions button.danger:hover { background: var(--err); color: #fff; }
     #tools-panel { display: flex; flex-direction: column; gap: 3px; }
     #tools-panel .skill {
       display: flex; align-items: center; gap: 6px; background: var(--bg-elev);
@@ -353,24 +489,25 @@
       <div class="sb-section">
         <div class="sb-label">Modèle</div>
         {% include "_models.html" %}
+        <div id="machine-chip" class="machine-chip" title="État du modèle sur la machine"></div>
       </div>
       <div class="sb-section">
         <label id="thinking-toggle" title="Réflexion préalable">
           <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> Réflexion</label>
       </div>
-      <div class="sb-section">
-        <div class="sb-label">Skills</div>
+      <details class="sb-section sb-fold">
+        <summary class="sb-label">Skills</summary>
         {% include "_skills.html" %}
-      </div>
-      <div class="sb-section">
-        <div class="sb-label">Outils</div>
+      </details>
+      <details class="sb-section sb-fold">
+        <summary class="sb-label">Outils</summary>
         {% include "_tools.html" %}
         <div class="hint">
           {% if permission_mode == "allow" %}
           <strong style="color:var(--warn)">Mode allow</strong> — exécution sans confirmation.
           {% else %}Mode : <code>{{ permission_mode }}</code>{% endif %}
         </div>
-      </div>
+      </details>
       <div class="sb-section" style="margin-top:auto; padding-bottom:12px;">
         <button class="reset" id="reset-btn" type="button">Reset conversation</button>
       </div>
@@ -410,6 +547,56 @@
       </div>
     </div>
   </div>
+
+  <!-- Moniteur système live (CPU/RAM/GPU) : visible seulement pour un modèle LOCAL -->
+  <div id="sysmon" hidden aria-label="Moniteur système">
+    <div class="sm-head"><span id="sm-gpu-name">GPU</span></div>
+    <div class="sm-row">
+      <span class="sm-label">CPU</span>
+      <canvas class="sm-spark" id="sm-cpu-spark" width="96" height="22"></canvas>
+      <span class="sm-val" id="sm-cpu-val">–</span>
+    </div>
+    <div class="sm-row">
+      <span class="sm-label">GPU</span>
+      <canvas class="sm-spark" id="sm-gpu-spark" width="96" height="22"></canvas>
+      <span class="sm-val" id="sm-gpu-val">–</span>
+    </div>
+    <div class="sm-bar-row">
+      <span class="sm-label">RAM</span>
+      <div class="sm-bar"><div class="sm-bar-fill" id="sm-ram-fill"></div></div>
+      <span class="sm-val" id="sm-ram-val">–</span>
+    </div>
+    <div class="sm-bar-row">
+      <span class="sm-label">VRAM</span>
+      <div class="sm-bar"><div class="sm-bar-fill sm-vram" id="sm-vram-fill"></div></div>
+      <span class="sm-val" id="sm-vram-val">–</span>
+    </div>
+    <div class="sm-foot"><span id="sm-temp"></span><span id="sm-power"></span></div>
+  </div>
+
+  <!-- Panneau d'édition d'un skill (ouvert au clic sur un nom de skill) -->
+  <div id="skill-scrim" hidden></div>
+  <aside id="skill-drawer" hidden aria-label="Éditeur de skill">
+    <div class="skdr-head">
+      <div class="skdr-titles">
+        <div id="skdr-name" class="skdr-name"></div>
+        <div id="skdr-desc" class="skdr-desc"></div>
+      </div>
+      <button type="button" id="skdr-close" title="Fermer">✕</button>
+    </div>
+    <textarea id="skdr-body" spellcheck="false"
+              placeholder="Contenu du SKILL.md…"></textarea>
+    <div class="skdr-foot">
+      <span id="skdr-status" class="skdr-status"></span>
+      <div class="skdr-actions">
+        <button type="button" id="skdr-save-session"
+                title="Applique à cette session uniquement (n'écrit pas le fichier)">Cette session</button>
+        <button type="button" id="skdr-save-global" class="primary"
+                title="Écrit le fichier SKILL.md pour toutes les sessions">Toutes les sessions</button>
+      </div>
+    </div>
+  </aside>
+
   <script id="loom-init" type="application/json">{{ init_json | safe }}</script>
   <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

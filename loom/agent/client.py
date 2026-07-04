@@ -686,6 +686,61 @@ class LoomClient:
             return r["client"], r["model"], r["enable_thinking_param"]
         return self._client, (model or self.model), True
 
+    def local_server_root(self) -> str:
+        """Racine du serveur LOCAL (llama-swap) : la base_url SANS le suffixe `/v1`.
+        Sert à joindre l'API de management (`/running`, `/api/models/unload`)."""
+        b = self.base_url
+        return b[:-3] if b.endswith("/v1") else b.rstrip("/")
+
+    def is_remote(self, model: str | None) -> bool:
+        """Vrai si le modèle est servi par une API DISTANTE (route montée), pas en local."""
+        return bool(model and model in self._routes)
+
+    def unload_local(self, model: str | None = None, timeout: float = 30.0) -> bool:
+        """Décharge le(s) modèle(s) LOCAL(aux) via l'API llama-swap (libère la VRAM). Model
+        None = tous. Best-effort : False si le serveur local est injoignable (non lancé, ou
+        llama-server direct sans API de swap). Cf. `POST /api/models/unload[/:model]`."""
+        import urllib.error
+        import urllib.request
+
+        root = self.local_server_root()
+        path = f"/api/models/unload/{model}" if model else "/api/models/unload"
+        try:
+            req = urllib.request.Request(root + path, data=b"", method="POST")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return 200 <= resp.status < 300
+        except (urllib.error.URLError, OSError, ValueError):
+            return False
+
+    def running_local(self, timeout: float = 5.0) -> tuple[bool, str]:
+        """(joignable, texte brut JSON) de llama-swap `GET /running`. Best-effort : le texte
+        brut suffit pour tester par sous-chaîne quel modèle est chargé, sans coupler au schéma."""
+        import urllib.error
+        import urllib.request
+
+        root = self.local_server_root()
+        try:
+            with urllib.request.urlopen(root + "/running", timeout=timeout) as resp:
+                return True, resp.read().decode("utf-8", "replace")
+        except (urllib.error.URLError, OSError, ValueError):
+            return False, ""
+
+    def warmup_local(self, model: str) -> None:
+        """Charge un modèle LOCAL en envoyant un ping 1-token : llama-swap charge à la 1re
+        requête (et swap l'ancien si besoin). BLOQUANT le temps du chargement -> appeler dans
+        un thread. Best-effort (avale toute erreur : serveur non lancé, etc.)."""
+        try:
+            for _ in self.stream_chat(
+                [{"role": "user", "content": "ping"}],
+                "",
+                1,
+                model=model,
+                thinking=False,
+            ):
+                pass
+        except Exception:  # noqa: BLE001 - warmup best-effort, jamais bloquant
+            pass
+
     def describe_image(self, data_uri: str, question: str, model: str) -> str:
         """Fait décrire une image par un modèle VISION (`model`) pour un modèle de raisonnement
         qui ne voit pas (ex. glm-5.2). Appel court NON streamé. Renvoie une description texte

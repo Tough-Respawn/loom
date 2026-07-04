@@ -1,8 +1,19 @@
 <div id="skills-panel">
-  {% for s in skills %}
-    <div class="skill-ro" title="{{ s.description }}">{{ s.name }}</div>
+  {% if skills %}
+    <label class="skill skills-all" title="Activer / désactiver tous les skills">
+      <input type="checkbox" id="skills-all"> <span class="muted">tous</span>
+    </label>
+    {% for s in skills %}
+      <div class="skill skill-row{% if s.name in overridden_skills %} has-override{% endif %}"
+           title="{{ s.description }}">
+        <input type="checkbox" class="skill-cb" data-name="{{ s.name }}"
+               {% if s.name in active_skills %}checked{% endif %}>
+        <button type="button" class="skill-name" data-name="{{ s.name }}"
+                title="Voir / éditer ce skill">{{ s.name }}</button>
+      </div>
+    {% endfor %}
   {% else %}
     <span class="muted">Aucun skill. Installe un plugin (install_plugin) ou ajoute
       loom/skills/&lt;nom&gt;/SKILL.md</span>
-  {% endfor %}
+  {% endif %}
 </div>

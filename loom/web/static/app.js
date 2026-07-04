@@ -594,11 +594,19 @@ document.querySelectorAll(".sess-pick").forEach((b) => {
   });
 });
 document.querySelectorAll(".sess-del").forEach((b) => {
-  b.addEventListener("click", async (e) => {
+  b.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (!confirm("Supprimer cette session ?")) return;
-    await postForm("/session/delete", { id: b.dataset.id });
-    location.reload();
+    showToast("Supprimer cette session ?", [
+      {
+        label: "Supprimer",
+        kind: "danger",
+        onClick: async () => {
+          await postForm("/session/delete", { id: b.dataset.id });
+          location.reload();
+        },
+      },
+      { label: "Annuler" },
+    ]);
   });
 });
 
@@ -774,5 +782,343 @@ if (resetBtn) {
     state.timeline = [];
     scheduleRender();
   });
+}
+
+// --- skills : activer/désactiver + éditer ---
+// Toggle : POST /skills avec la liste des skills COCHÉS -> le serveur re-render le panneau,
+// on remplace le noeud. La case « tous » coche/décoche l'ensemble. Délégation sur document
+// pour survivre au remplacement du panneau.
+function syncSkillsMaster() {
+  const cbs = [...document.querySelectorAll("#skills-panel .skill-cb")];
+  const master = document.getElementById("skills-all");
+  if (!master) return;
+  const on = cbs.filter((c) => c.checked).length;
+  master.checked = cbs.length > 0 && on === cbs.length;
+  master.indeterminate = on > 0 && on < cbs.length;
+}
+async function postSkillsToggle() {
+  const cbs = [...document.querySelectorAll("#skills-panel .skill-cb")];
+  const fd = new FormData();
+  cbs.filter((c) => c.checked).forEach((c) => fd.append("skill", c.dataset.name));
+  const r = await fetch("/skills", { method: "POST", body: fd });
+  const html = await r.text();
+  const panel = document.getElementById("skills-panel");
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html.trim();
+  const fresh = tmp.firstElementChild;
+  if (fresh && panel) panel.replaceWith(fresh);
+  syncSkillsMaster();
+}
+document.addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.classList && t.classList.contains("skill-cb")) {
+    postSkillsToggle();
+  } else if (t.id === "skills-all") {
+    const on = t.checked;
+    document
+      .querySelectorAll("#skills-panel .skill-cb")
+      .forEach((c) => (c.checked = on));
+    postSkillsToggle();
+  } else if (t.id === "model-select") {
+    // Changer de modèle déclenche le load/unload côté serveur (POST /model via HTMX).
+    // On suit l'état machine ; scheduleMachineRefresh re-sonde le temps que le POST persiste.
+    scheduleMachineRefresh();
+  }
+});
+syncSkillsMaster();
+
+// --- état du modèle sur la machine (chargé / chargement / libre / serveur off) ---
+let machineTimer = null;
+async function refreshMachineState() {
+  const chip = document.getElementById("machine-chip");
+  if (!chip) return "";
+  let d;
+  try {
+    d = await (await fetch("/machine_state")).json();
+  } catch {
+    chip.textContent = "";
+    return "";
+  }
+  // Moniteur système : visible UNIQUEMENT pour un modèle local (home), pas pour le cloud.
+  setSysmonVisible(d.mode === "home");
+  let cls = "",
+    text = "";
+  if (d.mode === "remote") {
+    // Modèle distant : la machine ne porte pas le cerveau. On la veut libre.
+    if (d.reachable && d.any_loaded) {
+      cls = "busy";
+      text = "machine · libération…";
+    } else {
+      cls = "free";
+      text = "machine · libre (modèle distant)";
+    }
+  } else if (!d.reachable) {
+    cls = "off";
+    text = "machine · serveur local éteint";
+  } else if (d.model_loaded) {
+    cls = "on";
+    text = "machine · " + d.model + " chargé";
+  } else {
+    cls = "busy";
+    text = "machine · " + d.model + " chargement…";
+  }
+  chip.className = "machine-chip " + cls;
+  chip.textContent = text;
+  return cls;
+}
+// Rafraîchit maintenant puis re-sonde : les 3 premiers passages (à 800 ms) laissent le POST
+// /model se persister avant de figer l'état ; ensuite on continue tant que c'est TRANSITOIRE
+// (chargement / libération) car un gros modèle met du temps à (dé)charger. Borné à ~40 s.
+function scheduleMachineRefresh() {
+  if (machineTimer) clearTimeout(machineTimer);
+  let tries = 0;
+  const tick = async () => {
+    const cls = await refreshMachineState();
+    tries += 1;
+    if ((tries < 3 || cls === "busy") && tries < 14) {
+      machineTimer = setTimeout(tick, tries < 3 ? 800 : 3000);
+    }
+  };
+  tick();
+}
+scheduleMachineRefresh();
+
+// Éditeur de skill (drawer latéral)
+const skDrawer = document.getElementById("skill-drawer");
+const skScrim = document.getElementById("skill-scrim");
+const skName = document.getElementById("skdr-name");
+const skDesc = document.getElementById("skdr-desc");
+const skBody = document.getElementById("skdr-body");
+const skStatus = document.getElementById("skdr-status");
+let skCurrent = null;
+
+function openSkillDrawer() {
+  if (skDrawer) skDrawer.hidden = false;
+  if (skScrim) skScrim.hidden = false;
+}
+function closeSkillDrawer() {
+  if (skDrawer) skDrawer.hidden = true;
+  if (skScrim) skScrim.hidden = true;
+  skCurrent = null;
+}
+async function openSkillEditor(name) {
+  try {
+    const r = await fetch("/skill?name=" + encodeURIComponent(name));
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      skStatus && (skStatus.textContent = d.error || "chargement impossible");
+      return;
+    }
+    skCurrent = d.name;
+    if (skName) skName.textContent = d.name;
+    if (skDesc) skDesc.textContent = d.description || "";
+    if (skBody) skBody.value = d.source || "";
+    if (skStatus)
+      skStatus.textContent = d.has_override
+        ? "override de session actif"
+        : d.editable_on_disk
+          ? ""
+          : "skill sans fichier sur disque";
+    const gbtn = document.getElementById("skdr-save-global");
+    if (gbtn) gbtn.disabled = !d.editable_on_disk;
+    openSkillDrawer();
+    if (skBody) skBody.focus();
+  } catch (err) {
+    if (skStatus) skStatus.textContent = "erreur : " + err;
+  }
+}
+async function saveSkill(scope) {
+  if (!skCurrent) return;
+  const fd = new FormData();
+  fd.append("name", skCurrent);
+  fd.append("body", skBody ? skBody.value : "");
+  fd.append("scope", scope);
+  if (skStatus) skStatus.textContent = "enregistrement…";
+  try {
+    const r = await fetch("/skill/save", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      if (skStatus) skStatus.textContent = d.error || "échec";
+      return;
+    }
+    if (skStatus)
+      skStatus.textContent =
+        scope === "global"
+          ? "enregistré pour toutes les sessions ✓"
+          : "appliqué à cette session ✓";
+    // Rafraîchit le panneau (badge override) sans changer les cases cochées.
+    postSkillsToggle();
+  } catch (err) {
+    if (skStatus) skStatus.textContent = "erreur : " + err;
+  }
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest && e.target.closest(".skill-name");
+  if (b) openSkillEditor(b.dataset.name);
+});
+document
+  .getElementById("skdr-close")
+  ?.addEventListener("click", closeSkillDrawer);
+if (skScrim) skScrim.addEventListener("click", closeSkillDrawer);
+document
+  .getElementById("skdr-save-session")
+  ?.addEventListener("click", () => saveSkill("session"));
+document
+  .getElementById("skdr-save-global")
+  ?.addEventListener("click", () => saveSkill("global"));
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && skDrawer && !skDrawer.hidden) closeSkillDrawer();
+});
+
+// --- toasts (remplacent confirm()/alert() natifs) ---
+// showToast(message, actions?) : actions = [{label, kind?, onClick?}]. Sans action, c'est
+// une simple notification auto-dismiss. Clic sur une action -> exécute onClick puis ferme.
+function showToast(message, actions = [], { timeout = 8000 } = {}) {
+  let host = document.getElementById("toast-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "toast-host";
+    document.body.appendChild(host);
+  }
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  const msg = document.createElement("span");
+  msg.className = "toast-msg";
+  msg.textContent = message;
+  toast.appendChild(msg);
+  let timer = null;
+  const dismiss = () => {
+    if (timer) clearTimeout(timer);
+    toast.classList.add("leaving");
+    setTimeout(() => toast.remove(), 160);
+  };
+  if (actions.length) {
+    const wrap = document.createElement("div");
+    wrap.className = "toast-actions";
+    for (const a of actions) {
+      const btn = document.createElement("button");
+      btn.textContent = a.label;
+      if (a.kind) btn.classList.add(a.kind);
+      btn.addEventListener("click", () => {
+        dismiss();
+        if (a.onClick) a.onClick();
+      });
+      wrap.appendChild(btn);
+    }
+    toast.appendChild(wrap);
+  }
+  host.appendChild(toast);
+  if (timeout) timer = setTimeout(dismiss, timeout);
+  return dismiss;
+}
+
+// --- moniteur système live (CPU / RAM / GPU) : visible seulement pour un modèle LOCAL ---
+// Piloté par refreshMachineState (mode 'home'). Sparklines dessinées sur <canvas>, barres
+// pour la mémoire. Poll ~1,2 s seulement tant que visible (aucune charge quand caché/cloud).
+const SM_N = 48; // points d'historique par sparkline
+const smHist = { cpu: [], gpu: [] };
+let sysmonTimer = null;
+
+function smPush(arr, v) {
+  arr.push(v);
+  if (arr.length > SM_N) arr.shift();
+}
+function smDrawSpark(canvas, data, color) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width,
+    h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (data.length < 2) return;
+  const step = w / (SM_N - 1);
+  const x0 = w - (data.length - 1) * step;
+  const y = (v) => h - 1 - (Math.max(0, Math.min(100, v)) / 100) * (h - 2);
+  const path = () => {
+    ctx.beginPath();
+    data.forEach((v, i) => {
+      const x = x0 + i * step;
+      i ? ctx.lineTo(x, y(v)) : ctx.moveTo(x, y(v));
+    });
+  };
+  // aire sous la courbe (dégradé) + ligne
+  path();
+  ctx.lineTo(x0 + (data.length - 1) * step, h);
+  ctx.lineTo(x0, h);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, color + "40");
+  grad.addColorStop(1, color + "00");
+  ctx.fillStyle = grad;
+  ctx.fill();
+  path();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.3;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+}
+
+const SM_GB = 1073741824;
+const setTxt = (id, v) => {
+  const el = document.getElementById(id);
+  if (el) el.textContent = v;
+};
+async function sysmonTick() {
+  let d;
+  try {
+    d = await (await fetch("/sysmon")).json();
+  } catch {
+    return;
+  }
+  if (d.cpu != null) {
+    smPush(smHist.cpu, d.cpu);
+    setTxt("sm-cpu-val", Math.round(d.cpu) + "%");
+  }
+  smDrawSpark(document.getElementById("sm-cpu-spark"), smHist.cpu, "#5b9d7e");
+  if (d.ram) {
+    const fill = document.getElementById("sm-ram-fill");
+    if (fill) fill.style.width = d.ram.percent + "%";
+    setTxt(
+      "sm-ram-val",
+      (d.ram.used / SM_GB).toFixed(1) + "/" + Math.round(d.ram.total / SM_GB) + "G",
+    );
+  }
+  const g = d.gpu;
+  if (g) {
+    setTxt("sm-gpu-name", (g.name || "GPU").replace(/^NVIDIA GeForce /, ""));
+    if (g.util != null) {
+      smPush(smHist.gpu, g.util);
+      setTxt("sm-gpu-val", Math.round(g.util) + "%");
+    }
+    smDrawSpark(document.getElementById("sm-gpu-spark"), smHist.gpu, "#e8c07a");
+    if (g.mem_total) {
+      const fill = document.getElementById("sm-vram-fill");
+      if (fill) fill.style.width = (g.mem_used / g.mem_total) * 100 + "%";
+      setTxt(
+        "sm-vram-val",
+        (g.mem_used / 1024).toFixed(1) + "/" + (g.mem_total / 1024).toFixed(1) + "G",
+      );
+    }
+    setTxt("sm-temp", g.temp != null ? Math.round(g.temp) + "°C" : "");
+    setTxt("sm-power", g.power != null ? Math.round(g.power) + " W" : "");
+  } else {
+    setTxt("sm-gpu-name", "GPU indisponible");
+  }
+}
+function setSysmonVisible(on) {
+  const el = document.getElementById("sysmon");
+  if (!el) return;
+  if (on) {
+    el.hidden = false;
+    if (!sysmonTimer) {
+      sysmonTick();
+      sysmonTimer = setInterval(sysmonTick, 1200);
+    }
+  } else {
+    el.hidden = true;
+    if (sysmonTimer) {
+      clearInterval(sysmonTimer);
+      sysmonTimer = null;
+    }
+  }
 }
 

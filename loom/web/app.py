@@ -35,7 +35,13 @@ from loom.agent import context
 
 from loom.agent.client import set_debug_log_path
 
-from loom.extend.skills import collect_skills, render_catalog
+from loom.extend.skills import (
+    collect_skills,
+    effective_skills,
+    read_skill_source,
+    render_catalog,
+    write_skill_source,
+)
 
 from loom.prompts import CHAT_SYSTEM_STRONG
 
@@ -434,6 +440,9 @@ def create_app(
     vision_models = set(vision_models or [])  # ids des modèles avec mmproj (vision)
 
     remote_model_ids = set(remote_model_ids or [])  # ids servis par une API distante
+    # ids des modèles LOCAUX (servis par llama-swap sur la machine) = tout sauf les distants.
+    # Sert à /machine_state (quel modèle machine est chargé).
+    local_model_ids = [m for m in (models or []) if m not in remote_model_ids]
 
     remote_model_names = dict(
         remote_model_names or {}
@@ -535,6 +544,22 @@ def create_app(
         finally:
             pending.pop(tool_id, None)
 
+    def _all_skills() -> list:
+        return collect_skills(skills_dir, plugins_dir, learned_dir=learned_skills_dir)
+
+    def _skills_ctx(conv) -> dict:
+        """Contexte du panneau Skills : la liste COMPLÈTE (pour les cases), l'ensemble des
+        skills ACTIFS (non désactivés) et ceux qui ont un override de session (badge UI)."""
+        skills = _all_skills()
+        disabled = set(conv.disabled_skills)
+        return {
+            "skills": skills,
+            "active_skills": [s.name for s in skills if s.name not in disabled],
+            "overridden_skills": [
+                s.name for s in skills if s.name in conv.skill_overrides
+            ],
+        }
+
     def _index_context() -> dict:
 
         sess = _session()
@@ -552,10 +577,9 @@ def create_app(
 
         return {
             "messages": conv.messages,
-            "skills": collect_skills(
-                skills_dir, plugins_dir, learned_dir=learned_skills_dir
-            ),
+            **_skills_ctx(conv),
             "models": models,
+            "remote_model_ids": remote_model_ids,
             "current_model": conv.model,
             "thinking": conv.thinking,
             "available_tools": available_tools,
@@ -761,8 +785,10 @@ def create_app(
             if context.summarize(conv, client, context_budget, keep_recent):
                 save()
 
-            skills = collect_skills(
-                skills_dir, plugins_dir, learned_dir=learned_skills_dir
+            skills = effective_skills(
+                collect_skills(skills_dir, plugins_dir, learned_dir=learned_skills_dir),
+                overrides=conv.skill_overrides,
+                disabled=conv.disabled_skills,
             )
 
             catalog = render_catalog(skills)
@@ -1295,6 +1321,61 @@ def create_app(
             active_tools=conv.active_tools,
         )
 
+    @app.post("/skills")
+    def skills_update():
+        # Toggle des skills (façon /tools) : le formulaire porte les skills COCHÉS. Les
+        # décochés (tous les autres) deviennent `disabled_skills` de la session -> retirés
+        # du catalogue et de use_skill. Re-render le panneau (case maître incluse).
+        conv, save = _ctx()
+        enabled = set(request.form.getlist("skill"))
+        all_names = [s.name for s in _all_skills()]
+        conv.set_disabled_skills([n for n in all_names if n not in enabled])
+        save()
+        return render_template("_skills.html", **_skills_ctx(conv))
+
+    @app.get("/skill")
+    def skill_get():
+        # Source d'un skill pour l'éditeur : texte brut du SKILL.md, ou l'override de session
+        # s'il existe (ce que le modèle voit réellement pour cette session).
+        conv, _ = _ctx()
+        name = request.args.get("name", "")
+        skill = next((s for s in _all_skills() if s.name == name), None)
+        if skill is None:
+            return {"error": f"skill inconnu : {name}"}, 404
+        override = conv.skill_overrides.get(name)
+        return {
+            "name": skill.name,
+            "description": skill.description,
+            "source": override if override is not None else read_skill_source(skill),
+            "has_override": override is not None,
+            "learned": bool(getattr(skill, "learned", False)),
+            "editable_on_disk": skill.base_dir != "",
+        }
+
+    @app.post("/skill/save")
+    def skill_save():
+        # Enregistre l'édition d'un skill. scope=session -> override de session (n'écrit
+        # PAS le disque) ; scope=global -> écrit le SKILL.md pour TOUTES les sessions et
+        # lève l'override de session (le fichier fait désormais foi).
+        conv, save = _ctx()
+        name = request.form.get("name", "")
+        body = request.form.get("body", "")
+        scope = request.form.get("scope", "session")
+        skill = next((s for s in _all_skills() if s.name == name), None)
+        if skill is None:
+            return {"error": f"skill inconnu : {name}"}, 404
+        if scope == "global":
+            try:
+                write_skill_source(skill, body)
+            except OSError as exc:
+                return {"error": f"écriture impossible : {exc}"}, 400
+            conv.set_skill_override(name, None)
+            save()
+            return {"ok": True, "scope": "global"}
+        conv.set_skill_override(name, body)
+        save()
+        return {"ok": True, "scope": "session"}
+
     @app.post("/thinking")
     def thinking_update():
 
@@ -1353,7 +1434,57 @@ def create_app(
 
         session_store.set_default_model(model)
 
-        return render_template("_models.html", models=models, current_model=conv.model)
+        # Cycle de vie du modèle SUR LA MACHINE. Sélectionner un modèle LOCAL le CHARGE
+        # (warmup : llama-swap charge à la 1re requête, et swap l'ancien si besoin) ;
+        # passer à un modèle DISTANT (API) DÉCHARGE le local pour LIBÉRER LA VRAM. Les deux
+        # en tâche de fond (best-effort) : la réponse UI reste instantanée, l'indicateur
+        # d'état (/machine_state) reflète ensuite le résultat réel via llama-swap.
+        if model in remote_model_ids:
+            threading.Thread(
+                target=client.unload_local, daemon=True, name="loom-unload"
+            ).start()
+        elif model:
+            threading.Thread(
+                target=lambda m=model: client.warmup_local(m),
+                daemon=True,
+                name="loom-warmup",
+            ).start()
+
+        return render_template(
+            "_models.html",
+            models=models,
+            current_model=conv.model,
+            remote_model_ids=remote_model_ids,
+        )
+
+    @app.get("/machine_state")
+    def machine_state():
+        # État du modèle SUR LA MACHINE, pour l'indicateur UI. Vérité = llama-swap /running
+        # (best-effort ; le modèle peut aussi s'être déchargé seul via son TTL). On teste par
+        # sous-chaîne quel modèle est chargé, sans coupler au schéma JSON de llama-swap.
+        conv, _ = _ctx()
+        model = conv.model
+        remote = model in remote_model_ids
+        reachable, running_txt = client.running_local()
+        model_loaded = bool(reachable and model and model in running_txt)
+        any_loaded = bool(
+            reachable and any(mid in running_txt for mid in local_model_ids)
+        )
+        return {
+            "mode": "remote" if remote else "home",
+            "model": model,
+            "reachable": reachable,
+            "model_loaded": model_loaded,
+            "any_loaded": any_loaded,
+        }
+
+    @app.get("/sysmon")
+    def sysmon_metrics():
+        # Métriques système LIVE (CPU/RAM/GPU) pour le moniteur affiché avec un modèle LOCAL.
+        # nvidia-smi + psutil ; champs à None si une source manque (le front s'adapte).
+        from loom.runtime.sysmon import read_metrics
+
+        return read_metrics()
 
     # --- Sessions : liste / nouvelle / bascule / suppression ---
 
@@ -1468,6 +1599,12 @@ def create_app(
                 model = sess.conversation.model if sess else None
 
                 if not model:
+                    continue
+
+                # Keep-warm = garder chaud le modèle LOCAL (éviter le cold start). Un modèle
+                # DISTANT n'a pas de cold start côté machine ET est PAYANT à l'appel : le
+                # pinger en boucle brûlerait des crédits pour rien -> on saute.
+                if model in remote_model_ids:
                     continue
 
                 for _kind, _chunk in client.stream_chat(
