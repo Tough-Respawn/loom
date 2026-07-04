@@ -168,10 +168,38 @@ function PermAsk({ it }) {
   </div>`;
 }
 
-function UserMsg({ it }) {
+function UserMsg({ it, userIndex }) {
+  // Bouton "repartir de la" : tronque la conversation apres ce message et
+  // pre-remplit l'input pour re-editer. Comme l'edition de message ChatGPT/Claude.
+  const doFork = async (e) => {
+    e.stopPropagation();
+    if (userIndex == null) return;
+    const fd = new FormData();
+    fd.append("user_index", String(userIndex));
+    try {
+      const r = await fetch("/fork", { method: "POST", body: fd });
+      if (!r.ok) return;
+      const j = await r.json();
+      // Tronque la timeline UI : garde jusqu'a CET item user (inclus)
+      const idx = state.timeline.indexOf(it);
+      if (idx >= 0) state.timeline = state.timeline.slice(0, idx + 1);
+      // Pre-remplit l'input
+      const inp = document.getElementById("input");
+      if (inp) {
+        inp.value = j.text || "";
+        inp.focus();
+      }
+      scheduleRender();
+    } catch (err) {
+      /* best-effort */
+    }
+  };
+
+  const forkBtn = html`<button class="msg-fork" type="button" title="Repartir de ce message" onClick=${doFork}>↩ repartir</button>`;
+
   const parts = Array.isArray(it.content) ? it.content : null;
   if (!parts) {
-    return html`<div class="msg user">${it.content}</div>`;
+    return html`<div class="msg user">${it.content}${forkBtn}</div>`;
   }
   return html`<div class="msg user">
     ${parts.map((p) =>
@@ -179,6 +207,7 @@ function UserMsg({ it }) {
         ? html`<img src=${p.image_url.url} alt="image" />`
         : html`<span>${p.text}</span>`,
     )}
+    ${forkBtn}
   </div>`;
 }
 
@@ -235,10 +264,10 @@ function enhance(el, raw) {
   }
 }
 
-function Item({ it }) {
+function Item({ it, userIndex }) {
   switch (it.kind) {
     case "user":
-      return html`<${UserMsg} it=${it} />`;
+      return html`<${UserMsg} it=${it} userIndex=${userIndex} />`;
     case "assistant":
       return html`<${Assistant} it=${it} />`;
     case "think":
@@ -262,7 +291,14 @@ function App() {
       Ã‰cris une demande. Loom agit avec ses outils (lire, Ã©crire, exÃ©cuter, chercher).
     </div>`;
   }
-  return state.timeline.map((it) => html`<${Item} key=${it.id} it=${it} />`);
+  let _ui = 0;
+  return state.timeline.map((it) => {
+    let userIndex = null;
+    if (it.kind === "user") {
+      userIndex = _ui++;
+    }
+    return html`<${Item} key=${it.id} it=${it} userIndex=${userIndex} />`;
+  });
 }
 
 // ----------------------------------------------------------------------------
