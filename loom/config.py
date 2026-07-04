@@ -116,6 +116,11 @@ class RemoteModelConfig:
     # par défaut on NE l'envoie PAS pour un modèle distant. Mets True seulement si
     # l'endpoint gère ce champ (vLLM auto-hébergé…) pour piloter le thinking au template.
     enable_thinking_param: bool = False
+    # Prix en $ / MILLION de tokens (input, output) chez le provider -> sert au compteur de
+    # coût RÉEL de la session. 0 = inconnu (coût affiché à 0). Le tarif dépend du modèle
+    # côté provider (ex. glm-5.2 chez Z.ai) : mets-le dans config/local.toml.
+    price_in: float = 0.0
+    price_out: float = 0.0
 
 
 @dataclass
@@ -203,6 +208,8 @@ def _parse_remote_model(d: dict) -> RemoteModelConfig:
         max_tokens=d.get("max_tokens"),
         vision=bool(d.get("vision", False)),
         enable_thinking_param=bool(d.get("enable_thinking_param", False)),
+        price_in=float(d.get("price_in", 0.0) or 0.0),
+        price_out=float(d.get("price_out", 0.0) or 0.0),
     )
 
 

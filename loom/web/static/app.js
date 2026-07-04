@@ -457,6 +457,10 @@ async function sendChat(text, images) {
         lastTokS = evt.tok_s;
         setMetrics(lastSent, lastRecv, lastTokS, {});
         break;
+      case "totals":
+        // Cumul RÉEL de la session (input rejoué à chaque appel + output + coût), persisté.
+        updateUsageMeter(evt);
+        break;
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancé ?)" });
         break;
@@ -550,6 +554,33 @@ function setMetrics(sent, recv, tokS, opts) {
   const rate = tokS != null ? ` · ${tokS} tok/s` : "";
   gmText.textContent = `↑ ${sent || 0} · ↓ ${recv || 0}${rate}`;
 }
+
+// --- Compteur CUMULÉ de la session : la VRAIE somme facturée (input rejoué à chaque appel
+// d'outil + output), distincte du live per-tour ci-dessus. Persistée côté serveur. ---
+function fmtTok(n) {
+  n = n || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
+  return String(n);
+}
+const usageMeter = document.getElementById("usage-meter");
+function updateUsageMeter(t) {
+  if (!usageMeter || !t) return;
+  const inEl = document.getElementById("um-in");
+  const outEl = document.getElementById("um-out");
+  const costEl = document.getElementById("um-cost");
+  if (inEl) inEl.textContent = fmtTok(t.tokens_in);
+  if (outEl) outEl.textContent = fmtTok(t.tokens_out);
+  // Nombre d'appels API = le MULTIPLICATEUR (le contexte est rejoué à chaque appel) : le
+  // levier d'optimisation n°1. « · 58× » se lit « input payé 58 fois ».
+  const callsEl = document.getElementById("um-calls");
+  if (callsEl) callsEl.textContent = t.api_calls > 0 ? "· " + t.api_calls + "×" : "";
+  const cost = t.cost_usd || 0;
+  if (costEl) costEl.textContent = cost > 0 ? "$" + cost.toFixed(cost < 1 ? 3 : 2) : "";
+  // Visible dès qu'il y a eu au moins un appel (même coût 0 si prix non configuré).
+  usageMeter.hidden = !(t.api_calls > 0 || t.tokens_in > 0 || t.tokens_out > 0);
+}
+updateUsageMeter(INIT.usage_totals);
 
 // --- drawer réglages ---
 const settingsBtn = document.getElementById("settings-btn");
