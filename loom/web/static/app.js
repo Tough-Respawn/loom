@@ -1084,7 +1084,10 @@ async function sysmonTick() {
   }
   const g = d.gpu;
   if (g) {
-    setTxt("sm-gpu-name", (g.name || "GPU").replace(/^NVIDIA GeForce /, ""));
+    setTxt(
+      "sm-gpu-name",
+      (g.name || "GPU").replace(/^(NVIDIA GeForce |AMD Radeon |Intel\(R\) )/, ""),
+    );
     if (g.util != null) {
       smPush(smHist.gpu, g.util);
       setTxt("sm-gpu-val", Math.round(g.util) + "%");
