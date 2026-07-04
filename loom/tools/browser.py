@@ -14,12 +14,14 @@ analyser, jamais des ordres (une page peut contenir « ignore tes consignes »).
 
 from __future__ import annotations
 
+import atexit
 import ipaddress
 import os
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -28,6 +30,105 @@ from loom.permissions import _is_hard_denied
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.shell import _kill_tree, _shell_argv
 from loom.tools.trust import untrusted
+
+# --- Registre des serveurs LAISSÉS VIVANTS par serve_and_check ---------------------------
+# serve_and_check démarre un serveur, le vérifie, puis le LAISSE TOURNER (au lieu de le tuer
+# aussitôt) pour que le modèle puisse tester PLUSIEURS pages/jeux sur le même serveur, puis
+# l'arrête explicitement via stop_server. Sécurités : arrêt de tout à la sortie de Loom
+# (atexit) + TTL de secours si le modèle oublie de fermer (pas de serveur orphelin éternel).
+_SERVERS_LOCK = threading.Lock()
+_LIVE_SERVERS: dict[str, dict] = {}  # id -> {proc, url, logpath, logf, started}
+_server_seq = [0]
+_SERVER_TTL = 900.0  # 15 min : large pour explorer, borné pour ne pas fuir
+
+
+def _kill_server_locked(sid: str) -> None:
+    """Tue et nettoie un serveur suivi. À appeler AVEC _SERVERS_LOCK détenu."""
+    s = _LIVE_SERVERS.pop(sid, None)
+    if not s:
+        return
+    try:
+        _kill_tree(s["proc"])
+    except Exception:  # noqa: BLE001 - best-effort
+        pass
+    try:
+        s["logf"].close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        os.unlink(s["logpath"])
+    except OSError:
+        pass
+
+
+def _reap_expired_servers() -> None:
+    """Arrête les serveurs plus vieux que le TTL (filet si le modèle oublie stop_server)."""
+    now = time.monotonic()
+    with _SERVERS_LOCK:
+        for sid in [
+            k for k, s in _LIVE_SERVERS.items() if now - s["started"] > _SERVER_TTL
+        ]:
+            _kill_server_locked(sid)
+
+
+def _register_server(proc, url: str, logpath: str, logf) -> str:
+    with _SERVERS_LOCK:
+        _server_seq[0] += 1
+        sid = f"srv{_server_seq[0]}"
+        _LIVE_SERVERS[sid] = {
+            "proc": proc,
+            "url": url,
+            "logpath": logpath,
+            "logf": logf,
+            "started": time.monotonic(),
+        }
+    return sid
+
+
+def _find_server_by_url(url: str) -> str | None:
+    with _SERVERS_LOCK:
+        for sid, s in _LIVE_SERVERS.items():
+            if s["url"] == url and s["proc"].poll() is None:
+                return sid
+    return None
+
+
+def _stop_servers(sid: str | None) -> str:
+    with _SERVERS_LOCK:
+        if sid:
+            if sid not in _LIVE_SERVERS:
+                actifs = ", ".join(_LIVE_SERVERS) or "(aucun)"
+                return f"aucun serveur suivi « {sid} ». Serveurs actifs : {actifs}"
+            url = _LIVE_SERVERS[sid]["url"]
+            _kill_server_locked(sid)
+            return f"serveur {sid} ({url}) arrêté."
+        if not _LIVE_SERVERS:
+            return "aucun serveur actif à arrêter."
+        n = len(_LIVE_SERVERS)
+        for k in list(_LIVE_SERVERS):
+            _kill_server_locked(k)
+        return f"{n} serveur(s) arrêté(s)."
+
+
+def _alive_hint(sid: str) -> str:
+    """Message accolé à un serveur laissé vivant : dit au modèle qu'il reste lancé, comment
+    tester d'autres pages, comment le fermer, et POURQUOI ne pas bricoler avec Start-Process."""
+    return (
+        f"[serveur TOUJOURS ACTIF - id={sid}] Il reste lance : teste d'AUTRES pages de ce "
+        "serveur avec check_page/check_interactive (ou re-appelle serve_and_check sur une "
+        "autre url du meme site, sans relancer). QUAND TU AS TA REPONSE, ferme-le avec "
+        f"serve_and_check(action='stop', id='{sid}'). Ne lance JAMAIS un serveur toi-meme via "
+        "Start-Process / start / Invoke-Item (ca ouvre le .ps1 dans un editeur et ne survit "
+        "pas) : serve_and_check s'occupe du cycle de vie."
+    )
+
+
+@atexit.register
+def _kill_all_servers() -> None:  # pragma: no cover - filet de sortie process
+    with _SERVERS_LOCK:
+        for k in list(_LIVE_SERVERS):
+            _kill_server_locked(k)
+
 
 _INSTALL_HINT = (
     "playwright non installe. Lance une fois : `uv add playwright` puis "
@@ -271,11 +372,18 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
     root = Path(workspace_dir)
 
     def run(args: dict) -> str:
+        _reap_expired_servers()  # filet : referme les serveurs oublies > TTL
+        action = (args.get("action") or "start").strip().lower()
+
+        # --- action='stop' : ferme un serveur laisse vivant (ou tous), sans command/url ---
+        if action == "stop":
+            return _stop_servers((args.get("id") or "").strip() or None)
+
         command = (args.get("command") or "").strip()
         if not command:
             raise ToolError(
-                "argument 'command' manquant (commande qui demarre le serveur, "
-                "ex. 'npm run dev -- --port 3000')"
+                "argument 'command' manquant (commande qui demarre le serveur, ex. "
+                "'npm run dev -- --port 3000'). Pour ARRETER un serveur, action='stop' (+ id)."
             )
         target = (args.get("url") or "").strip()
         if not target:
@@ -316,8 +424,20 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
             if s.strip()
         ]
 
-        # Serveur DETACHE : sa sortie va dans un fichier temporaire (lu en cas d'echec de
-        # demarrage). On NE communicate() PAS (il ne rend jamais la main) : on poll le port.
+        # Un serveur suivi tourne DEJA sur cette url (lance a un tour precedent) ? On ne
+        # relance PAS (le double bind echouerait) : on re-verifie simplement la page demandee
+        # sur le serveur vivant. C'est le cas « tester une 2e page du meme site ».
+        existing = _find_server_by_url(url)
+        if existing:
+            report = _render_page(url, wait_selector, count_selectors)
+            return untrusted(
+                f"serveur deja actif (id={existing}) sur {url} - verification :\n{report}"
+                f"\n\n{_alive_hint(existing)}",
+                f"page {url}",
+            )
+
+        # Serveur DETACHE : sa sortie va dans un fichier temporaire. On NE communicate() PAS
+        # (il ne rend jamais la main) : on poll le port.
         fd, logpath = tempfile.mkstemp(prefix="loom-serve-", suffix=".log")
         os.close(fd)
         logf = open(logpath, "w", encoding="utf-8", errors="replace")
@@ -340,72 +460,92 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                 pass
             raise ToolError(f"impossible de lancer le serveur : {exc}") from exc
 
-        try:
-            ready = _wait_for_port(proc, host, port, ready_timeout)
-            if ready:
-                report = _render_page(url, wait_selector, count_selectors)
-                body = f"serveur demarre, port {port} pret - verification de {url} :\n{report}"
-            else:
-                try:
-                    logf.flush()
-                    tail = Path(logpath).read_text(encoding="utf-8", errors="replace")[
-                        -1200:
-                    ]
-                except OSError:
-                    tail = ""
-                if proc.poll() is not None:
-                    diag = (
-                        f"le serveur s'est ARRETE tout seul (exit {proc.returncode}) avant "
-                        f"d'ecouter sur {host}:{port} - demarrage en echec."
-                    )
-                else:
-                    diag = (
-                        f"le port {host}:{port} n'a pas repondu en {ready_timeout}s. Verifie "
-                        "que la commande demarre bien un serveur sur CE port (option --port), "
-                        "ou augmente ready_timeout."
-                    )
-                body = (
-                    f"serve_and_check : {diag}\n--- sortie serveur ---\n"
-                    f"{tail or '(aucune sortie)'}"
-                )
-        finally:
-            _kill_tree(proc)
-            logf.close()
-            try:
-                os.unlink(logpath)
-            except OSError:
-                pass
+        ready = _wait_for_port(proc, host, port, ready_timeout)
+        if ready:
+            report = _render_page(url, wait_selector, count_selectors)
+            # On LAISSE le serveur vivre (registre) : le modele peut tester d'autres pages,
+            # puis le fermer avec action='stop'. Le log reste ouvert (le serveur y ecrit).
+            sid = _register_server(proc, url, logpath, logf)
+            body = (
+                f"serveur demarre, port {port} pret - verification de {url} :\n{report}"
+                f"\n\n{_alive_hint(sid)}"
+            )
+            return untrusted(body, f"page {url}")
 
-        return untrusted(body, f"page {url}")
+        # Echec de demarrage : diag depuis le log, puis on tue et on nettoie.
+        try:
+            logf.flush()
+            tail = Path(logpath).read_text(encoding="utf-8", errors="replace")[-1200:]
+        except OSError:
+            tail = ""
+        if proc.poll() is not None:
+            diag = (
+                f"le serveur s'est ARRETE tout seul (exit {proc.returncode}) avant "
+                f"d'ecouter sur {host}:{port} - demarrage en echec."
+            )
+        else:
+            diag = (
+                f"le port {host}:{port} n'a pas repondu en {ready_timeout}s. Verifie que la "
+                "commande demarre bien un serveur sur CE port (option --port), ou augmente "
+                "ready_timeout."
+            )
+        _kill_tree(proc)
+        logf.close()
+        try:
+            os.unlink(logpath)
+        except OSError:
+            pass
+        return untrusted(
+            f"serve_and_check : {diag}\n--- sortie serveur ---\n{tail or '(aucune sortie)'}",
+            f"page {url}",
+        )
 
     return ToolSpec(
         name="serve_and_check",
         description=(
-            "Demarre un serveur local en ARRIERE-PLAN (dev/preview : 'npm run dev', "
-            "'vite', 'flask run', 'python -m http.server'...), attend que son port reponde, "
-            "charge la page dans un navigateur headless (memes preuves que check_page : "
-            "erreurs console, elements, texte visible) PUIS arrete le serveur et tue tout "
-            "l'arbre de process. SERS-T'EN pour prouver qu'une appli a SERVEUR (Next.js, "
-            "Vite, Flask) s'affiche : run_shell ne peut PAS garder un serveur vivant (il le "
-            "tue au timeout) et check_page seul n'a rien a viser tant que rien n'ecoute. "
-            "Donne 'command' (qui demarre le serveur) et 'url' (ou le joindre, ex. "
-            "http://127.0.0.1:3000). Pour une page .html STATIQUE (sans serveur), prefere "
-            "check_page directement."
+            "Gere le CYCLE DE VIE d'un serveur local pour prouver qu'une appli a SERVEUR "
+            "(Next.js, Vite, Flask...) s'affiche/marche. run_shell ne peut PAS garder un "
+            "serveur vivant (il le tue au timeout) et NE lance JAMAIS un serveur toi-meme via "
+            "Start-Process/start (ca ouvre le .ps1 dans un editeur et ne survit pas) : passe "
+            "TOUJOURS par cet outil.\n"
+            "action='start' (defaut) : demarre 'command' en arriere-plan, attend que 'url' "
+            "reponde, charge la page en navigateur headless (erreurs console, elements, texte) "
+            "et LAISSE LE SERVEUR VIVANT -> tu peux ensuite tester d'AUTRES pages du meme "
+            "serveur (check_page/check_interactive, ou serve_and_check sur une autre url). "
+            "action='stop' : arrete le serveur d'id donne (ou TOUS si pas d'id) -> fais-le "
+            "QUAND TU AS TA REPONSE. Pour une page .html STATIQUE (sans serveur), prefere "
+            "check_page."
         ),
         parameters={
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "stop"],
+                    "description": (
+                        "'start' (defaut) demarre+verifie+laisse vivant ; 'stop' ferme un "
+                        "serveur laisse vivant (via id, ou tous si id absent)."
+                    ),
+                },
+                "id": {
+                    "type": "string",
+                    "description": (
+                        "Pour action='stop' : id du serveur a fermer (rendu au 'start', ex. "
+                        "'srv1'). Absent = ferme TOUS les serveurs laisses vivants."
+                    ),
+                },
                 "command": {
                     "type": "string",
                     "description": (
-                        "Commande qui demarre le serveur (ex. 'npm run dev -- --port 3000'). "
-                        "Elle sera lancee en arriere-plan puis arretee a la fin."
+                        "action='start' : commande qui demarre le serveur (ex. 'npm run dev "
+                        "-- --port 3000'). Lancee en arriere-plan, laissee vivante."
                     ),
                 },
                 "url": {
                     "type": "string",
                     "description": (
-                        "URL http(s):// ou joindre le serveur (ex. 'http://127.0.0.1:3000')."
+                        "action='start' : URL http(s):// ou joindre le serveur (ex. "
+                        "'http://127.0.0.1:3000')."
                     ),
                 },
                 "cwd": {
@@ -432,7 +572,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                     ),
                 },
             },
-            "required": ["command", "url"],
+            "required": [],
         },
         run=run,
     )
