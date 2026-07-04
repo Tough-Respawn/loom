@@ -121,6 +121,9 @@ class RemoteModelConfig:
     # côté provider (ex. glm-5.2 chez Z.ai) : mets-le dans config/local.toml.
     price_in: float = 0.0
     price_out: float = 0.0
+    # Prix $ / M des tokens d'INPUT servis par le CACHE (hit de préfixe) — bien moins cher
+    # (ex. glm-5.2 : ~0.26 vs 1.40). 0 = pas de remise appliquée (coût = borne haute).
+    price_cached: float = 0.0
 
 
 @dataclass
@@ -210,6 +213,7 @@ def _parse_remote_model(d: dict) -> RemoteModelConfig:
         enable_thinking_param=bool(d.get("enable_thinking_param", False)),
         price_in=float(d.get("price_in", 0.0) or 0.0),
         price_out=float(d.get("price_out", 0.0) or 0.0),
+        price_cached=float(d.get("price_cached", 0.0) or 0.0),
     )
 
 

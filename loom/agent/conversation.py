@@ -39,24 +39,44 @@ class Conversation:
     # l'output visible. On somme donc input/output/coût sur TOUS les appels (pas par tour).
     tokens_in: int = 0
     tokens_out: int = 0
+    tokens_cached: int = 0  # part de tokens_in servie par le cache de préfixe
     cost_usd: float = 0.0
     api_calls: int = 0
 
     def add_usage(
-        self, prompt: int, completion: int, price_in: float, price_out: float
+        self,
+        prompt: int,
+        completion: int,
+        cached: int,
+        price_in: float,
+        price_out: float,
+        price_cached: float = 0.0,
     ) -> None:
-        """Cumule un appel API dans les compteurs de session + le coût ($ / M tokens)."""
-        self.tokens_in += int(prompt or 0)
-        self.tokens_out += int(completion or 0)
+        """Cumule un appel API dans les compteurs de session + le coût ($ / M tokens).
+
+        `cached` = part de `prompt` servie par le cache (facturée `price_cached` au lieu de
+        `price_in`) -> le coût distingue input frais et input caché ; price_cached=0 = pas de
+        remise (borne haute). Sert à MESURER si le prompt caching mord."""
+        prompt = int(prompt or 0)
+        completion = int(completion or 0)
+        cached = min(int(cached or 0), prompt)  # jamais > input total
+        self.tokens_in += prompt
+        self.tokens_out += completion
+        self.tokens_cached += cached
         self.api_calls += 1
-        self.cost_usd += (prompt or 0) / 1e6 * price_in + (
-            completion or 0
-        ) / 1e6 * price_out
+        pc = price_cached if price_cached > 0 else price_in
+        fresh = prompt - cached
+        self.cost_usd += (
+            fresh / 1e6 * price_in + cached / 1e6 * pc + completion / 1e6 * price_out
+        )
 
     def usage_totals(self) -> dict:
+        pct = round(self.tokens_cached / self.tokens_in * 100) if self.tokens_in else 0
         return {
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
+            "tokens_cached": self.tokens_cached,
+            "cache_pct": pct,
             "cost_usd": round(self.cost_usd, 4),
             "api_calls": self.api_calls,
         }
@@ -72,6 +92,7 @@ class Conversation:
         # Compteur de consommation remis à zéro : le fil repart, le cumul aussi.
         self.tokens_in = 0
         self.tokens_out = 0
+        self.tokens_cached = 0
         self.cost_usd = 0.0
         self.api_calls = 0
 
@@ -115,6 +136,7 @@ class Conversation:
             "skill_overrides": self.skill_overrides,
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
+            "tokens_cached": self.tokens_cached,
             "cost_usd": self.cost_usd,
             "api_calls": self.api_calls,
         }
@@ -135,6 +157,7 @@ class Conversation:
             skill_overrides=dict(data.get("skill_overrides", {})),
             tokens_in=int(data.get("tokens_in", 0) or 0),
             tokens_out=int(data.get("tokens_out", 0) or 0),
+            tokens_cached=int(data.get("tokens_cached", 0) or 0),
             cost_usd=float(data.get("cost_usd", 0.0) or 0.0),
             api_calls=int(data.get("api_calls", 0) or 0),
         )
