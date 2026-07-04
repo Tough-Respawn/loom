@@ -174,7 +174,12 @@ def build_registry(
             specs.append(make_remember(memory.provider, memory.paths))
     if "dispatch_agent" in enabled and client is not None:
         from loom.prompts import SUBAGENT_SYSTEM
+        from loom.runtime.platform_info import detect as _platform_detect
         from loom.tools.agent import make_dispatch_agent
+
+        # Le sous-agent hérite des conventions de l'OS courant (shell/commandes) comme le
+        # fil principal : sinon il écrirait du PowerShell sur Linux, etc.
+        _sub_system = SUBAGENT_SYSTEM + "\n\n" + _platform_detect().prompt_block()
 
         def _build_sub_registry() -> ToolRegistry:
             # Sous-registre complet SANS client -> pas de dispatch_agent imbriqué
@@ -191,7 +196,7 @@ def build_registry(
             make_dispatch_agent(
                 client,
                 _build_sub_registry,
-                system_prompt=SUBAGENT_SYSTEM,
+                system_prompt=_sub_system,
                 model=model,
                 max_tokens=sub_max_tokens,
                 permission=permission,
