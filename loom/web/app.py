@@ -208,6 +208,7 @@ def create_app(
     reflect_model=None,
     model_contexts=None,
     model_max_tokens=None,
+    remote_model_ids=None,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -234,6 +235,7 @@ def create_app(
 
     models = list(models or [])
     vision_models = set(vision_models or [])  # ids des modèles avec mmproj (vision)
+    remote_model_ids = set(remote_model_ids or [])  # ids servis par une API distante
     available_tools = list(available_tools or [])
     chat_lock = threading.Lock()
     # Signal d'annulation : une nouvelle soumission le pose pour stopper net la
@@ -443,13 +445,26 @@ def create_app(
                 system_prompt += f"\n\n{catalog}"
             # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
             # "Tu es Loom") -> il baratine quand on lui demande "quel modèle ?". On lui
-            # injecte son modèle courant pour qu'il réponde honnêtement.
+            # injecte son modèle courant pour qu'il réponde honnêtement. DISTANT vs LOCAL :
+            # sans ça un modèle servi par une API répétait « je tourne en local/offline sur
+            # llama.cpp » (la persona de Loom est « agent local ») -> confabulation d'infra.
             if conv.model:
-                system_prompt += (
-                    f"\n\n# Ton moteur\nTu tournes sur le modèle local « {conv.model} ». "
-                    "Si on te demande quel modèle/moteur tu utilises, réponds-le "
-                    "honnêtement et directement (ce nom), sans esquiver."
-                )
+                if conv.model in remote_model_ids:
+                    system_prompt += (
+                        f"\n\n# Ton moteur\nTon raisonnement est servi par le modèle DISTANT "
+                        f"« {conv.model} », via une API externe — PAS en local. Tes OUTILS, eux, "
+                        "s'exécutent bien sur la machine de l'utilisateur, mais toi (le cerveau) "
+                        "non. Ne prétends donc JAMAIS être offline, ni tourner sur llama.cpp / "
+                        "llama-swap / une carte graphique locale : ce serait faux. Si on te "
+                        "demande quel modèle/moteur tu utilises, donne ce nom honnêtement, sans "
+                        "inventer de détails d'infrastructure."
+                    )
+                else:
+                    system_prompt += (
+                        f"\n\n# Ton moteur\nTu tournes sur le modèle local « {conv.model} ». "
+                        "Si on te demande quel modèle/moteur tu utilises, réponds-le "
+                        "honnêtement et directement (ce nom), sans esquiver."
+                    )
             # Dossier de travail courant : le modèle l'IGNORE sinon et le devine en sondant
             # (git rev-parse à l'aveugle, list_dir…) -> tours gaspillés. On le lui dit, avec
             # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git. Reste EN BAS

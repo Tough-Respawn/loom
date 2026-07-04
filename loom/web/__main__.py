@@ -189,6 +189,7 @@ def build_app(cfg):
         reflect_model=cfg.default_model,
         model_contexts=model_contexts,
         model_max_tokens=model_max_tokens,
+        remote_model_ids=[rm.id for rm in cfg.remote_models],
     )
     return app
 
