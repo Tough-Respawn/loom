@@ -1,10 +1,10 @@
-﻿// loom/web/static/app.js
-// UI Loom â€” modÃ¨le dÃ©claratif Â« Ã©tat â†’ vue Â» (Preact + htm, zÃ©ro build).
+// loom/web/static/app.js
+// UI Loom — modèle déclaratif « état → vue » (Preact + htm, zéro build).
 //
-// Principe : UNE source de vÃ©ritÃ© (`state.timeline`, une liste d'items ordonnÃ©s).
-// Les Ã©vÃ©nements SSE mutent l'Ã©tat (crÃ©ation/maj par `id`), puis `render(App)`.
-// Plus aucune manipulation DOM manuelle â†’ la classe de bugs (doublons/fantÃ´mes,
-// pills non rattachÃ©es) disparaÃ®t par construction. ValidÃ© par `node --check`.
+// Principe : UNE source de vérité (`state.timeline`, une liste d'items ordonnés).
+// Les événements SSE mutent l'état (création/maj par `id`), puis `render(App)`.
+// Plus aucune manipulation DOM manuelle → la classe de bugs (doublons/fantômes,
+// pills non rattachées) disparaît par construction. Validé par `node --check`.
 
 import {
   html,
@@ -14,11 +14,11 @@ import {
   useRef,
 } from "./preact-htm.js";
 
-// marked + DOMPurify sont chargÃ©s en global (scripts classiques avant ce module).
+// marked + DOMPurify sont chargés en global (scripts classiques avant ce module).
 marked.setOptions({ breaks: true });
-// ProtÃ¨ge les spans LaTeX ($â€¦$, $$â€¦$$, \(â€¦\), \[â€¦\]) du parseur markdown â€” sinon il mange
-// \lim_{x}, \frac, etc. On remplace par des jetons avant marked, on restaure (Ã©chappÃ©s
-// HTML pour bloquer toute injection) aprÃ¨s. MathJax les rend en SVG dans enhance().
+// Protège les spans LaTeX ($…$, $$…$$, \(…\), \[…\]) du parseur markdown — sinon il mange
+// \lim_{x}, \frac, etc. On remplace par des jetons avant marked, on restaure (échappés
+// HTML pour bloquer toute injection) après. MathJax les rend en SVG dans enhance().
 function _protectMath(raw) {
   const maths = [];
   const stash = (delim, tex) => {
@@ -52,7 +52,7 @@ const INIT = JSON.parse(
 );
 
 // ----------------------------------------------------------------------------
-// Ã‰tat + rendu
+// État + rendu
 // ----------------------------------------------------------------------------
 const state = {
   timeline: [], // items : {kind, id, ...}
@@ -100,13 +100,13 @@ function patch(id, fields) {
 function Think({ it }) {
   if (!it.text) return null;
   return html`<details class=${"think" + (it.active ? " active" : "")} open=${it.active}>
-    <summary>rÃ©flexion${it.role ? " " + it.role : ""}</summary>
+    <summary>réflexion${it.role ? " " + it.role : ""}</summary>
     <div>${it.text}</div>
   </details>`;
 }
 
 function IORow({ tag, text }) {
-  // Une ligne IN ou OUT : aperÃ§u 1 ligne, clic pour dÃ©plier le bloc complet.
+  // Une ligne IN ou OUT : aperçu 1 ligne, clic pour déplier le bloc complet.
   const [open, setOpen] = useState(false);
   const full = text == null ? "" : String(text);
   if (!full) return null;
@@ -116,18 +116,18 @@ function IORow({ tag, text }) {
     <div class="tool-io-row" onClick=${() => multi && setOpen(!open)}>
       <span class=${"io-tag io-" + tag.toLowerCase()}>${tag}</span>
       <span class="io-line">${open ? "" : first}</span>
-      <span class="tool-caret">${multi ? (open ? "â–¾" : "â–¸") : ""}</span>
+      <span class="tool-caret">${multi ? (open ? "▾" : "▸") : ""}</span>
     </div>
     ${open ? html`<pre class="tool-io-body">${full}</pre>` : null}
   </div>`;
 }
 
 function ToolPill({ it }) {
-  // Vue faÃ§on IN/OUT : en-tÃªte = nom du tool + Ã©tat ; puis la commande/entrÃ©e (IN) et la
-  // sortie (OUT), chacune dÃ©pliable pour voir tout, bloc par bloc.
+  // Vue façon IN/OUT : en-tête = nom du tool + état ; puis la commande/entrée (IN) et la
+  // sortie (OUT), chacune dépliable pour voir tout, bloc par bloc.
   const inText = it.in_full != null ? it.in_full : it.cmd || it.path || "";
   const outText = it.out_full != null ? it.out_full : it.preview || "";
-  const status = it.pending ? (it.chars ? it.chars + " car." : "â€¦") : it.ok ? "âœ“" : "âœ•";
+  const status = it.pending ? (it.chars ? it.chars + " car." : "…") : it.ok ? "✓" : "✕";
   return html`<div class=${"tool-chip" + (it.pending ? "" : it.ok ? " ok" : " ko")}>
     <div class="tool-head">
       <span class="tool-name">${it.name || "outil"}</span>
@@ -151,12 +151,12 @@ function PermAsk({ it }) {
   };
   return html`<div class=${"perm-ask" + (it.decided ? " decided" : "")}>
     <div>
-      <b>${it.name || "outil"}</b> veut s'exÃ©cuter${it.summary
+      <b>${it.name || "outil"}</b> veut s'exécuter${it.summary
         ? html` : <code>${it.summary}</code>`
         : ""}${it.decided
         ? it.approved
-          ? "  â†’ autorisÃ©"
-          : "  â†’ refusÃ©"
+          ? "  → autorisé"
+          : "  → refusé"
         : ""}
     </div>
     ${!it.decided
@@ -211,8 +211,8 @@ function UserMsg({ it, userIndex }) {
   </div>`;
 }
 
-// Bulle assistant : texte brut pendant le stream, markdown sanitizÃ© Ã  la fin
-// (+ boutons copier injectÃ©s une fois rendu, via effet).
+// Bulle assistant : texte brut pendant le stream, markdown sanitizé à la fin
+// (+ boutons copier injectés une fois rendu, via effet).
 function Assistant({ it }) {
   const ref = useRef(null);
   useEffect(() => {
@@ -232,7 +232,7 @@ function enhance(el, raw) {
   el.querySelectorAll("pre").forEach((pre) => {
     if (pre.querySelector(".copy-btn")) return;
     // Capture le texte du code AVANT d'ajouter le bouton : sinon innerText inclut
-    // Â« copier Â» et l'ancien hack regex rognait un code finissant vraiment par Â« copier Â».
+    // « copier » et l'ancien hack regex rognait un code finissant vraiment par « copier ».
     const code = (pre.querySelector("code") || pre).innerText;
     const btn = document.createElement("button");
     btn.className = "copy-btn";
@@ -240,7 +240,7 @@ function enhance(el, raw) {
     btn.textContent = "copier";
     btn.onclick = () => {
       navigator.clipboard.writeText(code);
-      btn.textContent = "copiÃ© âœ“";
+      btn.textContent = "copié ✓";
       setTimeout(() => (btn.textContent = "copier"), 1200);
     };
     pre.appendChild(btn);
@@ -250,15 +250,15 @@ function enhance(el, raw) {
     btn.className = "msg-copy";
     btn.type = "button";
     btn.textContent = "copier";
-    btn.title = "Copier la rÃ©ponse";
+    btn.title = "Copier la réponse";
     btn.onclick = () => {
       navigator.clipboard.writeText(raw);
-      btn.textContent = "âœ“";
+      btn.textContent = "✓";
       setTimeout(() => (btn.textContent = "copier"), 1200);
     };
     el.appendChild(btn);
   }
-  // Rend les formules LaTeX en SVG sur le DOM rÃ©el (MathJax tex-svg), aprÃ¨s le markdown.
+  // Rend les formules LaTeX en SVG sur le DOM réel (MathJax tex-svg), après le markdown.
   if (window.MathJax && window.MathJax.typesetPromise) {
     window.MathJax.typesetPromise([el]).catch(() => {});
   }
@@ -279,7 +279,7 @@ function Item({ it, userIndex }) {
     case "error":
       return html`<div class="msg assistant err">${it.message}</div>`;
     case "phase":
-      return html`<div class="phase-sep">&#9658; ${it.name}${it.detail ? " â€” " + it.detail : ""}</div>`;
+      return html`<div class="phase-sep">&#9658; ${it.name}${it.detail ? " — " + it.detail : ""}</div>`;
     default:
       return null;
   }
@@ -288,7 +288,7 @@ function Item({ it, userIndex }) {
 function App() {
   if (!state.timeline.length) {
     return html`<div class="empty-state">
-      Ã‰cris une demande. Loom agit avec ses outils (lire, Ã©crire, exÃ©cuter, chercher).
+      Écris une demande. Loom agit avec ses outils (lire, écrire, exécuter, chercher).
     </div>`;
   }
   let _ui = 0;
@@ -307,11 +307,11 @@ function App() {
 async function streamSSE(url, fd, onEvent, signal) {
   const resp = await fetch(url, { method: fd ? "POST" : "GET", body: fd || undefined, signal });
   if (resp.status === 429) {
-    onEvent({ type: "error", message: "OccupÃ© : un Ã©change est dÃ©jÃ  en cours." });
+    onEvent({ type: "error", message: "Occupé : un échange est déjà en cours." });
     return;
   }
   if (resp.status === 400) {
-    onEvent({ type: "error", message: "RequÃªte invalide." });
+    onEvent({ type: "error", message: "Requête invalide." });
     return;
   }
   const reader = resp.body.getReader();
@@ -353,25 +353,25 @@ async function sendChat(text, images) {
   let asstId = null;
   let lastSent = 0,
     lastRecv = 0,
-    lastTokS = null; // derniers compteurs envoyÃ©/reÃ§u/dÃ©bit (pour figer Ã  la fin)
+    lastTokS = null; // derniers compteurs envoyé/reçu/débit (pour figer à la fin)
 
   const fd = new FormData();
   fd.append("message", text);
   for (const im of images || []) fd.append("image", im); // multi-images : le back fait getlist
 
-  setMetrics(0, 0, null); // "â†‘0 â†“0" pulsant dÃ¨s l'envoi -> liveness immÃ©diate avant le 1er token
+  setMetrics(0, 0, null); // "↑0 ↓0" pulsant dès l'envoi -> liveness immédiate avant le 1er token
 
   const onEvent = (evt) => {
     switch (evt.type) {
       case "reasoning":
-        // Une NOUVELLE Ã©tape de rÃ©flexion clÃ´t le texte prÃ©cÃ©dent -> bulle sÃ©parÃ©e
-        // (sinon le texte d'aprÃ¨s s'empile dans la 1re bulle, en haut, au lieu d'en bas).
+        // Une NOUVELLE étape de réflexion clôt le texte précédent -> bulle séparée
+        // (sinon le texte d'après s'empile dans la 1re bulle, en haut, au lieu d'en bas).
         if (asstId) { patch(asstId, { done: true }); asstId = null; }
         if (!thinkId) thinkId = push({ kind: "think", role: "", text: "", active: true }).id;
         patch(thinkId, { text: get(thinkId).text + evt.text, active: true });
         break;
       case "text":
-        // Le texte clÃ´t l'Ã©tape de raisonnement courante (et la prochaine en ouvrira une
+        // Le texte clôt l'étape de raisonnement courante (et la prochaine en ouvrira une
         // neuve) -> on ferme la bulle au lieu de tout empiler dans une seule.
         if (thinkId) {
           patch(thinkId, { active: false });
@@ -382,15 +382,15 @@ async function sendChat(text, images) {
         break;
       case "tool_begin":
       case "tool_call": {
-        // Un outil se dÃ©clenche = fin de l'Ã©tape de rÃ©flexion en cours. On clÃ´t la bulle
-        // pour que le raisonnement du PROCHAIN tour dÃ©marre une bulle SÃ‰PARÃ‰E (une par
-        // Ã©tape : rÃ©flÃ©chir -> agir -> rÃ©flÃ©chirâ€¦), au lieu d'une seule qui grossit.
+        // Un outil se déclenche = fin de l'étape de réflexion en cours. On clôt la bulle
+        // pour que le raisonnement du PROCHAIN tour démarre une bulle SÉPARÉE (une par
+        // étape : réfléchir -> agir -> réfléchir…), au lieu d'une seule qui grossit.
         if (thinkId) {
           patch(thinkId, { active: false });
           thinkId = null;
         }
-        // â€¦et le TEXTE en cours aussi : un outil = fin de l'Ã©tape, la narration d'aprÃ¨s
-        // doit dÃ©marrer une bulle neuve SOUS l'outil (pas remonter dans la 1re bulle).
+        // …et le TEXTE en cours aussi : un outil = fin de l'étape, la narration d'après
+        // doit démarrer une bulle neuve SOUS l'outil (pas remonter dans la 1re bulle).
         if (asstId) { patch(asstId, { done: true }); asstId = null; }
         const tid = "tool:" + (evt.id || evt.name);
         if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name, pending: true });
@@ -399,16 +399,16 @@ async function sendChat(text, images) {
       }
       case "tool_args": {
         // Deltas d'arguments d'un tool_call (contenu de write_file, params de tout outil) :
-        // on cumule la taille pour la voir grossir sur la pastille pendant la gÃ©nÃ©ration.
-        // Le compteur â†“ global, lui, est pilotÃ© par l'event "metrics" du backend.
+        // on cumule la taille pour la voir grossir sur la pastille pendant la génération.
+        // Le compteur ↓ global, lui, est piloté par l'event "metrics" du backend.
         const tid = "tool:" + (evt.id || evt.name);
         if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name, pending: true });
         patch(tid, { chars: (get(tid).chars || 0) + (evt.n || 0) });
         break;
       }
       case "tool_stream": {
-        // ActivitÃ© live d'un outil streamant (sous-agent) : on accumule dans `stream`,
-        // affichÃ© dans la pastille tant qu'elle n'est pas dÃ©pliÃ©e.
+        // Activité live d'un outil streamant (sous-agent) : on accumule dans `stream`,
+        // affiché dans la pastille tant qu'elle n'est pas dépliée.
         const tid = "tool:" + (evt.id || evt.name);
         if (!get(tid)) push({ id: tid, kind: "tool", name: evt.name, pending: true });
         patch(tid, { stream: (get(tid).stream || "") + evt.text });
@@ -421,8 +421,8 @@ async function sendChat(text, images) {
         break;
       }
       case "phase":
-        // SÃ©parateur de phase du harnais de rÃ©flexion. Si on ignore cet event, le run
-        // reste lisible (les lignes du texte narrent dÃ©jÃ  l'avancement) -> non bloquant.
+        // Séparateur de phase du harnais de réflexion. Si on ignore cet event, le run
+        // reste lisible (les lignes du texte narrent déjà l'avancement) -> non bloquant.
         if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
         if (asstId) { patch(asstId, { done: true }); asstId = null; }
         push({ kind: "phase", name: evt.name, task: evt.task, detail: evt.detail });
@@ -431,8 +431,8 @@ async function sendChat(text, images) {
         push({ kind: "perm", callId: evt.id, name: evt.name, summary: evt.summary });
         break;
       case "workspace":
-        // Le serveur a adoptÃ© le dossier de travail dÃ©signÃ© dans le message : on
-        // reflÃ¨te la nouvelle pastille (l'utilisateur n'a rien eu Ã  pointer).
+        // Le serveur a adopté le dossier de travail désigné dans le message : on
+        // reflète la nouvelle pastille (l'utilisateur n'a rien eu à pointer).
         loomWorkdir = evt.path;
         try {
           localStorage.loomWorkdir = loomWorkdir;
@@ -442,23 +442,23 @@ async function sendChat(text, images) {
         reflectWorkdir();
         break;
       case "session_title": {
-        // Le serveur a infÃ©rÃ© un titre pour la session : on l'Ã©crit dans la sidebar en
-        // direct (sinon il n'apparaÃ®trait qu'au prochain rechargement). La liste est du
+        // Le serveur a inféré un titre pour la session : on l'écrit dans la sidebar en
+        // direct (sinon il n'apparaîtrait qu'au prochain rechargement). La liste est du
         // HTML rendu serveur -> on cible le bouton par son data-id.
         const btn = document.querySelector(`.sess-pick[data-id="${evt.id}"]`);
         if (btn) btn.textContent = evt.title;
         break;
       }
       case "metrics":
-        // Compteur live pilotÃ© par le backend : envoyÃ©s â†‘ (prompt rÃ©el) et reÃ§us â†“
-        // (gÃ©nÃ©ration, tool-calls inclus, rÃ©conciliÃ©s sur l'usage) + dÃ©bit mesurÃ©.
+        // Compteur live piloté par le backend : envoyés ↑ (prompt réel) et reçus ↓
+        // (génération, tool-calls inclus, réconciliés sur l'usage) + débit mesuré.
         lastSent = evt.sent;
         lastRecv = evt.recv;
         lastTokS = evt.tok_s;
         setMetrics(lastSent, lastRecv, lastTokS, {});
         break;
       case "error":
-        push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancÃ© ?)" });
+        push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancé ?)" });
         break;
     }
   };
@@ -470,12 +470,12 @@ async function sendChat(text, images) {
     if (err.name === "AbortError") {
       if (asstId) patch(asstId, { done: true });
     } else {
-      push({ kind: "error", message: "Erreur : " + err.message + " (Loom est-il lancÃ© ?)" });
+      push({ kind: "error", message: "Erreur : " + err.message + " (Loom est-il lancé ?)" });
     }
   } finally {
     if (thinkId) patch(thinkId, { active: false });
-    // Ne fige le compteur que si CETTE gÃ©nÃ©ration est encore l'active (une nouvelle
-    // soumission a dÃ©jÃ  remis le compteur Ã  zÃ©ro -> ne pas l'Ã©craser depuis l'ancienne).
+    // Ne fige le compteur que si CETTE génération est encore l'active (une nouvelle
+    // soumission a déjà remis le compteur à zéro -> ne pas l'écraser depuis l'ancienne).
     if (ac === currentAbort) {
       currentAbort = null;
       setMetrics(lastSent, lastRecv, lastTokS, { done: true });
@@ -484,7 +484,7 @@ async function sendChat(text, images) {
 }
 
 // ----------------------------------------------------------------------------
-// Hydratation + cÃ¢blage des contrÃ´les (formulaires, image, historique, toggles)
+// Hydratation + câblage des contrôles (formulaires, image, historique, toggles)
 // ----------------------------------------------------------------------------
 (INIT.messages || []).forEach((m) =>
   state.timeline.push({
@@ -495,13 +495,13 @@ async function sendChat(text, images) {
     done: true,
   }),
 );
-// Les messages assistant persistÃ©s portent leur markdown dans `content` (string).
+// Les messages assistant persistés portent leur markdown dans `content` (string).
 state.timeline.forEach((it) => {
   if (it.kind === "assistant" && typeof it.content === "string") it.raw = it.content;
 });
 scheduleRender();
 
-// MathJax charge en async : re-typeset les bulles dÃ©jÃ  rendues (historique) une fois prÃªt.
+// MathJax charge en async : re-typeset les bulles déjà rendues (historique) une fois prêt.
 function _typesetAll() {
   if (!(window.MathJax && window.MathJax.typesetPromise)) return;
   document
@@ -519,7 +519,7 @@ const MAX_IMAGES = 6;
 const previewWrap = document.getElementById("previewWrap");
 
 // ----------------------------------------------------------------------------
-// Dossier de travail des outils (oÃ¹ read/write/shell agissent), persistÃ©
+// Dossier de travail des outils (où read/write/shell agissent), persisté
 // ----------------------------------------------------------------------------
 const workdirPath = document.getElementById("workdir-path");
 const workdirChip = document.getElementById("workdir-chip");
@@ -535,7 +535,7 @@ function reflectWorkdir() {
 }
 reflectWorkdir();
 
-// --- Compteur live de gÃ©nÃ©ration (tokens rÃ©els + dÃ©bit mesurÃ©, pilotÃ© par le backend) ---
+// --- Compteur live de génération (tokens réels + débit mesuré, piloté par le backend) ---
 const genMetrics = document.getElementById("gen-metrics");
 const gmText = document.getElementById("gm-text");
 function setMetrics(sent, recv, tokS, opts) {
@@ -547,11 +547,11 @@ function setMetrics(sent, recv, tokS, opts) {
   }
   genMetrics.hidden = false;
   genMetrics.classList.toggle("done", !!(opts && opts.done));
-  const rate = tokS != null ? ` Â· ${tokS} tok/s` : "";
-  gmText.textContent = `â†‘ ${sent || 0} Â· â†“ ${recv || 0}${rate}`;
+  const rate = tokS != null ? ` · ${tokS} tok/s` : "";
+  gmText.textContent = `↑ ${sent || 0} · ↓ ${recv || 0}${rate}`;
 }
 
-// --- drawer rÃ©glages ---
+// --- drawer réglages ---
 const settingsBtn = document.getElementById("settings-btn");
 const drawer = document.getElementById("settings-drawer");
 const drawerScrim = document.getElementById("drawer-scrim");
@@ -573,7 +573,7 @@ window.addEventListener("keydown", (e) => {
 
 // --- sessions (liste / nouvelle / switch / suppression) ---
 // Changer de session change toute la conversation et la timeline : on recharge la page,
-// qui se re-rend avec la session active cÃ´tÃ© serveur (KISS et fiable).
+// qui se re-rend avec la session active côté serveur (KISS et fiable).
 async function postForm(url, data) {
   const fd = new FormData();
   for (const k in data) fd.append(k, data[k]);
@@ -602,7 +602,7 @@ document.querySelectorAll(".sess-del").forEach((b) => {
   });
 });
 
-// --- sÃ©lecteur de dossier natif ---
+// --- sélecteur de dossier natif ---
 const pickFolderBtn = document.getElementById("pick-folder-btn");
 if (pickFolderBtn) {
   pickFolderBtn.addEventListener("click", async () => {
@@ -613,8 +613,8 @@ if (pickFolderBtn) {
         loomWorkdir = j.path;
         localStorage.loomWorkdir = loomWorkdir;
         reflectWorkdir();
-        // Applique le dossier Ã  la SESSION ACTIVE tout de suite (sinon il ne
-        // s'appliquerait qu'Ã  la prochaine Â« Nouvelle session Â»).
+        // Applique le dossier à la SESSION ACTIVE tout de suite (sinon il ne
+        // s'appliquerait qu'à la prochaine « Nouvelle session »).
         await postForm("/session/workspace", { workspace: j.path });
       } else if (j.error) {
         console.warn("pick-folder:", j.error);
@@ -639,7 +639,7 @@ function renderPreviews() {
     img.alt = file.name || "image";
     const rm = document.createElement("button");
     rm.type = "button";
-    rm.textContent = "âœ•";
+    rm.textContent = "✕";
     rm.title = "Retirer";
     rm.addEventListener("click", () => removeImage(i));
     wrap.append(img, rm);
@@ -650,7 +650,7 @@ function renderPreviews() {
 function addImages(files) {
   for (const f of files) {
     if (!f || !f.type.startsWith("image/")) continue;
-    if (pendingImages.length >= MAX_IMAGES) break; // limite : les suivantes sont ignorÃ©es
+    if (pendingImages.length >= MAX_IMAGES) break; // limite : les suivantes sont ignorées
     pendingImages.push(f);
   }
   renderPreviews();
@@ -664,7 +664,7 @@ function clearImages() {
   renderPreviews();
 }
 
-// Scroll collant : on suit le bas seulement si l'utilisateur y est dÃ©jÃ .
+// Scroll collant : on suit le bas seulement si l'utilisateur y est déjà.
 function nearBottom() {
   if (!scrollWrap) return true;
   return scrollWrap.scrollTop + scrollWrap.clientHeight >= scrollWrap.scrollHeight - 120;
@@ -698,15 +698,15 @@ async function submitChat() {
   }
 }
 
-// Stop : coupe l'affichage cÃ´tÃ© client (abort) ET la gÃ©nÃ©ration cÃ´tÃ© serveur
-// (/cancel pose cancel_event). Pas de message vide envoyÃ© -> plus de 429.
+// Stop : coupe l'affichage côté client (abort) ET la génération côté serveur
+// (/cancel pose cancel_event). Pas de message vide envoyé -> plus de 429.
 function stopChat() {
   if (currentAbort) currentAbort.abort();
   fetch("/cancel", { method: "POST" }).catch(() => {});
 }
 chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
-  // Pendant une gÃ©nÃ©ration, le bouton Â« Stop Â» arrÃªte au lieu de soumettre.
+  // Pendant une génération, le bouton « Stop » arrête au lieu de soumettre.
   if (currentAbort) {
     stopChat();
     return;
@@ -714,7 +714,7 @@ chatForm.addEventListener("submit", (e) => {
   submitChat();
 });
 
-// historique â†‘/â†“ + EntrÃ©e pour envoyer
+// historique ↑/↓ + Entrée pour envoyer
 const history = [];
 let histIdx = -1;
 input.addEventListener("keydown", (e) => {
@@ -740,11 +740,11 @@ input.addEventListener("keydown", (e) => {
   }
 });
 
-// --- images (plusieurs, jusqu'Ã  MAX_IMAGES) ---
+// --- images (plusieurs, jusqu'à MAX_IMAGES) ---
 if (fileInput)
   fileInput.addEventListener("change", () => {
     addImages([...fileInput.files]);
-    fileInput.value = ""; // permet de re-sÃ©lectionner le mÃªme fichier ensuite
+    fileInput.value = ""; // permet de re-sélectionner le même fichier ensuite
   });
 const fileBtn = document.getElementById("fileBtn");
 if (fileBtn) fileBtn.addEventListener("click", () => fileInput.click());
@@ -756,7 +756,7 @@ window.addEventListener("paste", (e) => {
   if (files.length) addImages(files);
 });
 
-// --- toggle rÃ©flexion ---
+// --- toggle réflexion ---
 const thinkingCb = document.getElementById("thinking-cb");
 if (thinkingCb) {
   thinkingCb.addEventListener("change", () => {
@@ -766,7 +766,7 @@ if (thinkingCb) {
   });
 }
 
-// --- reset (vide la conversation cÃ´tÃ© serveur + client) ---
+// --- reset (vide la conversation côté serveur + client) ---
 const resetBtn = document.getElementById("reset-btn");
 if (resetBtn) {
   resetBtn.addEventListener("click", async () => {
