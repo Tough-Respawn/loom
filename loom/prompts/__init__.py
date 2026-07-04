@@ -18,5 +18,9 @@ def _load(name: str) -> str:
 
 
 CHAT_SYSTEM = _load("chat.system.md")
+# Variante ALLÉGÉE pour un modèle FORT (API distante) : identité + outils (bruts) + mémoire
+# soulignée + sécurité, SANS le scaffolding de comportement (impératifs, séquences, règles
+# d'or) qui ne sert qu'à un petit modèle local. On laisse le frontier se piloter seul.
+CHAT_SYSTEM_STRONG = _load("chat.system.strong.md")
 SUBAGENT_SYSTEM = _load("subagent.system.md")
 REFLECT_SYSTEM = _load("reflect.system.md")

@@ -20,6 +20,7 @@ from flask import Flask, Response, render_template, request
 from loom.agent import context
 from loom.agent.client import set_debug_log_path
 from loom.extend.skills import collect_skills, render_catalog
+from loom.prompts import CHAT_SYSTEM_STRONG
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
@@ -137,6 +138,19 @@ def _build_user_content(message: str, image) -> str | list:
     ]
 
 
+# Mots qui EFFACENT l'objectif de session via « /goal <mot> » (façon /goal de Claude Code).
+_GOAL_CLEAR_WORDS = {
+    "clear",
+    "stop",
+    "off",
+    "none",
+    "reset",
+    "cancel",
+    "efface",
+    "annule",
+}
+
+
 # Verbe compact par outil pour la TRACE D'ACTIONS persistée (anti-amnésie). Les outils
 # de navigation (find/search/list) en sont absents : on mémorise les LECTURES et les
 # CHANGEMENTS d'état, pas les allers-retours d'exploration.
@@ -209,6 +223,7 @@ def create_app(
     model_contexts=None,
     model_max_tokens=None,
     remote_model_ids=None,
+    remote_model_names=None,
 ) -> Flask:
     app = Flask(__name__)
     # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
@@ -236,6 +251,9 @@ def create_app(
     models = list(models or [])
     vision_models = set(vision_models or [])  # ids des modèles avec mmproj (vision)
     remote_model_ids = set(remote_model_ids or [])  # ids servis par une API distante
+    remote_model_names = dict(
+        remote_model_names or {}
+    )  # id Loom -> vrai modèle provider
     available_tools = list(available_tools or [])
     chat_lock = threading.Lock()
     # Signal d'annulation : une nouvelle soumission le pose pour stopper net la
@@ -367,6 +385,45 @@ def create_app(
         cancel_event.clear()
         conv, save = _ctx()
 
+        # Commande /goal : pilote l'OBJECTIF de complétion de la session.
+        # « /goal <condition> » pose l'objectif ET DÉMARRE aussitôt une itération (comme /goal
+        # de Claude Code : « exécute une première itération immédiatement ») — l'objectif maintient
+        # ensuite l'agent au travail (garde côté client.py) jusqu'à ce qu'un évaluateur le juge
+        # PROUVÉ atteint. « /goal » seul = statut ; « /goal clear|stop|… » = efface. Ces deux-là
+        # ne lancent pas de tour modèle (ack immédiat) ; poser un objectif, si.
+        if message == "/goal" or message.startswith("/goal "):
+            arg = message[len("/goal") :].strip()
+            if arg and arg.lower() not in _GOAL_CLEAR_WORDS:
+                # Pose l'objectif et AMORCE le travail : on remplace le message par une consigne
+                # de démarrage et on laisse le flux normal tourner, objectif désormais actif.
+                conv.set_goal(arg)
+                save()
+                message = (
+                    f"Objectif à atteindre : {arg}\n"
+                    "Commence MAINTENANT à agir pour l'atteindre, et PROUVE-le (exécute, montre "
+                    "la sortie réelle). Ne t'arrête pas tant qu'il n'est pas démontré atteint."
+                )
+                # (pas de return : on tombe dans la génération normale ci-dessous)
+            else:
+                if not arg:
+                    ack = (
+                        f"Objectif courant : « {conv.goal} » (actif jusqu'à preuve d'atteinte, "
+                        "/goal clear pour l'effacer)."
+                        if conv.goal
+                        else "Aucun objectif actif. Pose-en un : /goal <condition vérifiable>."
+                    )
+                else:
+                    conv.set_goal("")
+                    save()
+                    ack = "Objectif effacé — retour au mode normal (arrêt au stop naturel)."
+                chat_lock.release()
+
+                def _goal_ack():
+                    yield _sse("text", text=ack)
+                    yield _sse("done")
+
+                return Response(_goal_ack(), mimetype="text/event-stream")
+
         # Gate vision : une image envoyée à un modèle SANS mmproj fait planter llama-server
         # (500 "image input not supported") en plein run. On refuse EN AMONT, message clair,
         # plutôt qu'un crash après avoir déjà agi. (read_image suit le même garde côté tool.)
@@ -438,9 +495,13 @@ def create_app(
                     identity_paths["memory_md_path"],
                     max_tokens=identity_max_tokens,
                 )
-            system_prompt = (
-                f"{_idblk}\n\n{conv.system_prompt}" if _idblk else conv.system_prompt
-            )
+            # TIER du harnais : un modèle DISTANT (API, non quantifié) se pilote seul -> prompt
+            # ALLÉGÉ (identité + outils + mémoire + sécurité), sans le scaffolding de comportement
+            # de chat.system.md qui ne sert qu'à un petit modèle local. Le flag `strong` sert
+            # aussi (plus bas) à couper les gardes de comportement dans la boucle d'outils.
+            strong = bool(conv.model and conv.model in remote_model_ids)
+            base_prompt = CHAT_SYSTEM_STRONG if strong else conv.system_prompt
+            system_prompt = f"{_idblk}\n\n{base_prompt}" if _idblk else base_prompt
             if catalog:
                 system_prompt += f"\n\n{catalog}"
             # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
@@ -450,9 +511,15 @@ def create_app(
             # llama.cpp » (la persona de Loom est « agent local ») -> confabulation d'infra.
             if conv.model:
                 if conv.model in remote_model_ids:
+                    _pm = remote_model_names.get(conv.model)
+                    _label = (
+                        f"« {_pm} » (route « {conv.model} »)"
+                        if _pm
+                        else f"« {conv.model} »"
+                    )
                     system_prompt += (
                         f"\n\n# Ton moteur\nTon raisonnement est servi par le modèle DISTANT "
-                        f"« {conv.model} », via une API externe — PAS en local. Tes OUTILS, eux, "
+                        f"{_label}, via une API externe — PAS en local. Tes OUTILS, eux, "
                         "s'exécutent bien sur la machine de l'utilisateur, mais toi (le cerveau) "
                         "non. Ne prétends donc JAMAIS être offline, ni tourner sur llama.cpp / "
                         "llama-swap / une carte graphique locale : ce serait faux. Si on te "
@@ -478,6 +545,17 @@ def create_app(
                 "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
                 "même commande à l'identique."
             )
+            # Objectif de session (/goal), en DIRECTIVE DOUCE : pas de juge externe qui te
+            # contredit (retiré — il recalait des preuves correctes). Tu restes seul maître de
+            # ta propre vérification : ne te déclare pas fini tant que l'objectif n'est pas
+            # ATTEINT ET PROUVÉ par tes exécutions (montre la sortie réelle) ; une fois prouvé,
+            # dis-le et arrête-toi. L'utilisateur l'efface avec « /goal clear ».
+            if conv.goal:
+                system_prompt += (
+                    f"\n\n# Objectif de session\nTant qu'il est actif, oriente ton travail vers "
+                    f"cet objectif et ne le déclare atteint qu'une fois PROUVÉ par tes propres "
+                    f"exécutions (sortie réelle affichée) :\n{conv.goal}"
+                )
         except ValueError as exc:
             chat_lock.release()
             return Response(str(exc), status=400)
@@ -520,6 +598,9 @@ def create_app(
             use_tools = registry is not None and len(registry)
             # Limites du modèle courant (distant = sa grande fenêtre ; local = global).
             eff_max_tokens, eff_compact = _model_limits(conv.model)
+            # `strong` (tier distant=fort) est calculé plus haut, à la construction du prompt :
+            # il coupe ici les gardes de comportement (act_nudge, claim_audit, coupe non-progrès).
+            # On ne garde que outils + mémoire + sécurité. Un modèle local garde le harnais complet.
             if use_tools:
                 source = client.stream_chat_tools(
                     conv.to_messages(),
@@ -531,6 +612,7 @@ def create_app(
                     permission=permission,
                     confirm=_confirm,
                     compact_after_tokens=eff_compact,
+                    strong=strong,
                 )
             else:
                 source = client.stream_chat(

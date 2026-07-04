@@ -190,6 +190,7 @@ def build_app(cfg):
         model_contexts=model_contexts,
         model_max_tokens=model_max_tokens,
         remote_model_ids=[rm.id for rm in cfg.remote_models],
+        remote_model_names={rm.id: rm.model for rm in cfg.remote_models},
     )
     return app
 
