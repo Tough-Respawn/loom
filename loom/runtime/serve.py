@@ -215,6 +215,9 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         str(SWAP_YAML),
         "--listen",
         f"127.0.0.1:{cfg.port}",
+        # Recharge la config à la volée quand le fichier change : loom.web régénère ce yaml
+        # après une édition de modèle local / param serveur -> effet SANS relancer llama-swap.
+        "--watch-config",
     ]
     return _run(
         args,
@@ -222,6 +225,33 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         "Télécharge llama-swap (voir docs/install-windows.md), ou garde un seul "
         "modèle pour lancer llama-server en direct.",
     )
+
+
+def regenerate_swap_yaml(
+    defaults_path=CONFIG_PATH, local_path=PERSONAL_CONFIG_PATH, out_path=SWAP_YAML
+) -> Path | None:
+    """Régénère le llama-swap.yaml depuis la config COURANTE (sans rien télécharger).
+
+    Appelé par loom.web après une édition de modèle local (offload/contexte) ou d'un param
+    serveur : llama-swap lancé avec --watch-config recharge alors le fichier tout seul, et le
+    modèle rechargé (après déchargement) démarre avec les nouveaux args. Ferme la boucle
+    « customiser un modèle local depuis l'UI » sans toucher au TOML ni tout relancer.
+    Best-effort : renvoie le chemin écrit, ou None si la config est illisible."""
+    try:
+        cfg = load_config(defaults_path, local_path)
+        profile = detect_hardware()
+        swap = build_swap_config(
+            cfg.models,
+            profile,
+            llama_bin=cfg.server_bin,
+            models_dir=str(MODELS_DIR),
+            context=cfg.context,
+            override_n_gpu_layers=cfg.override_n_gpu_layers,
+        )
+        write_swap_yaml(swap, out_path)
+        return Path(out_path)
+    except Exception:  # noqa: BLE001 - régénération best-effort, jamais fatale pour l'UI
+        return None
 
 
 def main() -> int:
