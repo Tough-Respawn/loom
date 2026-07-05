@@ -466,6 +466,19 @@
       font-size: 15px; padding: 4px 8px; border-radius: 6px;
     }
     .cfg-x:hover { background: var(--bg-hover); color: var(--text); }
+    /* Onglets : une section visible à la fois -> pas de scroll interminable. */
+    .cfg-tabs {
+      display: flex; gap: 2px; padding: 6px 18px 0; border-bottom: 1px solid var(--border-soft);
+      flex: none;
+    }
+    .cfg-tab {
+      background: none; border: none; border-bottom: 2px solid transparent;
+      color: var(--text-dim); font-family: inherit; font-size: 12px; padding: 8px 13px;
+      cursor: pointer; transition: color .12s, border-color .12s; white-space: nowrap;
+    }
+    .cfg-tab:hover { color: var(--text); }
+    .cfg-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .cfg-panel[hidden], .cfg-group[hidden] { display: none; }
     .cfg-scroll { overflow-y: auto; padding: 8px 18px 18px; }
     .cfg-body { padding: 0; }
     /* Deux grands GROUPES de couche (commun / cette machine) = organisateur principal. */
@@ -896,11 +909,16 @@
         <span class="cfg-legend">d'abord ce qui est commun à tous les systèmes, puis ce qui est propre à cette machine</span>
         <button type="button" class="cfg-x" data-cfg-close aria-label="Fermer">✕</button>
       </div>
+      <!-- Onglets (une seule section visible à la fois, pas de scroll à travers tout). -->
+      <div class="cfg-tabs" id="cfg-tabs">
+        <button type="button" class="cfg-tab active" data-tab="commun">Commun à tous les systèmes</button>
+        <button type="button" class="cfg-tab" data-tab="systeme">Propre à cette machine</button>
+        <button type="button" class="cfg-tab" data-tab="modeles">Modèles distants</button>
+      </div>
       <div class="cfg-scroll">
-        <!-- Modèles distants : gérés ici (déplacés de l'engrenage). Conteneur PRESERVE au
-             re-render de #config-body (le JS ne reconstruit que #config-body). -->
-        <div id="cfg-models" class="cfg-group">
-          <div class="cfg-group-head">Modèles distants</div>
+        <!-- Onglet Modèles distants. Conteneur PRESERVE au re-render de #config-body (le JS
+             ne reconstruit que #config-body). -->
+        <div id="cfg-models" class="cfg-panel" data-tab="modeles" hidden>
           <div class="cfg-group-sub">La définition (URL, modèle, contexte) est commune à tous les systèmes ; la clé API est propre à cette machine.</div>
           <div id="rm-list" class="rm-list"></div>
           <button type="button" id="rm-add-btn" class="rm-add-btn">+ Ajouter un modèle distant</button>
