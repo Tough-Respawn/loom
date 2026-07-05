@@ -1771,9 +1771,10 @@ function setSysmonVisible(on) {
     }
   });
 
-  // Rafraîchit la liste à l'ouverture du panneau engrenage (et une fois au chargement).
-  const gear = document.getElementById("gear-btn");
-  if (gear) gear.addEventListener("click", load);
+  // Rafraîchit la liste à l'ouverture de la console de config (le bloc modèles y vit
+  // désormais, plus dans l'engrenage) + une fois au chargement.
+  const cfgOpen = document.getElementById("cfg-open");
+  if (cfgOpen) cfgOpen.addEventListener("click", load);
   load();
 })();
 
@@ -1848,11 +1849,7 @@ function setSysmonVisible(on) {
       '<span class="cfg-i" title="' +
       esc(p.help) +
       '">i</span>' +
-      '<span class="cfg-badge ' +
-      esc(p.layer) +
-      '">' +
-      (p.layer === "systeme" ? "système" : "commun") +
-      "</span>" +
+      // Pas de badge de couche par ligne : le GROUPE (commun / cette machine) le dit déjà.
       '<span class="cfg-nat">' +
       esc(p.nature) +
       "</span></div>" +
@@ -1873,17 +1870,59 @@ function setSysmonVisible(on) {
     );
   }
 
+  // Deux GRANDS groupes par couche (crystal clear) : d'abord tout ce qui est commun à tous
+  // les systèmes, puis tout ce qui est propre à cette machine. Les sections (Serveur, Chat…)
+  // deviennent des sous-titres à l'intérieur de chaque groupe.
+  const LAYER_GROUPS = [
+    {
+      layer: "commun", cls: "",
+      title: "Commun à tous les systèmes",
+      sub: "Les mêmes réglages partout, quel que soit l'ordinateur ou l'OS.",
+    },
+    {
+      layer: "systeme", cls: "machine",
+      title: "Propre à cette machine",
+      sub: "Chemins, GPU, ports et clés spécifiques à cet ordinateur.",
+    },
+  ];
+
   function render(data) {
-    body.innerHTML = (data.sections || [])
-      .map(
-        (s) =>
-          '<div class="cfg-section"><div class="cfg-sec-head">' +
-          esc(s.label) +
-          '</div><div class="cfg-rows">' +
-          s.params.map(rowHtml).join("") +
-          "</div></div>",
-      )
-      .join("");
+    const params = [];
+    (data.sections || []).forEach((s) =>
+      s.params.forEach((p) => params.push(Object.assign({ sectionLabel: s.label }, p))),
+    );
+    body.innerHTML = LAYER_GROUPS.map((g) => {
+      const gp = params.filter((p) => p.layer === g.layer);
+      if (!gp.length) return "";
+      const order = [];
+      const bySec = {};
+      gp.forEach((p) => {
+        if (!bySec[p.sectionLabel]) {
+          bySec[p.sectionLabel] = [];
+          order.push(p.sectionLabel);
+        }
+        bySec[p.sectionLabel].push(p);
+      });
+      const secs = order
+        .map(
+          (lbl) =>
+            '<div class="cfg-section"><div class="cfg-sec-head">' +
+            esc(lbl) +
+            '</div><div class="cfg-rows">' +
+            bySec[lbl].map(rowHtml).join("") +
+            "</div></div>",
+        )
+        .join("");
+      return (
+        '<div class="cfg-group ' + g.cls + '"><div class="cfg-group-head">' +
+        esc(g.title) +
+        '</div><div class="cfg-group-sub">' +
+        esc(g.sub) +
+        "</div>" +
+        secs +
+        "</div>"
+      );
+    }).join("");
   }
 
   async function loadCfg() {
