@@ -673,7 +673,10 @@ function activateTab(sid) {
     ?.closest(".session-item");
   if (li) li.classList.add("active");
   // Charge le brouillon de l'onglet ouvert (vide s'il n'a rien tapé).
-  if (inputEl) inputEl.value = t.draft || "";
+  if (inputEl) {
+    inputEl.value = t.draft || "";
+    autosize();
+  }
   state.pin = true;
   scheduleRender();
   renderTabs();
@@ -999,6 +1002,7 @@ function submitChat() {
   }
   const imgs = pendingImages.slice();
   input.value = "";
+  autosize(); // revient à 1 ligne après envoi
   clearImages();
   // Envoi sur l'onglet actif (flux concurrent) ; le bouton passe à Stop via syncComposer.
   sendChat(state.active, text, imgs).finally(() => input.focus());
@@ -1023,6 +1027,16 @@ chatForm.addEventListener("submit", (e) => {
   submitChat();
 });
 
+// Auto-dimensionnement du textarea : grandit avec le contenu jusqu'à max-height (CSS 200px),
+// puis scroll interne. Appelé à la frappe ET après toute écriture programmatique (brouillon
+// d'onglet, rappel d'historique, reset) pour que l'utilisateur voie/édite tout son prompt.
+function autosize() {
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 200) + "px";
+}
+input.addEventListener("input", autosize);
+
 // historique ↑/↓ + Entrée pour envoyer — l'historique est PAR ONGLET (t.history/t.histIdx),
 // amorcé avec les prompts déjà envoyés de la conversation.
 input.addEventListener("keydown", (e) => {
@@ -1039,6 +1053,7 @@ input.addEventListener("keydown", (e) => {
     if (t.histIdx == null || t.histIdx === -1) t.histIdx = hist.length;
     if (t.histIdx > 0) t.histIdx--;
     input.value = hist[t.histIdx];
+    autosize();
   } else if (e.key === "ArrowDown" && t.histIdx != null && t.histIdx !== -1) {
     e.preventDefault();
     if (t.histIdx < hist.length - 1) {
@@ -1048,6 +1063,7 @@ input.addEventListener("keydown", (e) => {
       t.histIdx = -1;
       input.value = "";
     }
+    autosize();
   }
 });
 
