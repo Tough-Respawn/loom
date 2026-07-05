@@ -387,6 +387,47 @@ SPEC: list[dict] = [
 ]
 
 
+# Défauts du CODE (dataclasses) pour les params absents des DEUX fichiers -> la console montre
+# la vraie valeur effective, pas une case vide. Miroir des defaults de config.py/web.py ;
+# `None` = pas de valeur (ex. override auto-détecté) -> champ vide avec placeholder « auto ».
+CODE_DEFAULTS = {
+    ("server", "context"): 24576,
+    ("server", "n_parallel"): 1,
+    ("server", "gpu_kv_headroom_mb"): 1024,
+    ("server", "port"): 8080,
+    ("server", "bin"): "llama-server",
+    ("server", "swap_bin"): "llama-swap",
+    ("override", "n_gpu_layers"): None,
+    ("override", "threads"): None,
+    ("chat", "default_model"): "",
+    ("chat", "max_tokens"): 2048,
+    ("chat", "request_timeout"): 120,
+    ("chat", "max_retries"): 6,
+    ("chat", "context_token_budget"): 3000,
+    ("chat", "keep_recent_messages"): 6,
+    ("chat", "web_port"): 8000,
+    ("chat", "identity_max_tokens"): 600,
+    ("chat", "keepwarm_enabled"): True,
+    ("chat", "keepwarm_interval"): 150,
+    ("chat", "reflect_enabled"): True,
+    ("chat", "reflect_min_actions"): 1,
+    ("tools", "workspace_dir"): ".",
+    ("tools", "read_file_max_bytes"): 40000,
+    ("tools", "shell_timeout"): 180,
+    ("memory", "recall_summarize"): True,
+    ("memory", "recall_summarize_threshold"): 5,
+    ("web_search", "enabled"): True,
+    ("web_search", "backend"): "auto",
+    ("web_search", "searxng_url"): "",
+    ("web_search", "tavily_api_key"): "",
+    ("web_search", "max_results"): 5,
+    ("web_search", "fetch_pages"): True,
+    ("web_search", "http_timeout"): 6,
+    ("web_search", "max_chars_per_page"): 4000,
+    ("permissions", "mode"): "ask",
+}
+
+
 def _read_toml(path: str | Path) -> dict:
     p = Path(path)
     if not p.exists():
@@ -422,7 +463,7 @@ def describe(defaults_path: str | Path, local_path: str | Path) -> dict:
         elif in_def is not None:
             value, source = in_def, "commun"
         else:
-            value, source = None, "defaut"
+            value, source = CODE_DEFAULTS.get((s, k)), "defaut"
         row = dict(spec)
         row["value"] = value
         row["source"] = source
