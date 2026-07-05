@@ -766,11 +766,15 @@ class LoomClient:
 
     def infer_title(self, model: str | None, message: str) -> str:
         """Titre COURT (3-5 mots) d'une conversation, inféré par le modèle. NON streamé, tout
-        petit budget. Point clé : on COUPE le raisonnement — sinon un modèle « thinking »
-        (glm…) épuise le budget en réflexion et ne sort jamais le titre (d'où le repli sur le
-        début du message). On tente d'abord avec le param anti-thinking adapté (Z.ai pour un
-        distant, chat_template_kwargs pour un local), puis SANS extra_body si le provider le
-        rejette. Renvoie "" si rien d'exploitable (l'appelant gère le repli)."""
+        petit budget.
+
+        Point clé : on COUPE le raisonnement — sinon un modèle « thinking » (glm, Qwen…)
+        épuise le budget en réflexion et ne sort jamais le titre (d'où le repli sur le début
+        du message). AGNOSTIQUE au provider ET au modèle : on essaie les conventions connues
+        pour désactiver le thinking, chacune ignorée/rejetée SANS CASSE si le backend ne la
+        connaît pas ; on garde la 1re qui produit un vrai titre. Couvre le DISTANT (Z.ai/GLM,
+        OpenRouter…) comme le LOCAL (llama.cpp/Qwen). Renvoie "" si rien d'exploitable ->
+        l'appelant gère le repli (début du message)."""
         oai, api_model, _ = self._resolve(model)
         prompt = (
             "Donne un titre TRÈS court (3 à 5 mots) résumant cette demande, en français, "
@@ -786,18 +790,21 @@ class LoomClient:
                 },
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": 40,
+            # Petite marge : si un backend ne sait pas couper le thinking, il a quand même la
+            # place de finir un raisonnement trivial ET d'émettre le titre.
+            "max_tokens": 96,
             "temperature": 0.3,
         }
-        # Ordre des tentatives : couper le thinking selon la cible, puis repli nu.
-        if self.is_remote(model):
-            extras = [{"extra_body": {"thinking": {"type": "disabled"}}}, {}]
-        else:
-            extras = [
-                {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
-                {},
-            ]
-        for extra in extras:
+        # Conventions anti-thinking connues, dans l'ordre (chacune best-effort), puis appel nu.
+        attempts = (
+            {"extra_body": {"thinking": {"type": "disabled"}}},  # Z.ai / GLM
+            {
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
+            },  # llama.cpp / Qwen (local)
+            {"extra_body": {"reasoning": {"enabled": False}}},  # OpenRouter
+            {},  # modèle sans raisonnement / provider strict
+        )
+        for extra in attempts:
             try:
                 resp = oai.chat.completions.create(**base, **extra)
                 txt = (resp.choices[0].message.content or "").strip()
