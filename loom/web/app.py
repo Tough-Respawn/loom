@@ -136,43 +136,16 @@ def _sse(event_type: str, **fields) -> str:
 
 
 def _infer_title(client, model, message: str) -> str:
-    """Titre court (3-5 mots) inféré par le modèle depuis la 1re demande, pour ne pas
-
-    laisser la session « Nouvelle session ». Thinking OFF + peu de tokens (cosmétique, pas
-
-    cher). Repli sur le début du message si le modèle ne renvoie rien d'exploitable."""
-
-    prompt = (
-        "Donne un titre TRÈS court (3 à 5 mots) résumant cette demande, en français, "
-        "sans guillemets ni ponctuation finale. Réponds UNIQUEMENT par le titre.\n\n"
-        "Demande : " + message[:500]
-    )
-
-    title = ""
-
+    """Titre court (3-5 mots) inféré par le modèle depuis la 1re demande, pour ne pas laisser
+    la session « Nouvelle session ». La logique (thinking coupé + tentatives) vit dans
+    client.infer_title ; ici on ne garde QUE le repli sur le début du message si le modèle ne
+    renvoie rien d'exploitable."""
     try:
-        parts = [
-            chunk
-            for kind, chunk in client.stream_chat(
-                [{"role": "user", "content": prompt}],
-                "Tu génères des titres de conversation courts et clairs.",
-                32,
-                model=model,
-                thinking=False,
-            )
-            if kind == "content"
-        ]
-
-        merged = "".join(parts).strip().strip('"').strip("'").strip()
-
-        title = merged.splitlines()[0][:60].strip() if merged else ""
-
+        title = client.infer_title(model, message)
     except Exception:  # noqa: BLE001 - un titre est cosmétique, jamais bloquant
         title = ""
-
     if not title:
         title = message.strip().splitlines()[0][:48].strip() or "Session"
-
     return title
 
 
@@ -1338,21 +1311,19 @@ def create_app(
                     except Exception as _e:  # noqa: BLE001 - best-effort, jamais bloquant
                         print(f"[reflect] erreur ignorée : {_e}", flush=True)
 
-                # Auto-titre : à la 1re vraie réponse, nommer la session (le modèle infère
+                # Auto-titre : à la 1re vraie réponse, nommer la session (le modèle infère le
+                # sujet). On titre LA session de CETTE génération (`sess`), pas la session
+                # focus (_cur) — sinon, en multi-onglets concurrent, on titrerait la mauvaise.
 
-                # le sujet) au lieu de la laisser « Nouvelle session ».
-
-                _sess = _session()
-
-                if saved and _sess.title == "Nouvelle session":
+                if saved and sess.title == "Nouvelle session":
                     _title = _infer_title(client, conv.model or None, message)
 
                     if _title:
-                        _sess.title = _title
+                        sess.title = _title
 
-                        session_store.save(_sess)
+                        session_store.save(sess)
 
-                        yield _sse("session_title", id=_sess.id, title=_title)
+                        yield _sse("session_title", id=sess.id, title=_title)
 
                 yield _sse("done")
 
