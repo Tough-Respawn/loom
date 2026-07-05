@@ -362,6 +362,8 @@ def create_app(
     remote_model_names=None,
     model_prices=None,
     remote_store_path=None,
+    config_defaults_path=None,
+    config_local_path=None,
 ) -> Flask:
 
     app = Flask(__name__)
@@ -1715,6 +1717,55 @@ def create_app(
         if mid in models:
             models.remove(mid)
         return {"ok": True, "models": _models_payload(), "remotes": _remote_list()}
+
+    # ---- Console de configuration : introspection + édition des vrais fichiers TOML (deux
+    # couches commun/système), commentaires préservés via tomlkit (loom.runtime.config_schema).
+    def _cfg_paths_ok():
+        return bool(config_defaults_path and config_local_path)
+
+    @app.get("/config")
+    def config_describe():
+        if not _cfg_paths_ok():
+            return {"error": "chemins de config indisponibles"}, 500
+        from loom.runtime import config_schema
+
+        return config_schema.describe(config_defaults_path, config_local_path)
+
+    @app.post("/config/set")
+    def config_set():
+        if not _cfg_paths_ok():
+            return {"error": "chemins de config indisponibles"}, 500
+        from loom.runtime import config_schema
+
+        b = request.get_json(silent=True) or {}
+        section = (b.get("section") or "").strip()
+        key = (b.get("key") or "").strip()
+        if not (section and key):
+            return {"error": "section et key requis"}, 400
+        try:
+            res = config_schema.set_value(
+                config_defaults_path, config_local_path, section, key, b.get("value")
+            )
+        except (ValueError, OSError) as e:
+            return {"ok": False, "error": str(e)[:160]}, 400
+        code = 200 if res.get("ok") else 400
+        return res, code
+
+    @app.post("/config/reset")
+    def config_reset():
+        if not _cfg_paths_ok():
+            return {"error": "chemins de config indisponibles"}, 500
+        from loom.runtime import config_schema
+
+        b = request.get_json(silent=True) or {}
+        section = (b.get("section") or "").strip()
+        key = (b.get("key") or "").strip()
+        if not (section and key):
+            return {"error": "section et key requis"}, 400
+        res = config_schema.reset_value(
+            config_defaults_path, config_local_path, section, key
+        )
+        return res, (200 if res.get("ok") else 400)
 
     @app.get("/machine_state")
     def machine_state():
