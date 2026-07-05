@@ -619,6 +619,11 @@ async function openTab(sid) {
 function activateTab(sid) {
   const t = state.tabs[sid];
   if (!t) return;
+  // Brouillon PAR ONGLET : on sauve le texte NON envoyé de l'onglet qu'on quitte, on
+  // chargera celui de l'onglet ouvert (plus bas). Sinon la zone de saisie est partagée.
+  const inputEl = document.getElementById("input");
+  const prev = state.tabs[state.active];
+  if (prev && inputEl) prev.draft = inputEl.value;
   state.active = sid;
   // Le serveur suit ce focus (pour /model, /tools, /reset, /pick-folder qui opèrent sur _cur).
   postForm("/session/activate", { id: sid }).catch(() => {});
@@ -648,6 +653,8 @@ function activateTab(sid) {
     .querySelector(`.sess-pick[data-id="${sid}"]`)
     ?.closest(".session-item");
   if (li) li.classList.add("active");
+  // Charge le brouillon de l'onglet ouvert (vide s'il n'a rien tapé).
+  if (inputEl) inputEl.value = t.draft || "";
   state.pin = true;
   scheduleRender();
   renderTabs();
@@ -963,6 +970,7 @@ function submitChat() {
   histIdx = -1;
   const imgs = pendingImages.slice();
   input.value = "";
+  if (activeTab()) activeTab().draft = ""; // message parti -> brouillon vidé
   clearImages();
   // Envoi sur l'onglet actif (flux concurrent) ; le bouton passe à Stop via syncComposer.
   sendChat(state.active, text, imgs).finally(() => input.focus());
