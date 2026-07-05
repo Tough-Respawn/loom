@@ -356,6 +356,21 @@
     .usage-meter .um-cache { color: var(--accent); }
     .usage-meter .um-cache.miss { color: var(--err); }
     .usage-meter .um-calls { color: var(--text-faint); }
+    /* Jauge de remplissage de la fenêtre de contexte (occupation courante / fenêtre du modèle).
+       Distinct des totaux cumulés : c'est « à quel point le contexte est plein MAINTENANT ». */
+    .usage-meter .um-ctx { display: inline-flex; align-items: center; gap: 5px; color: var(--text-faint); }
+    .usage-meter .um-ctx[hidden] { display: none; }
+    .usage-meter .um-ctx-sep { color: var(--text-faint); }
+    .usage-meter .um-ctx-bar {
+      width: 44px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden;
+    }
+    .usage-meter .um-ctx-bar i {
+      display: block; height: 100%; width: 0%; background: var(--accent); transition: width .25s ease;
+    }
+    .usage-meter .um-ctx.warn .um-ctx-bar i { background: var(--warn); }
+    .usage-meter .um-ctx.crit .um-ctx-bar i { background: var(--err); }
+    .usage-meter .um-ctx.warn #um-ctx-pct { color: var(--warn); }
+    .usage-meter .um-ctx.crit #um-ctx-pct { color: var(--err); }
     .sidebar-toggle {
       display: none; background: var(--bg-elev); border: 1px solid var(--border);
       color: var(--text-dim); padding: 6px 10px; border-radius: 6px; cursor: pointer;
@@ -626,6 +641,11 @@
         <span class="um-cache" id="um-cache"></span>
         <span id="um-out">0</span><span class="um-unit">out</span>
         <span class="um-calls" id="um-calls"></span>
+        <span class="um-ctx" id="um-ctx" hidden>
+          <span class="um-ctx-sep">·</span> ctx
+          <span class="um-ctx-bar"><i id="um-ctx-fill"></i></span>
+          <span id="um-ctx-pct">0%</span>
+        </span>
       </span>
     </div>
     <div class="tabbar" id="tabbar" hidden></div>
