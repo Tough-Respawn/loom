@@ -36,4 +36,5 @@ api_key = "<TA_CLE_ICI>"                  # …ou api_key_env = "GLM_API_KEY" (v
 # réelle et mets-la ici (ex. glm-5.2 = 1000000 sur docs.z.ai). Les providers qui l'exposent
 # (OpenRouter, vLLM) sont lus automatiquement -> cette valeur ne sert que de repli.
 context = 1000000
-max_tokens = 8192                         # plafond de sortie par tour
+# PAS de max_tokens : un modèle distant prend la limite de sortie DU PROVIDER (sa machine n'a
+# pas les contraintes du local 6 Go). N'en ajoute un que pour BORNER volontairement le coût.
