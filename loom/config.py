@@ -204,6 +204,12 @@ def _discover_models(models_root: Path) -> list[ModelConfig]:
     return out
 
 
+def remote_model_from_dict(d: dict) -> RemoteModelConfig:
+    """Public : construit un RemoteModelConfig depuis un dict (store JSON géré par l'UI ou
+    table TOML). Même normalisation que le chargement config -> fusion homogène au démarrage."""
+    return _parse_remote_model(d)
+
+
 def _parse_remote_model(d: dict) -> RemoteModelConfig:
     """Construit un RemoteModelConfig depuis une table TOML [[remote_models]]."""
     return RemoteModelConfig(

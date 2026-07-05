@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Loom</title>
+  <script>
+    (function(){try{var t=localStorage.getItem('loom-theme');if(!t)t='dark';var a=localStorage.getItem('loom-accent');if(!a)a='green';document.documentElement.setAttribute('data-theme',t);document.documentElement.setAttribute('data-accent',a);}catch(e){}})();
+  </script>
   <script src="{{ url_for('static', filename='htmx.min.js') }}"></script>
   <script src="{{ url_for('static', filename='marked.min.js') }}"></script>
   <script src="{{ url_for('static', filename='purify.min.js') }}"></script>
@@ -28,6 +31,12 @@
   <style>
     :root {
       color-scheme: dark;
+      --radius: 8px;
+      --sidebar-w: 260px;
+    }
+    /* ---- Thème Dark (défaut) ---- */
+    :root,
+    [data-theme="dark"] {
       --bg: #0d0f14;
       --bg-panel: #11141b;
       --bg-elev: #161922;
@@ -37,16 +46,49 @@
       --text: #d4d9e3;
       --text-dim: #7a8294;
       --text-faint: #4a5060;
-      --accent: #5b9d7e;
-      --accent-dim: #2a6147;
-      --accent-bg: #11201a;
       --warn: #e8c07a;
       --warn-bg: #1f1a0e;
       --err: #e07070;
       --err-bg: #20140f;
-      --radius: 8px;
-      --sidebar-w: 260px;
     }
+    /* ---- Thème Bleu nuit (plus doux, moins noir) ---- */
+    [data-theme="night"] {
+      --bg: #121826;
+      --bg-panel: #161d2e;
+      --bg-elev: #1c2438;
+      --bg-hover: #232c44;
+      --border: #26304a;
+      --border-soft: #1e2640;
+      --text: #cfd8e8;
+      --text-dim: #7e8aa3;
+      --text-faint: #4d576e;
+      --warn: #e8c07a;
+      --warn-bg: #2a2418;
+      --err: #e07070;
+      --err-bg: #2a1820;
+    }
+    /* ---- Thème Bleu azur (plus clair que nuit, toujours sombre) ---- */
+    [data-theme="azure"] {
+      --bg: #1a2336;
+      --bg-panel: #1f2942;
+      --bg-elev: #26324f;
+      --bg-hover: #2d3a5c;
+      --border: #33415f;
+      --border-soft: #2b3650;
+      --text: #d8e2f4;
+      --text-dim: #92a0bd;
+      --text-faint: #5d6a87;
+      --warn: #e8c07a;
+      --warn-bg: #2e2818;
+      --err: #e07070;
+      --err-bg: #2e1c22;
+    }
+    /* ---- Tons d'accent (se superposent au thème) ---- */
+    [data-accent="green"]  { --accent: #5b9d7e; --accent-dim: #2a6147; --accent-bg: #11201a; }
+    [data-accent="blue"]   { --accent: #6ba3d6; --accent-dim: #2d5a8a; --accent-bg: #13203a; }
+    [data-accent="violet"] { --accent: #a78bda; --accent-dim: #5a4080; --accent-bg: #1f1633; }
+    [data-accent="amber"]  { --accent: #d6a868; --accent-dim: #8a6428; --accent-bg: #251e10; }
+    [data-accent="rose"]   { --accent: #d67a9a; --accent-dim: #8a3a5a; --accent-bg: #281622; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; }
     body {
@@ -302,6 +344,112 @@
       font-size: 12px; cursor: pointer; font-family: inherit; transition: .12s;
     }
     .reset:hover { background: #2a1812; }
+
+    /* ---- APPARENCE (thème + accent) ---- */
+    .sb-appearance { display: flex; flex-direction: column; gap: 10px; }
+    .appear-row { display: flex; flex-direction: column; gap: 5px; }
+    .appear-row > label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px;
+      color: var(--text-faint); font-weight: 600;
+    }
+    #theme-select {
+      width: 100%; background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+      font-size: 12px; font-family: inherit; cursor: pointer;
+    }
+    #theme-select:focus { outline: none; border-color: var(--accent-dim); }
+    .accent-dots { display: flex; gap: 8px; flex-wrap: wrap; }
+    .accent-dot {
+      width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border);
+      cursor: pointer; padding: 0; transition: transform .12s, border-color .12s;
+    }
+    .accent-dot:hover { transform: scale(1.12); }
+    .accent-dot.active { border-color: var(--text); transform: scale(1.12); }
+    .accent-dot[data-accent="green"]  { background: #5b9d7e; }
+    .accent-dot[data-accent="blue"]   { background: #6ba3d6; }
+    .accent-dot[data-accent="violet"] { background: #a78bda; }
+    .accent-dot[data-accent="amber"]  { background: #d6a868; }
+    .accent-dot[data-accent="rose"]   { background: #d67a9a; }
+    /* --- engrenage + panneau pop-over d'apparence --- */
+    .gear-btn {
+      display: flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: 6px;
+      background: none; border: 1px solid transparent; color: var(--text-dim);
+      cursor: pointer; transition: background .12s, color .12s;
+    }
+    .gear-btn:hover { background: var(--bg-hover); color: var(--text); }
+    .gear-btn.active { background: var(--accent-bg); color: var(--accent); border-color: var(--accent-dim); }
+    .gear-btn svg { width: 16px; height: 16px; }
+    #appearance-pop {
+      position: fixed; z-index: 55; width: 300px; max-height: 82vh; overflow-y: auto;
+      background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 14px 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.45);
+      animation: ap-in .14s ease;
+    }
+    /* --- Gestionnaire de modèles distants (dans le panneau engrenage) --- */
+    .rm-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 8px; }
+    .rm-empty { font-size: 11px; color: var(--text-faint); padding: 4px 2px; }
+    .rm-item {
+      display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+      background: var(--bg); border: 1px solid var(--border-soft); border-radius: 6px;
+    }
+    .rm-item-main { flex: 1; min-width: 0; }
+    .rm-item .rm-id { font-size: 12px; color: var(--text); }
+    .rm-item .rm-sub {
+      font-size: 10px; color: var(--text-faint); overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
+    .rm-item .rm-nokey { color: var(--warn); }
+    .rm-tag {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-faint);
+      border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; margin-left: 4px;
+    }
+    .rm-ic {
+      background: none; border: none; color: var(--text-faint); cursor: pointer;
+      padding: 2px 4px; border-radius: 4px; font-size: 12px; flex: none;
+    }
+    .rm-ic:hover { background: var(--bg-hover); color: var(--text); }
+    .rm-ic.rm-del:hover { color: var(--err); }
+    .rm-add-btn {
+      width: 100%; background: var(--bg); color: var(--accent); border: 1px dashed var(--accent-dim);
+      border-radius: 6px; padding: 6px; font-family: inherit; font-size: 11px; cursor: pointer;
+      transition: .12s;
+    }
+    .rm-add-btn:hover { background: var(--accent-bg); }
+    .rm-form { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+    .rm-in {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-family: inherit; font-size: 11.5px; padding: 6px 8px;
+    }
+    .rm-in:focus { outline: none; border-color: var(--accent-dim); }
+    .rm-in:disabled { color: var(--text-faint); }
+    .rm-row2 { display: flex; gap: 6px; align-items: center; }
+    .rm-row2 .rm-in { flex: 1; }
+    .rm-vis {
+      display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-dim);
+      white-space: nowrap; cursor: pointer;
+    }
+    .rm-vis input { accent-color: var(--accent); width: 13px; height: 13px; }
+    .rm-msg { font-size: 10.5px; color: var(--text-faint); min-height: 13px; }
+    .rm-msg.ok { color: var(--accent); }
+    .rm-msg.err { color: var(--err); }
+    .rm-actions { display: flex; gap: 6px; }
+    .rm-btn {
+      flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text-dim);
+      border-radius: 6px; padding: 6px; font-family: inherit; font-size: 11px; cursor: pointer;
+      transition: .12s;
+    }
+    .rm-btn:hover { background: var(--bg-hover); color: var(--text); }
+    .rm-btn.primary { background: var(--accent-dim); color: #fff; border-color: transparent; }
+    .rm-btn.primary:hover { filter: brightness(1.12); }
+    .rm-btn.ghost { flex: 0 0 auto; padding: 6px 10px; }
+    @keyframes ap-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+    #appearance-pop[hidden] { display: none; }
+    #appearance-pop .ap-head {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px;
+      color: var(--text-faint); font-weight: 600; margin-bottom: 10px;
+    }
 
     /* ---- MAIN AREA ---- */
     .main { flex: 1; display: flex; flex-direction: column; height: 100vh; min-width: 0; }
@@ -572,12 +720,17 @@
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span class="brand">Loom<span class="dot">.</span></span>
-      {% if permission_mode == "allow" %}
-      <span class="perm-warn" title="Mode allow : outils exécutés sans confirmation. Passe à ask dans loom.config.toml.">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3.5 21.5 20H2.5z"/><line x1="12" y1="10" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17.01"/></svg>
-        allow
-      </span>
-      {% endif %}
+      <div style="display:flex; align-items:center; gap:4px;">
+        {% if permission_mode == "allow" %}
+        <span class="perm-warn" title="Mode allow : outils exécutés sans confirmation. Passe à ask dans loom.config.toml.">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3.5 21.5 20H2.5z"/><line x1="12" y1="10" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17.01"/></svg>
+          allow
+        </span>
+        {% endif %}
+        <button type="button" class="gear-btn" id="gear-btn" title="Apparence" aria-label="Apparence">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
     </div>
     <div class="sidebar-body">
       {% if active_session %}
@@ -620,6 +773,52 @@
       </div>
     </div>
   </aside>
+
+  <!-- Panneau Réglages (engrenage) : Apparence + Modèles -->
+  <div id="appearance-pop" hidden>
+    <div class="ap-head">Apparence</div>
+    <div class="sb-appearance">
+      <div class="appear-row">
+        <label for="theme-select">Thème</label>
+        <select id="theme-select">
+          <option value="dark">Dark (sombre neutre)</option>
+          <option value="night">Bleu nuit (plus doux)</option>
+          <option value="azure">Bleu azur (plus clair)</option>
+        </select>
+      </div>
+      <div class="appear-row">
+        <label>Couleur d'accent</label>
+        <div class="accent-dots">
+          <button type="button" class="accent-dot" data-accent="green" title="Vert"></button>
+          <button type="button" class="accent-dot" data-accent="blue" title="Bleu"></button>
+          <button type="button" class="accent-dot" data-accent="violet" title="Violet"></button>
+          <button type="button" class="accent-dot" data-accent="amber" title="Ambre"></button>
+          <button type="button" class="accent-dot" data-accent="rose" title="Rose"></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Gestionnaire de modèles distants : ajouter/éditer/supprimer à chaud (sans redémarrer) -->
+    <div class="ap-head" style="margin-top:16px;">Modèles distants</div>
+    <div id="rm-list" class="rm-list"></div>
+    <button type="button" id="rm-add-btn" class="rm-add-btn">+ Ajouter un modèle distant</button>
+    <form id="rm-form" class="rm-form" hidden autocomplete="off">
+      <input id="rm-id" class="rm-in" placeholder="nom affiché (ex. glm-distant)">
+      <input id="rm-base" class="rm-in" placeholder="base_url (https://api.z.ai/api/paas/v4)">
+      <input id="rm-model" class="rm-in" placeholder="modèle côté provider (ex. glm-5.2)">
+      <input id="rm-key" class="rm-in" type="password" placeholder="clé API">
+      <div class="rm-row2">
+        <input id="rm-ctx" class="rm-in" type="number" placeholder="contexte (doc officielle)">
+        <label class="rm-vis"><input type="checkbox" id="rm-vision"> vision</label>
+      </div>
+      <div class="rm-msg" id="rm-msg"></div>
+      <div class="rm-actions">
+        <button type="button" id="rm-test" class="rm-btn">Tester</button>
+        <button type="submit" id="rm-save" class="rm-btn primary">Enregistrer</button>
+        <button type="button" id="rm-cancel" class="rm-btn ghost">Annuler</button>
+      </div>
+    </form>
+  </div>
 
   <!-- MAIN -->
   <div class="main">
@@ -721,6 +920,69 @@
   </aside>
 
   <script id="loom-init" type="application/json">{{ init_json | safe }}</script>
+  <script>
+    (function(){
+      var root = document.documentElement;
+      var sel = document.getElementById('theme-select');
+      if (sel) {
+        var cur = root.getAttribute('data-theme'); if (!cur) cur = 'dark';
+        sel.value = cur;
+        sel.addEventListener('change', function(){
+          var v = sel.value;
+          root.setAttribute('data-theme', v);
+          try { localStorage.setItem('loom-theme', v); } catch(e) {}
+        });
+      }
+      var dots = document.querySelectorAll('.accent-dot');
+      var curA = root.getAttribute('data-accent'); if (!curA) curA = 'green';
+      dots.forEach(function(d){
+        if (d.getAttribute('data-accent') === curA) d.classList.add('active');
+        d.addEventListener('click', function(){
+          var v = d.getAttribute('data-accent');
+          root.setAttribute('data-accent', v);
+          try { localStorage.setItem('loom-accent', v); } catch(e) {}
+          dots.forEach(function(x){ x.classList.remove('active'); });
+          d.classList.add('active');
+        });
+      });
+
+      /* --- engrenage : toggle du panneau apparence --- */
+      var gear = document.getElementById('gear-btn');
+      var pop = document.getElementById('appearance-pop');
+      if (gear && pop) {
+        function positionPop() {
+          var r = gear.getBoundingClientRect();
+          pop.style.left = (r.right + 6) + 'px';
+          pop.style.top = r.top + 'px';
+        }
+        function openPop() {
+          positionPop();
+          pop.hidden = false;
+          gear.classList.add('active');
+        }
+        function closePop() {
+          pop.hidden = true;
+          gear.classList.remove('active');
+        }
+        gear.addEventListener('click', function(e){
+          e.stopPropagation();
+          if (pop.hidden) openPop(); else closePop();
+        });
+        /* fermeture au clic extérieur */
+        document.addEventListener('click', function(e){
+          if (!pop.hidden && !pop.contains(e.target) && e.target !== gear) closePop();
+        });
+        /* fermeture au Escape */
+        document.addEventListener('keydown', function(e){
+          if (e.key === 'Escape' && !pop.hidden) closePop();
+        });
+        /* repositionner au resize */
+        window.addEventListener('resize', function(){
+          if (!pop.hidden) positionPop();
+        });
+      }
+    })();
+  </script>
   <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

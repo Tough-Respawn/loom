@@ -1580,3 +1580,200 @@ function setSysmonVisible(on) {
   }
 }
 
+// --- Gestionnaire de modèles distants (panneau engrenage) : ajout/édition/suppression À CHAUD
+// (le backend monte la route sans redémarrer). Reconstruit le <select> après chaque mutation. ---
+(function () {
+  const rmList = document.getElementById("rm-list");
+  const rmForm = document.getElementById("rm-form");
+  const rmAddBtn = document.getElementById("rm-add-btn");
+  if (!rmList || !rmForm || !rmAddBtn) return;
+  const $ = (id) => document.getElementById(id);
+
+  function rebuildModelSelect(payload) {
+    const sel = document.getElementById("model-select");
+    if (!sel || !payload) return;
+    const cur = sel.value;
+    sel.innerHTML = payload
+      .map(
+        (m) =>
+          '<option value="' +
+          m.id +
+          '"' +
+          (m.id === cur ? " selected" : "") +
+          ">" +
+          (m.remote ? "remote · " : "home · ") +
+          m.id +
+          "</option>",
+      )
+      .join("");
+  }
+
+  function setMsg(txt, kind) {
+    const m = $("rm-msg");
+    if (m) {
+      m.textContent = txt || "";
+      m.className = "rm-msg" + (kind ? " " + kind : "");
+    }
+  }
+  const esc = (s) =>
+    String(s == null ? "" : s).replace(
+      /[&<>"]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+    );
+
+  function renderList(remotes) {
+    if (!remotes || !remotes.length) {
+      rmList.innerHTML = '<div class="rm-empty">aucun modèle distant</div>';
+      return;
+    }
+    rmList.innerHTML = remotes
+      .map(function (m) {
+        const host = String(m.base_url || "")
+          .replace(/^https?:\/\//, "")
+          .split("/")[0];
+        const sub =
+          esc(host) +
+          " · " +
+          esc(m.model) +
+          (m.context ? " · " + fmtTok(m.context) + " ctx" : "") +
+          (m.has_key ? "" : ' · <span class="rm-nokey">sans clé</span>');
+        const tag = m.managed ? "" : '<span class="rm-tag">config</span>';
+        const btns = m.managed
+          ? '<button type="button" class="rm-ic rm-edit" data-id="' +
+            esc(m.id) +
+            '" title="Éditer">✎</button><button type="button" class="rm-ic rm-del" data-id="' +
+            esc(m.id) +
+            '" title="Supprimer">✕</button>'
+          : "";
+        return (
+          '<div class="rm-item"><div class="rm-item-main"><span class="rm-id">' +
+          esc(m.id) +
+          "</span>" +
+          tag +
+          '<div class="rm-sub">' +
+          sub +
+          "</div></div>" +
+          btns +
+          "</div>"
+        );
+      })
+      .join("");
+  }
+
+  let cache = [];
+  async function load() {
+    try {
+      const d = await (await fetch("/models/config")).json();
+      cache = d.remotes || [];
+      renderList(cache);
+    } catch {}
+  }
+
+  function bodyFromForm() {
+    return {
+      id: $("rm-id").value.trim(),
+      base_url: $("rm-base").value.trim(),
+      model: $("rm-model").value.trim(),
+      api_key: $("rm-key").value,
+      context: $("rm-ctx").value.trim() || null,
+      vision: $("rm-vision").checked,
+    };
+  }
+
+  function openForm(rec) {
+    $("rm-id").value = rec ? rec.id : "";
+    $("rm-id").disabled = !!rec; // l'id ne se renomme pas en édition
+    $("rm-base").value = rec ? rec.base_url : "";
+    $("rm-model").value = rec ? rec.model : "";
+    $("rm-key").value = "";
+    $("rm-key").placeholder =
+      rec && rec.has_key ? "clé inchangée (laisser vide)" : "clé API";
+    $("rm-ctx").value = rec && rec.context ? rec.context : "";
+    $("rm-vision").checked = !!(rec && rec.vision);
+    setMsg("");
+    rmForm.hidden = false;
+    rmAddBtn.hidden = true;
+  }
+  function closeForm() {
+    rmForm.hidden = true;
+    rmAddBtn.hidden = false;
+  }
+
+  rmAddBtn.addEventListener("click", () => openForm(null));
+  $("rm-cancel").addEventListener("click", closeForm);
+
+  rmList.addEventListener("click", async (e) => {
+    const ed = e.target.closest(".rm-edit");
+    const dl = e.target.closest(".rm-del");
+    if (ed) {
+      const rec = cache.find((x) => x.id === ed.dataset.id);
+      if (rec) openForm(rec);
+    } else if (dl) {
+      if (!confirm("Supprimer le modèle « " + dl.dataset.id + " » ?")) return;
+      const r = await fetch(
+        "/models/remote/" + encodeURIComponent(dl.dataset.id),
+        { method: "DELETE" },
+      );
+      const j = await r.json();
+      if (j.ok) {
+        cache = j.remotes;
+        renderList(cache);
+        rebuildModelSelect(j.models);
+      }
+    }
+  });
+
+  $("rm-test").addEventListener("click", async () => {
+    const b = bodyFromForm();
+    if (!b.base_url || !b.model) {
+      setMsg("base_url et modèle requis", "err");
+      return;
+    }
+    setMsg("test en cours…");
+    try {
+      const r = await fetch("/models/remote/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(b),
+      });
+      const j = await r.json();
+      setMsg(j.ok ? "connexion OK" : "échec : " + (j.message || ""), j.ok ? "ok" : "err");
+    } catch {
+      setMsg("test impossible", "err");
+    }
+  });
+
+  rmForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const b = bodyFromForm();
+    if (!b.id || !b.base_url || !b.model) {
+      setMsg("id, base_url et modèle requis", "err");
+      return;
+    }
+    setMsg("enregistrement…");
+    try {
+      const r = await fetch("/models/remote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(b),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        cache = j.remotes;
+        renderList(cache);
+        rebuildModelSelect(j.models);
+        closeForm();
+      } else {
+        setMsg(j.error || "erreur", "err");
+      }
+    } catch {
+      setMsg("enregistrement impossible", "err");
+    }
+  });
+
+  // Rafraîchit la liste à l'ouverture du panneau engrenage (et une fois au chargement).
+  const gear = document.getElementById("gear-btn");
+  if (gear) gear.addEventListener("click", load);
+  load();
+})();
+
