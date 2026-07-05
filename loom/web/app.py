@@ -1229,6 +1229,34 @@ def create_app(
 
             last_tok = None
 
+            # Auto-titre DÈS L'ENVOI (le titre dérive du MESSAGE, pas de la réponse). Pour un
+            # modèle DISTANT : on l'infère en tâche de fond tout de suite et on le pousse au
+            # client dès qu'il est prêt (interleavé), sans attendre la fin du tour -> l'onglet
+            # prend son vrai nom en ~1-2s même sur une génération longue. Pour un modèle LOCAL,
+            # on NE le fait PAS ici (llama-swap = 1 slot ; un appel concurrent contendrait avec
+            # la génération) : on garde le titrage en fin de tour, quand le slot est libre.
+            _titled = {"value": None, "emitted": False}
+            _title_ready = threading.Event()
+            _immediate_title = (
+                sess.title == "Nouvelle session" and conv.model in remote_model_ids
+            )
+            if _immediate_title:
+
+                def _do_title(_msg=message, _model=conv.model):
+                    _t = ""
+                    try:
+                        _t = _infer_title(client, _model or None, _msg)
+                    except Exception:  # noqa: BLE001 - titre best-effort, jamais bloquant
+                        _t = ""
+                    _titled["value"] = _t or ""
+                    if _t:
+                        sess.title = _t
+                    _title_ready.set()
+
+                threading.Thread(
+                    target=_do_title, daemon=True, name="loom-title"
+                ).start()
+
             try:
                 # Modèle LOCAL : llama-swap n'en sert qu'UN à la fois -> on sérialise via le
                 # verrou global (limitation machine connue, signalée à l'UI). Modèle DISTANT :
@@ -1247,6 +1275,19 @@ def create_app(
                     _local_held = True
 
                 for kind, payload in source:
+                    # Titre distant prêt (thread de fond) -> on le pousse dès la 1re occasion.
+                    if (
+                        _immediate_title
+                        and _title_ready.is_set()
+                        and not _titled["emitted"]
+                    ):
+                        _titled["emitted"] = True
+                        if _titled["value"]:
+                            session_store.save(sess)
+                            yield _sse(
+                                "session_title", id=sess.id, title=_titled["value"]
+                            )
+
                     if cancel_event.is_set():
                         # Une nouvelle soumission demande l'arrêt : on stoppe net
 
@@ -1431,14 +1472,24 @@ def create_app(
                 # sujet). On titre LA session de CETTE génération (`sess`), pas la session
                 # focus (_cur) — sinon, en multi-onglets concurrent, on titrerait la mauvaise.
 
-                if saved and sess.title == "Nouvelle session":
+                if _immediate_title:
+                    # Distant : filet de secours si le thread de titre n'a pas fini avant la
+                    # fin de la boucle (ou tour sans événement) -> on l'attend brièvement.
+                    if not _titled["emitted"]:
+                        _title_ready.wait(timeout=8)
+                        _titled["emitted"] = True
+                        if _titled["value"]:
+                            sess.title = _titled["value"]
+                            session_store.save(sess)
+                            yield _sse(
+                                "session_title", id=sess.id, title=_titled["value"]
+                            )
+                elif saved and sess.title == "Nouvelle session":
+                    # Local : titrage en fin de tour (slot llama-swap libre, pas de contention).
                     _title = _infer_title(client, conv.model or None, message)
-
                     if _title:
                         sess.title = _title
-
                         session_store.save(sess)
-
                         yield _sse("session_title", id=sess.id, title=_title)
 
                 yield _sse("done")
