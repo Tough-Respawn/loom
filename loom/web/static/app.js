@@ -904,6 +904,29 @@ function updateUsageMeter(t) {
   // levier d'optimisation n°1. « · 58× » se lit « input payé 58 fois ».
   const callsEl = document.getElementById("um-calls");
   if (callsEl) callsEl.textContent = t.api_calls > 0 ? "· " + t.api_calls + "×" : "";
+  // Jauge de contexte : occupation COURANTE (prompt du dernier appel) / fenêtre du modèle.
+  // Répond à « à quel point le contexte est plein ». Ambre >=70%, rouge >=85% (la
+  // microcompaction élague les vieux résultats d'outils au-delà, cf. seuil serveur).
+  const ctxEl = document.getElementById("um-ctx");
+  if (ctxEl) {
+    const used = t.context_tokens || 0;
+    const win = t.context_window || 0;
+    if (win > 0 && used > 0) {
+      const pct = Math.min(100, Math.round((used / win) * 100));
+      const fill = document.getElementById("um-ctx-fill");
+      if (fill) fill.style.width = pct + "%";
+      const pctEl = document.getElementById("um-ctx-pct");
+      if (pctEl) pctEl.textContent = pct + "%";
+      ctxEl.title =
+        "Fenêtre de contexte : " + fmtTok(used) + " / " + fmtTok(win) +
+        " tokens (" + pct + "%). Au-delà de ~85%, la microcompaction élague les vieux résultats d'outils.";
+      ctxEl.classList.toggle("warn", pct >= 70 && pct < 85);
+      ctxEl.classList.toggle("crit", pct >= 85);
+      ctxEl.hidden = false;
+    } else {
+      ctxEl.hidden = true;
+    }
+  }
   // Coût volontairement PAS affiché : sans tarif réel il polluerait. Le backend le cumule
   // toujours (cost_usd), prêt à réafficher quand on aura les vrais chiffres du provider.
   usageMeter.hidden = !(t.api_calls > 0 || t.tokens_in > 0 || t.tokens_out > 0);
