@@ -1858,93 +1858,99 @@ function setSysmonVisible(on) {
     );
   }
 
+  // Ligne LÉGÈRE : libellé + (i) + champ. La méta (nature/effet) va en infobulle ; « modifié »
+  // se signale par un liseré discret + le lien réinitialiser (rien sur les lignes au défaut).
   function rowHtml(p) {
-    const resetVis = p.source !== "defaut" ? "" : ' style="display:none"';
-    const applies =
+    // "Modifié" = surcharge PROPRE À LA MACHINE (local.toml) uniquement. Une valeur qui vient
+    // de defaults.toml est le défaut livré commun -> pas marquée (sinon tout est "modifié").
+    const customized = p.source === "systeme";
+    const restart =
       p.applies === "restart"
-        ? '<span class="cfg-applies-restart">redémarrage</span>'
-        : '<span class="cfg-applies-live">live</span>';
+        ? ' <span class="cfg-restart" title="Prise en compte au redémarrage de Loom">redémarrage</span>'
+        : "";
+    const tip =
+      esc(p.help) +
+      (p.nature ? " (" + esc(p.nature) + ")" : "");
     return (
-      '<div class="cfg-row" data-section="' +
+      '<div class="cfg-row' +
+      (customized ? " customized" : "") +
+      '" data-section="' +
       esc(p.section) +
       '" data-key="' +
       esc(p.key) +
       '" data-type="' +
       esc(p.type) +
       '">' +
-      '<div class="cfg-row-main"><div class="cfg-label-line">' +
-      '<span class="cfg-label">' +
+      '<div class="cfg-row-main"><span class="cfg-label">' +
       esc(p.label) +
       "</span>" +
       '<span class="cfg-i" title="' +
-      esc(p.help) +
+      tip +
       '">i</span>' +
-      // Pas de badge de couche par ligne : le GROUPE (commun / cette machine) le dit déjà.
-      '<span class="cfg-nat">' +
-      esc(p.nature) +
-      "</span></div>" +
-      '<div class="cfg-sub"><span class="cfg-prov ' +
-      esc(p.source) +
-      '">' +
-      provLabel(p.source) +
-      "</span> · " +
-      applies +
-      "</div></div>" +
+      restart +
+      "</div>" +
       '<div class="cfg-control">' +
       control(p) +
       '<button type="button" class="cfg-reset"' +
-      resetVis +
+      (customized ? "" : " hidden") +
       ">réinitialiser</button>" +
-      '<span class="cfg-saved">enregistré</span>' +
+      '<span class="cfg-saved">✓</span>' +
       "</div></div>"
     );
   }
 
-  // Deux GRANDS groupes par couche (crystal clear) : d'abord tout ce qui est commun à tous
-  // les systèmes, puis tout ce qui est propre à cette machine. Les sections (Serveur, Chat…)
-  // deviennent des sous-titres à l'intérieur de chaque groupe.
-  const LAYER_GROUPS = [
-    {
-      layer: "commun", cls: "",
-      title: "Commun à tous les systèmes",
-      sub: "Les mêmes réglages partout, quel que soit l'ordinateur ou l'OS.",
-    },
-    {
-      layer: "systeme", cls: "machine",
-      title: "Propre à cette machine",
-      sub: "Chemins, GPU, ports et clés spécifiques à cet ordinateur.",
-    },
-  ];
+  function sectionsHtml(list) {
+    const order = [];
+    const bySec = {};
+    list.forEach((p) => {
+      if (!bySec[p.sectionLabel]) {
+        bySec[p.sectionLabel] = [];
+        order.push(p.sectionLabel);
+      }
+      bySec[p.sectionLabel].push(p);
+    });
+    return order
+      .map(
+        (lbl) =>
+          '<div class="cfg-section"><div class="cfg-sec-head">' +
+          esc(lbl) +
+          "</div>" +
+          bySec[lbl].map(rowHtml).join("") +
+          "</div>",
+      )
+      .join("");
+  }
+
+  const LAYER_GROUPS = [{ layer: "commun" }, { layer: "systeme" }];
 
   function render(data) {
     const params = [];
     (data.sections || []).forEach((s) =>
-      s.params.forEach((p) => params.push(Object.assign({ sectionLabel: s.label }, p))),
+      s.params.forEach((p) =>
+        params.push(Object.assign({ sectionLabel: s.label }, p)),
+      ),
     );
     body.innerHTML = LAYER_GROUPS.map((g) => {
       const gp = params.filter((p) => p.layer === g.layer);
       if (!gp.length) return "";
-      const order = [];
-      const bySec = {};
-      gp.forEach((p) => {
-        if (!bySec[p.sectionLabel]) {
-          bySec[p.sectionLabel] = [];
-          order.push(p.sectionLabel);
-        }
-        bySec[p.sectionLabel].push(p);
-      });
-      const secs = order
-        .map(
-          (lbl) =>
-            '<div class="cfg-section"><div class="cfg-sec-head">' +
-            esc(lbl) +
-            '</div><div class="cfg-rows">' +
-            bySec[lbl].map(rowHtml).join("") +
-            "</div></div>",
-        )
-        .join("");
-      // Pas de sous-titre : l'onglet dit déjà "commun" / "propre à cette machine".
-      return '<div class="cfg-group" data-tab="' + g.layer + '">' + secs + "</div>";
+      // Essentiel visible d'emblée ; le reste replié sous « Réglages avancés ».
+      const ess = gp.filter((p) => !p.advanced);
+      const adv = gp.filter((p) => p.advanced);
+      const advHtml = adv.length
+        ? '<details class="cfg-adv"><summary>Réglages avancés (' +
+          adv.length +
+          ")</summary>" +
+          sectionsHtml(adv) +
+          "</details>"
+        : "";
+      return (
+        '<div class="cfg-group" data-tab="' +
+        g.layer +
+        '">' +
+        sectionsHtml(ess) +
+        advHtml +
+        "</div>"
+      );
     }).join("");
     showTab(activeTab); // applique la visibilité après (re)construction du contenu
   }
@@ -1996,15 +2002,12 @@ function setSysmonVisible(on) {
     });
     const j = await r.json();
     if (!j.ok) return;
-    // Provenance mise à jour selon la couche écrite (ou 'defaut' si valeur vidée = reset).
-    const src = j.source === "commun" || j.source === "systeme" ? j.source : "defaut";
-    const prov = row.querySelector(".cfg-prov");
-    if (prov) {
-      prov.className = "cfg-prov " + src;
-      prov.textContent = provLabel(src);
-    }
+    // "Modifié" (liseré + reset) seulement pour une surcharge MACHINE (local.toml). Un édit
+    // commun va dans defaults.toml (le défaut livré) -> reste discret.
+    const customized = j.source === "systeme";
+    row.classList.toggle("customized", customized);
     const rb = row.querySelector(".cfg-reset");
-    if (rb) rb.style.display = src === "defaut" ? "none" : "";
+    if (rb) rb.hidden = !customized;
     flashSaved(row);
   }
 
