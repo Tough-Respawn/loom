@@ -884,41 +884,63 @@ async function postForm(url, data) {
 // session l'OUVRE comme onglet (ou l'active si déjà ouverte) — plus de rechargement de page.
 const sessionNew = document.getElementById("session-new");
 if (sessionNew) sessionNew.addEventListener("click", newSessionTab);
-document.querySelector(".session-list")?.addEventListener("click", async (e) => {
-  // Suppression : confirmation INLINE sur la ligne (le × devient ✓/✗) -> pas besoin d'aller
-  // en bas de l'écran. La ligne garde son titre pendant la confirmation.
+document.querySelector(".session-list")?.addEventListener("click", (e) => {
+  // Suppression : un petit toast de confirmation SORT À DROITE de la session cliquée (pas en
+  // bas de l'écran) -> confirmation là où est la session.
   const del = e.target.closest(".sess-del");
   if (del) {
     e.stopPropagation();
-    const sid = del.dataset.id;
-    del.outerHTML =
-      `<span class="sess-confirm">` +
-      `<button type="button" class="sess-yes" data-id="${sid}" title="Confirmer la suppression">✓</button>` +
-      `<button type="button" class="sess-no" data-id="${sid}" title="Annuler">✕</button>` +
-      `</span>`;
-    return;
-  }
-  const yes = e.target.closest(".sess-yes");
-  if (yes) {
-    e.stopPropagation();
-    const sid = yes.dataset.id;
-    await postForm("/session/delete", { id: sid });
-    if (state.tabs[sid]) closeTab(sid); // ferme l'onglet si ouvert
-    yes.closest(".session-item")?.remove(); // retire de la sidebar
-    return;
-  }
-  const no = e.target.closest(".sess-no");
-  if (no) {
-    e.stopPropagation();
-    const sid = no.dataset.id;
-    const span = no.closest(".sess-confirm");
-    if (span)
-      span.outerHTML = `<button type="button" class="sess-del" data-id="${sid}" title="Supprimer">✕</button>`;
+    openDeleteConfirm(del.dataset.id, del.closest(".session-item"));
     return;
   }
   const pick = e.target.closest(".sess-pick");
   if (pick) openTab(pick.dataset.id);
 });
+
+// Popover de confirmation de suppression, ancré à DROITE de la ligne de session.
+function _outsideDelClose(e) {
+  if (!e.target.closest("#sess-del-pop")) closeDeleteConfirm();
+}
+function closeDeleteConfirm() {
+  document.getElementById("sess-del-pop")?.remove();
+  document.removeEventListener("click", _outsideDelClose, true);
+}
+function openDeleteConfirm(sid, row) {
+  closeDeleteConfirm();
+  if (!row) return;
+  const r = row.getBoundingClientRect();
+  const pop = document.createElement("div");
+  pop.id = "sess-del-pop";
+  pop.className = "sess-del-pop";
+  pop.style.top = r.top + "px";
+  pop.style.left = r.right + 6 + "px";
+  const label = document.createElement("span");
+  label.className = "sdp-label";
+  label.textContent = "Supprimer cette session ?";
+  const yes = document.createElement("button");
+  yes.type = "button";
+  yes.className = "sdp-yes";
+  yes.textContent = "Supprimer";
+  const no = document.createElement("button");
+  no.type = "button";
+  no.className = "sdp-no";
+  no.textContent = "Annuler";
+  yes.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await postForm("/session/delete", { id: sid });
+    if (state.tabs[sid]) closeTab(sid); // ferme l'onglet si ouvert
+    row.remove();
+    closeDeleteConfirm();
+  });
+  no.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    closeDeleteConfirm();
+  });
+  pop.append(label, yes, no);
+  document.body.appendChild(pop);
+  // Ferme au clic ailleurs (en phase capture pour ne pas rater les clics dans la sidebar).
+  setTimeout(() => document.addEventListener("click", _outsideDelClose, true), 0);
+}
 
 // --- sélecteur de dossier natif ---
 const pickFolderBtn = document.getElementById("pick-folder-btn");
