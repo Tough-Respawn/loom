@@ -29,6 +29,19 @@ def build_app(cfg):
     conversation = Conversation.load(cfg.chat.history_path, cfg.chat.system_prompt)
     if not conversation.model:
         conversation.set_model(cfg.default_model)
+    # Modèles distants AJOUTÉS VIA L'UI : store machine-owned (var/remote_models.json), fusionné
+    # ici avec ceux de local.toml. Les gérés par l'UI l'emportent par id. Tout le reste (routes,
+    # contexte, prix, sélecteur) se dérive ensuite de cfg.remote_models sans autre changement.
+    from loom.config import remote_model_from_dict
+    from loom.runtime import model_store
+
+    remote_store_path = (
+        Path(cfg.chat.history_path).resolve().parent / "remote_models.json"
+    )
+    for md in model_store.load(remote_store_path):
+        rc = remote_model_from_dict(md)
+        cfg.remote_models = [rm for rm in cfg.remote_models if rm.id != rc.id]
+        cfg.remote_models.append(rc)
     # Routes vers les modèles distants (API OpenAI-compatible) : la clé vient du TOML en clair
     # ou d'une variable d'env (api_key_env). Un modèle sans clé résolue reste routé mais
     # échouera à l'appel (401) — message clair côté client, pas de crash au démarrage.
@@ -218,6 +231,7 @@ def build_app(cfg):
             rm.id: (rm.price_in, rm.price_out, rm.price_cached)
             for rm in cfg.remote_models
         },
+        remote_store_path=str(remote_store_path),
     )
     return app
 

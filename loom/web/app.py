@@ -44,6 +44,7 @@ from loom.extend.skills import (
 )
 
 from loom.prompts import CHAT_SYSTEM_STRONG
+from loom.runtime import model_store
 from loom.runtime.platform_info import detect as platform_detect
 
 from loom.runtime.models_profile import load_profile
@@ -360,6 +361,7 @@ def create_app(
     remote_model_ids=None,
     remote_model_names=None,
     model_prices=None,
+    remote_store_path=None,
 ) -> Flask:
 
     app = Flask(__name__)
@@ -1589,6 +1591,130 @@ def create_app(
             current_model=conv.model,
             remote_model_ids=remote_model_ids,
         )
+
+    # ---- Gestionnaire de modèles (UI) : ajouter/tester/supprimer un modèle DISTANT à chaud,
+    # sans redémarrer. Un distant = URL + clé (rien en VRAM) -> l'ajout monte une route et met
+    # à jour les registres partagés en place. Persisté dans le store JSON (remote_store_path).
+    def _models_payload():
+        """Liste ordonnée pour reconstruire le <select> côté client (id + local/distant)."""
+        return [{"id": m, "remote": m in remote_model_ids} for m in models]
+
+    def _remote_list():
+        """Modèles distants montés, pour le panneau de config. Jamais la clé en clair :
+        seulement sa présence. `managed` = ajouté via l'UI (éditable/supprimable) vs déclaré
+        dans local.toml (lecture seule ici)."""
+        managed_ids = {m.get("id") for m in model_store.load(remote_store_path)}
+        out = []
+        for mid in remote_model_ids:
+            info = client.remote_route_info(mid)
+            out.append(
+                {
+                    "id": mid,
+                    "base_url": info["base_url"],
+                    "model": info["model"],
+                    "context": model_contexts.get(mid),
+                    "max_tokens": model_max_tokens.get(mid),
+                    "vision": mid in vision_models,
+                    "has_key": info["has_key"],
+                    "managed": mid in managed_ids,
+                }
+            )
+        return sorted(out, key=lambda x: x["id"])
+
+    def _mount_remote(rec):
+        """Monte à chaud un modèle distant `rec` (dict) dans TOUS les registres partagés."""
+        mid = rec["id"]
+        client.add_remote_route(
+            mid,
+            {
+                "base_url": rec["base_url"],
+                "api_key": rec.get("api_key", ""),
+                "model": rec["model"],
+                "enable_thinking_param": bool(rec.get("enable_thinking_param", False)),
+            },
+        )
+        remote_model_ids.add(mid)
+        remote_model_names[mid] = rec["model"]
+        if rec.get("context"):
+            model_contexts[mid] = int(rec["context"])
+        if rec.get("max_tokens"):
+            model_max_tokens[mid] = int(rec["max_tokens"])
+        model_prices[mid] = (
+            float(rec.get("price_in", 0.0) or 0.0),
+            float(rec.get("price_out", 0.0) or 0.0),
+            float(rec.get("price_cached", 0.0) or 0.0),
+        )
+        if rec.get("vision"):
+            vision_models.add(mid)
+        else:
+            vision_models.discard(mid)
+        if mid not in models:
+            models.append(mid)
+
+    @app.get("/models/config")
+    def models_config():
+        return {"remotes": _remote_list(), "models": _models_payload()}
+
+    @app.post("/models/remote/test")
+    def models_remote_test():
+        b = request.get_json(silent=True) or {}
+        base_url = (b.get("base_url") or "").strip().rstrip("/")
+        model = (b.get("model") or "").strip()
+        mid = (b.get("id") or "").strip()
+        key = (b.get("api_key") or "").strip()
+        if not key and mid:  # édition sans re-saisir la clé -> réutilise la stockée
+            stored = {m["id"]: m for m in model_store.load(remote_store_path)}
+            key = stored.get(mid, {}).get("api_key", "")
+        if not (base_url and model):
+            return {"ok": False, "message": "base_url et model requis"}, 400
+        ok, msg = client.ping_remote(base_url, key, model)
+        return {"ok": ok, "message": msg}
+
+    @app.post("/models/remote")
+    def models_remote_upsert():
+        if not remote_store_path:
+            return {"error": "store des modèles indisponible"}, 500
+        b = request.get_json(silent=True) or {}
+        mid = (b.get("id") or "").strip()
+        base_url = (b.get("base_url") or "").strip().rstrip("/")
+        model = (b.get("model") or "").strip()
+        if not (mid and base_url and model):
+            return {"error": "id, base_url et model sont requis"}, 400
+        if mid in models and mid not in remote_model_ids:
+            return {"error": f"'{mid}' est déjà un modèle local"}, 400
+        stored = {m["id"]: m for m in model_store.load(remote_store_path)}
+        key = (b.get("api_key") or "").strip() or stored.get(mid, {}).get("api_key", "")
+        rec = {
+            "id": mid,
+            "base_url": base_url,
+            "model": model,
+            "api_key": key,
+            "context": int(b["context"]) if b.get("context") else None,
+            "max_tokens": int(b["max_tokens"]) if b.get("max_tokens") else None,
+            "vision": bool(b.get("vision")),
+        }
+        model_store.upsert(remote_store_path, rec)
+        _mount_remote(rec)
+        return {"ok": True, "models": _models_payload(), "remotes": _remote_list()}
+
+    @app.delete("/models/remote/<mid>")
+    def models_remote_delete(mid):
+        if not remote_store_path:
+            return {"error": "store des modèles indisponible"}, 500
+        managed = {m.get("id") for m in model_store.load(remote_store_path)}
+        if mid not in managed:
+            return {"error": "modèle non géré par l'UI (défini dans local.toml)"}, 400
+        model_store.delete(remote_store_path, mid)
+        client.remove_remote_route(mid)
+        remote_model_ids.discard(mid)
+        remote_model_names.pop(mid, None)
+        model_contexts.pop(mid, None)
+        model_max_tokens.pop(mid, None)
+        model_prices.pop(mid, None)
+        vision_models.discard(mid)
+        if mid in models:
+            models.remove(mid)
+        return {"ok": True, "models": _models_payload(), "remotes": _remote_list()}
 
     @app.get("/machine_state")
     def machine_state():
