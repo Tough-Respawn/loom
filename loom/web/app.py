@@ -424,9 +424,21 @@ def create_app(
     def _price_of(model_id):
         return model_prices.get(model_id, (0.0, 0.0, 0.0))
 
-    def _ctx_window(model_id):
-        """Fenêtre de contexte brute (tokens) du modèle courant -> dénominateur de la jauge."""
-        return model_contexts.get(model_id) or context_window
+    def _ctx_info(model_id):
+        """(fenêtre de contexte, source) du modèle -> dénominateur de la jauge + provenance.
+
+        Distant : on demande D'ABORD au PROVIDER (`client.remote_context`, mis en cache) —
+        c'est le modèle lui-même qui fait autorité. S'il ne publie rien (Z.ai/OpenAI), repli
+        sur la valeur déclarée en config. Local : la fenêtre est celle qu'on a ALLOUÉE au
+        serveur (n_ctx) = notre limite volontaire, signalée comme telle. Sources possibles :
+        `provider` (fait autorité), `config` (déclaré, non vérifiable), `local` (notre limite)."""
+        declared = model_contexts.get(model_id) or context_window
+        if model_id in remote_model_ids:
+            provided = client.remote_context(model_id)
+            if provided:
+                return provided, "provider"
+            return declared, "config"
+        return declared, "local"
 
     def _model_limits(model_id):
         """(max_tokens effectif, seuil de microcompact) pour `model_id`."""
@@ -439,8 +451,10 @@ def create_app(
 
     def _totals(conv):
         """Compteurs de session + fenêtre du modèle (jauge de remplissage du contexte).
-        La fenêtre dépend du modèle (que l'app connaît), pas de la Conversation -> jointe ici."""
-        return {**conv.usage_totals(), "context_window": _ctx_window(conv.model)}
+        La fenêtre dépend du modèle (que l'app connaît), pas de la Conversation -> jointe ici,
+        avec sa source (provider/config/local) pour que l'UI signale si le chiffre fait autorité."""
+        win, src = _ctx_info(conv.model)
+        return {**conv.usage_totals(), "context_window": win, "context_source": src}
 
     models = list(models or [])
 
