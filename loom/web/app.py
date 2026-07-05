@@ -517,14 +517,21 @@ def create_app(
         return declared, "local"
 
     def _model_limits(model_id):
-        """(max_tokens effectif, seuil de microcompact) pour `model_id`. Lit le max_tokens
-        global dans le holder vivant -> une édition prend effet au prochain tour, sans relance."""
+        """(plafond de sortie, seuil de microcompact) pour `model_id`.
 
+        Le max_tokens global est une contrainte LOCALE (calibrée pour la VRAM de la machine).
+        Un modèle DISTANT ne l'hérite PAS : sa machine est plus puissante. Non défini -> None
+        (plafond OMIS dans la requête, le provider applique SA limite). La réserve de
+        microcompact reste modeste côté distant (leur fenêtre est large, le seuil compte peu)."""
         win = model_contexts.get(model_id) or context_window
-
-        mt = model_max_tokens.get(model_id) or _settings["max_tokens"]
-
-        return mt, max(1024, win - mt - 1024)
+        explicit = model_max_tokens.get(model_id)
+        if model_id in remote_model_ids:
+            cap = explicit  # None possible -> pas de cap imposé
+            reserve = explicit or 8192
+        else:
+            cap = explicit or _settings["max_tokens"]  # local : plafond global
+            reserve = cap
+        return cap, max(1024, win - reserve - 1024)
 
     def _totals(conv):
         """Compteurs de session + fenêtre du modèle (jauge de remplissage du contexte).
