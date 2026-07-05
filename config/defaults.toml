@@ -1,59 +1,62 @@
-# Config Loom — paramètres NON liés au hardware.
-# Les valeurs hardware (n_gpu_layers, threads) sont auto-détectées par serve.py ;
-# on ne les met ici (section [override]) que pour forcer/plafonner.
-# Le chemin du binaire spécifique à une machine va dans config/local.toml.
+# Loom — config COMMUNE à tous les systèmes (versionnée). Les valeurs hardware et les
+# secrets vont dans config/local.toml. Détail complet : docs/ + infobulles de la console.
 
-# Les MODÈLES sont désormais découverts par dossier : loom/models/<id>/model.toml
-# (+ profile.md + le GGUF). Plus de bloc [[models]] ici. default_model (section [chat])
-# choisit celui chargé par défaut ; le sélecteur UI hot-swap entre les dossiers trouvés.
-
+# ============================ Serveur (llama.cpp) ============================
 [server]
-# Contexte 24576 : large fenêtre pour une boucle tool-use qui enchaîne lectures et
-# résultats d'outils. Gemma supporte 131072 ; avec sliding-window (n_swa=512) + KV q8_0
-# le KV reste léger -> 24576 tient sur 6 Go. cf. docs/perf-gpu.md.
+
+# Fenêtre de contexte ; tient sur 6 Go avec KV q8_0. cf. docs/perf-gpu.md
 context = 24576
-# Slots de llama-server (--parallel). Loom est mono-flux : un seul échange à la fois
-# (verrou de chat) et le sous-agent tourne en synchrone -> 1 seul slot, qui dispose
-# alors de TOUT le pool KV (-c). Le 4 d'avant venait du fan-out, supprimé.
+
+# Mono-flux : 1 slot llama-server = tout le pool KV
 n_parallel = 1
-# Marge VRAM (Mo) réservée hors couches GPU (cache KV + buffers de calcul). En mono-flux,
-# plus besoin de réserver pour des slots concurrents -> on l'abaisse pour offloader plus de
-# couches et saturer le GPU. Vise ~99% de la VRAM : descends par paliers (640 -> 512 -> 384)
-# en surveillant `nvidia-smi` (la "Shared GPU memory" doit rester à 0 ; si elle monte, c'est
-# le spill qui écroule les perfs -> remonte la marge). serve.py loggue les couches offloadées.
+
+# Marge VRAM hors couches GPU ; trop bas -> spill mémoire partagée (surveiller nvidia-smi)
 gpu_kv_headroom_mb = 640
+
+# Port du serveur modèle (llama-swap)
 port = 8080
-# Binaire llama-server : "llama-server" si dans le PATH, sinon override en local.
+
+# Binaires ; mettre le chemin absolu dans local.toml si absents du PATH
 bin = "llama-server"
-# Binaire llama-swap (routeur multi-modèles) : "llama-swap" si dans le PATH.
 swap_bin = "llama-swap"
 
+# ============================ Override GPU / CPU =============================
+# Décommenter pour FORCER l'offload (sinon auto-détecté par serve.py).
 [override]
-# n_gpu_layers = 35   # décommenter pour forcer l'offload total si le modèle tient
+# n_gpu_layers = 35
 # threads = 8
 
+# ============================== Chat / runtime ==============================
 [chat]
+
+# Modèle chargé au démarrage (le sélecteur de l'UI hot-swap ensuite)
 default_model = "gemma4-26b-a4b-uncensored"
-# system_prompt : non défini ici -> centralisé dans loom/prompts/chat.system.md
+
+# system_prompt centralisé dans loom/prompts/chat.system.md (pas ici)
 history_path = "var/conversation.json"
 web_port = 8000
 skills_dir = "loom/skills"
-# Racine du store de plugins (défaut loom/plugins). Contenu installé git-ignoré.
+
+# Store de plugins (contenu installé git-ignoré)
 plugins_root = "loom/plugins"
-# 8192 : avec un modèle à réflexion (Qwen3.5), le thinking mange une part du budget ; 8192
-# laisse de la place au raisonnement ET à la sortie (compact_after = 24576-8192-1024 =
-# 15360, large). La parade au gros fichier reste le chunk (write_file + append_file).
+
+# Sortie max par tour ; laisse la place au raisonnement + à la réponse
 max_tokens = 8192
+
 request_timeout = 120
 max_retries = 6
+
+# Budget du résumé inter-tours de l'historique (tokens)
 context_token_budget = 5000
+
+# Messages récents laissés intacts lors du résumé
 keep_recent_messages = 6
 
+# ================================= Outils ===================================
 [tools]
-# Boucle tool-use : les outils exposés au modèle. C'est LE harness — le modèle agit
-# en appelant le bon outil au bon moment. Vide => aucun outil (le modèle ne peut qu'écrire
-# du texte). PRÉREQUIS live : llama-server avec --jinja (serve.py l'inclut) pour que le
-# modèle émette des tool_calls structurés.
+
+# Outils exposés au modèle = la boucle tool-use. Vide -> le modèle ne peut qu'écrire du
+# texte. PRÉREQUIS live : llama-server --jinja (serve.py l'inclut) pour les tool_calls.
 enabled = [
     "find_files", "search_text", "list_dir",
     "read_file", "read_document", "read_image",
@@ -65,43 +68,25 @@ enabled = [
     "check_page", "check_interactive", "serve_and_check",
     "use_skill", "list_plugins", "add_marketplace", "install_plugin",
 ]
-# Périmètre des outils : racine de tes projets (anti-traversal). Surchargé par
-# config/local.toml pour pointer la vraie racine de la machine.
+
+# Racine autorisée des outils (anti-traversal) ; surchargée dans local.toml
 workspace_dir = "."
-# Cap par appel read_file (caractères) : bas devant le contexte (24576) -> un gros
-# fichier se lit par tranches (start_line) au lieu de tout charger et déborder.
+
+# Cap par appel read_file (caractères) ; au-delà, lecture par tranches
 read_file_max_bytes = 40000
 
+# ============================== Recherche web ===============================
 [web_search]
-# snippet-first : on utilise les extraits des résultats au lieu de scraper les
-# pages (évite les 403/rate-limit, plus rapide). Passe à true pour du contenu
-# complet (recherche approfondie) quand un backend fiable (SearXNG/Tavily) est en place.
+
+# false = extraits des résultats (rapide) ; true = scrape complet des pages
 fetch_pages = false
 
+# =============================== Permissions ================================
 [permissions]
-# mode = "allow" : write_file/edit_file/run_shell s'exécutent SANS confirmation
-# (agent autonome, plus de blocage sur les bulles Autoriser). La deny-list DURE
-# (rm -rf, Remove-Item -Recurse -Force, format, dd if=…) reste incontournable même
-# en allow. Repasser à "ask" pour ré-activer la confirmation.
+
+# allow = write/edit/run_shell sans confirmation ; la deny-list dure reste active
 mode = "allow"
 
-# MODÈLES DISTANTS (API OpenAI-compatible) — exemple, à RECOPIER dans config/local.toml
-# (gitignored) avec la vraie clé. Chaque entrée s'ajoute au sélecteur de modèles, au même
-# titre qu'un modèle local : tu bascules dessus quand tu veux, les outils tournent toujours
-# en local, seules les requêtes du modèle partent à l'API. Tester le HARNAIS avec un très
-# gros modèle, sans grosse stack locale.
-#
-# ATTENTION résidence des données : le contenu de tes fichiers locaux part dans le prompt
-# vers le provider. Zhipu/GLM = Chine ; OpenAI/OpenRouter = souvent US ; UE = Mistral / Azure
-# région EU. Vérifie avant d'y envoyer du code sensible.
-#
-# [[remote_models]]
-# id = "glm-distant"                              # nom affiché dans le menu
-# base_url = "https://open.bigmodel.cn/api/paas/v4"  # endpoint OpenAI-compatible du provider
-# model = "glm-4.6"                              # id du modèle CÔTÉ provider (à vérifier)
-# api_key_env = "GLM_API_KEY"                    # nom de la variable d'env qui porte la clé
-# # api_key = "sk-…"                             # …ou la clé en clair (uniquement dans local.toml)
-# context = 131072                               # fenêtre du modèle (informatif)
-# vision = false                                 # true si le modèle accepte les images
-# enable_thinking_param = false                  # true SEULEMENT pour un backend llama.cpp/vLLM
-#                                                # auto-hébergé (envoie repeat_penalty + thinking)
+# ============================= Modèles distants =============================
+# Ne se déclarent PAS ici (secrets). Gère-les via la console de l'UI (onglet Modèles
+# distants), ou copie l'exemple : config/local.example.toml -> config/local.toml.
