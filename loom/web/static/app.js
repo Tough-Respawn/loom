@@ -917,9 +917,18 @@ function updateUsageMeter(t) {
       if (fill) fill.style.width = pct + "%";
       const pctEl = document.getElementById("um-ctx-pct");
       if (pctEl) pctEl.textContent = pct + "%";
+      // Source de la fenêtre : provider = le modèle distant fait autorité ; config = déclaré
+      // (le provider ne publie pas sa fenêtre, ex. Z.ai) ; local = notre limite d'allocation.
+      const src =
+        t.context_source === "provider"
+          ? "fenêtre lue du provider (fait autorité)"
+          : t.context_source === "local"
+          ? "fenêtre allouée localement (notre limite)"
+          : "fenêtre déclarée (le provider ne publie pas la sienne)";
       ctxEl.title =
         "Fenêtre de contexte : " + fmtTok(used) + " / " + fmtTok(win) +
-        " tokens (" + pct + "%). Au-delà de ~85%, la microcompaction élague les vieux résultats d'outils.";
+        " tokens (" + pct + "%). " + src +
+        ". Au-delà de ~85%, la microcompaction élague les vieux résultats d'outils.";
       ctxEl.classList.toggle("warn", pct >= 70 && pct < 85);
       ctxEl.classList.toggle("crit", pct >= 85);
       ctxEl.hidden = false;

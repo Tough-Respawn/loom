@@ -696,9 +696,14 @@ class LoomClient:
                     timeout=timeout,
                     max_retries=max_retries,
                 ),
+                "base_url": spec["base_url"],
+                "api_key": spec.get("api_key") or "",
                 "model": spec.get("model") or rid,
                 "enable_thinking_param": bool(spec.get("enable_thinking_param", False)),
             }
+        # Cache de la fenêtre de contexte découverte par provider (id Loom -> int|None).
+        # None mémorisé = provider interrogé mais muet -> on ne re-frappe pas l'API.
+        self._ctx_cache: dict[str, int | None] = {}
 
     def _resolve(self, model: str | None):
         """(client_openai, model_api, native_extras) pour le modèle demandé. Un modèle
@@ -718,6 +723,61 @@ class LoomClient:
     def is_remote(self, model: str | None) -> bool:
         """Vrai si le modèle est servi par une API DISTANTE (route montée), pas en local."""
         return bool(model and model in self._routes)
+
+    def remote_context(self, model: str | None) -> int | None:
+        """Fenêtre de contexte RÉELLE d'un modèle distant, lue DU PROVIDER (`GET /models`).
+
+        C'est « le modèle lui-même » qui répond, pas la config Loom. Best-effort : renvoie
+        l'entier si le provider publie un champ de contexte (OpenRouter `context_length`,
+        vLLM `max_model_len`, `max_input_tokens`…), sinon None — beaucoup d'API (Z.ai, OpenAI)
+        renvoient le schéma nu (id/object/created/owned_by) et NE publient rien : l'appelant
+        retombe alors sur la valeur déclarée en config. Résultat mis en cache (l'absence aussi)
+        pour ne pas re-frapper l'API à chaque page."""
+        if not model or model not in self._routes:
+            return None
+        if model in self._ctx_cache:
+            return self._ctx_cache[model]
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        r = self._routes[model]
+        base = str(r.get("base_url") or "").rstrip("/")
+        api_model = r.get("model") or model
+        key = r.get("api_key") or ""
+        keys = (
+            "context_length",
+            "context_window",
+            "max_context_length",
+            "max_model_len",
+            "max_input_tokens",
+        )
+        found: int | None = None
+        try:
+            req = urllib.request.Request(
+                base + "/models", headers={"Authorization": "Bearer " + key}
+            )
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                data = _json.loads(resp.read().decode("utf-8", "replace"))
+            items = data.get("data") if isinstance(data, dict) else data
+            for m in items or []:
+                if not isinstance(m, dict) or m.get("id") != api_model:
+                    continue
+                for k in keys:
+                    v = m.get(k)
+                    if isinstance(v, (int, float)) and v > 0:
+                        found = int(v)
+                        break
+                tp = m.get("top_provider")  # OpenRouter niche le contexte ici
+                if found is None and isinstance(tp, dict):
+                    v = tp.get("context_length")
+                    if isinstance(v, (int, float)) and v > 0:
+                        found = int(v)
+                break
+        except (urllib.error.URLError, OSError, ValueError):
+            found = None
+        self._ctx_cache[model] = found
+        return found
 
     def unload_local(self, model: str | None = None, timeout: float = 30.0) -> bool:
         """Décharge le(s) modèle(s) LOCAL(aux) via l'API llama-swap (libère la VRAM). Model
