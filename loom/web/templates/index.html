@@ -466,12 +466,27 @@
       font-size: 15px; padding: 4px 8px; border-radius: 6px;
     }
     .cfg-x:hover { background: var(--bg-hover); color: var(--text); }
-    .cfg-body { overflow-y: auto; padding: 8px 18px 18px; }
-    .cfg-section { margin-top: 14px; }
+    .cfg-scroll { overflow-y: auto; padding: 8px 18px 18px; }
+    .cfg-body { padding: 0; }
+    /* Deux grands GROUPES de couche (commun / cette machine) = organisateur principal. */
+    .cfg-group { margin-top: 20px; }
+    .cfg-group:first-child { margin-top: 6px; }
+    .cfg-group-head {
+      font-size: 12.5px; font-weight: 700; color: var(--text); letter-spacing: .2px;
+      padding: 9px 12px; border-radius: 8px;
+      background: var(--bg-elev); border: 1px solid var(--border);
+      display: flex; align-items: center; gap: 9px;
+    }
+    .cfg-group-head::before {
+      content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--accent); flex: none;
+    }
+    .cfg-group.machine .cfg-group-head::before { background: #d6b06a; }
+    .cfg-group-sub { font-size: 10.5px; color: var(--text-faint); padding: 6px 12px 2px; }
+    .cfg-section { margin-top: 10px; }
+    /* Sous-section (Serveur, Chat…) : tempérée, le groupe de couche prime visuellement. */
     .cfg-sec-head {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px;
-      color: var(--accent); font-weight: 700; padding: 6px 0 8px;
-      border-bottom: 1px solid var(--border-soft); margin-bottom: 6px;
+      font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+      color: var(--text-faint); font-weight: 600; padding: 8px 4px 4px;
     }
     .cfg-row {
       display: grid; grid-template-columns: 1fr 210px; gap: 10px 14px; align-items: center;
@@ -868,44 +883,46 @@
       </div>
     </div>
 
-    <!-- Gestionnaire de modèles distants : ajouter/éditer/supprimer à chaud (sans redémarrer) -->
-    <div class="ap-head" style="margin-top:16px;">Modèles distants</div>
-    <div id="rm-list" class="rm-list"></div>
-    <button type="button" id="rm-add-btn" class="rm-add-btn">+ Ajouter un modèle distant</button>
-    <form id="rm-form" class="rm-form" hidden autocomplete="off">
-      <input id="rm-id" class="rm-in" placeholder="nom affiché (ex. glm-distant)">
-      <input id="rm-base" class="rm-in" placeholder="base_url (https://api.z.ai/api/paas/v4)">
-      <input id="rm-model" class="rm-in" placeholder="modèle côté provider (ex. glm-5.2)">
-      <input id="rm-key" class="rm-in" type="password" placeholder="clé API">
-      <div class="rm-row2">
-        <input id="rm-ctx" class="rm-in" type="number" placeholder="contexte (doc officielle)">
-        <label class="rm-vis"><input type="checkbox" id="rm-vision"> vision</label>
-      </div>
-      <div class="rm-msg" id="rm-msg"></div>
-      <div class="rm-actions">
-        <button type="button" id="rm-test" class="rm-btn">Tester</button>
-        <button type="submit" id="rm-save" class="rm-btn primary">Enregistrer</button>
-        <button type="button" id="rm-cancel" class="rm-btn ghost">Annuler</button>
-      </div>
-    </form>
-
     <div class="ap-head" style="margin-top:16px;">Configuration</div>
     <button type="button" id="cfg-open" class="rm-add-btn">Ouvrir la console de configuration</button>
   </div>
 
-  <!-- Console de configuration : tous les paramètres reels (deux couches commun/systeme) -->
+  <!-- Console de configuration : modeles + parametres reels, GROUPES par couche -->
   <div id="config-modal" class="cfg-modal" hidden>
     <div class="cfg-backdrop" data-cfg-close></div>
     <div class="cfg-dialog" role="dialog" aria-label="Configuration">
       <div class="cfg-head">
         <span class="cfg-title">Configuration</span>
-        <span class="cfg-legend">
-          <span class="cfg-badge commun">commun</span> tout système ·
-          <span class="cfg-badge systeme">système</span> cette machine
-        </span>
+        <span class="cfg-legend">d'abord ce qui est commun à tous les systèmes, puis ce qui est propre à cette machine</span>
         <button type="button" class="cfg-x" data-cfg-close aria-label="Fermer">✕</button>
       </div>
-      <div class="cfg-body" id="config-body"></div>
+      <div class="cfg-scroll">
+        <!-- Modèles distants : gérés ici (déplacés de l'engrenage). Conteneur PRESERVE au
+             re-render de #config-body (le JS ne reconstruit que #config-body). -->
+        <div id="cfg-models" class="cfg-group">
+          <div class="cfg-group-head">Modèles distants</div>
+          <div class="cfg-group-sub">La définition (URL, modèle, contexte) est commune à tous les systèmes ; la clé API est propre à cette machine.</div>
+          <div id="rm-list" class="rm-list"></div>
+          <button type="button" id="rm-add-btn" class="rm-add-btn">+ Ajouter un modèle distant</button>
+          <form id="rm-form" class="rm-form" hidden autocomplete="off">
+            <input id="rm-id" class="rm-in" placeholder="nom affiché (ex. glm-distant)">
+            <input id="rm-base" class="rm-in" placeholder="base_url (https://api.z.ai/api/paas/v4)">
+            <input id="rm-model" class="rm-in" placeholder="modèle côté provider (ex. glm-5.2)">
+            <input id="rm-key" class="rm-in" type="password" placeholder="clé API (propre à cette machine)">
+            <div class="rm-row2">
+              <input id="rm-ctx" class="rm-in" type="number" placeholder="contexte (doc officielle)">
+              <label class="rm-vis"><input type="checkbox" id="rm-vision"> vision</label>
+            </div>
+            <div class="rm-msg" id="rm-msg"></div>
+            <div class="rm-actions">
+              <button type="button" id="rm-test" class="rm-btn">Tester</button>
+              <button type="submit" id="rm-save" class="rm-btn primary">Enregistrer</button>
+              <button type="button" id="rm-cancel" class="rm-btn ghost">Annuler</button>
+            </div>
+          </form>
+        </div>
+        <div class="cfg-body" id="config-body"></div>
+      </div>
     </div>
   </div>
 
