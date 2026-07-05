@@ -1868,9 +1868,8 @@ function setSysmonVisible(on) {
       p.applies === "restart"
         ? ' <span class="cfg-restart" title="Prise en compte au redémarrage de Loom">redémarrage</span>'
         : "";
-    const tip =
-      esc(p.help) +
-      (p.nature ? " (" + esc(p.nature) + ")" : "");
+    // Infobulle = explication en clair, sans jargon interne (plus de "(libre)"/"(override)").
+    const tip = esc(p.help);
     return (
       '<div class="cfg-row' +
       (customized ? " customized" : "") +
