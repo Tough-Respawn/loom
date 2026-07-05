@@ -485,7 +485,7 @@
     .thumb button { position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; line-height: 14px; padding: 0; border-radius: 50%; background: var(--bg-elev); color: var(--text-dim); border: 1px solid var(--border); font-size: 10px; cursor: pointer; }
     .composer { display: flex; align-items: flex-end; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); transition: border-color .2s; overflow: hidden; }
     .composer:focus-within { border-color: var(--accent-dim); }
-    textarea#input { flex: 1; resize: none; border: 0; background: transparent; color: var(--text); padding: 10px 12px; min-height: 40px; max-height: 200px; font-family: inherit; font-size: 13px; line-height: 1.6; }
+    textarea#input { flex: 1; resize: none; border: 0; background: transparent; color: var(--text); padding: 10px 12px; min-height: 40px; max-height: 200px; overflow-y: auto; font-family: inherit; font-size: 13px; line-height: 1.6; }
     textarea#input::placeholder { color: var(--text-faint); }
     textarea#input:focus { outline: none; }
     #fileBtn { display: flex; align-items: center; justify-content: center; background: transparent; color: var(--text-faint); padding: 0 10px; border: none; cursor: pointer; transition: .12s; }
