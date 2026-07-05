@@ -120,22 +120,25 @@
     }
     .session-item:hover .sess-del { opacity: 1; }
     .session-item .sess-del:hover { color: var(--err); }
-    /* Toast de confirmation de suppression : SORT À DROITE de la ligne de session (flottant) */
+    /* Confirmation de suppression : prolonge la ligne de session vers la DROITE — même
+       hauteur, même police (fine, alignée), comme une box liée à la session. */
     .sess-del-pop {
-      position: fixed; z-index: 60; display: flex; align-items: center; gap: 8px;
-      background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
-      padding: 8px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.5); white-space: nowrap;
-      font-size: 12.5px; color: var(--text); animation: sdp-in .14s ease;
+      position: fixed; z-index: 60; box-sizing: border-box;
+      display: flex; align-items: center; gap: 4px;
+      background: var(--bg-elev); border: 1px solid var(--accent-dim);
+      border-radius: 6px; padding: 0 4px 0 9px; white-space: nowrap;
+      font-size: 12px; font-family: inherit; color: var(--text-dim);
+      box-shadow: 0 3px 12px rgba(0,0,0,.4); animation: sdp-in .12s ease;
     }
-    @keyframes sdp-in { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+    @keyframes sdp-in { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
     .sess-del-pop .sdp-label { color: var(--text-dim); }
     .sess-del-pop button {
-      border: 1px solid var(--border); background: none; border-radius: 5px;
-      padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer;
+      border: none; background: none; border-radius: 4px; padding: 3px 8px;
+      font: inherit; font-size: 11.5px; cursor: pointer; line-height: 1;
     }
-    .sess-del-pop .sdp-yes { border-color: transparent; background: var(--err-bg); color: var(--err); }
+    .sess-del-pop .sdp-yes { color: var(--err); }
     .sess-del-pop .sdp-yes:hover { background: var(--err); color: #fff; }
-    .sess-del-pop .sdp-no { color: var(--text-dim); }
+    .sess-del-pop .sdp-no { color: var(--text-faint); }
     .sess-del-pop .sdp-no:hover { background: var(--bg-hover); color: var(--text); }
     #model-select {
       width: 100%; background: var(--bg-elev); color: var(--text);
