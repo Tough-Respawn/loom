@@ -107,9 +107,14 @@ class RemoteModelConfig:
     model: str  # id du modèle CÔTÉ provider (ex. "glm-4.6")
     api_key: str = ""  # clé en clair (préfère local.toml)…
     api_key_env: str = ""  # …ou nom d'une variable d'env qui la porte
-    context: int | None = (
-        None  # fenêtre du modèle -> seuil de microcompact (profite du max)
-    )
+    # Fenêtre de contexte du modèle -> seuil de microcompact + jauge de remplissage (UI).
+    # RÉFLEXE à l'ajout d'un provider : la plupart des API (Z.ai, OpenAI) ne publient PAS le
+    # contexte via GET /models (schéma nu id/object/created/owned_by). La source de vérité est
+    # la DOC officielle du modèle -> web fetch/search la fenêtre réelle et mets-la ici (ex.
+    # glm-5.2 = 1M sur docs.z.ai, pas 200k). Certains providers l'exposent quand même via
+    # /models (OpenRouter context_length, vLLM max_model_len) : là Loom la lit tout seul
+    # (client.remote_context) et cette valeur ne sert que de repli.
+    context: int | None = None
     max_tokens: int | None = None  # plafond de sortie/tour (défaut = global si absent)
     vision: bool = False  # le modèle accepte-t-il les images
     # Une API hébergée rejette souvent un extra_body inconnu (chat_template_kwargs) ->
