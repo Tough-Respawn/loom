@@ -83,6 +83,58 @@ function scheduleRender() {
     render(html`<${App} />`, root);
     if (state.pin && scrollWrap)
       scrollWrap.scrollTop = scrollWrap.scrollHeight;
+    renderMsgNav(); // navigateur de prompts (liste des messages user de l'onglet actif)
+  });
+}
+
+// --- Navigateur de prompts : liste les messages UTILISATEUR de l'onglet actif à droite.
+// Survol = texte complet (title + panneau élargi), clic = saut vers le message. ---
+function _userMsgTexts() {
+  const t = activeTab();
+  if (!t) return [];
+  const out = [];
+  for (const it of t.timeline) {
+    if (it.kind !== "user") continue;
+    const c = it.content;
+    out.push(
+      typeof c === "string"
+        ? c
+        : Array.isArray(c)
+          ? (c.find((p) => p.type === "text") || {}).text || ""
+          : "",
+    );
+  }
+  return out;
+}
+function renderMsgNav() {
+  const nav = document.getElementById("msg-nav");
+  if (!nav) return;
+  const texts = _userMsgTexts();
+  if (texts.length < 2) {
+    // inutile pour 0-1 message : on cache
+    nav.hidden = true;
+    nav.innerHTML = "";
+    return;
+  }
+  nav.hidden = false;
+  nav.innerHTML = "";
+  texts.forEach((txt, i) => {
+    const clean = (txt || "(vide)").replace(/\s+/g, " ").trim();
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "mn-item";
+    b.textContent = clean;
+    b.title = clean;
+    b.addEventListener("click", () => {
+      const el = document.querySelectorAll("#messages .msg.user")[i];
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      nav.querySelectorAll(".mn-item.active").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      el.classList.add("mn-flash");
+      setTimeout(() => el.classList.remove("mn-flash"), 900);
+    });
+    nav.append(b);
   });
 }
 
