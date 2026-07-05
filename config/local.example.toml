@@ -1,40 +1,53 @@
-# Gabarit de surcharge MACHINE. Copie-le en `config/local.toml` (gitignored) et adapte :
+# Gabarit de surcharge MACHINE. Copie-le en config/local.toml (gitignored) et adapte :
 #   cp config/local.example.toml config/local.toml
-# local.toml surcharge config/defaults.toml avec ce qui est propre à TA machine (chemins des
-# binaires, offload GPU, racine des projets). Les valeurs ci-dessous sont celles d'une RTX
-# 2060 — une autre carte (ex. RTX 3090) voudra d'autres réglages.
+# Surcharge defaults.toml avec ce qui est propre à TA machine (binaires, offload GPU, racine
+# des projets) + tes SECRETS. Valeurs ci-dessous : RTX 2060.
+
+# ============================ Serveur (llama.cpp) ============================
 [server]
-# Binaire llama-server. Mets le chemin absolu si pas dans le PATH.
+
+# Chemin absolu des binaires si absents du PATH
 bin = "C:/tools/llama/llama-server.exe"
-# Routeur multi-modèles (hot-swap par le sélecteur de l'UI), github.com/mostlygeek/llama-swap.
 swap_bin = "C:/tools/llama/llama-swap.exe"
 
-# Offload COMPLET (toutes couches + output/embeddings) : -ngl 99. Couplé au gpu_tuning
-# (Flash-Attn + KV q8_0 + batch) côté serve.py. Benchmark RTX 2060 : single 12->17.8 tok/s,
-# 4 flux ~100 tok/s. VRAM ~4 Go/6 -> pas de spill. cf. docs/perf-gpu.md.
+# ============================ Override GPU / CPU =============================
 [override]
+
+# Offload complet -ngl 99 (RTX 2060 : VRAM ~4 Go/6, pas de spill). cf. docs/perf-gpu.md
 n_gpu_layers = 99
 
+# ================================= Outils ===================================
 [tools]
-# Périmètre des outils sur CETTE machine : racine de tes projets.
+
+# Racine des projets sur cette machine (périmètre des outils)
 workspace_dir = "C:/Users/<toi>/Documents"
 
+# ============================== Chat / runtime ==============================
 [chat]
-# Modèle sélectionné au démarrage (id d'un modèle local ou distant ci-dessous).
+
+# Modèle chargé au démarrage (id d'un modèle local ou distant ci-dessous)
 default_model = "glm-distant"
 
-# Modèle DISTANT (API OpenAI-compatible) : s'ajoute au sélecteur à côté des locaux.
-# Ne mets JAMAIS ta vraie clé dans un fichier partagé — ce gabarit ne porte que des
-# placeholders. Ta clé va dans config/local.toml (gitignored) ou via api_key_env.
+# ============================= Modèles distants =============================
+# API OpenAI-compatible ; s'ajoute au sélecteur à côté des locaux. NE mets JAMAIS ta vraie
+# clé dans un fichier partagé : ce gabarit ne porte que des placeholders. Éditable aussi via
+# la console de l'UI (onglet Modèles distants).
 [[remote_models]]
-id = "glm-distant"                        # nom affiché dans le sélecteur
-base_url = "https://api.z.ai/api/paas/v4" # endpoint OpenAI-compatible du provider
-model = "glm-5.2"                         # id du modèle CÔTÉ provider
-api_key = "<TA_CLE_ICI>"                  # …ou api_key_env = "GLM_API_KEY" (variable d'env)
-# Fenêtre de contexte : la plupart des API (Z.ai, OpenAI) ne la publient PAS via /models ->
-# la source de vérité est la DOC officielle du modèle. Réflexe : web fetch/search la fenêtre
-# réelle et mets-la ici (ex. glm-5.2 = 1000000 sur docs.z.ai). Les providers qui l'exposent
-# (OpenRouter, vLLM) sont lus automatiquement -> cette valeur ne sert que de repli.
+
+# Nom affiché dans le sélecteur
+id = "glm-distant"
+
+# Endpoint du provider + id du modèle CÔTÉ provider
+base_url = "https://api.z.ai/api/paas/v4"
+model = "glm-5.2"
+
+# Clé en clair, ou api_key_env = "GLM_API_KEY" (variable d'env)
+api_key = "<TA_CLE_ICI>"
+
+# Fenêtre de contexte : rarement publiée par l'API -> source de vérité = la DOC officielle
+# (ex. glm-5.2 = 1000000 sur docs.z.ai). Les providers qui l'exposent (OpenRouter, vLLM) sont
+# lus tout seuls ; cette valeur ne sert que de repli.
 context = 1000000
-# PAS de max_tokens : un modèle distant prend la limite de sortie DU PROVIDER (sa machine n'a
-# pas les contraintes du local 6 Go). N'en ajoute un que pour BORNER volontairement le coût.
+
+# PAS de max_tokens : un distant prend la limite de sortie DU PROVIDER (sa machine n'a pas les
+# contraintes du local). N'en ajoute un que pour BORNER volontairement le coût.
