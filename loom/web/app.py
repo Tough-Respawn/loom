@@ -426,6 +426,77 @@ def create_app(
     # Prix par modèle ($/M tokens) : id -> (input, output, cached). Local/absent -> (0,0,0).
     model_prices = dict(model_prices or {})
 
+    # Config VIVANTE de loom.web : au lieu de figer ces valeurs au démarrage, on les tient dans
+    # un holder mutable que le runtime consulte À CHAQUE usage, et qu'on RECHARGE depuis le
+    # disque après chaque édition (/config/set). Résultat : permissions, plafonds, budgets,
+    # reflect et keep-warm prennent effet À CHAUD, sans redémarrer loom.web. (Les params du
+    # SERVEUR MODÈLE restent hors de portée : autre process, cf. serve.py.)
+    _settings = {
+        "max_tokens": max_tokens,
+        "context_budget": context_budget,
+        "keep_recent": keep_recent,
+        "identity_max_tokens": identity_max_tokens,
+        "reflect_enabled": reflect_enabled,
+        "reflect_min_actions": reflect_min_actions,
+        "keepwarm_enabled": keepwarm_enabled,
+        "keepwarm_interval": keepwarm_interval,
+        "permission_mode": permission_mode,
+    }
+    # La fonction de permission capture cfg.permissions ; pour appliquer un changement de mode
+    # à chaud on la remplace dans ce holder (le runtime lit _perm["fn"]).
+    _perm = {"fn": permission}
+
+    def _reload_app_config():
+        """Relit defaults.toml + local.toml et met à jour le holder + la permission (à chaud).
+        Best-effort : une config invalide ne casse pas l'app en cours (on garde l'ancienne)."""
+        if not (config_defaults_path and config_local_path):
+            return
+        try:
+            from loom.agent.context import effective_context_budget
+            from loom.config import load_config
+            from loom.permissions import evaluate
+
+            c = load_config(config_defaults_path, config_local_path)
+        except Exception:  # noqa: BLE001 - reload best-effort, jamais fatal
+            return
+        _settings.update(
+            max_tokens=c.chat.max_tokens,
+            context_budget=effective_context_budget(
+                c.chat.context_token_budget, c.context, c.chat.max_tokens
+            ),
+            keep_recent=c.chat.keep_recent_messages,
+            identity_max_tokens=c.chat.identity_max_tokens,
+            reflect_enabled=c.chat.reflect_enabled,
+            reflect_min_actions=c.chat.reflect_min_actions,
+            keepwarm_enabled=c.chat.keepwarm_enabled,
+            keepwarm_interval=c.chat.keepwarm_interval,
+            permission_mode=c.permissions.mode,
+        )
+        _perm["fn"] = lambda name, args: evaluate(name, args, c.permissions)
+
+    def _regen_swap_yaml():
+        """Régénère le llama-swap.yaml depuis la config (llama-swap -watch-config le recharge).
+        Best-effort, silencieux si serve indispo. Renvoie True si écrit."""
+        if not (config_defaults_path and config_local_path):
+            return False
+        try:
+            from loom.runtime.serve import regenerate_swap_yaml
+
+            return bool(regenerate_swap_yaml(config_defaults_path, config_local_path))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _apply_to_model_server(section):
+        """Param SERVEUR/OVERRIDE (affecte le lancement de llama-server) : régénère le yaml et
+        décharge les modèles locaux -> ils se relancent avec les nouveaux args au prochain usage
+        (llama-swap -watch-config). Ne touche pas les autres process. Best-effort, en tâche de fond."""
+        if section not in ("server", "override"):
+            return
+        if _regen_swap_yaml():
+            threading.Thread(
+                target=client.unload_local, daemon=True, name="loom-reload-models"
+            ).start()
+
     def _price_of(model_id):
         return model_prices.get(model_id, (0.0, 0.0, 0.0))
 
@@ -446,11 +517,12 @@ def create_app(
         return declared, "local"
 
     def _model_limits(model_id):
-        """(max_tokens effectif, seuil de microcompact) pour `model_id`."""
+        """(max_tokens effectif, seuil de microcompact) pour `model_id`. Lit le max_tokens
+        global dans le holder vivant -> une édition prend effet au prochain tour, sans relance."""
 
         win = model_contexts.get(model_id) or context_window
 
-        mt = model_max_tokens.get(model_id) or max_tokens
+        mt = model_max_tokens.get(model_id) or _settings["max_tokens"]
 
         return mt, max(1024, win - mt - 1024)
 
@@ -648,7 +720,7 @@ def create_app(
             "workspace_dir": ws,
             "sessions": sessions,
             "active_session": active_id,
-            "permission_mode": permission_mode,
+            "permission_mode": _settings["permission_mode"],
             # État initial pour l'hydratation côté client (Preact). On échappe '<'
             # pour ne pas pouvoir fermer la balise <script> depuis le contenu.
             "init_json": json.dumps(
@@ -883,7 +955,9 @@ def create_app(
 
             # Gestion du contexte : résumé auto si trop long
 
-            if context.summarize(conv, client, context_budget, keep_recent):
+            if context.summarize(
+                conv, client, _settings["context_budget"], _settings["keep_recent"]
+            ):
                 save()
 
             skills = effective_skills(
@@ -915,7 +989,7 @@ def create_app(
                     identity_paths["soul_path"],
                     identity_paths["user_path"],
                     identity_paths["memory_md_path"],
-                    max_tokens=identity_max_tokens,
+                    max_tokens=_settings["identity_max_tokens"],
                 )
 
             # TIER du harnais : un modèle DISTANT (API, non quantifié) se pilote seul -> prompt
@@ -1117,7 +1191,7 @@ def create_app(
                     model=conv.model or None,
                     registry=registry,
                     thinking=conv.thinking,
-                    permission=permission,
+                    permission=_perm["fn"],
                     confirm=_confirm,
                     compact_after_tokens=eff_compact,
                     strong=strong,
@@ -1304,10 +1378,10 @@ def create_app(
                 # avalée — la réponse utilisateur est déjà rendue (design §6, §11).
 
                 if (
-                    reflect_enabled
+                    _settings["reflect_enabled"]
                     and reflect_stores is not None
                     and saved
-                    and len(actions) >= reflect_min_actions
+                    and len(actions) >= _settings["reflect_min_actions"]
                 ):
                     try:
                         from loom.agent.reflect import reflect as _reflect
@@ -1811,8 +1885,17 @@ def create_app(
                 tp.write_text(tomlkit.dumps(doc), encoding="utf-8")
         except (ValueError, TypeError) as e:
             return {"ok": False, "error": str(e)[:120]}, 400
-        # Prise en compte au prochain (re)chargement du modèle (offload = paramètre de lancement).
-        return {"ok": True, "applies": "restart"}
+        # Applique À CHAUD côté serveur modèle : régénère le yaml (llama-swap -watch-config le
+        # recharge) + décharge CE modèle -> il se relance avec le nouveau tuning au prochain
+        # usage, sans toucher au TOML à la main ni tout redémarrer.
+        applied = _regen_swap_yaml()
+        if applied:
+            threading.Thread(
+                target=lambda: client.unload_local(mid),
+                daemon=True,
+                name="loom-reload-model",
+            ).start()
+        return {"ok": True, "applies": "model-reload" if applied else "restart"}
 
     # ---- Console de configuration : introspection + édition des vrais fichiers TOML (deux
     # couches commun/système), commentaires préservés via tomlkit (loom.runtime.config_schema).
@@ -1849,6 +1932,9 @@ def create_app(
                 )
         except (ValueError, OSError) as e:
             return {"ok": False, "error": str(e)[:160]}, 400
+        if res.get("ok"):
+            _reload_app_config()  # applique À CHAUD les params app (permissions, tokens…)
+            _apply_to_model_server(section)  # régénère le yaml si param serveur/modèle
         code = 200 if res.get("ok") else 400
         return res, code
 
@@ -1867,7 +1953,16 @@ def create_app(
             res = config_schema.reset_value(
                 config_defaults_path, config_local_path, section, key
             )
+        if res.get("ok"):
+            _reload_app_config()
+            _apply_to_model_server(section)
         return res, (200 if res.get("ok") else 400)
+
+    @app.get("/config/effective")
+    def config_effective():
+        """Valeurs de config ACTUELLEMENT en vigueur dans l'app en cours (mémoire vive). Sert
+        à vérifier qu'une édition s'applique à chaud, sans redémarrer loom.web."""
+        return dict(_settings)
 
     @app.get("/machine_state")
     def machine_state():
@@ -2016,14 +2111,17 @@ def create_app(
 
     def _keepwarm_loop():
 
-        tick = max(15.0, min(float(keepwarm_interval) / 3.0, 60.0))
-
         while True:
-            time.sleep(tick)
+            interval = float(_settings["keepwarm_interval"])  # relu à chaud
+            time.sleep(max(15.0, min(interval / 3.0, 60.0)))
+
+            # Activable/désactivable à chaud : si coupé, on ne ping pas (thread reste en veille).
+            if not _settings["keepwarm_enabled"]:
+                continue
 
             last = _last_activity[0]
 
-            if last <= 0 or (time.time() - last) < float(keepwarm_interval):
+            if last <= 0 or (time.time() - last) < interval:
                 continue
 
             if not _local_gen_lock.acquire(blocking=False):
@@ -2060,9 +2158,8 @@ def create_app(
             finally:
                 _local_gen_lock.release()
 
-    if keepwarm_enabled:
-        threading.Thread(
-            target=_keepwarm_loop, daemon=True, name="loom-keepwarm"
-        ).start()
+    # Thread toujours lancé (il dort à l'idle) : ainsi activer/désactiver keep-warm dans la
+    # console prend effet à chaud, sans redémarrer loom.web.
+    threading.Thread(target=_keepwarm_loop, daemon=True, name="loom-keepwarm").start()
 
     return app
