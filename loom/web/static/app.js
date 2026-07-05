@@ -577,6 +577,22 @@ function renderTabs() {
   tabbarEl.append(plus);
 }
 
+// Textes des messages UTILISATEUR d'une conversation -> amorce l'historique ↑/↓ de l'onglet
+// (pour rappeler les prompts déjà envoyés, pas seulement ceux tapés depuis le chargement).
+function _userTexts(messages) {
+  const out = [];
+  for (const m of messages || []) {
+    if (m.role !== "user" && m.kind !== "user") continue;
+    const c = m.content;
+    if (typeof c === "string") out.push(c);
+    else if (Array.isArray(c)) {
+      const tp = c.find((p) => p.type === "text");
+      if (tp && tp.text) out.push(tp.text);
+    }
+  }
+  return out;
+}
+
 function _hydrateTimeline(t, messages) {
   (messages || []).forEach((m) =>
     t.timeline.push({
@@ -608,6 +624,9 @@ async function openTab(sid) {
       workspace: d.workspace || "",
       meter: d.usage_totals || null,
       metrics: null,
+      draft: "",
+      history: _userTexts(d.messages),
+      histIdx: -1,
     };
     _hydrateTimeline(t, d.messages);
     state.tabs[sid] = t;
@@ -695,6 +714,9 @@ async function newSessionTab() {
     workspace: d.workspace || "",
     meter: null,
     metrics: null,
+    draft: "",
+    history: [],
+    histIdx: -1,
   };
   state.order.push(d.id);
   addSidebarSession(d);
@@ -731,6 +753,9 @@ function addSidebarSession(d) {
       workspace: INIT.workspace || "",
       meter: INIT.usage_totals || null,
       metrics: null,
+      draft: "",
+      history: _userTexts(INIT.messages),
+      histIdx: -1,
     };
     _hydrateTimeline(t0, INIT.messages);
     state.tabs[sid] = t0;
@@ -966,11 +991,14 @@ function syncComposer() {
 function submitChat() {
   const text = input.value.trim();
   if (!text || !state.active) return;
-  history.push(text);
-  histIdx = -1;
+  const t = activeTab();
+  if (t) {
+    (t.history || (t.history = [])).push(text); // historique ↑/↓ de CET onglet
+    t.histIdx = -1;
+    t.draft = ""; // message parti -> brouillon vidé
+  }
   const imgs = pendingImages.slice();
   input.value = "";
-  if (activeTab()) activeTab().draft = ""; // message parti -> brouillon vidé
   clearImages();
   // Envoi sur l'onglet actif (flux concurrent) ; le bouton passe à Stop via syncComposer.
   sendChat(state.active, text, imgs).finally(() => input.focus());
@@ -995,27 +1023,29 @@ chatForm.addEventListener("submit", (e) => {
   submitChat();
 });
 
-// historique ↑/↓ + Entrée pour envoyer
-const history = [];
-let histIdx = -1;
+// historique ↑/↓ + Entrée pour envoyer — l'historique est PAR ONGLET (t.history/t.histIdx),
+// amorcé avec les prompts déjà envoyés de la conversation.
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     submitChat();
     return;
   }
-  if (e.key === "ArrowUp" && input.selectionStart === 0 && history.length) {
+  const t = activeTab();
+  if (!t) return;
+  const hist = t.history || (t.history = []);
+  if (e.key === "ArrowUp" && input.selectionStart === 0 && hist.length) {
     e.preventDefault();
-    if (histIdx === -1) histIdx = history.length;
-    if (histIdx > 0) histIdx--;
-    input.value = history[histIdx];
-  } else if (e.key === "ArrowDown" && histIdx !== -1) {
+    if (t.histIdx == null || t.histIdx === -1) t.histIdx = hist.length;
+    if (t.histIdx > 0) t.histIdx--;
+    input.value = hist[t.histIdx];
+  } else if (e.key === "ArrowDown" && t.histIdx != null && t.histIdx !== -1) {
     e.preventDefault();
-    if (histIdx < history.length - 1) {
-      histIdx++;
-      input.value = history[histIdx];
+    if (t.histIdx < hist.length - 1) {
+      t.histIdx++;
+      input.value = hist[t.histIdx];
     } else {
-      histIdx = -1;
+      t.histIdx = -1;
       input.value = "";
     }
   }
