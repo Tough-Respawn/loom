@@ -131,12 +131,12 @@ SPEC: list[dict] = [
     {
         "section": "chat",
         "key": "max_tokens",
-        "label": "Sortie max / tour",
+        "label": "Sortie max / tour (local)",
         "layer": "commun",
         "nature": "libre",
         "type": "int",
         "applies": "live",
-        "help": "Plafond de tokens générés par tour.",
+        "help": "Plafond de sortie par tour pour les modèles LOCAUX (calibré VRAM). Les distants ne l'héritent pas : ils suivent leur propre max_tokens ou celui du provider.",
     },
     {
         "section": "chat",
