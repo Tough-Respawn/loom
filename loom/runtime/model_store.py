@@ -9,6 +9,7 @@ ajouter/configurer un modèle distant sans jamais ouvrir un TOML à la main (zé
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 # Champs persistés d'un modèle distant géré par l'UI. `api_key` est stocké en clair dans
@@ -48,11 +49,32 @@ def load(path: str | Path) -> list[dict]:
 
 
 def save(path: str | Path, models: list[dict]) -> None:
+    """Écrit le store en OWNER-ONLY (0600) : ce fichier porte des clés API en clair. Sur
+    POSIX (Loom vise aussi Linux/Mac) un 0644 par défaut exposerait les secrets aux autres
+    utilisateurs ; on crée donc le fichier en 0600 dès l'ouverture (pas de fenêtre umask) et
+    on rechmod un fichier préexistant. Sur Windows le mode POSIX est ~ignoré (sans effet, sans
+    erreur). Écriture atomique (temp + replace) pour ne jamais laisser un JSON tronqué."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(
-        json.dumps(list(models), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    data = json.dumps(list(models), ensure_ascii=False, indent=2).encode("utf-8")
+    tmp = p.with_name(p.name + ".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    os.replace(
+        tmp, p
+    )  # atomique : le lecteur voit l'ancien ou le nouveau, jamais un mix
+    try:
+        os.chmod(p, 0o600)  # verrouille aussi un fichier préexistant (best-effort)
+    except OSError:
+        pass
 
 
 def upsert(path: str | Path, model: dict) -> list[dict]:
