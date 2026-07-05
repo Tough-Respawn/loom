@@ -724,6 +724,61 @@ class LoomClient:
         """Vrai si le modèle est servi par une API DISTANTE (route montée), pas en local."""
         return bool(model and model in self._routes)
 
+    def add_remote_route(self, model_id: str, spec: dict) -> None:
+        """Monte (ou remplace) À CHAUD la route d'un modèle distant : un client OpenAI de plus,
+        sans redémarrer. Un distant = juste une URL + une clé, rien à charger en VRAM -> l'ajout
+        est immédiat. Invalide le cache de contexte pour ce modèle."""
+        self._routes[model_id] = {
+            "client": OpenAI(
+                base_url=spec["base_url"],
+                api_key=spec.get("api_key") or "none",
+                timeout=self.timeout,
+                max_retries=self.max_retries,
+            ),
+            "base_url": spec["base_url"],
+            "api_key": spec.get("api_key") or "",
+            "model": spec.get("model") or model_id,
+            "enable_thinking_param": bool(spec.get("enable_thinking_param", False)),
+        }
+        self._ctx_cache.pop(model_id, None)
+
+    def remove_remote_route(self, model_id: str) -> None:
+        """Démonte à chaud la route d'un modèle distant (l'id disparaît du sélecteur)."""
+        self._routes.pop(model_id, None)
+        self._ctx_cache.pop(model_id, None)
+
+    def remote_route_info(self, model_id: str) -> dict:
+        """Infos SÛRES d'une route distante pour l'UI (jamais la clé en clair) : base_url,
+        modèle côté provider, présence d'une clé."""
+        r = self._routes.get(model_id) or {}
+        return {
+            "base_url": r.get("base_url", ""),
+            "model": r.get("model", model_id),
+            "has_key": bool(r.get("api_key")),
+            "enable_thinking_param": bool(r.get("enable_thinking_param", False)),
+        }
+
+    def ping_remote(
+        self, base_url: str, api_key: str, model: str, timeout: float = 15.0
+    ) -> tuple[bool, str]:
+        """Test de connexion RÉEL d'un endpoint distant : 1 requête 1-token, non-stream,
+        sans retry. (ok, message). Sert au bouton « Tester » avant d'enregistrer un modèle."""
+        try:
+            oai = OpenAI(
+                base_url=base_url,
+                api_key=api_key or "none",
+                timeout=timeout,
+                max_retries=0,
+            )
+            oai.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+            )
+            return True, "OK"
+        except Exception as e:  # noqa: BLE001 - remonte un message clair à l'UI
+            return False, f"{type(e).__name__}: {str(e)[:160]}"
+
     def remote_context(self, model: str | None) -> int | None:
         """Fenêtre de contexte RÉELLE d'un modèle distant, lue DU PROVIDER (`GET /models`).
 
