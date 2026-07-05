@@ -305,7 +305,7 @@ def build_create_kwargs(
     model: str,
     messages: list[dict],
     system_prompt: str,
-    max_tokens: int,
+    max_tokens: int | None,
     thinking: bool = True,
     tools: list[dict] | None = None,
     native_extras: bool = True,
@@ -314,10 +314,13 @@ def build_create_kwargs(
         "model": model,
         "messages": [{"role": "system", "content": system_prompt}, *messages],
         "stream": True,
-        "max_tokens": max_tokens,
         # Demande l'usage réel (tokens) dans un chunk final ; ignoré si non supporté.
         "stream_options": {"include_usage": True},
     }
+    # max_tokens=None -> on l'OMET : le provider applique SA propre limite. Sert aux modèles
+    # DISTANTS sans cap explicite (leur machine n'a pas les contraintes du local 6 Go).
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
     if tools:
         kwargs["tools"] = tools
     # extra_body = paramètres spécifiques au backend llama.cpp LOCAL. On ne les envoie PAS à
