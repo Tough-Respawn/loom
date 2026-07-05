@@ -912,8 +912,10 @@ function openDeleteConfirm(sid, row) {
   const pop = document.createElement("div");
   pop.id = "sess-del-pop";
   pop.className = "sess-del-pop";
+  // Aligné sur la ligne : même hauteur, collé juste à sa droite (prolongement visuel).
   pop.style.top = r.top + "px";
-  pop.style.left = r.right + 6 + "px";
+  pop.style.height = r.height + "px";
+  pop.style.left = r.right + 3 + "px";
   const label = document.createElement("span");
   label.className = "sdp-label";
   label.textContent = "Supprimer cette session ?";
