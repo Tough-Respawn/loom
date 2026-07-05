@@ -92,3 +92,39 @@ def delete(path: str | Path, model_id: str) -> list[dict]:
     models = [m for m in load(path) if m.get("id") != model_id]
     save(path, models)
     return models
+
+
+def upsert_remote_in_toml(local_path: str | Path, record: dict) -> None:
+    """Écrit/maj un [[remote_models]] dans local.toml par id, via tomlkit (commentaires et
+    structure du fichier PRÉSERVÉS). Sert à éditer depuis l'UI un modèle distant DÉFINI EN
+    CONFIG (pas dans le store JSON) : url, modèle, contexte, clé... restent dans local.toml,
+    là où l'utilisateur les avait mis. Seuls les champs présents dans `record` sont posés."""
+    import tomlkit
+
+    p = Path(local_path)
+    doc = (
+        tomlkit.parse(p.read_text(encoding="utf-8"))
+        if p.exists()
+        else tomlkit.document()
+    )
+    arr = doc.get("remote_models")
+    if arr is None:
+        arr = tomlkit.aot()
+        doc["remote_models"] = arr
+    fields = ("id", "base_url", "model", "api_key", "context", "max_tokens", "vision")
+    target = None
+    for t in arr:
+        if t.get("id") == record.get("id"):
+            target = t
+            break
+    if target is None:
+        target = tomlkit.table()
+        for k in fields:
+            if record.get(k) is not None:
+                target[k] = record[k]
+        arr.append(target)
+    else:
+        for k in fields:
+            if record.get(k) is not None:
+                target[k] = record[k]
+    p.write_text(tomlkit.dumps(doc), encoding="utf-8")

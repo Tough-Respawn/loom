@@ -747,6 +747,11 @@ class LoomClient:
         self._routes.pop(model_id, None)
         self._ctx_cache.pop(model_id, None)
 
+    def remote_api_key(self, model_id: str) -> str:
+        """Clé brute d'une route distante — USAGE SERVEUR uniquement (préserver la clé lors
+        d'une édition sans la re-saisir, indice masqué). NE JAMAIS renvoyer telle quelle au client."""
+        return (self._routes.get(model_id) or {}).get("api_key", "")
+
     def remote_route_info(self, model_id: str) -> dict:
         """Infos SÛRES d'une route distante pour l'UI (jamais la clé en clair) : base_url,
         modèle côté provider, présence d'une clé."""

@@ -460,7 +460,31 @@
       border-bottom: 1px solid var(--border-soft);
     }
     .cfg-title { font-size: 14px; font-weight: 700; color: var(--text); }
-    .cfg-legend { font-size: 10.5px; color: var(--text-faint); flex: 1; }
+    .cfg-head-spacer { flex: 1; }
+    /* Cartes de modèles LOCAUX : définition en lecture seule + tuning d'offload éditable. */
+    .lm-item {
+      background: var(--bg); border: 1px solid var(--border-soft); border-radius: 8px;
+      padding: 10px 12px; margin-bottom: 8px;
+    }
+    .lm-head { display: flex; align-items: center; gap: 8px; }
+    .lm-id { font-size: 12.5px; color: var(--text); font-weight: 600; }
+    .lm-tag {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .4px; color: var(--text-faint);
+      border: 1px solid var(--border); border-radius: 3px; padding: 0 4px;
+    }
+    .lm-sub { font-size: 10px; color: var(--text-faint); margin: 3px 0 8px; }
+    .lm-tune { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+    .lm-field { display: flex; flex-direction: column; gap: 3px; }
+    .lm-field > span { font-size: 10px; color: var(--text-dim); }
+    .lm-field input[type="number"], .lm-field input[type="text"] {
+      background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-family: inherit; font-size: 11.5px; padding: 5px 8px;
+    }
+    .lm-field input:focus { outline: none; border-color: var(--accent-dim); }
+    .lm-field.lm-bool { flex-direction: row; align-items: center; gap: 6px; }
+    .lm-field.lm-bool input { accent-color: var(--accent); width: 14px; height: 14px; }
+    .lm-saved { color: var(--accent); font-size: 10px; opacity: 0; transition: opacity .2s; }
+    .lm-saved.show { opacity: 1; }
     .cfg-x {
       background: none; border: none; color: var(--text-dim); cursor: pointer;
       font-size: 15px; padding: 4px 8px; border-radius: 6px;
@@ -906,16 +930,23 @@
     <div class="cfg-dialog" role="dialog" aria-label="Configuration">
       <div class="cfg-head">
         <span class="cfg-title">Configuration</span>
-        <span class="cfg-legend">d'abord ce qui est commun à tous les systèmes, puis ce qui est propre à cette machine</span>
+        <span class="cfg-head-spacer"></span>
         <button type="button" class="cfg-x" data-cfg-close aria-label="Fermer">✕</button>
       </div>
-      <!-- Onglets (une seule section visible à la fois, pas de scroll à travers tout). -->
+      <!-- Onglets (une seule section visible à la fois, pas de scroll à travers tout).
+           Loom = harness d'abord LOCAL -> Modèles locaux avant Modèles distants. -->
       <div class="cfg-tabs" id="cfg-tabs">
         <button type="button" class="cfg-tab active" data-tab="commun">Commun à tous les systèmes</button>
         <button type="button" class="cfg-tab" data-tab="systeme">Propre à cette machine</button>
+        <button type="button" class="cfg-tab" data-tab="locaux">Modèles locaux</button>
         <button type="button" class="cfg-tab" data-tab="modeles">Modèles distants</button>
       </div>
       <div class="cfg-scroll">
+        <!-- Onglet Modèles locaux (servis sur cette machine). Tuning d'offload GPU éditable. -->
+        <div id="cfg-local" class="cfg-panel" data-tab="locaux" hidden>
+          <div class="cfg-group-sub">Servis sur cette machine. La définition (dépôt, fichier) est commune ; le réglage d'offload GPU est propre à cette machine et prend effet au rechargement du modèle.</div>
+          <div id="local-list" class="rm-list"></div>
+        </div>
         <!-- Onglet Modèles distants. Conteneur PRESERVE au re-render de #config-body (le JS
              ne reconstruit que #config-body). -->
         <div id="cfg-models" class="cfg-panel" data-tab="modeles" hidden>

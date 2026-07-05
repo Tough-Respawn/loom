@@ -1636,15 +1636,23 @@ function setSysmonVisible(on) {
           " · " +
           esc(m.model) +
           (m.context ? " · " + fmtTok(m.context) + " ctx" : "") +
-          (m.has_key ? "" : ' · <span class="rm-nokey">sans clé</span>');
+          (m.has_key
+            ? m.key_hint
+              ? ' · clé ' + esc(m.key_hint)
+              : ""
+            : ' · <span class="rm-nokey">sans clé</span>');
+        // config = défini dans local.toml (éditable ici aussi) ; sinon géré par l'UI.
         const tag = m.managed ? "" : '<span class="rm-tag">config</span>';
-        const btns = m.managed
-          ? '<button type="button" class="rm-ic rm-edit" data-id="' +
-            esc(m.id) +
-            '" title="Éditer">✎</button><button type="button" class="rm-ic rm-del" data-id="' +
-            esc(m.id) +
-            '" title="Supprimer">✕</button>'
-          : "";
+        // Édition pour TOUS (config inclus) ; suppression réservée aux modèles gérés par l'UI.
+        const btns =
+          '<button type="button" class="rm-ic rm-edit" data-id="' +
+          esc(m.id) +
+          '" title="Éditer">✎</button>' +
+          (m.managed
+            ? '<button type="button" class="rm-ic rm-del" data-id="' +
+              esc(m.id) +
+              '" title="Supprimer">✕</button>'
+            : "");
         return (
           '<div class="rm-item"><div class="rm-item-main"><span class="rm-id">' +
           esc(m.id) +
@@ -1687,7 +1695,9 @@ function setSysmonVisible(on) {
     $("rm-model").value = rec ? rec.model : "";
     $("rm-key").value = "";
     $("rm-key").placeholder =
-      rec && rec.has_key ? "clé inchangée (laisser vide)" : "clé API";
+      rec && rec.has_key
+        ? "clé actuelle " + (rec.key_hint || "•••") + " — vide = inchangée"
+        : "clé API (propre à cette machine)";
     $("rm-ctx").value = rec && rec.context ? rec.context : "";
     $("rm-vision").checked = !!(rec && rec.vision);
     setMsg("");
@@ -1793,8 +1803,11 @@ function setSysmonVisible(on) {
     document
       .querySelectorAll("#cfg-tabs .cfg-tab")
       .forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-    const models = document.getElementById("cfg-models");
-    if (models) models.hidden = tab !== "modeles";
+    // Panneaux hors #config-body (modèles locaux, distants) togglés par leur data-tab.
+    document
+      .querySelectorAll("#config-modal .cfg-panel")
+      .forEach((p) => (p.hidden = p.dataset.tab !== tab));
+    // Groupes de couche rendus dans #config-body (commun / systeme).
     body
       .querySelectorAll(".cfg-group")
       .forEach((g) => (g.hidden = g.dataset.tab !== tab));
@@ -1930,15 +1943,8 @@ function setSysmonVisible(on) {
             "</div></div>",
         )
         .join("");
-      return (
-        '<div class="cfg-group" data-tab="' +
-        g.layer +
-        '"><div class="cfg-group-sub">' +
-        esc(g.sub) +
-        "</div>" +
-        secs +
-        "</div>"
-      );
+      // Pas de sous-titre : l'onglet dit déjà "commun" / "propre à cette machine".
+      return '<div class="cfg-group" data-tab="' + g.layer + '">' + secs + "</div>";
     }).join("");
     showTab(activeTab); // applique la visibilité après (re)construction du contenu
   }
@@ -2019,5 +2025,100 @@ function setSysmonVisible(on) {
     });
     loadCfg();
   });
+})();
+
+// --- Onglet Modèles locaux : liste des modèles servis sur cette machine + édition du tuning
+// d'offload GPU (context / n_gpu_layers / cpu_moe / n_cpu_moe) dans leur model.toml. ---
+(function () {
+  const list = document.getElementById("local-list");
+  const cfgOpen = document.getElementById("cfg-open");
+  if (!list) return;
+  const esc = (s) =>
+    String(s == null ? "" : s).replace(
+      /[&<>"]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+    );
+
+  function numField(key, label, val, ph) {
+    return (
+      '<label class="lm-field"><span>' +
+      label +
+      '</span><input data-key="' +
+      key +
+      '" type="number" value="' +
+      (val == null ? "" : esc(val)) +
+      '"' +
+      (ph ? ' placeholder="' + ph + '"' : "") +
+      "></label>"
+    );
+  }
+
+  function render(models) {
+    if (!models || !models.length) {
+      list.innerHTML = '<div class="rm-empty">aucun modèle local découvert</div>';
+      return;
+    }
+    list.innerHTML = models
+      .map(function (m) {
+        const go = m.size_mb ? Math.round((m.size_mb / 1024) * 10) / 10 + " Go" : "";
+        const sub =
+          esc(m.filename) +
+          (go ? " · " + go : "") +
+          (m.repo ? " · " + esc(m.repo) : "") +
+          (m.n_layers ? " · " + m.n_layers + " couches" : "") +
+          (m.vision ? " · vision" : "");
+        const tune =
+          numField("context", "Contexte (tokens)", m.context, "") +
+          numField("n_gpu_layers", "Couches sur GPU", m.n_gpu_layers, "auto") +
+          numField("n_cpu_moe", "Experts MoE en RAM (n)", m.n_cpu_moe, "—") +
+          '<label class="lm-field lm-bool"><input data-key="cpu_moe" type="checkbox"' +
+          (m.cpu_moe ? " checked" : "") +
+          "><span>Tous les experts en RAM (cpu_moe)</span></label>";
+        return (
+          '<div class="lm-item" data-id="' +
+          esc(m.id) +
+          '"><div class="lm-head"><span class="lm-id">' +
+          esc(m.id) +
+          '</span><span class="lm-tag">local</span><span class="lm-saved">enregistré</span></div>' +
+          '<div class="lm-sub">' +
+          sub +
+          '</div><div class="lm-tune">' +
+          tune +
+          "</div></div>"
+        );
+      })
+      .join("");
+  }
+
+  async function load() {
+    try {
+      const d = await (await fetch("/models/local")).json();
+      render(d.models);
+    } catch {}
+  }
+
+  async function save(item, ctl) {
+    const value = ctl.type === "checkbox" ? ctl.checked : ctl.value;
+    const r = await fetch("/models/local/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: item.dataset.id, key: ctl.dataset.key, value }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      const s = item.querySelector(".lm-saved");
+      if (s) {
+        s.classList.add("show");
+        setTimeout(() => s.classList.remove("show"), 1400);
+      }
+    }
+  }
+
+  list.addEventListener("change", (e) => {
+    const item = e.target.closest(".lm-item");
+    if (item && e.target.dataset.key) save(item, e.target);
+  });
+  if (cfgOpen) cfgOpen.addEventListener("click", load);
+  load();
 })();
 
