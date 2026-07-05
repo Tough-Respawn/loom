@@ -18,3 +18,22 @@ n_gpu_layers = 99
 [tools]
 # Périmètre des outils sur CETTE machine : racine de tes projets.
 workspace_dir = "C:/Users/<toi>/Documents"
+
+[chat]
+# Modèle sélectionné au démarrage (id d'un modèle local ou distant ci-dessous).
+default_model = "glm-distant"
+
+# Modèle DISTANT (API OpenAI-compatible) : s'ajoute au sélecteur à côté des locaux.
+# Ne mets JAMAIS ta vraie clé dans un fichier partagé — ce gabarit ne porte que des
+# placeholders. Ta clé va dans config/local.toml (gitignored) ou via api_key_env.
+[[remote_models]]
+id = "glm-distant"                        # nom affiché dans le sélecteur
+base_url = "https://api.z.ai/api/paas/v4" # endpoint OpenAI-compatible du provider
+model = "glm-5.2"                         # id du modèle CÔTÉ provider
+api_key = "<TA_CLE_ICI>"                  # …ou api_key_env = "GLM_API_KEY" (variable d'env)
+# Fenêtre de contexte : la plupart des API (Z.ai, OpenAI) ne la publient PAS via /models ->
+# la source de vérité est la DOC officielle du modèle. Réflexe : web fetch/search la fenêtre
+# réelle et mets-la ici (ex. glm-5.2 = 1000000 sur docs.z.ai). Les providers qui l'exposent
+# (OpenRouter, vLLM) sont lus automatiquement -> cette valeur ne sert que de repli.
+context = 1000000
+max_tokens = 8192                         # plafond de sortie par tour
