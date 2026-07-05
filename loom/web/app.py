@@ -424,6 +424,10 @@ def create_app(
     def _price_of(model_id):
         return model_prices.get(model_id, (0.0, 0.0, 0.0))
 
+    def _ctx_window(model_id):
+        """Fenêtre de contexte brute (tokens) du modèle courant -> dénominateur de la jauge."""
+        return model_contexts.get(model_id) or context_window
+
     def _model_limits(model_id):
         """(max_tokens effectif, seuil de microcompact) pour `model_id`."""
 
@@ -432,6 +436,11 @@ def create_app(
         mt = model_max_tokens.get(model_id) or max_tokens
 
         return mt, max(1024, win - mt - 1024)
+
+    def _totals(conv):
+        """Compteurs de session + fenêtre du modèle (jauge de remplissage du contexte).
+        La fenêtre dépend du modèle (que l'app connaît), pas de la Conversation -> jointe ici."""
+        return {**conv.usage_totals(), "context_window": _ctx_window(conv.model)}
 
     models = list(models or [])
 
@@ -603,7 +612,7 @@ def create_app(
         return {
             "messages": conv.messages,
             **_skills_ctx(conv),
-            "usage_totals": conv.usage_totals(),
+            "usage_totals": _totals(conv),
             "models": models,
             "remote_model_ids": remote_model_ids,
             "current_model": conv.model,
@@ -620,7 +629,7 @@ def create_app(
                 {
                     "messages": conv.messages,
                     "thinking": conv.thinking,
-                    "usage_totals": conv.usage_totals(),
+                    "usage_totals": _totals(conv),
                     # Onglet initial : la session active (id/titre/modèle/workspace) + toutes
                     # les sessions (pour la sidebar). Le multi-onglets s'hydrate là-dessus.
                     "active_session": active_id,
@@ -1206,7 +1215,7 @@ def create_app(
                             tok_s=last_rate,
                         )
 
-                        yield _sse("totals", **conv.usage_totals())
+                        yield _sse("totals", **_totals(conv))
 
                     elif kind == "phase":
                         yield _sse("phase", **payload)
@@ -1629,7 +1638,7 @@ def create_app(
             "thinking": conv.thinking,
             "model": conv.model,
             "active_tools": conv.active_tools,
-            "usage_totals": conv.usage_totals(),
+            "usage_totals": _totals(conv),
         }
 
     @app.post("/session/new")

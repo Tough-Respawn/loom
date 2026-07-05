@@ -42,6 +42,11 @@ class Conversation:
     tokens_cached: int = 0  # part de tokens_in servie par le cache de préfixe
     cost_usd: float = 0.0
     api_calls: int = 0
+    # Taille du contexte au DERNIER appel (prompt_tokens du dernier tour), PAS un cumul :
+    # c'est le remplissage courant de la fenêtre du modèle. Rapporté à la fenêtre (côté web)
+    # -> jauge « ctx X% » (proximité du seuil de microcompact). Le contexte grossit dans la
+    # boucle d'outils ; le dernier appel du tour = l'occupation réelle.
+    context_tokens: int = 0
 
     def add_usage(
         self,
@@ -64,6 +69,8 @@ class Conversation:
         self.tokens_out += completion
         self.tokens_cached += cached
         self.api_calls += 1
+        # Occupation courante de la fenêtre = le prompt du DERNIER appel (pas un cumul).
+        self.context_tokens = prompt
         pc = price_cached if price_cached > 0 else price_in
         fresh = prompt - cached
         self.cost_usd += (
@@ -79,6 +86,7 @@ class Conversation:
             "cache_pct": pct,
             "cost_usd": round(self.cost_usd, 4),
             "api_calls": self.api_calls,
+            "context_tokens": self.context_tokens,
         }
 
     def add(self, role: str, content: str | list) -> None:
@@ -95,6 +103,7 @@ class Conversation:
         self.tokens_cached = 0
         self.cost_usd = 0.0
         self.api_calls = 0
+        self.context_tokens = 0
 
     def set_goal(self, goal: str) -> None:
         self.goal = (goal or "").strip()
@@ -139,6 +148,7 @@ class Conversation:
             "tokens_cached": self.tokens_cached,
             "cost_usd": self.cost_usd,
             "api_calls": self.api_calls,
+            "context_tokens": self.context_tokens,
         }
 
     @classmethod
@@ -160,6 +170,7 @@ class Conversation:
             tokens_cached=int(data.get("tokens_cached", 0) or 0),
             cost_usd=float(data.get("cost_usd", 0.0) or 0.0),
             api_calls=int(data.get("api_calls", 0) or 0),
+            context_tokens=int(data.get("context_tokens", 0) or 0),
         )
 
     def save(self, path: str | Path) -> None:
