@@ -1777,3 +1777,190 @@ function setSysmonVisible(on) {
   load();
 })();
 
+// --- Console de configuration (modal) : tous les paramètres réels, deux couches
+// commun/système, édition en direct des vrais fichiers TOML (commentaires préservés backend). ---
+(function () {
+  const modal = document.getElementById("config-modal");
+  const body = document.getElementById("config-body");
+  const openBtn = document.getElementById("cfg-open");
+  if (!modal || !body || !openBtn) return;
+  const esc = (s) =>
+    String(s == null ? "" : s).replace(
+      /[&<>"]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+    );
+
+  function provLabel(src) {
+    return src === "systeme"
+      ? "surchargé ici"
+      : src === "commun"
+        ? "défaut commun"
+        : "défaut";
+  }
+
+  function control(p) {
+    const v = p.value;
+    if (p.type === "bool") {
+      return (
+        '<input type="checkbox" class="cfg-cb cfg-ctl"' + (v ? " checked" : "") + ">"
+      );
+    }
+    if (p.type === "select") {
+      const opts = (p.options || [])
+        .map(
+          (o) =>
+            '<option value="' + esc(o) + '"' + (o === v ? " selected" : "") + ">" + esc(o) + "</option>",
+        )
+        .join("");
+      return '<select class="cfg-sel cfg-ctl">' + opts + "</select>";
+    }
+    const itype = p.type === "secret" ? "password" : p.type === "int" ? "number" : "text";
+    const ph = p.value == null ? ' placeholder="auto"' : "";
+    return (
+      '<input class="cfg-in cfg-ctl" type="' +
+      itype +
+      '" value="' +
+      esc(v == null ? "" : v) +
+      '"' +
+      ph +
+      ">"
+    );
+  }
+
+  function rowHtml(p) {
+    const resetVis = p.source !== "defaut" ? "" : ' style="display:none"';
+    const applies =
+      p.applies === "restart"
+        ? '<span class="cfg-applies-restart">redémarrage</span>'
+        : '<span class="cfg-applies-live">live</span>';
+    return (
+      '<div class="cfg-row" data-section="' +
+      esc(p.section) +
+      '" data-key="' +
+      esc(p.key) +
+      '" data-type="' +
+      esc(p.type) +
+      '">' +
+      '<div class="cfg-row-main"><div class="cfg-label-line">' +
+      '<span class="cfg-label">' +
+      esc(p.label) +
+      "</span>" +
+      '<span class="cfg-i" title="' +
+      esc(p.help) +
+      '">i</span>' +
+      '<span class="cfg-badge ' +
+      esc(p.layer) +
+      '">' +
+      (p.layer === "systeme" ? "système" : "commun") +
+      "</span>" +
+      '<span class="cfg-nat">' +
+      esc(p.nature) +
+      "</span></div>" +
+      '<div class="cfg-sub"><span class="cfg-prov ' +
+      esc(p.source) +
+      '">' +
+      provLabel(p.source) +
+      "</span> · " +
+      applies +
+      "</div></div>" +
+      '<div class="cfg-control">' +
+      control(p) +
+      '<button type="button" class="cfg-reset"' +
+      resetVis +
+      ">réinitialiser</button>" +
+      '<span class="cfg-saved">enregistré</span>' +
+      "</div></div>"
+    );
+  }
+
+  function render(data) {
+    body.innerHTML = (data.sections || [])
+      .map(
+        (s) =>
+          '<div class="cfg-section"><div class="cfg-sec-head">' +
+          esc(s.label) +
+          '</div><div class="cfg-rows">' +
+          s.params.map(rowHtml).join("") +
+          "</div></div>",
+      )
+      .join("");
+  }
+
+  async function loadCfg() {
+    try {
+      const d = await (await fetch("/config")).json();
+      render(d);
+    } catch {
+      body.innerHTML = '<div class="rm-empty">config indisponible</div>';
+    }
+  }
+
+  function open() {
+    modal.hidden = false;
+    loadCfg();
+  }
+  function close() {
+    modal.hidden = true;
+  }
+  openBtn.addEventListener("click", open);
+  modal.addEventListener("click", (e) => {
+    if (e.target.hasAttribute("data-cfg-close")) close();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.hidden) close();
+  });
+
+  function valueOf(ctl, type) {
+    if (type === "bool") return ctl.checked;
+    return ctl.value;
+  }
+  function flashSaved(row) {
+    const s = row.querySelector(".cfg-saved");
+    if (!s) return;
+    s.classList.add("show");
+    setTimeout(() => s.classList.remove("show"), 1400);
+  }
+
+  async function save(row) {
+    const ctl = row.querySelector(".cfg-ctl");
+    const section = row.dataset.section;
+    const key = row.dataset.key;
+    const value = valueOf(ctl, row.dataset.type);
+    const r = await fetch("/config/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ section, key, value }),
+    });
+    const j = await r.json();
+    if (!j.ok) return;
+    // Provenance mise à jour selon la couche écrite (ou 'defaut' si valeur vidée = reset).
+    const src = j.source === "commun" || j.source === "systeme" ? j.source : "defaut";
+    const prov = row.querySelector(".cfg-prov");
+    if (prov) {
+      prov.className = "cfg-prov " + src;
+      prov.textContent = provLabel(src);
+    }
+    const rb = row.querySelector(".cfg-reset");
+    if (rb) rb.style.display = src === "defaut" ? "none" : "";
+    flashSaved(row);
+  }
+
+  // Édition : change (blur pour les inputs, immédiat pour cases/selects) -> sauve.
+  body.addEventListener("change", (e) => {
+    const row = e.target.closest(".cfg-row");
+    if (row && e.target.classList.contains("cfg-ctl")) save(row);
+  });
+  // Reset : retire la clé du fichier de couche, puis recharge (valeur effective inférieure).
+  body.addEventListener("click", async (e) => {
+    const rb = e.target.closest(".cfg-reset");
+    if (!rb) return;
+    const row = e.target.closest(".cfg-row");
+    await fetch("/config/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ section: row.dataset.section, key: row.dataset.key }),
+    });
+    loadCfg();
+  });
+})();
+
