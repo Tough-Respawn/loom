@@ -444,6 +444,76 @@
     .rm-btn.primary { background: var(--accent-dim); color: #fff; border-color: transparent; }
     .rm-btn.primary:hover { filter: brightness(1.12); }
     .rm-btn.ghost { flex: 0 0 auto; padding: 6px 10px; }
+
+    /* --- Console de configuration (modal) --- */
+    .cfg-modal { position: fixed; inset: 0; z-index: 80; display: flex; }
+    .cfg-modal[hidden] { display: none; }
+    .cfg-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+    .cfg-dialog {
+      position: relative; margin: auto; width: 680px; max-width: 94vw; max-height: 88vh;
+      display: flex; flex-direction: column;
+      background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.5); animation: ap-in .16s ease;
+    }
+    .cfg-head {
+      display: flex; align-items: center; gap: 12px; padding: 14px 18px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .cfg-title { font-size: 14px; font-weight: 700; color: var(--text); }
+    .cfg-legend { font-size: 10.5px; color: var(--text-faint); flex: 1; }
+    .cfg-x {
+      background: none; border: none; color: var(--text-dim); cursor: pointer;
+      font-size: 15px; padding: 4px 8px; border-radius: 6px;
+    }
+    .cfg-x:hover { background: var(--bg-hover); color: var(--text); }
+    .cfg-body { overflow-y: auto; padding: 8px 18px 18px; }
+    .cfg-section { margin-top: 14px; }
+    .cfg-sec-head {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px;
+      color: var(--accent); font-weight: 700; padding: 6px 0 8px;
+      border-bottom: 1px solid var(--border-soft); margin-bottom: 6px;
+    }
+    .cfg-row {
+      display: grid; grid-template-columns: 1fr 210px; gap: 10px 14px; align-items: center;
+      padding: 7px 4px; border-bottom: 1px solid var(--border-soft);
+    }
+    .cfg-row:last-child { border-bottom: none; }
+    .cfg-row-main { min-width: 0; }
+    .cfg-label-line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .cfg-label { font-size: 12.5px; color: var(--text); }
+    .cfg-i {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--border);
+      color: var(--text-faint); font-size: 9px; font-style: italic; cursor: help; flex: none;
+    }
+    .cfg-i:hover { color: var(--text); border-color: var(--text-dim); }
+    .cfg-badge {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .4px; font-weight: 600;
+      padding: 1px 5px; border-radius: 3px; border: 1px solid transparent;
+    }
+    .cfg-badge.commun { color: #8fb8d9; background: #14202e; border-color: #23384d; }
+    .cfg-badge.systeme { color: #d6b06a; background: #241d10; border-color: #453720; }
+    .cfg-nat { font-size: 9.5px; color: var(--text-faint); }
+    .cfg-sub { font-size: 10px; color: var(--text-faint); margin-top: 2px; }
+    .cfg-applies-restart { color: var(--warn); }
+    .cfg-control { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+    .cfg-in, .cfg-sel {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-family: inherit; font-size: 12px; padding: 5px 8px;
+    }
+    .cfg-in:focus, .cfg-sel:focus { outline: none; border-color: var(--accent-dim); }
+    .cfg-cb { accent-color: var(--accent); width: 15px; height: 15px; }
+    .cfg-prov { font-size: 9.5px; white-space: nowrap; }
+    .cfg-prov.systeme { color: #d6b06a; }
+    .cfg-prov.commun { color: var(--text-faint); }
+    .cfg-prov.defaut { color: var(--text-faint); }
+    .cfg-reset {
+      background: none; border: none; color: var(--text-faint); cursor: pointer;
+      font-size: 10px; text-decoration: underline; padding: 0;
+    }
+    .cfg-reset:hover { color: var(--err); }
+    .cfg-saved { color: var(--accent); font-size: 10px; opacity: 0; transition: opacity .2s; }
+    .cfg-saved.show { opacity: 1; }
     @keyframes ap-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
     #appearance-pop[hidden] { display: none; }
     #appearance-pop .ap-head {
@@ -818,6 +888,25 @@
         <button type="button" id="rm-cancel" class="rm-btn ghost">Annuler</button>
       </div>
     </form>
+
+    <div class="ap-head" style="margin-top:16px;">Configuration</div>
+    <button type="button" id="cfg-open" class="rm-add-btn">Ouvrir la console de configuration</button>
+  </div>
+
+  <!-- Console de configuration : tous les paramètres reels (deux couches commun/systeme) -->
+  <div id="config-modal" class="cfg-modal" hidden>
+    <div class="cfg-backdrop" data-cfg-close></div>
+    <div class="cfg-dialog" role="dialog" aria-label="Configuration">
+      <div class="cfg-head">
+        <span class="cfg-title">Configuration</span>
+        <span class="cfg-legend">
+          <span class="cfg-badge commun">commun</span> tout système ·
+          <span class="cfg-badge systeme">système</span> cette machine
+        </span>
+        <button type="button" class="cfg-x" data-cfg-close aria-label="Fermer">✕</button>
+      </div>
+      <div class="cfg-body" id="config-body"></div>
+    </div>
   </div>
 
   <!-- MAIN -->
