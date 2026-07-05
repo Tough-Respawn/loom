@@ -804,14 +804,21 @@ class LoomClient:
             {"extra_body": {"reasoning": {"enabled": False}}},  # OpenRouter
             {},  # modèle sans raisonnement / provider strict
         )
+        # Titre = cosmétique : ÉCHEC RAPIDE si le backend est lent/éteint (pas de retries en
+        # cascade qui feraient traîner la fin du tour). On retombe alors sur le repli message.
+        fast = oai.with_options(max_retries=0, timeout=20)
         for extra in attempts:
             try:
-                resp = oai.chat.completions.create(**base, **extra)
+                resp = fast.chat.completions.create(**base, **extra)
                 txt = (resp.choices[0].message.content or "").strip()
                 txt = txt.strip('"').strip("'").strip()
                 if txt:
                     return txt.splitlines()[0][:60].strip()
-            except Exception:  # noqa: BLE001 - titre cosmétique, on tente la variante suivante
+            except (APIConnectionError, APITimeoutError):
+                # Backend down/lent : inutile de tenter les autres variantes de param (elles
+                # échoueront pareil) -> on abandonne vite, l'appelant fait le repli message.
+                break
+            except Exception:  # noqa: BLE001 - param rejeté par ce backend : variante suivante
                 continue
         return ""
 
