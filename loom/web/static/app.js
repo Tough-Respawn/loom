@@ -123,8 +123,14 @@ function renderMsgNav() {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "mn-item";
-    b.textContent = clean;
     b.title = clean;
+    // Replié = juste un point ; le texte n'apparaît qu'au survol du panneau (déplié).
+    const span = document.createElement("span");
+    span.className = "mn-text";
+    span.textContent = clean;
+    const dot = document.createElement("span");
+    dot.className = "mn-dot";
+    b.append(span, dot);
     b.addEventListener("click", () => {
       const el = document.querySelectorAll("#messages .msg.user")[i];
       if (!el) return;
