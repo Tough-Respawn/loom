@@ -364,6 +364,7 @@ def create_app(
     remote_store_path=None,
     config_defaults_path=None,
     config_local_path=None,
+    local_models=None,
 ) -> Flask:
 
     app = Flask(__name__)
@@ -461,6 +462,10 @@ def create_app(
         return {**conv.usage_totals(), "context_window": win, "context_source": src}
 
     models = list(models or [])
+    # Sérialise TOUTES les écritures de fichiers de config/modèles (model.toml, local.toml,
+    # defaults.toml, store JSON) : Flask est threaded -> deux éditions concurrentes du même
+    # fichier feraient une course read-modify-write (la dernière écrase l'autre).
+    _toml_lock = threading.Lock()
 
     vision_models = set(vision_models or [])  # ids des modèles avec mmproj (vision)
 
@@ -468,6 +473,9 @@ def create_app(
     # ids des modèles LOCAUX (servis par llama-swap sur la machine) = tout sauf les distants.
     # Sert à /machine_state (quel modèle machine est chargé).
     local_model_ids = [m for m in (models or []) if m not in remote_model_ids]
+    # Détails des modèles LOCAUX (onglet Modèles locaux) : id/dir/offload/context. `dir` porte
+    # le model.toml -> édition du tuning machine via tomlkit.
+    local_model_specs = list(local_models or [])
 
     remote_model_names = dict(
         remote_model_names or {}
@@ -1609,6 +1617,7 @@ def create_app(
         out = []
         for mid in remote_model_ids:
             info = client.remote_route_info(mid)
+            key = client.remote_api_key(mid)
             out.append(
                 {
                     "id": mid,
@@ -1618,6 +1627,9 @@ def create_app(
                     "max_tokens": model_max_tokens.get(mid),
                     "vision": mid in vision_models,
                     "has_key": info["has_key"],
+                    # Indice masqué (4 derniers car.) : l'utilisateur voit sa propre clé de
+                    # façon partielle, jamais la clé entière renvoyée au client.
+                    "key_hint": ("…" + key[-4:]) if key else "",
                     "managed": mid in managed_ids,
                 }
             )
@@ -1685,7 +1697,13 @@ def create_app(
         if mid in models and mid not in remote_model_ids:
             return {"error": f"'{mid}' est déjà un modèle local"}, 400
         stored = {m["id"]: m for m in model_store.load(remote_store_path)}
-        key = (b.get("api_key") or "").strip() or stored.get(mid, {}).get("api_key", "")
+        # Clé : si vide, on garde l'existante — soit du store géré, soit de la route montée
+        # (cas d'un modèle défini en config qu'on édite sans re-saisir la clé).
+        key = (
+            (b.get("api_key") or "").strip()
+            or stored.get(mid, {}).get("api_key", "")
+            or client.remote_api_key(mid)
+        )
         rec = {
             "id": mid,
             "base_url": base_url,
@@ -1695,7 +1713,14 @@ def create_app(
             "max_tokens": int(b["max_tokens"]) if b.get("max_tokens") else None,
             "vision": bool(b.get("vision")),
         }
-        model_store.upsert(remote_store_path, rec)
+        # Un modèle DÉFINI EN CONFIG (monté mais absent du store géré) reste dans local.toml :
+        # on l'y édite en place (tomlkit, commentaires préservés). Sinon store JSON géré par l'UI.
+        is_config = mid in remote_model_ids and mid not in stored
+        with _toml_lock:
+            if is_config and config_local_path:
+                model_store.upsert_remote_in_toml(config_local_path, rec)
+            else:
+                model_store.upsert(remote_store_path, rec)
         _mount_remote(rec)
         return {"ok": True, "models": _models_payload(), "remotes": _remote_list()}
 
@@ -1706,7 +1731,8 @@ def create_app(
         managed = {m.get("id") for m in model_store.load(remote_store_path)}
         if mid not in managed:
             return {"error": "modèle non géré par l'UI (défini dans local.toml)"}, 400
-        model_store.delete(remote_store_path, mid)
+        with _toml_lock:
+            model_store.delete(remote_store_path, mid)
         client.remove_remote_route(mid)
         remote_model_ids.discard(mid)
         remote_model_names.pop(mid, None)
@@ -1717,6 +1743,76 @@ def create_app(
         if mid in models:
             models.remove(mid)
         return {"ok": True, "models": _models_payload(), "remotes": _remote_list()}
+
+    # ---- Modèles LOCAUX : liste + édition du tuning MACHINE (offload GPU) dans model.toml.
+    # La définition (repo/filename/n_layers) est commune au modèle -> lecture seule ici ; le
+    # tuning (context/n_gpu_layers/cpu_moe/n_cpu_moe) est propre à cette machine -> éditable.
+    _LOCAL_EDITABLE = {
+        "context": "int",
+        "n_gpu_layers": "int",
+        "cpu_moe": "bool",
+        "n_cpu_moe": "int",
+    }
+
+    @app.get("/models/local")
+    def models_local():
+        import tomllib
+
+        out = []
+        for m in local_model_specs:
+            cur = {k: v for k, v in m.items() if k != "dir"}
+            d = m.get("dir")
+            if d:
+                tp = Path(d) / "model.toml"
+                if tp.exists():
+                    try:
+                        raw = tomllib.loads(tp.read_text(encoding="utf-8"))
+                        for k in _LOCAL_EDITABLE:
+                            if k in raw:
+                                cur[k] = raw[k]
+                    except (OSError, ValueError):
+                        pass
+            out.append(cur)
+        return {"models": out}
+
+    @app.post("/models/local/set")
+    def models_local_set():
+        import tomlkit
+
+        b = request.get_json(silent=True) or {}
+        mid = (b.get("id") or "").strip()
+        key = (b.get("key") or "").strip()
+        if key not in _LOCAL_EDITABLE:
+            return {"error": "champ non éditable"}, 400
+        spec = next((m for m in local_model_specs if m.get("id") == mid), None)
+        if not spec or not spec.get("dir"):
+            return {"error": "modèle local inconnu"}, 404
+        tp = Path(spec["dir"]) / "model.toml"
+        if not tp.exists():
+            return {"error": "model.toml introuvable"}, 404
+        raw = b.get("value")
+        t = _LOCAL_EDITABLE[key]
+        empty = raw is None or (
+            isinstance(raw, str) and raw.strip() == "" and t == "int"
+        )
+        truthy = ("1", "true", "on", "yes")
+        try:
+            with _toml_lock:  # sérialise le read-modify-write (Flask threaded)
+                doc = tomlkit.parse(tp.read_text(encoding="utf-8"))
+                if empty:
+                    if key in doc:
+                        del doc[key]
+                elif t == "int":
+                    doc[key] = int(raw)
+                else:  # bool
+                    doc[key] = (
+                        raw if isinstance(raw, bool) else str(raw).lower() in truthy
+                    )
+                tp.write_text(tomlkit.dumps(doc), encoding="utf-8")
+        except (ValueError, TypeError) as e:
+            return {"ok": False, "error": str(e)[:120]}, 400
+        # Prise en compte au prochain (re)chargement du modèle (offload = paramètre de lancement).
+        return {"ok": True, "applies": "restart"}
 
     # ---- Console de configuration : introspection + édition des vrais fichiers TOML (deux
     # couches commun/système), commentaires préservés via tomlkit (loom.runtime.config_schema).
@@ -1743,9 +1839,14 @@ def create_app(
         if not (section and key):
             return {"error": "section et key requis"}, 400
         try:
-            res = config_schema.set_value(
-                config_defaults_path, config_local_path, section, key, b.get("value")
-            )
+            with _toml_lock:
+                res = config_schema.set_value(
+                    config_defaults_path,
+                    config_local_path,
+                    section,
+                    key,
+                    b.get("value"),
+                )
         except (ValueError, OSError) as e:
             return {"ok": False, "error": str(e)[:160]}, 400
         code = 200 if res.get("ok") else 400
@@ -1762,9 +1863,10 @@ def create_app(
         key = (b.get("key") or "").strip()
         if not (section and key):
             return {"error": "section et key requis"}, 400
-        res = config_schema.reset_value(
-            config_defaults_path, config_local_path, section, key
-        )
+        with _toml_lock:
+            res = config_schema.reset_value(
+                config_defaults_path, config_local_path, section, key
+            )
         return res, (200 if res.get("ok") else 400)
 
     @app.get("/machine_state")

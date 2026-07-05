@@ -195,6 +195,24 @@ def build_app(cfg):
     model_max_tokens = {
         rm.id: rm.max_tokens for rm in cfg.remote_models if rm.max_tokens
     }
+    # Modèles LOCAUX (découverts par dossier) : détails pour l'onglet Modèles locaux de la
+    # console. `dir` porte le model.toml -> édition du tuning machine (offload) via tomlkit.
+    local_models = [
+        {
+            "id": m.id,
+            "dir": m.dir,
+            "repo": m.repo,
+            "filename": m.filename,
+            "n_layers": m.n_layers,
+            "size_mb": m.size_mb,
+            "context": (m.context or cfg.context),
+            "n_gpu_layers": m.n_gpu_layers,
+            "cpu_moe": m.cpu_moe,
+            "n_cpu_moe": m.n_cpu_moe,
+            "vision": bool(m.mmproj_filename),
+        }
+        for m in cfg.models
+    ]
     app = create_app(
         client,
         cfg.chat.skills_dir,
@@ -234,6 +252,7 @@ def build_app(cfg):
         remote_store_path=str(remote_store_path),
         config_defaults_path=str(CONFIG_PATH),
         config_local_path=str(PERSONAL_CONFIG_PATH),
+        local_models=local_models,
     )
     return app
 
