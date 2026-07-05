@@ -519,19 +519,21 @@
     }
     .cfg-group.machine .cfg-group-head::before { background: #d6b06a; }
     .cfg-group-sub { font-size: 10.5px; color: var(--text-faint); padding: 6px 12px 2px; }
-    .cfg-section { margin-top: 10px; }
-    /* Sous-section (Serveur, Chat…) : tempérée, le groupe de couche prime visuellement. */
+    .cfg-section { margin-top: 12px; }
+    .cfg-section:first-child { margin-top: 2px; }
     .cfg-sec-head {
       font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
-      color: var(--text-faint); font-weight: 600; padding: 8px 4px 4px;
+      color: var(--text-faint); font-weight: 600; padding: 10px 2px 3px;
     }
+    /* Ligne AÉRÉE, sans bordure : libellé (+ i) à gauche, champ à droite. */
     .cfg-row {
-      display: grid; grid-template-columns: 1fr 210px; gap: 10px 14px; align-items: center;
-      padding: 7px 4px; border-bottom: 1px solid var(--border-soft);
+      display: grid; grid-template-columns: 1fr 190px; gap: 8px 14px; align-items: center;
+      padding: 8px; border-radius: 7px; transition: background .12s;
     }
-    .cfg-row:last-child { border-bottom: none; }
-    .cfg-row-main { min-width: 0; }
-    .cfg-label-line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .cfg-row:hover { background: var(--bg-elev); }
+    /* "Modifié" : liseré discret d'accent (pas de texte "surchargé ici" sur chaque ligne). */
+    .cfg-row.customized { box-shadow: inset 2px 0 0 var(--accent); }
+    .cfg-row-main { min-width: 0; display: flex; align-items: center; gap: 7px; }
     .cfg-label { font-size: 12.5px; color: var(--text); }
     .cfg-i {
       display: inline-flex; align-items: center; justify-content: center;
@@ -539,15 +541,11 @@
       color: var(--text-faint); font-size: 9px; font-style: italic; cursor: help; flex: none;
     }
     .cfg-i:hover { color: var(--text); border-color: var(--text-dim); }
-    .cfg-badge {
-      font-size: 9px; text-transform: uppercase; letter-spacing: .4px; font-weight: 600;
-      padding: 1px 5px; border-radius: 3px; border: 1px solid transparent;
+    /* Effet au redémarrage : signalé seulement là où c'est vrai (rien pour "live"). */
+    .cfg-restart {
+      font-size: 9px; color: var(--warn); background: var(--warn-bg);
+      border: 1px solid var(--warn-bg); border-radius: 3px; padding: 0 5px; white-space: nowrap;
     }
-    .cfg-badge.commun { color: #8fb8d9; background: #14202e; border-color: #23384d; }
-    .cfg-badge.systeme { color: #d6b06a; background: #241d10; border-color: #453720; }
-    .cfg-nat { font-size: 9.5px; color: var(--text-faint); }
-    .cfg-sub { font-size: 10px; color: var(--text-faint); margin-top: 2px; }
-    .cfg-applies-restart { color: var(--warn); }
     .cfg-control { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
     .cfg-in, .cfg-sel {
       width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
@@ -555,17 +553,24 @@
     }
     .cfg-in:focus, .cfg-sel:focus { outline: none; border-color: var(--accent-dim); }
     .cfg-cb { accent-color: var(--accent); width: 15px; height: 15px; }
-    .cfg-prov { font-size: 9.5px; white-space: nowrap; }
-    .cfg-prov.systeme { color: #d6b06a; }
-    .cfg-prov.commun { color: var(--text-faint); }
-    .cfg-prov.defaut { color: var(--text-faint); }
     .cfg-reset {
       background: none; border: none; color: var(--text-faint); cursor: pointer;
-      font-size: 10px; text-decoration: underline; padding: 0;
+      font-size: 10px; text-decoration: underline; padding: 0; white-space: nowrap;
     }
+    .cfg-reset[hidden] { display: none; }
     .cfg-reset:hover { color: var(--err); }
-    .cfg-saved { color: var(--accent); font-size: 10px; opacity: 0; transition: opacity .2s; }
+    .cfg-saved { color: var(--accent); font-size: 12px; opacity: 0; transition: opacity .2s; }
     .cfg-saved.show { opacity: 1; }
+    /* Réglages avancés : repliés par défaut -> vue initiale légère. */
+    .cfg-adv { margin-top: 12px; }
+    .cfg-adv > summary {
+      cursor: pointer; list-style: none; font-size: 11px; color: var(--text-dim);
+      padding: 9px 2px; border-top: 1px solid var(--border-soft); user-select: none;
+    }
+    .cfg-adv > summary::-webkit-details-marker { display: none; }
+    .cfg-adv > summary::before { content: "▸ "; color: var(--text-faint); }
+    .cfg-adv[open] > summary::before { content: "▾ "; }
+    .cfg-adv > summary:hover { color: var(--text); }
     @keyframes ap-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
     #appearance-pop[hidden] { display: none; }
     #appearance-pop .ap-head {
