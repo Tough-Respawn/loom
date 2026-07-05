@@ -232,6 +232,8 @@ def build_app(cfg):
             for rm in cfg.remote_models
         },
         remote_store_path=str(remote_store_path),
+        config_defaults_path=str(CONFIG_PATH),
+        config_local_path=str(PERSONAL_CONFIG_PATH),
     )
     return app
 
