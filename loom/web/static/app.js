@@ -884,23 +884,36 @@ async function postForm(url, data) {
 // session l'OUVRE comme onglet (ou l'active si déjà ouverte) — plus de rechargement de page.
 const sessionNew = document.getElementById("session-new");
 if (sessionNew) sessionNew.addEventListener("click", newSessionTab);
-document.querySelector(".session-list")?.addEventListener("click", (e) => {
+document.querySelector(".session-list")?.addEventListener("click", async (e) => {
+  // Suppression : confirmation INLINE sur la ligne (le × devient ✓/✗) -> pas besoin d'aller
+  // en bas de l'écran. La ligne garde son titre pendant la confirmation.
   const del = e.target.closest(".sess-del");
   if (del) {
     e.stopPropagation();
     const sid = del.dataset.id;
-    showToast("Supprimer cette session ?", [
-      {
-        label: "Supprimer",
-        kind: "danger",
-        onClick: async () => {
-          await postForm("/session/delete", { id: sid });
-          if (state.tabs[sid]) closeTab(sid); // ferme l'onglet si ouvert
-          del.closest(".session-item")?.remove(); // retire de la sidebar
-        },
-      },
-      { label: "Annuler" },
-    ]);
+    del.outerHTML =
+      `<span class="sess-confirm">` +
+      `<button type="button" class="sess-yes" data-id="${sid}" title="Confirmer la suppression">✓</button>` +
+      `<button type="button" class="sess-no" data-id="${sid}" title="Annuler">✕</button>` +
+      `</span>`;
+    return;
+  }
+  const yes = e.target.closest(".sess-yes");
+  if (yes) {
+    e.stopPropagation();
+    const sid = yes.dataset.id;
+    await postForm("/session/delete", { id: sid });
+    if (state.tabs[sid]) closeTab(sid); // ferme l'onglet si ouvert
+    yes.closest(".session-item")?.remove(); // retire de la sidebar
+    return;
+  }
+  const no = e.target.closest(".sess-no");
+  if (no) {
+    e.stopPropagation();
+    const sid = no.dataset.id;
+    const span = no.closest(".sess-confirm");
+    if (span)
+      span.outerHTML = `<button type="button" class="sess-del" data-id="${sid}" title="Supprimer">✕</button>`;
     return;
   }
   const pick = e.target.closest(".sess-pick");

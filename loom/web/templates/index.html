@@ -120,6 +120,16 @@
     }
     .session-item:hover .sess-del { opacity: 1; }
     .session-item .sess-del:hover { color: var(--err); }
+    /* Confirmation INLINE de suppression (le × devient ✓/✗ sur la ligne même) */
+    .sess-confirm { display: inline-flex; align-items: center; gap: 1px; flex: none; }
+    .sess-confirm button {
+      background: none; border: none; cursor: pointer; padding: 4px 6px; font-size: 12px;
+      border-radius: 4px; line-height: 1;
+    }
+    .sess-confirm .sess-yes { color: var(--err); }
+    .sess-confirm .sess-yes:hover { background: var(--err); color: #fff; }
+    .sess-confirm .sess-no { color: var(--text-faint); }
+    .sess-confirm .sess-no:hover { background: var(--bg-hover); color: var(--text); }
     #model-select {
       width: 100%; background: var(--bg-elev); color: var(--text);
       border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
