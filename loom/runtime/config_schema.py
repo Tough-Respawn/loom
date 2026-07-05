@@ -428,6 +428,32 @@ CODE_DEFAULTS = {
 }
 
 
+# Paramètres AVANCÉS : repliés par défaut dans la console (rarement touchés). Garde la vue
+# initiale légère -> l'essentiel visible, le reste sous « Réglages avancés ».
+ADVANCED = {
+    ("server", "n_parallel"),
+    ("server", "port"),
+    ("override", "threads"),
+    ("chat", "request_timeout"),
+    ("chat", "max_retries"),
+    ("chat", "context_token_budget"),
+    ("chat", "keep_recent_messages"),
+    ("chat", "identity_max_tokens"),
+    ("chat", "reflect_min_actions"),
+    ("chat", "keepwarm_interval"),
+    ("chat", "web_port"),
+    ("tools", "read_file_max_bytes"),
+    ("memory", "recall_summarize"),
+    ("memory", "recall_summarize_threshold"),
+    ("web_search", "backend"),
+    ("web_search", "searxng_url"),
+    ("web_search", "tavily_api_key"),
+    ("web_search", "max_results"),
+    ("web_search", "http_timeout"),
+    ("web_search", "max_chars_per_page"),
+}
+
+
 def _read_toml(path: str | Path) -> dict:
     p = Path(path)
     if not p.exists():
@@ -467,6 +493,7 @@ def describe(defaults_path: str | Path, local_path: str | Path) -> dict:
         row = dict(spec)
         row["value"] = value
         row["source"] = source
+        row["advanced"] = (s, k) in ADVANCED
         sections.setdefault(s, []).append(row)
     return {
         "sections": [
