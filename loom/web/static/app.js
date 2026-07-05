@@ -1785,6 +1785,23 @@ function setSysmonVisible(on) {
   const body = document.getElementById("config-body");
   const openBtn = document.getElementById("cfg-open");
   if (!modal || !body || !openBtn) return;
+
+  // Onglets : une seule section affichée (commun | systeme | modeles), pas de scroll global.
+  let activeTab = "commun";
+  function showTab(tab) {
+    activeTab = tab;
+    document
+      .querySelectorAll("#cfg-tabs .cfg-tab")
+      .forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+    const models = document.getElementById("cfg-models");
+    if (models) models.hidden = tab !== "modeles";
+    body
+      .querySelectorAll(".cfg-group")
+      .forEach((g) => (g.hidden = g.dataset.tab !== tab));
+  }
+  document
+    .querySelectorAll("#cfg-tabs .cfg-tab")
+    .forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
   const esc = (s) =>
     String(s == null ? "" : s).replace(
       /[&<>"]/g,
@@ -1914,15 +1931,16 @@ function setSysmonVisible(on) {
         )
         .join("");
       return (
-        '<div class="cfg-group ' + g.cls + '"><div class="cfg-group-head">' +
-        esc(g.title) +
-        '</div><div class="cfg-group-sub">' +
+        '<div class="cfg-group" data-tab="' +
+        g.layer +
+        '"><div class="cfg-group-sub">' +
         esc(g.sub) +
         "</div>" +
         secs +
         "</div>"
       );
     }).join("");
+    showTab(activeTab); // applique la visibilité après (re)construction du contenu
   }
 
   async function loadCfg() {
