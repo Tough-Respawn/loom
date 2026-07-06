@@ -1430,7 +1430,105 @@ class LoomClient:
             # Images inline (read_image) à faire VOIR au modèle : différées après TOUS
             # les résultats d'outils (les messages `tool` doivent rester contigus).
             image_followups: list[dict] = []
-            for tc in tool_calls:
+            # PARALLÉLISME (distant uniquement). Règle Loom : local = 1 slot -> on sérialise ;
+            # distant = machine du provider -> on EXPLOITE le parallélisme. Cas ciblé et sûr :
+            # un tour où le modèle émet PLUSIEURS dispatch_agent (sous-agents indépendants) ->
+            # on les lance concurremment (1 thread chacun), leurs activités relayées en direct
+            # via une file, résultats recollés dans l'ordre. Tout le reste (écritures, shell,
+            # mix d'outils, modèle local) reste SÉQUENTIEL (garde-fous P1.1, confirm, etc.).
+            _seq_tool_calls = tool_calls
+            _parallel = (
+                registry is not None
+                and self.is_remote(model)
+                and len(tool_calls) >= 2
+                and all(tc.get("name") == "dispatch_agent" for tc in tool_calls)
+            )
+            if _parallel:
+                import queue as _queue
+
+                _seq_tool_calls = []  # la boucle séquentielle ne fait rien ce tour
+                _q: _queue.Queue = _queue.Queue()
+                _res: dict = {}  # id -> (result, ok)
+                for (
+                    _tc
+                ) in tool_calls:  # pastilles d'abord : elles se rempliront en parallèle
+                    yield ("tool_call", {"id": _tc["id"], "name": _tc["name"]})
+                    log_event(
+                        "tool.call",
+                        name=_tc["name"],
+                        args_len=len(_tc["arguments"] or ""),
+                    )
+
+                def _pworker(tc):
+                    try:
+                        pargs = json.loads(tc["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        _res[tc["id"]] = (
+                            "erreur: arguments tronqués (réponse coupée).",
+                            False,
+                        )
+                        _q.put((tc["id"], "__done__", None))
+                        return
+                    parts: list[str] = []
+                    try:
+                        for sk, sp in registry.run_stream(tc["name"], pargs):
+                            ln = _sub_activity_line(sk, sp)
+                            if ln:
+                                _q.put(
+                                    (
+                                        tc["id"],
+                                        "tool_stream",
+                                        {"id": tc["id"], "text": ln},
+                                    )
+                                )
+                            if sk == "content" and isinstance(sp, str):
+                                parts.append(sp)
+                        r = "".join(parts).strip() or "(le sous-agent n'a rien renvoyé)"
+                        okp = not r.startswith("erreur")
+                    except Exception as e:  # noqa: BLE001 - un agent qui casse n'arrête pas les autres
+                        r, okp = f"erreur: {e}", False
+                    _res[tc["id"]] = (r, okp)
+                    _q.put((tc["id"], "__done__", None))
+
+                _threads = [
+                    threading.Thread(
+                        target=_pworker, args=(tc,), daemon=True, name="loom-agent"
+                    )
+                    for tc in tool_calls
+                ]
+                for _t in _threads:
+                    _t.start()
+                _left = len(_threads)
+                while _left > 0:  # relaie l'activité live des N agents au fil de l'eau
+                    _tid, _kind, _payload = _q.get()
+                    if _kind == "__done__":
+                        _left -= 1
+                    else:
+                        yield (_kind, _payload)
+                for _t in _threads:
+                    _t.join()
+                for tc in (
+                    tool_calls
+                ):  # résultats DANS L'ORDRE (messages `tool` cohérents pour l'API)
+                    r, okp = _res.get(tc["id"], ("(vide)", False))
+                    convo.append(
+                        {"role": "tool", "tool_call_id": tc["id"], "content": r}
+                    )
+                    executed = True
+                    if not okp:
+                        fail_count += 1
+                    yield (
+                        "tool_result",
+                        {
+                            "id": tc["id"],
+                            "name": tc["name"],
+                            "ok": okp,
+                            "preview": r[:300],
+                            "out_full": str(r)[:8000],
+                        },
+                    )
+
+            for tc in _seq_tool_calls:
                 name = tc["name"]
                 yield ("tool_call", {"id": tc["id"], "name": name})
                 log_event("tool.call", name=name, args_len=len(tc["arguments"] or ""))

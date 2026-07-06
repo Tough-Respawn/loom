@@ -1020,6 +1020,16 @@ def create_app(
 
             system_prompt = f"{_idblk}\n\n{base_prompt}" if _idblk else base_prompt
 
+            # Distant (strong) : la machine du provider encaisse le parallélisme -> on incite à
+            # GROUPER les sous-agents indépendants dans un même tour (ils tournent en parallèle).
+            if strong:
+                system_prompt += (
+                    "\n\nParallélisme : quand plusieurs sous-tâches sont INDÉPENDANTES (auditer/"
+                    "explorer des pans distincts), émets PLUSIEURS dispatch_agent dans le MÊME "
+                    "tour — ils s'exécutent EN PARALLÈLE, bien plus vite qu'un par tour. Un pan = "
+                    "un agent, lance-les ensemble."
+                )
+
             if catalog:
                 system_prompt += f"\n\n{catalog}"
 
