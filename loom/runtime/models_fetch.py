@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download
+from huggingface_hub.errors import HfHubHTTPError
 
 
 class ModelUnavailable(Exception):
@@ -75,8 +76,11 @@ def ensure_model(repo: str, filename: str, models_dir: str | Path) -> Path:
         )
     try:
         hf_hub_download(repo_id=repo, filename=filename, local_dir=str(models_dir))
+    # hf_hub_download ne lève jamais ModelUnavailable (exception interne à ce module) :
+    # ce re-raise est théoriquement mort, mais on le garde par sécurité défensive au cas
+    # où un futur appelant lèverait une exception maison dans un wrapper.
     except ModelUnavailable:
         raise
-    except Exception as exc:  # noqa: BLE001 - 401/404/réseau/HF : tout devient actionnable
+    except (HfHubHTTPError, OSError) as exc:  # 401/404/réseau/HF : tout devient actionnable
         raise ModelUnavailable(_missing_msg(filename, target, repo, cause=exc)) from exc
     return target

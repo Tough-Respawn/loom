@@ -1,5 +1,7 @@
 # CHANGELOG — Loom
 
+<!-- RÔLE : historique des versions (commits, fonctionnalités, corrections, refactoring). Pitch public : README.md. Suivi interne : ETAT_PROJET.md. Carte technique : loom.md. -->
+
 > Commits du 2026-04 à 2026-06 — `feat/loom-memory-foundation` (HEAD), `master` à `be69fb6`.
 
 ---

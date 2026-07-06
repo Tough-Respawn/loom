@@ -1,11 +1,11 @@
 # loom/tools/browser.py
 """Outils navigateur : check_page (yeux sur une page rendue), check_interactive (preuve de
-jouabilite) et serve_and_check (demarre un serveur, verifie, l'arrete).
+jouabilité) et serve_and_check (démarre un serveur, vérifie, l'arrête).
 
 Sans ca, le modele edite du HTML/JS a l'aveugle et confabule « ca marche » : il ne voit
 ni l'erreur console qui plante le jeu, ni que la grille ne s'affiche pas. check_page charge
 la page dans Chromium headless, EXECUTE le JS, et renvoie les ERREURS CONSOLE, le compte
-d'elements (count_selectors) et un extrait du texte visible. Lazy-import de playwright :
+d'éléments (count_selectors) et un extrait du texte visible. Lazy-import de playwright :
 message clair et actionnable si la lib (ou le navigateur) n'est pas installee.
 
 Le contenu d'une page est EXTERNE/non fiable -> renvoye via untrusted() : donnee a
@@ -19,7 +19,6 @@ import ipaddress
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -27,6 +26,8 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from loom.permissions import _is_hard_denied
+from loom.runtime.platform_info import detect
+from loom.tools._net import categorize_ip
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.shell import _kill_tree, _shell_argv
 from loom.tools.trust import untrusted
@@ -118,7 +119,7 @@ def _alive_hint(sid: str) -> str:
         "serveur avec check_page/check_interactive (ou re-appelle serve_and_check sur une "
         "autre url du meme site, sans relancer). QUAND TU AS TA REPONSE, ferme-le avec "
         f"serve_and_check(action='stop', id='{sid}'). Ne lance JAMAIS un serveur toi-meme via "
-        "Start-Process / start / Invoke-Item (ca ouvre le .ps1 dans un editeur et ne survit "
+        "Start-Process / start / Invoke-Item (ca ouvre le .ps1 dans un éditeur et ne survit "
         "pas) : serve_and_check s'occupe du cycle de vie."
     )
 
@@ -162,10 +163,11 @@ def _browser_http_blocked(url: str) -> str | None:
         return f"hote introuvable : {host}"
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        # Loopback (127.0.0.1/::1) et LAN prive (192.168.x) AUTORISES : c'est l'usage
-        # meme de l'outil. On ne bloque que ce qui n'a aucun usage dev : metadonnees
-        # cloud (link-local 169.254.x / fe80::), multicast, adresse non specifiee.
-        if ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+        cat = categorize_ip(ip)
+        # Loopback (127.0.0.1/::1) et LAN privé (192.168.x) AUTORISÉS : c'est l'usage
+        # même de l'outil. On ne bloque que ce qui n'a aucun usage dev : métadonnées
+        # cloud (link-local 169.254.x / fe80::), multicast, adresse non spécifiée.
+        if cat in ("link-local", "multicast", "unspecified"):
             return f"hote interdit (adresse speciale : {ip})"
     return None
 
@@ -174,7 +176,7 @@ def _browser_url(root: Path, target: str) -> str:
     """Resout et VALIDE la cible d'un outil navigateur ; leve ToolError si refusee.
 
     - http(s):// -> garde de navigateur (`_browser_http_blocked`) : loopback/LAN prive
-      AUTORISES (c'est l'usage : verifier un dev server), seules les adresses speciales
+      AUTORISES (c'est l'usage : vérifier un dev server), seules les adresses speciales
       (metadonnees cloud) sont bloquees ;
     - file:// ou chemin local -> confine aux extensions web (`_WEB_EXT`) : le navigateur ne
       peut pas servir a exfiltrer un fichier arbitraire rendu en page.
@@ -204,7 +206,7 @@ def _render_page(
     url: str, wait_selector: str | None, count_selectors: list[str]
 ) -> str:
     """Charge `url` dans Chromium headless, EXECUTE son JS et renvoie un rapport TEXTE :
-    erreurs console, comptes d'elements, extrait visible, diagnostic de localisation. Ne
+    erreurs console, comptes d'éléments, extrait visible, diagnostic de localisation. Ne
     leve PAS pour une page injoignable (renvoie un diagnostic) ; leve ToolError seulement
     si Playwright (lib ou navigateur) est absent. Partage par check_page et serve_and_check."""
     try:
@@ -272,14 +274,14 @@ def _render_page(
     for e in errors[:8]:
         lines.append(f"  [erreur] {e[:200]}")
     if counts:
-        lines.append("elements : " + " - ".join(f"{s} x{n}" for s, n in counts.items()))
+        lines.append("éléments : " + " - ".join(f"{s} x{n}" for s, n in counts.items()))
     visible = " ".join(body_text.split())
     if visible:
         lines.append(f"texte visible : {visible[:400]}")
     if note:
         lines.append(f"DIAGNOSTIC : {note}")
     elif not errors and not page_errors:
-        lines.append("(aucune erreur console - la page s'est chargee et executee)")
+        lines.append("(aucune erreur console - la page s'est chargée et exécutée)")
     return "\n".join(lines)
 
 
@@ -311,10 +313,10 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
         description=(
             "Charge une page web (URL http(s):// OU chemin d'un fichier .html local) dans "
             "un navigateur headless, EXECUTE son JavaScript, et renvoie : les ERREURS de "
-            "la console, le nombre d'elements correspondant a count_selectors (ex "
+            "la console, le nombre d'éléments correspondant a count_selectors (ex "
             "'.cell,#board'), et un extrait du texte visible. SERS-T'EN pour VERIFIER "
             "qu'une page HTML que tu viens d'ecrire s'affiche et fonctionne (0 erreur "
-            "console, elements attendus presents) AU LIEU de supposer que ca marche. Pour "
+            "console, éléments attendus presents) AU LIEU de supposer que ca marche. Pour "
             "une appli servie par un SERVEUR (Next.js, Vite, Flask) qui n'est pas encore "
             "lance, utilise plutot serve_and_check. Si des erreurs apparaissent, corrige "
             "puis relance jusqu'a 0 erreur."
@@ -339,7 +341,7 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
                     "type": "string",
                     "description": (
                         "Selecteurs CSS a compter, separes par des virgules (ex "
-                        "'.cell,.flag') - pour verifier que des elements sont bien rendus."
+                        "'.cell,.flag') - pour vérifier que des éléments sont bien rendus."
                     ),
                 },
             },
@@ -350,12 +352,12 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
 
 
 def _wait_for_port(proc: subprocess.Popen, host: str, port: int, timeout: int) -> bool:
-    """Attend qu'un port TCP accepte une connexion (serveur pret). Renvoie False si le
-    delai expire OU si le process serveur meurt avant (crash au demarrage)."""
+    """Attend qu'un port TCP accepte une connexion (serveur prêt). Renvoie False si le
+    delai expire OU si le process serveur meurt avant (crash au démarrage)."""
     end = time.time() + timeout
     while time.time() < end:
         if proc.poll() is not None:
-            return False  # le serveur s'est arrete tout seul -> demarrage en echec
+            return False  # le serveur s'est arrête tout seul -> démarrage en echec
         try:
             with socket.create_connection((host, port), timeout=1):
                 return True
@@ -365,7 +367,7 @@ def _wait_for_port(proc: subprocess.Popen, host: str, port: int, timeout: int) -
 
 
 def make_serve_and_check(workspace_dir: str) -> ToolSpec:
-    """Outil serve_and_check : demarre un serveur en arriere-plan, attend son port, charge
+    """Outil serve_and_check : démarre un serveur en arrière-plan, attend son port, charge
     la page (comme check_page), PUIS tue tout l'arbre de process. run_shell ne peut pas
     garder un serveur vivant (il le tue au timeout) et check_page seul n'a rien a viser tant
     que rien n'ecoute : cet outil ferme ce trou pour Next.js/Vite/Flask."""
@@ -375,20 +377,20 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
         _reap_expired_servers()  # filet : referme les serveurs oublies > TTL
         action = (args.get("action") or "start").strip().lower()
 
-        # --- action='stop' : ferme un serveur laisse vivant (ou tous), sans command/url ---
+        # --- action='stop' : ferme un serveur laissé vivant (ou tous), sans command/url ---
         if action == "stop":
             return _stop_servers((args.get("id") or "").strip() or None)
 
         command = (args.get("command") or "").strip()
         if not command:
             raise ToolError(
-                "argument 'command' manquant (commande qui demarre le serveur, ex. "
+                "argument 'command' manquant (commande qui démarre le serveur, ex. "
                 "'npm run dev -- --port 3000'). Pour ARRETER un serveur, action='stop' (+ id)."
             )
         target = (args.get("url") or "").strip()
         if not target:
             raise ToolError(
-                "argument 'url' manquant (URL du serveur a verifier, "
+                "argument 'url' manquant (URL du serveur a vérifier, "
                 "ex. 'http://127.0.0.1:3000')"
             )
         if not target.lower().startswith(("http://", "https://")):
@@ -425,7 +427,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
         ]
 
         # Un serveur suivi tourne DEJA sur cette url (lance a un tour precedent) ? On ne
-        # relance PAS (le double bind echouerait) : on re-verifie simplement la page demandee
+        # relance PAS (le double bind echouerait) : on re-vérifie simplement la page demandée
         # sur le serveur vivant. C'est le cas « tester une 2e page du meme site ».
         existing = _find_server_by_url(url)
         if existing:
@@ -441,64 +443,75 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
         fd, logpath = tempfile.mkstemp(prefix="loom-serve-", suffix=".log")
         os.close(fd)
         logf = open(logpath, "w", encoding="utf-8", errors="replace")
-        popen_kwargs: dict = {}
-        if not sys.platform.startswith("win"):
-            popen_kwargs["start_new_session"] = True
+        proc = None
+        handed_off = False  # True une fois logf confié au registre (serveur vivant)
         try:
-            proc = subprocess.Popen(
-                _shell_argv(command),
-                cwd=str(workdir),
-                stdout=logf,
-                stderr=subprocess.STDOUT,
-                **popen_kwargs,
-            )
-        except OSError as exc:
-            logf.close()
+            popen_kwargs: dict = {}
+            if not detect().is_windows:
+                popen_kwargs["start_new_session"] = True
             try:
-                os.unlink(logpath)
+                proc = subprocess.Popen(
+                    _shell_argv(command),
+                    cwd=str(workdir),
+                    stdout=logf,
+                    stderr=subprocess.STDOUT,
+                    **popen_kwargs,
+                )
+            except OSError as exc:
+                raise ToolError(f"impossible de lancer le serveur : {exc}") from exc
+
+            ready = _wait_for_port(proc, host, port, ready_timeout)
+            if ready:
+                report = _render_page(url, wait_selector, count_selectors)
+                # On LAISSE le serveur vivre (registre) : le modele peut tester d'autres pages,
+                # puis le fermer avec action='stop'. Le log reste ouvert (le serveur y ecrit).
+                sid = _register_server(proc, url, logpath, logf)
+                handed_off = True
+                body = (
+                    f"serveur démarre, port {port} prêt - verification de {url} :\n{report}"
+                    f"\n\n{_alive_hint(sid)}"
+                )
+                return untrusted(body, f"page {url}")
+
+            # Echec de démarrage : diag depuis le log, puis on tue et on nettoie.
+            try:
+                logf.flush()
+                tail = Path(logpath).read_text(encoding="utf-8", errors="replace")[-1200:]
             except OSError:
-                pass
-            raise ToolError(f"impossible de lancer le serveur : {exc}") from exc
-
-        ready = _wait_for_port(proc, host, port, ready_timeout)
-        if ready:
-            report = _render_page(url, wait_selector, count_selectors)
-            # On LAISSE le serveur vivre (registre) : le modele peut tester d'autres pages,
-            # puis le fermer avec action='stop'. Le log reste ouvert (le serveur y ecrit).
-            sid = _register_server(proc, url, logpath, logf)
-            body = (
-                f"serveur demarre, port {port} pret - verification de {url} :\n{report}"
-                f"\n\n{_alive_hint(sid)}"
+                tail = ""
+            if proc.poll() is not None:
+                diag = (
+                    f"le serveur s'est ARRETE tout seul (exit {proc.returncode}) avant "
+                    f"d'ecouter sur {host}:{port} - démarrage en echec."
+                )
+            else:
+                diag = (
+                    f"le port {host}:{port} n'a pas repondu en {ready_timeout}s. Verifie que la "
+                    "commande démarre bien un serveur sur CE port (option --port), ou augmente "
+                    "ready_timeout."
+                )
+            return untrusted(
+                f"serve_and_check : {diag}\n--- sortie serveur ---\n{tail or '(aucune sortie)'}",
+                f"page {url}",
             )
-            return untrusted(body, f"page {url}")
-
-        # Echec de demarrage : diag depuis le log, puis on tue et on nettoie.
-        try:
-            logf.flush()
-            tail = Path(logpath).read_text(encoding="utf-8", errors="replace")[-1200:]
-        except OSError:
-            tail = ""
-        if proc.poll() is not None:
-            diag = (
-                f"le serveur s'est ARRETE tout seul (exit {proc.returncode}) avant "
-                f"d'ecouter sur {host}:{port} - demarrage en echec."
-            )
-        else:
-            diag = (
-                f"le port {host}:{port} n'a pas repondu en {ready_timeout}s. Verifie que la "
-                "commande demarre bien un serveur sur CE port (option --port), ou augmente "
-                "ready_timeout."
-            )
-        _kill_tree(proc)
-        logf.close()
-        try:
-            os.unlink(logpath)
-        except OSError:
-            pass
-        return untrusted(
-            f"serve_and_check : {diag}\n--- sortie serveur ---\n{tail or '(aucune sortie)'}",
-            f"page {url}",
-        )
+        finally:
+            # Sur TOUT chemin non-remis (erreur OU echec de démarrage) : tue le proc,
+            # ferme le log et supprime le temp. Le chemin 'ready' a transfere la propriete
+            # au registre (handed_off) -> on ne touche pas a logf/logpath.
+            if not handed_off:
+                if proc is not None:
+                    try:
+                        _kill_tree(proc)
+                    except Exception:  # noqa: BLE001 - best-effort
+                        pass
+                try:
+                    logf.close()
+                except OSError:
+                    pass
+                try:
+                    os.unlink(logpath)
+                except OSError:
+                    pass
 
     return ToolSpec(
         name="serve_and_check",
@@ -506,13 +519,13 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
             "Gere le CYCLE DE VIE d'un serveur local pour prouver qu'une appli a SERVEUR "
             "(Next.js, Vite, Flask...) s'affiche/marche. run_shell ne peut PAS garder un "
             "serveur vivant (il le tue au timeout) et NE lance JAMAIS un serveur toi-meme via "
-            "Start-Process/start (ca ouvre le .ps1 dans un editeur et ne survit pas) : passe "
+            "Start-Process/start (ca ouvre le .ps1 dans un éditeur et ne survit pas) : passe "
             "TOUJOURS par cet outil.\n"
-            "action='start' (defaut) : demarre 'command' en arriere-plan, attend que 'url' "
-            "reponde, charge la page en navigateur headless (erreurs console, elements, texte) "
+            "action='start' (defaut) : démarre 'command' en arrière-plan, attend que 'url' "
+            "reponde, charge la page en navigateur headless (erreurs console, éléments, texte) "
             "et LAISSE LE SERVEUR VIVANT -> tu peux ensuite tester d'AUTRES pages du meme "
             "serveur (check_page/check_interactive, ou serve_and_check sur une autre url). "
-            "action='stop' : arrete le serveur d'id donne (ou TOUS si pas d'id) -> fais-le "
+            "action='stop' : arrête le serveur d'id donne (ou TOUS si pas d'id) -> fais-le "
             "QUAND TU AS TA REPONSE. Pour une page .html STATIQUE (sans serveur), prefere "
             "check_page."
         ),
@@ -523,8 +536,8 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                     "type": "string",
                     "enum": ["start", "stop"],
                     "description": (
-                        "'start' (defaut) demarre+verifie+laisse vivant ; 'stop' ferme un "
-                        "serveur laisse vivant (via id, ou tous si id absent)."
+                        "'start' (defaut) démarre+vérifie+laissé vivant ; 'stop' ferme un "
+                        "serveur laissé vivant (via id, ou tous si id absent)."
                     ),
                 },
                 "id": {
@@ -537,8 +550,8 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                 "command": {
                     "type": "string",
                     "description": (
-                        "action='start' : commande qui demarre le serveur (ex. 'npm run dev "
-                        "-- --port 3000'). Lancee en arriere-plan, laissee vivante."
+                        "action='start' : commande qui démarre le serveur (ex. 'npm run dev "
+                        "-- --port 3000'). Lancee en arrière-plan, laissée vivante."
                     ),
                 },
                 "url": {
@@ -737,7 +750,7 @@ def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
 
 
 def make_check_interactive(workspace_dir: str) -> ToolSpec:
-    """Outil check_interactive : joue une sequence d'actions sur une page et verifie le DOM
+    """Outil check_interactive : joue une sequence d'actions sur une page et vérifie le DOM
     apres chaque action. Pour PROUVER qu'une page est jouable (pas seulement « 0 erreur »)."""
 
     def run(args: dict) -> str:
@@ -780,10 +793,10 @@ def make_check_interactive(workspace_dir: str) -> ToolSpec:
         name="check_interactive",
         description=(
             "Prouve qu'une page HTML est JOUABLE : joue une sequence d'actions reelles "
-            "(click, rightclick, dblclick, hover, type) sur des selecteurs CSS et verifie, "
+            "(click, rightclick, dblclick, hover, type) sur des sélecteurs CSS et vérifie, "
             "APRES chaque action, une post-condition dans le DOM. Va plus loin que check_page "
             "(qui ne fait que charger). Utilise-le pour prouver « cliquer une cellule la "
-            "revele », « clic droit pose un drapeau », « restart reinitialise »."
+            "révèle », « clic droit pose un drapeau », « restart réinitialise »."
         ),
         parameters={
             "type": "object",

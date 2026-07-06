@@ -8,6 +8,7 @@ de modèle — testable sur `:memory:`. Best-effort sur lock (log + skip), cf. d
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -69,8 +70,9 @@ class LocalMemory:
                 (ts, kind, source, text),
             )
             self._conn.commit()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as e:
             # lock/contention : best-effort, on n'interrompt jamais le tour (design §11).
+            logging.warning(f"SQLite error: {e}")
             pass
 
     def recall(self, query: str, *, k: int = 5) -> list[Snippet]:
@@ -82,7 +84,8 @@ class LocalMemory:
                 "WHERE episodes_fts MATCH ? ORDER BY score LIMIT ?",
                 (q, k),
             ).fetchall()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as e:
+            logging.warning(f"SQLite error: {e}")
             return []
         return [
             Snippet(text=r[0], kind=r[1], source=r[2], score=float(r[3])) for r in rows

@@ -1,5 +1,7 @@
 # Loom — agent IA local, multimodal et offline
 
+<!-- RÔLE : carte technique (arborescence, stack, conventions, points d'attention). Pitch public : README.md. Suivi interne : ETAT_PROJET.md. Historique versions : CHANGELOG.md. -->
+
 ## But
 
 Loom est un **agent tool-use** local : une boucle qui donne à un modèle local des outils et la logique de les enchaîner, pour qu'il localise, lise, modifie et exécute sur de vrais projets au lieu de seulement discuter. Objectif affiché : rester productif internet coupé, en « internalisant le harness » (outils + intelligence d'appel) autour d'un modèle open-source autre que Claude. 100 % offline par défaut.
@@ -11,7 +13,7 @@ Le pari architectural : pas d'orchestrateur déterministe, pas de rail de réfle
 - **Python 3.12+**, gestionnaire `uv`, build `hatchling`.
 - **Runtime LLM** : `llama.cpp` (`llama-server`), API OpenAI-compatible sur `:8080` ; `llama-swap` pour le hot-swap multi-modèles. MoE 24B+ rendus jouables sur 6 Go de VRAM par offload des experts en RAM (`--cpu-moe`).
 - **Web/UI** : Flask + Preact/htm (zéro build, libs vendorées en `loom/web/static/`), streaming SSE, markdown, MathJax (LaTeX offline). Multi-onglets (une session par onglet, génération concurrente pour les distants), console de configuration (édition des TOML à chaud), gestionnaire de modèles (locaux + distants, ajout/édition sans redémarrer), compteur tokens/cache + jauge de remplissage du contexte, moniteur système (CPU/RAM/GPU) pour les modèles locaux.
-- **SDK** : `openai` (client API), `httpx`/`requests`, `huggingface-hub` (téléchargement des GGUF).
+- **SDK** : `openai` (client API), `httpx`, `huggingface-hub` (téléchargement des GGUF).
 - **Ingestion docs** : `pypdf`, `openpyxl`, `python-docx`, `trafilatura`.
 - **Vérification rendu** : `playwright` (headless, `check_page` / `check_interactive`).
 - **Lint/format** : `ruff` (présent au runtime pour l'outil `format_code`).
@@ -54,7 +56,6 @@ from-claude-to-local-haranessed-llm/
 ├── docs/                      # adr/ (llamacpp-vs-ollama), superpowers/ (specs/plans), install-windows.md, install-linux.md, perf-gpu.md, bench-llama.md
 ├── evals/                     # harnais d'éval des prompts (cases.py, run_eval.py) + éval du skill code-review (review_cases.py, run_review_eval.py)
 ├── var/                       # état machine (gitignored) : identity/, memory/, sessions/, skills_learned/, logs/, cache/
-├── presentation-qwen/         # présentation de Loom générée par Qwen3.6
 ├── pyproject.toml             # dépendances + build hatchling
 ├── uv.lock
 ├── README.md  ETAT_PROJET.md  CHANGELOG.md  .gitignore

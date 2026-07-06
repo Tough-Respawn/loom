@@ -23,22 +23,23 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from loom.agent.client import LoomClient
 from loom.agent.conversation import Conversation
-from loom.config import load_config
-from loom.permissions import evaluate
 from loom.tools import AVAILABLE_TOOLS, build_registry
 
 from evals.cases import CASES
+from evals.harness import (
+    _RT,
+    git_show,
+    load_eval_config,
+    make_client,
+    make_perm,
+)
 
-_ROOT = Path(__file__).resolve().parent.parent
-_RT = _ROOT / "loom"
-_OUT = _ROOT / "evals" / "out"
+_OUT = _RT.parent / "evals" / "out"
 
 
 # --- trajectoire -------------------------------------------------------------
@@ -61,16 +62,7 @@ class Trajectory:
 
 
 def _git_show(rel: str) -> str:
-    r = subprocess.run(
-        ["git", "show", f"HEAD:{rel}"],
-        cwd=_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    if r.returncode != 0:
-        raise RuntimeError(f"git show HEAD:{rel} a échoué : {r.stderr.strip()}")
-    return r.stdout.strip()
+    return git_show(rel).strip()
 
 
 def load_variants(which: str) -> dict:
@@ -333,11 +325,11 @@ def self_test():
     traj = Trajectory(
         tool_calls=[
             ("read_file", {"path": "calc.py"}),
-            ("replace_lines", {"path": "calc.py", "start": 1, "end": 3}),
+            ("edit_file", {"path": "calc.py"}),
             ("run_shell", {"command": "Get-ChildItem"}),
         ],
         tool_results=[
-            {"name": "replace_lines", "ok": True, "preview": ""},
+            {"name": "edit_file", "ok": True, "preview": ""},
             {"name": "run_shell", "ok": True, "preview": "OK"},
         ],
         final_text="C'est corrigé, le script tourne sans erreur.",
@@ -380,16 +372,10 @@ def main():
     if args.self_test:
         raise SystemExit(0 if self_test() else 1)
 
-    cfg = load_config(_RT / "loom.config.toml", _RT / "loom.config.personnel.toml")
+    cfg = load_eval_config()
     model = args.model or cfg.default_model
-    base_url = f"http://127.0.0.1:{cfg.port}/v1"
-    client = LoomClient(
-        base_url=base_url,
-        model=model,
-        timeout=cfg.chat.request_timeout,
-        max_retries=cfg.chat.max_retries,
-    )
-    perm = lambda name, a: evaluate(name, a, cfg.permissions)  # noqa: E731
+    client, base_url = make_client(cfg, model)
+    perm = make_perm(cfg)
     only = set(args.cases.split(",")) if args.cases else None
 
     print(

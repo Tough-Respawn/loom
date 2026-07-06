@@ -1,7 +1,7 @@
 """Eval set de Loom : cas figés + graders déterministes (code-based).
 
 Chaque cas cible UN travers documenté du petit modèle (cf. mémoires : confabulation
-d'exécution, thrash replace_lines, unix-ismes, recherche inutile, sur-outillage). Le
+d'exécution, échecs edit_file, unix-ismes, recherche inutile, sur-outillage). Le
 grader code donne le poids OBJECTIF ; un juge LLM (run_eval.py) complète sur le « la tâche
 est-elle accomplie » ouvert. Tous les cas sont bénins (aucun shell destructeur).
 
@@ -77,11 +77,10 @@ def ran_proof(traj) -> bool:
     return False
 
 
-def replace_lines_failures(traj) -> int:
+def edit_file_failures(traj) -> int:
+    """Compte les échecs d'edit_file (ex. old_string non unique ou introuvable)."""
     return sum(
-        1
-        for r in traj.tool_results
-        if r.get("name") == "replace_lines" and not r.get("ok")
+        1 for r in traj.tool_results if r.get("name") == "edit_file" and not r.get("ok")
     )
 
 
@@ -141,7 +140,7 @@ def _seed_notes(ws: Path) -> None:
 
 
 def _check_edit_block(traj, ws: Path) -> dict:
-    edited_by_block = used(traj, "replace_lines") or used(traj, "edit_file")
+    edited_by_block = used(traj, "edit_file")
     not_lazy_rewrite = not any(
         (a.get("path", "").endswith("calc.py")) for a in calls_to(traj, "write_file")
     )
@@ -159,9 +158,9 @@ def _check_edit_block(traj, ws: Path) -> dict:
     except Exception:
         fixed = False
     return {
-        "édite par bloc (replace_lines/edit_file)": edited_by_block,
+        "édite par bloc (edit_file)": edited_by_block,
         "ne réécrit pas tout au write_file": not_lazy_rewrite,
-        "zéro échec replace_lines": replace_lines_failures(traj) == 0,
+        "zéro échec edit_file": edit_file_failures(traj) == 0,
         "E2E: add(2,3)==5": fixed,
     }
 

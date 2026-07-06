@@ -1,7 +1,7 @@
 """Éval du skill code-review : détection à vérité-terrain (rappel / faux positifs / verdict).
 
-Injecte le CORPS du skill (ce que renvoie use_skill) dans le prompt système — variante
-`old` = git HEAD, `new` = disque — fait relire chaque cas étiqueté, puis grade :
+Injecte le CORPS du skill (ce que renvoie use_skill) dans le prompt système - variante
+`old` = git HEAD, `new` = disque - fait relire chaque cas étiqueté, puis grade :
   - RAPPEL : pour chaque problème planté, la revue l'a-t-elle attrapé ? (juge LLM)
   - FAUX POSITIFS : combien de problèmes infondés la revue invente-t-elle ? (juge LLM)
   - VERDICT : la revue tranche-t-elle correctement (NON-prêt si bugs, prêt si propre) ?
@@ -16,23 +16,23 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from loom.agent.client import LoomClient
 from loom.agent.conversation import Conversation
-from loom.config import load_config
 from loom.extend.skills import _parse_skill_md
-from loom.permissions import evaluate
 from loom.tools import AVAILABLE_TOOLS, build_registry
 
+from evals.harness import (
+    _RT,
+    git_show,
+    load_eval_config,
+    make_client,
+    make_perm,
+)
 from evals.review_cases import CASES, extract_verdict, verdict_ok
 
-_ROOT = Path(__file__).resolve().parent.parent
-_RT = _ROOT / "loom"
-_OUT = _ROOT / "evals" / "out_review"
+_OUT = _RT.parent / "evals" / "out_review"
 _SKILL_REL = "loom/skills/code-review/SKILL.md"
 
 
@@ -47,16 +47,7 @@ class Trajectory:
 
 
 def _git_show(rel: str) -> str:
-    r = subprocess.run(
-        ["git", "show", f"HEAD:{rel}"],
-        cwd=_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    if r.returncode != 0:
-        raise RuntimeError(f"git show HEAD:{rel} a échoué : {r.stderr.strip()}")
-    return r.stdout
+    return git_show(rel)
 
 
 def _skill_body(text: str) -> str:
@@ -84,7 +75,7 @@ _TASK = (
 
 
 def run_one(client, model, skill_body, case, cfg, perm, max_iters):
-    system = f"{_CHAT}\n\n# Skill actif — code-review\n{skill_body}"
+    system = f"{_CHAT}\n\n# Skill actif - code-review\n{skill_body}"
     convo = Conversation(system_prompt=system)
     traj = Trajectory()
     with tempfile.TemporaryDirectory(prefix=f"loom_rev_{case.id}_") as tmp:
@@ -125,7 +116,7 @@ def run_one(client, model, skill_body, case, cfg, perm, max_iters):
 _JUDGE_SYS = (
     "Tu évalues une revue de code, en juge impartial. On te donne le CODE relu, la REVUE "
     "produite, et la liste des PROBLÈMES attendus. Pour chaque problème attendu, compte-le "
-    "comme identifié (true) si la revue le mentionne de façon SUBSTANTIELLE — le mot exact "
+    "comme identifié (true) si la revue le mentionne de façon SUBSTANTIELLE - le mot exact "
     "n'est pas requis, une description claire du même problème suffit. Compte aussi les "
     "problèmes DISTINCTS que la revue affirme mais qui sont CLAIREMENT INFONDÉS (absents du "
     "code) ; en cas de doute, ne les compte pas. Réponds en JSON sur une ligne : "
@@ -243,7 +234,7 @@ def _save(variant, case_id, k, case, traj, rec):
 def report(all_results: dict):
     variants = list(all_results.keys())
     print("\n" + "=" * 74)
-    print("RAPPORT CODE-REVIEW — rappel (problèmes attrapés) · FP · verdict")
+    print("RAPPORT CODE-REVIEW - rappel (problèmes attrapés) · FP · verdict")
     print("=" * 74)
     head = "cas".ljust(24) + "".join(v.ljust(25) for v in variants)
     print(head)
@@ -293,16 +284,10 @@ def main():
     ap.add_argument("--cases", default=None)
     args = ap.parse_args()
 
-    cfg = load_config(_RT / "loom.config.toml", _RT / "loom.config.personnel.toml")
+    cfg = load_eval_config()
     model = args.model or cfg.default_model
-    base_url = f"http://127.0.0.1:{cfg.port}/v1"
-    client = LoomClient(
-        base_url=base_url,
-        model=model,
-        timeout=cfg.chat.request_timeout,
-        max_retries=cfg.chat.max_retries,
-    )
-    perm = lambda n, a: evaluate(n, a, cfg.permissions)  # noqa: E731
+    client, base_url = make_client(cfg, model)
+    perm = make_perm(cfg)
     only = set(args.cases.split(",")) if args.cases else None
 
     print(

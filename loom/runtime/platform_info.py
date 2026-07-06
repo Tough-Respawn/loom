@@ -39,7 +39,8 @@ class PlatformInfo:
         if self.shell_family == "powershell":
             exe = "pwsh" if self.shell_kind == "pwsh" else "powershell"
             return [exe, "-NoProfile", "-NonInteractive", "-Command", command]
-        return ["/bin/bash", "-lc", command]
+        bash = shutil.which("bash") or "/bin/bash"
+        return [bash, "-lc", command]
 
     def prompt_block(self) -> str:
         """Bloc « Système » injecté au prompt : dit au modèle l'OS, son shell et les

@@ -13,6 +13,7 @@ import unicodedata
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
 
@@ -155,7 +156,7 @@ def _emit(text: str) -> None:
         pass
 
 
-def _debug(label: str, payload, limit: int = 4000) -> None:
+def _debug(label: str, payload: Any, limit: int = 4000) -> None:
     """Imprime un bloc de debug sur stderr (terminal de loom.web), no-op si désactivé.
     Labels ASCII volontairement (pas d'accents/flèches) pour rester lisible sur tout
     terminal Windows."""
@@ -237,7 +238,7 @@ def _sub_activity_line(kind: str, payload) -> str:
     return ""
 
 
-def _usage_dict(usage) -> dict:
+def _usage_dict(usage: Any) -> dict:
     """Normalise l'usage (tokens réels) renvoyé par le serveur en fin de stream.
 
     Capture aussi `cached_tokens` (sous-ensemble de prompt_tokens facturé ~÷5 quand le
@@ -282,7 +283,7 @@ def _estimate_usage(system_prompt, messages, text, reasoning, tool_calls) -> dic
     }
 
 
-def _iter_events(stream) -> Iterator[tuple[str, object]]:
+def _iter_events(stream: Any) -> Iterator[tuple[str, object]]:
     """Yield ('reasoning'|'content', txt) par delta, et ('usage', dict) en fin de
     stream si le serveur renvoie l'usage (stream_options.include_usage)."""
     for chunk in stream:
@@ -365,7 +366,7 @@ def _scan_repeat(buf: str, counts: dict[str, int]) -> tuple[str, str | None]:
     return rest, None
 
 
-def _iter_turn(stream, collector: dict) -> Iterator[tuple[str, str]]:
+def _iter_turn(stream: Any, collector: dict) -> Iterator[tuple[str, str]]:
     """Yield ('reasoning'|'content', txt) ET accumule les tool_calls streamés.
 
     Les tool_calls arrivent fragmentés : chaque morceau porte un `.index`, et
@@ -904,7 +905,8 @@ class LoomClient:
                 thinking=False,
             ):
                 pass
-        except Exception:  # noqa: BLE001 - warmup best-effort, jamais bloquant
+        except Exception as e:  # noqa: BLE001 - warmup best-effort, jamais bloquant
+            _debug("WARMUP_ERR", str(e))
             pass
 
     def infer_title(self, model: str | None, message: str) -> str:
@@ -961,7 +963,8 @@ class LoomClient:
                 # Backend down/lent : inutile de tenter les autres variantes de param (elles
                 # échoueront pareil) -> on abandonne vite, l'appelant fait le repli message.
                 break
-            except Exception:  # noqa: BLE001 - param rejeté par ce backend : variante suivante
+            except Exception as e:  # noqa: BLE001 - param rejeté par ce backend : variante suivante
+                _debug("TITLE_ERR", str(e))
                 continue
         return ""
 
