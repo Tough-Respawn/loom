@@ -802,6 +802,33 @@
     .io-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.7; font-family: inherit; cursor: pointer; font-size: 11px; }
     .tool-io-body { margin: 4px 0 1px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; max-height: 360px; overflow: auto; white-space: pre-wrap; font-family: inherit; font-size: 11px; color: var(--text-dim); }
     .tool-stream { margin: 6px 0 1px; padding: 8px 10px; background: var(--bg); border: 1px dashed var(--accent-dim); border-radius: 6px; max-height: 200px; overflow: auto; white-space: pre-wrap; font-family: inherit; font-size: 11px; color: var(--text-dim); opacity: 0.8; }
+    /* ---- Arène d'agents PARALLÈLES : lanes côte à côte + animation « ça tourne » ---- */
+    .agent-arena { margin: 8px 0; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel); position: relative; }
+    .agent-arena.running { border-color: var(--accent-dim); }
+    .arena-tag { font-size: 10px; letter-spacing: .4px; color: var(--text-faint); text-transform: uppercase; margin: 0 2px 7px; display: flex; align-items: center; gap: 7px; }
+    .agent-arena.running .arena-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: arena-blink 1s ease-in-out infinite; }
+    .agent-arena.done .arena-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+    @keyframes arena-blink { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+    /* Les N lanes en RANGÉE (scroll horizontal si trop nombreuses), largeur égale. */
+    .arena-lanes { display: flex; gap: 8px; overflow-x: auto; align-items: stretch; padding-bottom: 2px; }
+    .agent-lane { flex: 1 0 0; min-width: 150px; max-width: 320px; background: var(--bg); border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px; position: relative; overflow: hidden; }
+    .agent-lane.working { border-color: var(--accent-dim); }
+    /* Balayage lumineux qui traverse la lane tant qu'elle travaille (effet « en cours »). */
+    .agent-lane.working::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, var(--accent-bg) 50%, transparent 70%); transform: translateX(-100%); animation: lane-sweep 1.5s linear infinite; pointer-events: none; }
+    @keyframes lane-sweep { to { transform: translateX(100%); } }
+    .agent-lane.ok { border-color: var(--accent-dim); }
+    .agent-lane.ko { border-color: var(--err); }
+    .lane-head { display: flex; align-items: center; gap: 7px; font-size: 11.5px; position: relative; z-index: 1; }
+    .lane-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
+    .agent-lane.working .lane-dot { background: var(--accent); animation: lane-pulse 1s ease-in-out infinite; }
+    .agent-lane.ok .lane-dot { background: var(--accent); }
+    .agent-lane.ko .lane-dot { background: var(--err); }
+    @keyframes lane-pulse { 0%,100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 0 var(--accent-bg); } 50% { transform: scale(1.35); opacity: .5; box-shadow: 0 0 0 4px transparent; } }
+    .lane-name { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lane-status { margin-left: auto; color: var(--accent); font-size: 12px; }
+    .agent-lane.ko .lane-status { color: var(--err); }
+    .lane-stream { margin: 6px 0 0; font-size: 10px; color: var(--text-dim); white-space: pre-wrap; max-height: 130px; overflow: auto; opacity: .75; position: relative; z-index: 1; }
+    .lane-out { margin-top: 6px; font-size: 11px; color: var(--text-dim); max-height: 130px; overflow: auto; white-space: pre-wrap; }
     .perm-ask { max-width: 100%; font-size: 12px; color: var(--warn); background: var(--warn-bg); border: 1px solid #5a4520; border-left: 2px solid #5a4520; border-radius: 0 var(--radius) var(--radius) 0; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; margin: 2px 0; }
     .perm-ask code { background: var(--bg); color: var(--warn); padding: 1px 5px; border-radius: 3px; font-family: inherit; }
     .perm-btns { display: flex; gap: 8px; }

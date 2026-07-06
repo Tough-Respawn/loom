@@ -218,6 +218,36 @@ function ToolPill({ it }) {
   </div>`;
 }
 
+// Une LANE d'agent dans l'arène parallèle : carte étroite, pulse tant qu'elle travaille,
+// se fige en ✓/✕ à la fin. L'activité live (tool_stream) défile dedans.
+function AgentLane({ it }) {
+  const cls = it.pending ? " working" : it.ok ? " ok" : " ko";
+  const status = it.pending ? "" : it.ok ? "✓" : "✕";
+  const out = it.out_full != null ? it.out_full : it.preview || "";
+  return html`<div class=${"agent-lane" + cls}>
+    <div class="lane-head">
+      <span class="lane-dot"></span>
+      <span class="lane-name">${it.name || "agent"}</span>
+      <span class="lane-status">${status}</span>
+    </div>
+    ${it.pending
+      ? html`<pre class="lane-stream">${(it.stream || "…").slice(-600)}</pre>`
+      : html`<div class="lane-out">${out.slice(0, 400)}</div>`}
+  </div>`;
+}
+
+// Arène parallèle : les N agents CÔTE À CÔTE (flex row) au lieu d'être empilés. Tant qu'au
+// moins un travaille, l'arène est « running » (animation) ; tous finis -> settle.
+function ParallelArena({ lanes }) {
+  const running = lanes.some((l) => l.pending);
+  return html`<div class=${"agent-arena" + (running ? " running" : " done")}>
+    <div class="arena-tag">${lanes.length} agents en parallèle</div>
+    <div class="arena-lanes">
+      ${lanes.map((l) => html`<${AgentLane} key=${l.id} it=${l} />`)}
+    </div>
+  </div>`;
+}
+
 function PermAsk({ it }) {
   const decide = (approve) => {
     const fd = new FormData();
@@ -375,13 +405,25 @@ function App() {
     </div>`;
   }
   let _ui = 0;
-  return t.timeline.map((it) => {
-    let userIndex = null;
-    if (it.kind === "user") {
-      userIndex = _ui++;
+  const items = t.timeline;
+  const consumed = new Set(); // lanes déjà rendues DANS une arène -> pas en double vertical
+  const out = [];
+  for (const it of items) {
+    if (consumed.has(it.id)) continue;
+    if (it.kind === "parallel") {
+      // Récupère les cartes d'outils du groupe (id "tool:"+laneId) pour les rendre côte à côte.
+      const lanes = (it.lanes || [])
+        .map((lid) => items.find((x) => x.id === "tool:" + lid))
+        .filter(Boolean);
+      lanes.forEach((l) => consumed.add(l.id));
+      out.push(html`<${ParallelArena} key=${it.id} lanes=${lanes} />`);
+      continue;
     }
-    return html`<${Item} key=${it.id} it=${it} userIndex=${userIndex} />`;
-  });
+    let userIndex = null;
+    if (it.kind === "user") userIndex = _ui++;
+    out.push(html`<${Item} key=${it.id} it=${it} userIndex=${userIndex} />`);
+  }
+  return out;
 }
 
 // ----------------------------------------------------------------------------
@@ -455,6 +497,14 @@ async function sendChat(sid, text, images) {
 
   const onEvent = (evt) => {
     switch (evt.type) {
+      case "parallel":
+        // Groupe d'outils lancés EN PARALLÈLE (distant) : on clôt les bulles en cours et on
+        // pose un marqueur « arène ». Les tool_call/tool_result suivants, dont l'id est dans
+        // `lanes`, seront rendus CÔTE À CÔTE (animation), pas empilés.
+        if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
+        if (asstId) { patch(asstId, { done: true }); asstId = null; }
+        push({ kind: "parallel", lanes: evt.ids || [] });
+        break;
       case "reasoning":
         // Une NOUVELLE étape de réflexion clôt le texte précédent -> bulle séparée
         // (sinon le texte d'après s'empile dans la 1re bulle, en haut, au lieu d'en bas).
@@ -687,6 +737,11 @@ function _replayTimeline(t, events) {
           raw: typeof d.content === "string" ? d.content : "",
           done: true,
         });
+        break;
+      case "parallel":
+        think = null;
+        asst = null;
+        add({ kind: "parallel", lanes: d.ids || [] });
         break;
       case "reasoning":
         if (asst) asst = null;
