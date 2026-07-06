@@ -111,7 +111,12 @@ def upsert_remote_in_toml(local_path: str | Path, record: dict) -> None:
     if arr is None:
         arr = tomlkit.aot()
         doc["remote_models"] = arr
-    fields = ("id", "base_url", "model", "api_key", "context", "max_tokens", "vision")
+    # Mêmes champs qu'en store JSON (KEEP) : single source of truth. Les 4 champs
+    # enable_thinking_param / price_in / price_out / price_cached sont des champs de
+    # local.toml par conception (cf. config.RemoteModelConfig) et doivent donc pouvoir être
+    # persistés ici - un écart ferait qu'un modèle édité via l'UI les perdrait silencieusement.
+    # NB : api_key_env (TOML-only, géré à la main) reste volontairement exclu de KEEP/fields.
+    fields = KEEP
     target = None
     for t in arr:
         if t.get("id") == record.get("id"):

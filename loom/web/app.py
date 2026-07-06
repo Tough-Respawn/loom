@@ -52,41 +52,41 @@ from loom.runtime.models_profile import load_profile
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
-MAX_IMAGES = 6  # nb max d'images jointes à un message (au-delà : ignorées)
+MAX_IMAGES = 6  # nb max d'images jointes ÃƒÂ  un message (au-delÃƒÂ  : ignorÃƒÂ©es)
 
 
-# Détection d'un chemin ABSOLU dans un message (Windows `C:\...` / `C:/...` ou POSIX
+# DÃƒÂ©tection d'un chemin ABSOLU dans un message (Windows `C:\...` / `C:/...` ou POSIX
 
-# `/...`). Sert à l'auto-adoption du dossier de travail : si l'utilisateur désigne un
+# `/...`). Sert ÃƒÂ  l'auto-adoption du dossier de travail : si l'utilisateur dÃƒÂ©signe un
 
 # dossier existant, la session l'adopte -> run_shell tourne dedans, les chemins relatifs
 
-# s'y résolvent, et il n'a PAS à pointer le dossier dans l'UI.
+# s'y rÃƒÂ©solvent, et il n'a PAS ÃƒÂ  pointer le dossier dans l'UI.
 
 _PATH_RE = re.compile(r"""(?:[A-Za-z]:[\\/]|[\\/])[^\s"'`<>|*?]*""")
 
 
 def _detect_workspace(message: str, root: str | None = None) -> str | None:
-    """Renvoie le dossier EXISTANT le plus spécifique cité dans `message` (résolu absolu),
+    """Renvoie le dossier EXISTANT le plus spÃƒÂ©cifique citÃƒÂ© dans `message` (rÃƒÂ©solu absolu),
 
-    ou None. Un fichier existant -> son dossier parent. N'adopte QUE du réel (isdir/isfile),
+    ou None. Un fichier existant -> son dossier parent. N'adopte QUE du rÃƒÂ©el (isdir/isfile),
 
-    donc un chemin de référence faux n'a aucun effet.
+    donc un chemin de rÃƒÂ©fÃƒÂ©rence faux n'a aucun effet.
 
 
 
-    Si `root` est fourni, on accepte aussi un PROJET cité par son seul NOM quand c'est un
+    Si `root` est fourni, on accepte aussi un PROJET citÃƒÂ© par son seul NOM quand c'est un
 
-    sous-dossier direct de `root` (ex. « ... pour energy-data-platform » sans le chemin
+    sous-dossier direct de `root` (ex. Ã‚Â« ... pour energy-data-platform Ã‚Â» sans le chemin
 
-    complet). Match EXACT sur un sous-dossier réel -> pas de faux positif sur un mot courant.
+    complet). Match EXACT sur un sous-dossier rÃƒÂ©el -> pas de faux positif sur un mot courant.
 
     """
 
     found: list[str] = []
 
     for raw in _PATH_RE.findall(message):
-        p = raw.rstrip(".,;:!?)]}»\"'`").strip()
+        p = raw.rstrip(".,;:!?)]}Ã‚Â»\"'`").strip()
 
         if len(p) < 3:
             continue
@@ -121,7 +121,7 @@ def _detect_workspace(message: str, root: str | None = None) -> str | None:
     if not found:
         return None
 
-    best = max(found, key=len)  # le chemin le plus long = le plus spécifique
+    best = max(found, key=len)  # le chemin le plus long = le plus spÃƒÂ©cifique
 
     try:
         return str(Path(best).resolve())
@@ -131,19 +131,19 @@ def _detect_workspace(message: str, root: str | None = None) -> str | None:
 
 
 def _sse(event_type: str, **fields) -> str:
-    """Sérialise un événement Server-Sent Events (UTF-8, accents préservés)."""
+    """SÃƒÂ©rialise un ÃƒÂ©vÃƒÂ©nement Server-Sent Events (UTF-8, accents prÃƒÂ©servÃƒÂ©s)."""
 
     return f"data: {json.dumps({'type': event_type, **fields}, ensure_ascii=False)}\n\n"
 
 
 def _infer_title(client, model, message: str) -> str:
-    """Titre court (3-5 mots) inféré par le modèle depuis la 1re demande, pour ne pas laisser
-    la session « Nouvelle session ». La logique (thinking coupé + tentatives) vit dans
-    client.infer_title ; ici on ne garde QUE le repli sur le début du message si le modèle ne
+    """Titre court (3-5 mots) infÃƒÂ©rÃƒÂ© par le modÃƒÂ¨le depuis la 1re demande, pour ne pas laisser
+    la session Ã‚Â« Nouvelle session Ã‚Â». La logique (thinking coupÃƒÂ© + tentatives) vit dans
+    client.infer_title ; ici on ne garde QUE le repli sur le dÃƒÂ©but du message si le modÃƒÂ¨le ne
     renvoie rien d'exploitable."""
     try:
         title = client.infer_title(model, message)
-    except Exception:  # noqa: BLE001 - un titre est cosmétique, jamais bloquant
+    except Exception:  # noqa: BLE001 - un titre est cosmÃƒÂ©tique, jamais bloquant
         title = ""
     if not title:
         title = message.strip().splitlines()[0][:48].strip() or "Session"
@@ -151,19 +151,19 @@ def _infer_title(client, model, message: str) -> str:
 
 
 def _build_user_content(message, images, *, is_vision, stash_dir) -> str | list:
-    """Construit le contenu du message user à partir de N images jointes (max MAX_IMAGES).
+    """Construit le contenu du message user ÃƒÂ  partir de N images jointes (max MAX_IMAGES).
 
 
 
-    - Modèle VISION : images EMBARQUÉES (data URI) dans un message multimodal — il les VOIT.
+    - ModÃƒÂ¨le VISION : images EMBARQUÃƒâ€°ES (data URI) dans un message multimodal Ã¢â‚¬â€ il les VOIT.
 
-    - Modèle TEXTE-ONLY : images ENREGISTRÉES sur disque (stash_dir) ; le message reste du
+    - ModÃƒÂ¨le TEXTE-ONLY : images ENREGISTRÃƒâ€°ES sur disque (stash_dir) ; le message reste du
 
       texte, avec les chemins + consigne d'inspecter via read_image (qui route vers un VLM).
 
 
 
-    Lève ValueError (-> 400) si une image est trop grande ou n'est pas une image.
+    LÃƒÂ¨ve ValueError (-> 400) si une image est trop grande ou n'est pas une image.
 
     """
 
@@ -188,12 +188,12 @@ def _build_user_content(message, images, *, is_vision, stash_dir) -> str | list:
         read.append((im.filename, mime, blob))
 
     if is_vision:
-        # EMBARQUÉES : le modèle multimodal les VOIT déjà. Sans ce rappel, il croit devoir
+        # EMBARQUÃƒâ€°ES : le modÃƒÂ¨le multimodal les VOIT dÃƒÂ©jÃƒÂ . Sans ce rappel, il croit devoir
 
-        # les rouvrir via read_image, devine un chemin, échoue.
+        # les rouvrir via read_image, devine un chemin, ÃƒÂ©choue.
 
         note = (
-            f"[{len(read)} image(s) jointe(s) à ce message — tu les VOIS déjà directement "
+            f"[{len(read)} image(s) jointe(s) ÃƒÂ  ce message Ã¢â‚¬â€ tu les VOIS dÃƒÂ©jÃƒÂ  directement "
             "ci-dessous. N'utilise PAS read_image pour elles, ne devine aucun chemin.]\n"
         )
 
@@ -208,9 +208,9 @@ def _build_user_content(message, images, *, is_vision, stash_dir) -> str | list:
 
         return parts
 
-    # TEXTE-ONLY : on enregistre sur disque et on donne les chemins ; read_image (routé vers
+    # TEXTE-ONLY : on enregistre sur disque et on donne les chemins ; read_image (routÃƒÂ© vers
 
-    # un VLM) décrira à la demande. Le modèle ne voit rien inline, inutile de l'embarquer.
+    # un VLM) dÃƒÂ©crira ÃƒÂ  la demande. Le modÃƒÂ¨le ne voit rien inline, inutile de l'embarquer.
 
     stash_dir = Path(stash_dir)
 
@@ -230,15 +230,15 @@ def _build_user_content(message, images, *, is_vision, stash_dir) -> str | list:
     listing = "\n".join(f"- {p}" for p in paths)
 
     note = (
-        f"[{len(paths)} image(s) jointe(s) à ce message, enregistrée(s) sur disque. Ton "
-        "modèle ne les voit pas directement : inspecte-les avec read_image(path[, question]) "
-        "— un modèle vision te les décrira. Chemins :\n" + listing + "]\n"
+        f"[{len(paths)} image(s) jointe(s) ÃƒÂ  ce message, enregistrÃƒÂ©e(s) sur disque. Ton "
+        "modÃƒÂ¨le ne les voit pas directement : inspecte-les avec read_image(path[, question]) "
+        "Ã¢â‚¬â€ un modÃƒÂ¨le vision te les dÃƒÂ©crira. Chemins :\n" + listing + "]\n"
     )
 
     return note + message
 
 
-# Mots qui EFFACENT l'objectif de session via « /goal <mot> » (façon /goal de Claude Code).
+# Mots qui EFFACENT l'objectif de session via Ã‚Â« /goal <mot> Ã‚Â» (faÃƒÂ§on /goal de Claude Code).
 
 _GOAL_CLEAR_WORDS = {
     "clear",
@@ -253,38 +253,38 @@ _GOAL_CLEAR_WORDS = {
 
 
 def _init_message(target_display: str) -> str:
-    """Consigne dépliée par la commande /init : fait explorer le dossier `target_display`
-    et écrire `target_display/loom.md` (fiche projet). Fonction pure (testable)."""
+    """Consigne dÃƒÂ©pliÃƒÂ©e par la commande /init : fait explorer le dossier `target_display`
+    et ÃƒÂ©crire `target_display/loom.md` (fiche projet). Fonction pure (testable)."""
     return (
-        f"Génère la fiche projet du dossier de travail « {target_display} ». Explore-le "
-        "avec tes outils (list_dir, find_files, read_file) — n'invente RIEN, base-toi "
-        "seulement sur ce que tu lis vraiment. Repère : le but du projet, la "
+        f"GÃƒÂ©nÃƒÂ¨re la fiche projet du dossier de travail Ã‚Â« {target_display} Ã‚Â». Explore-le "
+        "avec tes outils (list_dir, find_files, read_file) Ã¢â‚¬â€ n'invente RIEN, base-toi "
+        "seulement sur ce que tu lis vraiment. RepÃƒÂ¨re : le but du projet, la "
         "stack/langages/frameworks, l'arborescence importante, comment l'installer / le "
         "lancer / le tester, et les conventions (lint, gestionnaire de paquets, CI/CD). "
-        "Puis ÉCRIS le fichier avec write_file au chemin EXACT "
-        f"« {target_display}/loom.md » (à la racine de CE dossier, nulle part ailleurs), "
-        "en markdown structuré : titre du projet, puis les sections `## But`, `## Stack`, "
+        "Puis Ãƒâ€°CRIS le fichier avec write_file au chemin EXACT "
+        f"Ã‚Â« {target_display}/loom.md Ã‚Â» (ÃƒÂ  la racine de CE dossier, nulle part ailleurs), "
+        "en markdown structurÃƒÂ© : titre du projet, puis les sections `## But`, `## Stack`, "
         "`## Arborescence`, `## Lancer / Tester`, `## Conventions`, `## Points d'attention`. "
-        "Concis et factuel ; si une info manque, dis-le plutôt que de la deviner. Termine "
-        "en confirmant le chemin écrit."
+        "Concis et factuel ; si une info manque, dis-le plutÃƒÂ´t que de la deviner. Termine "
+        "en confirmant le chemin ÃƒÂ©crit."
     )
 
 
-# Verbe compact par outil pour la TRACE D'ACTIONS persistée (anti-amnésie). Les outils
+# Verbe compact par outil pour la TRACE D'ACTIONS persistÃƒÂ©e (anti-amnÃƒÂ©sie). Les outils
 
-# de navigation (find/search/list) en sont absents : on mémorise les LECTURES et les
+# de navigation (find/search/list) en sont absents : on mÃƒÂ©morise les LECTURES et les
 
-# CHANGEMENTS d'état, pas les allers-retours d'exploration.
+# CHANGEMENTS d'ÃƒÂ©tat, pas les allers-retours d'exploration.
 
 _TRACE_VERB = {
     "read_file": "lu",
     "read_document": "lu",
     "read_image": "vu",
-    "write_file": "créé",
-    "append_file": "complété",
-    "edit_file": "modifié",
-    "run_shell": "exécuté",
-    "dispatch_agent": "délégué",
+    "write_file": "crÃƒÂ©ÃƒÂ©",
+    "append_file": "complÃƒÂ©tÃƒÂ©",
+    "edit_file": "modifiÃƒÂ©",
+    "run_shell": "exÃƒÂ©cutÃƒÂ©",
+    "dispatch_agent": "dÃƒÂ©lÃƒÂ©guÃƒÂ©",
 }
 
 _WRITE_NAMES = {
@@ -295,9 +295,9 @@ _WRITE_NAMES = {
 
 
 def _action_trace_line(evt: dict) -> str | None:
-    """Rend un `tool_result` en ligne compacte pour la trace, ou None s'il ne mérite pas
+    """Rend un `tool_result` en ligne compacte pour la trace, ou None s'il ne mÃƒÂ©rite pas
 
-    d'être mémorisé (navigation, écriture échouée/différée)."""
+    d'ÃƒÂªtre mÃƒÂ©morisÃƒÂ© (navigation, ÃƒÂ©criture ÃƒÂ©chouÃƒÂ©e/diffÃƒÂ©rÃƒÂ©e)."""
 
     name = evt.get("name") or ""
 
@@ -308,14 +308,14 @@ def _action_trace_line(evt: dict) -> str | None:
 
     ok = bool(evt.get("ok"))
 
-    # Une écriture échouée/différée n'est pas un changement d'état à retenir (si elle
+    # Une ÃƒÂ©criture ÃƒÂ©chouÃƒÂ©e/diffÃƒÂ©rÃƒÂ©e n'est pas un changement d'ÃƒÂ©tat ÃƒÂ  retenir (si elle
 
-    # réussit ensuite dans le même tour, c'est cette réussite-là qui sera tracée).
+    # rÃƒÂ©ussit ensuite dans le mÃƒÂªme tour, c'est cette rÃƒÂ©ussite-lÃƒÂ  qui sera tracÃƒÂ©e).
 
     if name in _WRITE_NAMES and not ok:
         return None
 
-    mark = "" if ok else "✗ "
+    mark = "" if ok else "Ã¢Å“â€” "
 
     if name == "run_shell":
         head = (evt.get("preview") or "").split("\n")[0][:60]
@@ -323,7 +323,7 @@ def _action_trace_line(evt: dict) -> str | None:
         return f"{mark}{verb} shell: {head}".strip()
 
     if name == "dispatch_agent":
-        return f"{mark}{verb} une sous-tâche"
+        return f"{mark}{verb} une sous-tÃƒÂ¢che"
 
     return f"{mark}{verb} {evt.get('path') or '?'}"
 
@@ -369,26 +369,26 @@ def create_app(
 
     app = Flask(__name__)
 
-    # Recharge le template à chaque requête : éditer index.html ne nécessite pas de
+    # Recharge le template ÃƒÂ  chaque requÃƒÂªte : ÃƒÂ©diter index.html ne nÃƒÂ©cessite pas de
 
-    # redémarrer le serveur (sinon Jinja sert la version compilée au démarrage).
+    # redÃƒÂ©marrer le serveur (sinon Jinja sert la version compilÃƒÂ©e au dÃƒÂ©marrage).
 
     app.config["TEMPLATES_AUTO_RELOAD"] = True
 
     app.jinja_env.auto_reload = True
 
-    # Pas de cache navigateur sur les statiques (app.js/css) : éditer le frontend prend effet
+    # Pas de cache navigateur sur les statiques (app.js/css) : ÃƒÂ©diter le frontend prend effet
 
-    # au simple rechargement, sans hard-refresh. Sinon un app.js mis à jour reste servi depuis
+    # au simple rechargement, sans hard-refresh. Sinon un app.js mis ÃƒÂ  jour reste servi depuis
 
-    # le cache et diverge du template rechargé côté serveur (bugs fantômes).
+    # le cache et diverge du template rechargÃƒÂ© cÃƒÂ´tÃƒÂ© serveur (bugs fantÃƒÂ´mes).
 
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
-    # Windows sert les .js/.css statiques avec un mimetype tiré du registre, souvent SANS
-    # `charset` -> le navigateur les décode en Windows-1252 et les glyphes UTF-8 deviennent
-    # du mojibake (é -> Ã©, fleche -> â†', check -> âœ"). On force `charset=utf-8` sur toute
-    # réponse textuelle qui n'en déclare pas, pour un décodage client correct quelle que
+    # Windows sert les .js/.css statiques avec un mimetype tirÃƒÂ© du registre, souvent SANS
+    # `charset` -> le navigateur les dÃƒÂ©code en Windows-1252 et les glyphes UTF-8 deviennent
+    # du mojibake (ÃƒÂ© -> ÃƒÆ’Ã‚Â©, fleche -> ÃƒÂ¢Ã¢â‚¬Â ', check -> ÃƒÂ¢Ã…â€œ"). On force `charset=utf-8` sur toute
+    # rÃƒÂ©ponse textuelle qui n'en dÃƒÂ©clare pas, pour un dÃƒÂ©codage client correct quelle que
     # soit la source du mimetype.
     @app.after_request
     def _force_utf8_charset(response):
@@ -408,29 +408,29 @@ def create_app(
 
     plugins_dir = str(plugins_dir)
 
-    # Seuil de microcompact INTERNE à la boucle d'outils : on vide les vieux résultats
+    # Seuil de microcompact INTERNE ÃƒÂ  la boucle d'outils : on vide les vieux rÃƒÂ©sultats
 
-    # d'outils quand le contexte vivant approche la fenêtre du modèle (en réservant la place
+    # d'outils quand le contexte vivant approche la fenÃƒÂªtre du modÃƒÂ¨le (en rÃƒÂ©servant la place
 
-    # de la réponse). Distinct du résumé inter-tours (context_budget) qui ne porte que sur
+    # de la rÃƒÂ©ponse). Distinct du rÃƒÂ©sumÃƒÂ© inter-tours (context_budget) qui ne porte que sur
 
-    # l'historique persisté. Calculé PAR MODÈLE (_model_limits) : un modèle distant à grande
+    # l'historique persistÃƒÂ©. CalculÃƒÂ© PAR MODÃƒË†LE (_model_limits) : un modÃƒÂ¨le distant ÃƒÂ  grande
 
-    # fenêtre exploite SA fenêtre + son max_tokens au lieu du global, sans toucher au réglage
+    # fenÃƒÂªtre exploite SA fenÃƒÂªtre + son max_tokens au lieu du global, sans toucher au rÃƒÂ©glage
 
-    # local. Repli sur le global pour tout id non listé.
+    # local. Repli sur le global pour tout id non listÃƒÂ©.
 
     model_contexts = dict(model_contexts or {})
 
     model_max_tokens = dict(model_max_tokens or {})
-    # Prix par modèle ($/M tokens) : id -> (input, output, cached). Local/absent -> (0,0,0).
+    # Prix par modÃƒÂ¨le ($/M tokens) : id -> (input, output, cached). Local/absent -> (0,0,0).
     model_prices = dict(model_prices or {})
 
-    # Config VIVANTE de loom.web : au lieu de figer ces valeurs au démarrage, on les tient dans
-    # un holder mutable que le runtime consulte À CHAQUE usage, et qu'on RECHARGE depuis le
-    # disque après chaque édition (/config/set). Résultat : permissions, plafonds, budgets,
-    # reflect et keep-warm prennent effet À CHAUD, sans redémarrer loom.web. (Les params du
-    # SERVEUR MODÈLE restent hors de portée : autre process, cf. serve.py.)
+    # Config VIVANTE de loom.web : au lieu de figer ces valeurs au dÃƒÂ©marrage, on les tient dans
+    # un holder mutable que le runtime consulte Ãƒâ‚¬ CHAQUE usage, et qu'on RECHARGE depuis le
+    # disque aprÃƒÂ¨s chaque ÃƒÂ©dition (/config/set). RÃƒÂ©sultat : permissions, plafonds, budgets,
+    # reflect et keep-warm prennent effet Ãƒâ‚¬ CHAUD, sans redÃƒÂ©marrer loom.web. (Les params du
+    # SERVEUR MODÃƒË†LE restent hors de portÃƒÂ©e : autre process, cf. serve.py.)
     _settings = {
         "max_tokens": max_tokens,
         "context_budget": context_budget,
@@ -443,11 +443,11 @@ def create_app(
         "permission_mode": permission_mode,
     }
     # La fonction de permission capture cfg.permissions ; pour appliquer un changement de mode
-    # à chaud on la remplace dans ce holder (le runtime lit _perm["fn"]).
+    # ÃƒÂ  chaud on la remplace dans ce holder (le runtime lit _perm["fn"]).
     _perm = {"fn": permission}
 
     def _reload_app_config():
-        """Relit defaults.toml + local.toml et met à jour le holder + la permission (à chaud).
+        """Relit defaults.toml + local.toml et met ÃƒÂ  jour le holder + la permission (ÃƒÂ  chaud).
         Best-effort : une config invalide ne casse pas l'app en cours (on garde l'ancienne)."""
         if not (config_defaults_path and config_local_path):
             return
@@ -475,8 +475,8 @@ def create_app(
         _perm["fn"] = lambda name, args: evaluate(name, args, c.permissions)
 
     def _regen_swap_yaml():
-        """Régénère le llama-swap.yaml depuis la config (llama-swap -watch-config le recharge).
-        Best-effort, silencieux si serve indispo. Renvoie True si écrit."""
+        """RÃƒÂ©gÃƒÂ©nÃƒÂ¨re le llama-swap.yaml depuis la config (llama-swap -watch-config le recharge).
+        Best-effort, silencieux si serve indispo. Renvoie True si ÃƒÂ©crit."""
         if not (config_defaults_path and config_local_path):
             return False
         try:
@@ -487,9 +487,9 @@ def create_app(
             return False
 
     def _apply_to_model_server(section):
-        """Param SERVEUR/OVERRIDE (affecte le lancement de llama-server) : régénère le yaml et
-        décharge les modèles locaux -> ils se relancent avec les nouveaux args au prochain usage
-        (llama-swap -watch-config). Ne touche pas les autres process. Best-effort, en tâche de fond."""
+        """Param SERVEUR/OVERRIDE (affecte le lancement de llama-server) : rÃƒÂ©gÃƒÂ©nÃƒÂ¨re le yaml et
+        dÃƒÂ©charge les modÃƒÂ¨les locaux -> ils se relancent avec les nouveaux args au prochain usage
+        (llama-swap -watch-config). Ne touche pas les autres process. Best-effort, en tÃƒÂ¢che de fond."""
         if section not in ("server", "override"):
             return
         if _regen_swap_yaml():
@@ -501,13 +501,13 @@ def create_app(
         return model_prices.get(model_id, (0.0, 0.0, 0.0))
 
     def _ctx_info(model_id):
-        """(fenêtre de contexte, source) du modèle -> dénominateur de la jauge + provenance.
+        """(fenÃƒÂªtre de contexte, source) du modÃƒÂ¨le -> dÃƒÂ©nominateur de la jauge + provenance.
 
-        Distant : on demande D'ABORD au PROVIDER (`client.remote_context`, mis en cache) —
-        c'est le modèle lui-même qui fait autorité. S'il ne publie rien (Z.ai/OpenAI), repli
-        sur la valeur déclarée en config. Local : la fenêtre est celle qu'on a ALLOUÉE au
-        serveur (n_ctx) = notre limite volontaire, signalée comme telle. Sources possibles :
-        `provider` (fait autorité), `config` (déclaré, non vérifiable), `local` (notre limite)."""
+        Distant : on demande D'ABORD au PROVIDER (`client.remote_context`, mis en cache) Ã¢â‚¬â€
+        c'est le modÃƒÂ¨le lui-mÃƒÂªme qui fait autoritÃƒÂ©. S'il ne publie rien (Z.ai/OpenAI), repli
+        sur la valeur dÃƒÂ©clarÃƒÂ©e en config. Local : la fenÃƒÂªtre est celle qu'on a ALLOUÃƒâ€°E au
+        serveur (n_ctx) = notre limite volontaire, signalÃƒÂ©e comme telle. Sources possibles :
+        `provider` (fait autoritÃƒÂ©), `config` (dÃƒÂ©clarÃƒÂ©, non vÃƒÂ©rifiable), `local` (notre limite)."""
         declared = model_contexts.get(model_id) or context_window
         if model_id in remote_model_ids:
             provided = client.remote_context(model_id)
@@ -519,14 +519,14 @@ def create_app(
     def _model_limits(model_id):
         """(plafond de sortie, seuil de microcompact) pour `model_id`.
 
-        Le max_tokens global est une contrainte LOCALE (calibrée pour la VRAM de la machine).
-        Un modèle DISTANT ne l'hérite PAS : sa machine est plus puissante. Non défini -> None
-        (plafond OMIS dans la requête, le provider applique SA limite). La réserve de
-        microcompact reste modeste côté distant (leur fenêtre est large, le seuil compte peu)."""
+        Le max_tokens global est une contrainte LOCALE (calibrÃƒÂ©e pour la VRAM de la machine).
+        Un modÃƒÂ¨le DISTANT ne l'hÃƒÂ©rite PAS : sa machine est plus puissante. Non dÃƒÂ©fini -> None
+        (plafond OMIS dans la requÃƒÂªte, le provider applique SA limite). La rÃƒÂ©serve de
+        microcompact reste modeste cÃƒÂ´tÃƒÂ© distant (leur fenÃƒÂªtre est large, le seuil compte peu)."""
         win = model_contexts.get(model_id) or context_window
         explicit = model_max_tokens.get(model_id)
         if model_id in remote_model_ids:
-            cap = explicit  # None possible -> pas de cap imposé
+            cap = explicit  # None possible -> pas de cap imposÃƒÂ©
             reserve = explicit or 8192
         else:
             cap = explicit or _settings["max_tokens"]  # local : plafond global
@@ -534,45 +534,45 @@ def create_app(
         return cap, max(1024, win - reserve - 1024)
 
     def _totals(conv):
-        """Compteurs de session + fenêtre du modèle (jauge de remplissage du contexte).
-        La fenêtre dépend du modèle (que l'app connaît), pas de la Conversation -> jointe ici,
-        avec sa source (provider/config/local) pour que l'UI signale si le chiffre fait autorité."""
+        """Compteurs de session + fenÃƒÂªtre du modÃƒÂ¨le (jauge de remplissage du contexte).
+        La fenÃƒÂªtre dÃƒÂ©pend du modÃƒÂ¨le (que l'app connaÃƒÂ®t), pas de la Conversation -> jointe ici,
+        avec sa source (provider/config/local) pour que l'UI signale si le chiffre fait autoritÃƒÂ©."""
         win, src = _ctx_info(conv.model)
         return {**conv.usage_totals(), "context_window": win, "context_source": src}
 
     models = list(models or [])
-    # Sérialise TOUTES les écritures de fichiers de config/modèles (model.toml, local.toml,
-    # defaults.toml, store JSON) : Flask est threaded -> deux éditions concurrentes du même
-    # fichier feraient une course read-modify-write (la dernière écrase l'autre).
+    # SÃƒÂ©rialise TOUTES les ÃƒÂ©critures de fichiers de config/modÃƒÂ¨les (model.toml, local.toml,
+    # defaults.toml, store JSON) : Flask est threaded -> deux ÃƒÂ©ditions concurrentes du mÃƒÂªme
+    # fichier feraient une course read-modify-write (la derniÃƒÂ¨re ÃƒÂ©crase l'autre).
     _toml_lock = threading.Lock()
 
-    vision_models = set(vision_models or [])  # ids des modèles avec mmproj (vision)
+    vision_models = set(vision_models or [])  # ids des modÃƒÂ¨les avec mmproj (vision)
 
     remote_model_ids = set(remote_model_ids or [])  # ids servis par une API distante
-    # ids des modèles LOCAUX (servis par llama-swap sur la machine) = tout sauf les distants.
-    # Sert à /machine_state (quel modèle machine est chargé).
+    # ids des modÃƒÂ¨les LOCAUX (servis par llama-swap sur la machine) = tout sauf les distants.
+    # Sert ÃƒÂ  /machine_state (quel modÃƒÂ¨le machine est chargÃƒÂ©).
     local_model_ids = [m for m in (models or []) if m not in remote_model_ids]
-    # Détails des modèles LOCAUX (onglet Modèles locaux) : id/dir/offload/context. `dir` porte
-    # le model.toml -> édition du tuning machine via tomlkit.
+    # DÃƒÂ©tails des modÃƒÂ¨les LOCAUX (onglet ModÃƒÂ¨les locaux) : id/dir/offload/context. `dir` porte
+    # le model.toml -> ÃƒÂ©dition du tuning machine via tomlkit.
     local_model_specs = list(local_models or [])
 
     remote_model_names = dict(
         remote_model_names or {}
-    )  # id Loom -> vrai modèle provider
+    )  # id Loom -> vrai modÃƒÂ¨le provider
 
     available_tools = list(available_tools or [])
 
-    # Concurrence PAR SESSION : chaque session a son propre verrou de génération et son
-    # signal d'annulation -> plusieurs sessions (onglets) génèrent EN PARALLÈLE. Une nouvelle
-    # soumission n'interrompt QUE la génération de SA session (pas les autres). Verrou GLOBAL
-    # `_local_gen_lock` en plus pour les modèles LOCAUX : llama-swap n'en sert qu'un à la fois
-    # -> deux générations locales se sérialisent (limitation machine connue, signalée à l'UI).
+    # Concurrence PAR SESSION : chaque session a son propre verrou de gÃƒÂ©nÃƒÂ©ration et son
+    # signal d'annulation -> plusieurs sessions (onglets) gÃƒÂ©nÃƒÂ¨rent EN PARALLÃƒË†LE. Une nouvelle
+    # soumission n'interrompt QUE la gÃƒÂ©nÃƒÂ©ration de SA session (pas les autres). Verrou GLOBAL
+    # `_local_gen_lock` en plus pour les modÃƒÂ¨les LOCAUX : llama-swap n'en sert qu'un ÃƒÂ  la fois
+    # -> deux gÃƒÂ©nÃƒÂ©rations locales se sÃƒÂ©rialisent (limitation machine connue, signalÃƒÂ©e ÃƒÂ  l'UI).
     _gen_guard = threading.Lock()
     _sess_locks: dict[str, threading.Lock] = {}
     _sess_cancel: dict[str, threading.Event] = {}
     _local_gen_lock = threading.Lock()
-    # Événement d'annulation de la génération EN COURS sur CE thread (pour _confirm, qui tourne
-    # dans le thread de génération) — posé au début de /chat.
+    # Ãƒâ€°vÃƒÂ©nement d'annulation de la gÃƒÂ©nÃƒÂ©ration EN COURS sur CE thread (pour _confirm, qui tourne
+    # dans le thread de gÃƒÂ©nÃƒÂ©ration) Ã¢â‚¬â€ posÃƒÂ© au dÃƒÂ©but de /chat.
     _confirm_local = threading.local()
 
     def _lock_for(sid: str) -> threading.Lock:
@@ -583,17 +583,15 @@ def create_app(
         with _gen_guard:
             return _sess_cancel.setdefault(sid, threading.Event())
 
-    # Décisions de confirmation en attente : tool_call_id -> {event, approved}.
+    # DÃƒÂ©cisions de confirmation en attente : tool_call_id -> {event, approved}.
 
-    # Renseignées par la route /tool_decision (autre thread), consommées par _confirm.
+    # RenseignÃƒÂ©es par la route /tool_decision (autre thread), consommÃƒÂ©es par _confirm.
 
     pending: dict = {}
 
-    app.config["_pending"] = pending
+    # Horodatage de la derniÃƒÂ¨re fin de gÃƒÂ©nÃƒÂ©ration (0 = jamais). Le keep-warm ne pinge
 
-    # Horodatage de la dernière fin de génération (0 = jamais). Le keep-warm ne pinge
-
-    # qu'après une vraie activité et seulement à l'idle (cf. thread plus bas).
+    # qu'aprÃƒÂ¨s une vraie activitÃƒÂ© et seulement ÃƒÂ  l'idle (cf. thread plus bas).
 
     _last_activity = [0.0]
 
@@ -603,23 +601,21 @@ def create_app(
 
     _cur: dict = {"session": None}
 
-    app.config["_session_holder"] = _cur
-
-    # Cache d'OBJETS session en mémoire : UNE instance par session, partagée entre requêtes
+    # Cache d'OBJETS session en mÃƒÂ©moire : UNE instance par session, partagÃƒÂ©e entre requÃƒÂªtes
     # (onglets) -> pas de sauvegardes qui se clobberent quand plusieurs sessions tournent en
-    # parallèle. `_cur` pointe la session FOCUS (défaut de l'index).
+    # parallÃƒÂ¨le. `_cur` pointe la session FOCUS (dÃƒÂ©faut de l'index).
     _sessions_cache: dict = {}
 
     def _ensure_model(sess):
-        # Une session neuve peut naître sans modèle -> requête model="" -> llama-swap renvoie
-        # 404. On garantit un modèle valide (le 1er = défaut) ; corrige aussi les vides.
+        # Une session neuve peut naÃƒÂ®tre sans modÃƒÂ¨le -> requÃƒÂªte model="" -> llama-swap renvoie
+        # 404. On garantit un modÃƒÂ¨le valide (le 1er = dÃƒÂ©faut) ; corrige aussi les vides.
         if sess is not None and not sess.conversation.model and models:
             sess.conversation.set_model(models[0])
             session_store.save(sess)
         return sess
 
     def _get_session(sid: str):
-        """Session par id, depuis le cache (une instance) ou chargée du disque. None si absente."""
+        """Session par id, depuis le cache (une instance) ou chargÃƒÂ©e du disque. None si absente."""
         if not sid:
             return None
         with _gen_guard:
@@ -645,20 +641,20 @@ def create_app(
     def _ctx():
         """Renvoie (conversation, save) : la conversation de la session active et sa
 
-        persistance. Point de vérité unique pour tous les endpoints."""
+        persistance. Point de vÃƒÂ©ritÃƒÂ© unique pour tous les endpoints."""
 
         sess = _session()
 
         return sess.conversation, (lambda: session_store.save(sess))
 
     def _confirm(tool_id: str, name: str, args: dict) -> bool:
-        """Bloque jusqu'à la décision UI (OK/Refuser). Interruptible et borné.
+        """Bloque jusqu'ÃƒÂ  la dÃƒÂ©cision UI (OK/Refuser). Interruptible et bornÃƒÂ©.
 
 
 
         Renvoie False si refus, timeout, ou si une nouvelle soumission annule
 
-        (cancel_event) — évite tout deadlock sur le verrou de chat.
+        (cancel_event) Ã¢â‚¬â€ ÃƒÂ©vite tout deadlock sur le verrou de chat.
 
         """
 
@@ -668,7 +664,7 @@ def create_app(
 
         deadline = time.monotonic() + confirm_timeout
 
-        # Annulation de LA session dont on exécute la génération (thread-local, posé par /chat).
+        # Annulation de LA session dont on exÃƒÂ©cute la gÃƒÂ©nÃƒÂ©ration (thread-local, posÃƒÂ© par /chat).
         cancel_ev = getattr(_confirm_local, "ev", None)
 
         try:
@@ -687,8 +683,8 @@ def create_app(
         return collect_skills(skills_dir, plugins_dir, learned_dir=learned_skills_dir)
 
     def _skills_ctx(conv) -> dict:
-        """Contexte du panneau Skills : la liste COMPLÈTE (pour les cases), l'ensemble des
-        skills ACTIFS (non désactivés) et ceux qui ont un override de session (badge UI)."""
+        """Contexte du panneau Skills : la liste COMPLÃƒË†TE (pour les cases), l'ensemble des
+        skills ACTIFS (non dÃƒÂ©sactivÃƒÂ©s) et ceux qui ont un override de session (badge UI)."""
         skills = _all_skills()
         disabled = set(conv.disabled_skills)
         return {
@@ -728,15 +724,15 @@ def create_app(
             "sessions": sessions,
             "active_session": active_id,
             "permission_mode": _settings["permission_mode"],
-            # État initial pour l'hydratation côté client (Preact). On échappe '<'
+            # Ãƒâ€°tat initial pour l'hydratation cÃƒÂ´tÃƒÂ© client (Preact). On ÃƒÂ©chappe '<'
             # pour ne pas pouvoir fermer la balise <script> depuis le contenu.
             "init_json": json.dumps(
                 {
                     "messages": conv.messages,
                     "thinking": conv.thinking,
                     "usage_totals": _totals(conv),
-                    # Onglet initial : la session active (id/titre/modèle/workspace) + toutes
-                    # les sessions (pour la sidebar). Le multi-onglets s'hydrate là-dessus.
+                    # Onglet initial : la session active (id/titre/modÃƒÂ¨le/workspace) + toutes
+                    # les sessions (pour la sidebar). Le multi-onglets s'hydrate lÃƒÂ -dessus.
                     "active_session": active_id,
                     "title": sess.title,
                     "model": conv.model,
@@ -747,21 +743,21 @@ def create_app(
             ).replace("<", "\\u003c"),
         }
 
-    # Garde CSRF : le serveur écoute sur 127.0.0.1 SANS auth, et tourne souvent en
+    # Garde CSRF : le serveur ÃƒÂ©coute sur 127.0.0.1 SANS auth, et tourne souvent en
 
-    # mode=allow (outils exécutés sans confirmation). Une page web tierce OUVERTE dans le
+    # mode=allow (outils exÃƒÂ©cutÃƒÂ©s sans confirmation). Une page web tierce OUVERTE dans le
 
-    # navigateur de l'utilisateur peut POSTer en cross-origin vers 127.0.0.1 (requêtes
+    # navigateur de l'utilisateur peut POSTer en cross-origin vers 127.0.0.1 (requÃƒÂªtes
 
-    # « simples », sans preflight) et piloter l'agent local -> exécution d'outils. Le
+    # Ã‚Â« simples Ã‚Â», sans preflight) et piloter l'agent local -> exÃƒÂ©cution d'outils. Le
 
-    # binding localhost NE protège PAS de ça. On refuse les POST dont l'en-tête
+    # binding localhost NE protÃƒÂ¨ge PAS de ÃƒÂ§a. On refuse les POST dont l'en-tÃƒÂªte
 
-    # Sec-Fetch-Site (envoyé par tous les navigateurs modernes) trahit une origine tierce.
+    # Sec-Fetch-Site (envoyÃƒÂ© par tous les navigateurs modernes) trahit une origine tierce.
 
     # `same-origin`/`none` (notre propre page, barre d'adresse) passent ; un client non-
 
-    # navigateur (curl, tests) n'envoie pas l'en-tête -> autorisé, on ne casse rien.
+    # navigateur (curl, tests) n'envoie pas l'en-tÃƒÂªte -> autorisÃƒÂ©, on ne casse rien.
 
     @app.before_request
     def _csrf_guard():
@@ -770,7 +766,7 @@ def create_app(
             return None
 
         if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
-            return Response("requête cross-origin refusée (CSRF)", status=403)
+            return Response("requÃƒÂªte cross-origin refusÃƒÂ©e (CSRF)", status=403)
 
         return None
 
@@ -788,7 +784,7 @@ def create_app(
 
         save()
 
-        # Le fil repart à neuf -> on efface aussi le journal d'affichage temps réel.
+        # Le fil repart ÃƒÂ  neuf -> on efface aussi le journal d'affichage temps rÃƒÂ©el.
         session_store.clear_timeline(_session().id)
 
         return render_template("index.html", **_index_context())
@@ -802,22 +798,22 @@ def create_app(
             return Response("message invalide", status=400)
 
         # Session CIBLE : par `session_id` (onglet) sinon la session focus. Chaque session a
-        # son verrou : une nouvelle soumission n'interrompt QUE la génération de SA session,
-        # les autres onglets continuent en parallèle.
+        # son verrou : une nouvelle soumission n'interrompt QUE la gÃƒÂ©nÃƒÂ©ration de SA session,
+        # les autres onglets continuent en parallÃƒÂ¨le.
         req_sid = (request.form.get("session_id") or "").strip()
         sess = _get_session(req_sid) or _session()
-        _cur["session"] = sess  # focus (défaut de l'index)
+        _cur["session"] = sess  # focus (dÃƒÂ©faut de l'index)
         sid = sess.id
         chat_lock = _lock_for(sid)
         cancel_event = _cancel_for(sid)
 
         if not chat_lock.acquire(blocking=False):
-            # Une génération de CETTE session tourne déjà : on l'annule et on attend le verrou.
+            # Une gÃƒÂ©nÃƒÂ©ration de CETTE session tourne dÃƒÂ©jÃƒÂ  : on l'annule et on attend le verrou.
 
             cancel_event.set()
 
             if not chat_lock.acquire(timeout=interrupt_wait):
-                return Response("occupé : cette session génère déjà", status=429)
+                return Response("occupÃƒÂ© : cette session gÃƒÂ©nÃƒÂ¨re dÃƒÂ©jÃƒÂ ", status=429)
 
         # On tient le verrou : repartir d'un signal d'annulation propre.
 
@@ -826,17 +822,17 @@ def create_app(
         conv = sess.conversation
         save = lambda: session_store.save(sess)  # noqa: E731
 
-        # Commande /goal : pilote l'OBJECTIF de complétion de la session.
+        # Commande /goal : pilote l'OBJECTIF de complÃƒÂ©tion de la session.
 
-        # « /goal <condition> » pose l'objectif ET DÉMARRE aussitôt une itération (comme /goal
+        # Ã‚Â« /goal <condition> Ã‚Â» pose l'objectif ET DÃƒâ€°MARRE aussitÃƒÂ´t une itÃƒÂ©ration (comme /goal
 
-        # de Claude Code : « exécute une première itération immédiatement ») — l'objectif maintient
+        # de Claude Code : Ã‚Â« exÃƒÂ©cute une premiÃƒÂ¨re itÃƒÂ©ration immÃƒÂ©diatement Ã‚Â») Ã¢â‚¬â€ l'objectif maintient
 
-        # ensuite l'agent au travail (garde côté client.py) jusqu'à ce qu'un évaluateur le juge
+        # ensuite l'agent au travail (garde cÃƒÂ´tÃƒÂ© client.py) jusqu'ÃƒÂ  ce qu'un ÃƒÂ©valuateur le juge
 
-        # PROUVÉ atteint. « /goal » seul = statut ; « /goal clear|stop|… » = efface. Ces deux-là
+        # PROUVÃƒâ€° atteint. Ã‚Â« /goal Ã‚Â» seul = statut ; Ã‚Â« /goal clear|stop|Ã¢â‚¬Â¦ Ã‚Â» = efface. Ces deux-lÃƒÂ 
 
-        # ne lancent pas de tour modèle (ack immédiat) ; poser un objectif, si.
+        # ne lancent pas de tour modÃƒÂ¨le (ack immÃƒÂ©diat) ; poser un objectif, si.
 
         if message == "/goal" or message.startswith("/goal "):
             arg = message[len("/goal") :].strip()
@@ -844,27 +840,27 @@ def create_app(
             if arg and arg.lower() not in _GOAL_CLEAR_WORDS:
                 # Pose l'objectif et AMORCE le travail : on remplace le message par une consigne
 
-                # de démarrage et on laisse le flux normal tourner, objectif désormais actif.
+                # de dÃƒÂ©marrage et on laisse le flux normal tourner, objectif dÃƒÂ©sormais actif.
 
                 conv.set_goal(arg)
 
                 save()
 
                 message = (
-                    f"Objectif à atteindre : {arg}\n"
-                    "Commence MAINTENANT à agir pour l'atteindre, et PROUVE-le (exécute, montre "
-                    "la sortie réelle). Ne t'arrête pas tant qu'il n'est pas démontré atteint."
+                    f"Objectif ÃƒÂ  atteindre : {arg}\n"
+                    "Commence MAINTENANT ÃƒÂ  agir pour l'atteindre, et PROUVE-le (exÃƒÂ©cute, montre "
+                    "la sortie rÃƒÂ©elle). Ne t'arrÃƒÂªte pas tant qu'il n'est pas dÃƒÂ©montrÃƒÂ© atteint."
                 )
 
-                # (pas de return : on tombe dans la génération normale ci-dessous)
+                # (pas de return : on tombe dans la gÃƒÂ©nÃƒÂ©ration normale ci-dessous)
 
             else:
                 if not arg:
                     ack = (
-                        f"Objectif courant : « {conv.goal} » (actif jusqu'à preuve d'atteinte, "
+                        f"Objectif courant : Ã‚Â« {conv.goal} Ã‚Â» (actif jusqu'ÃƒÂ  preuve d'atteinte, "
                         "/goal clear pour l'effacer)."
                         if conv.goal
-                        else "Aucun objectif actif. Pose-en un : /goal <condition vérifiable>."
+                        else "Aucun objectif actif. Pose-en un : /goal <condition vÃƒÂ©rifiable>."
                     )
 
                 else:
@@ -872,7 +868,7 @@ def create_app(
 
                     save()
 
-                    ack = "Objectif effacé — retour au mode normal (arrêt au stop naturel)."
+                    ack = "Objectif effacÃƒÂ© Ã¢â‚¬â€ retour au mode normal (arrÃƒÂªt au stop naturel)."
 
                 chat_lock.release()
 
@@ -884,11 +880,11 @@ def create_app(
 
                 return Response(_goal_ack(), mimetype="text/event-stream")
 
-        # Commande /init : génère une fiche projet `loom.md` À LA RACINE DU DOSSIER DE TRAVAIL
-        # de la session (celui défini dans l'UI, ou ciblé par « /init <chemin> »). Macro de
-        # prompt (pas de scanner figé) : on déplie une consigne et la boucle tool-use explore
-        # puis écrit le fichier. `/init <dossier existant>` adopte d'abord ce dossier comme
-        # workspace (exploration + écriture cohérentes).
+        # Commande /init : gÃƒÂ©nÃƒÂ¨re une fiche projet `loom.md` Ãƒâ‚¬ LA RACINE DU DOSSIER DE TRAVAIL
+        # de la session (celui dÃƒÂ©fini dans l'UI, ou ciblÃƒÂ© par Ã‚Â« /init <chemin> Ã‚Â»). Macro de
+        # prompt (pas de scanner figÃƒÂ©) : on dÃƒÂ©plie une consigne et la boucle tool-use explore
+        # puis ÃƒÂ©crit le fichier. `/init <dossier existant>` adopte d'abord ce dossier comme
+        # workspace (exploration + ÃƒÂ©criture cohÃƒÂ©rentes).
         if message == "/init" or message.startswith("/init "):
             arg = message[len("/init") :].strip()
             _sess = _session()
@@ -902,19 +898,19 @@ def create_app(
                         session_store.save(_sess)
             target_display = str(Path(target_dir)).replace("\\", "/")
             message = _init_message(target_display)
-            # (pas de return : le flux normal ci-dessous exécute la consigne)
+            # (pas de return : le flux normal ci-dessous exÃƒÂ©cute la consigne)
 
-        # Plus de garde bloquant : un modèle texte-only ne reçoit PAS l'image inline (qui
+        # Plus de garde bloquant : un modÃƒÂ¨le texte-only ne reÃƒÂ§oit PAS l'image inline (qui
 
-        # ferait planter un llama-server sans mmproj) — on la stocke sur disque et il l'inspecte
+        # ferait planter un llama-server sans mmproj) Ã¢â‚¬â€ on la stocke sur disque et il l'inspecte
 
-        # via read_image, routé vers un modèle vision (cf. _build_user_content plus bas).
+        # via read_image, routÃƒÂ© vers un modÃƒÂ¨le vision (cf. _build_user_content plus bas).
 
-        # Logs PAR SESSION (au même titre que session.json) : (1) trace des échanges modèle
+        # Logs PAR SESSION (au mÃƒÂªme titre que session.json) : (1) trace des ÃƒÂ©changes modÃƒÂ¨le
 
-        # routée vers sessions/<id>/debug.log ; (2) copie du log serveur modèle global
+        # routÃƒÂ©e vers sessions/<id>/debug.log ; (2) copie du log serveur modÃƒÂ¨le global
 
-        # (var/logs/serve.log) dans la session — doublon assumé, pour tout avoir sous la main.
+        # (var/logs/serve.log) dans la session Ã¢â‚¬â€ doublon assumÃƒÂ©, pour tout avoir sous la main.
 
         _sdir = session_store.session_dir(_session().id)
 
@@ -931,11 +927,11 @@ def create_app(
             except OSError:
                 pass
 
-        # Auto-adoption du dossier de travail : si le message désigne un dossier EXISTANT,
+        # Auto-adoption du dossier de travail : si le message dÃƒÂ©signe un dossier EXISTANT,
 
         # la session l'adopte avant le tour -> run_shell tourne dedans et les chemins
 
-        # relatifs s'y résolvent, sans que l'utilisateur ait à pointer le dossier dans l'UI.
+        # relatifs s'y rÃƒÂ©solvent, sans que l'utilisateur ait ÃƒÂ  pointer le dossier dans l'UI.
 
         adopted_ws = None
 
@@ -963,11 +959,11 @@ def create_app(
 
             save()
 
-            # Journal d'affichage temps réel : on y consigne le message user (le journal est la
-            # source de RÉ-AFFICHAGE au rechargement -> il doit être complet, user inclus).
+            # Journal d'affichage temps rÃƒÂ©el : on y consigne le message user (le journal est la
+            # source de RÃƒâ€°-AFFICHAGE au rechargement -> il doit ÃƒÂªtre complet, user inclus).
             session_store.append_event(sess.id, "user", {"content": message})
 
-            # Gestion du contexte : résumé auto si trop long
+            # Gestion du contexte : rÃƒÂ©sumÃƒÂ© auto si trop long
 
             if context.summarize(
                 conv, client, _settings["context_budget"], _settings["keep_recent"]
@@ -982,17 +978,17 @@ def create_app(
 
             catalog = render_catalog(skills)
 
-            # Identité always-on (SOUL/USER/MEMORY) EN TÊTE : c'est la définition qui FAIT FOI
+            # IdentitÃƒÂ© always-on (SOUL/USER/MEMORY) EN TÃƒÅ TE : c'est la dÃƒÂ©finition qui FAIT FOI
 
-            # de qui est Loom (rôle, persona, style). Le mode d'emploi opérationnel (outils,
+            # de qui est Loom (rÃƒÂ´le, persona, style). Le mode d'emploi opÃƒÂ©rationnel (outils,
 
-            # règles) de chat.system.md vient APRÈS et s'y conforme — on ne plante plus un
+            # rÃƒÂ¨gles) de chat.system.md vient APRÃƒË†S et s'y conforme Ã¢â‚¬â€ on ne plante plus un
 
-            # cadrage générique d'abord pour le corriger 12k caractères plus loin. Always-on =>
+            # cadrage gÃƒÂ©nÃƒÂ©rique d'abord pour le corriger 12k caractÃƒÂ¨res plus loin. Always-on =>
 
-            # survit toujours à la microcompaction/summarization (qui ne touchent que
+            # survit toujours ÃƒÂ  la microcompaction/summarization (qui ne touchent que
 
-            # l'historique). Bornée par identity_max_tokens. Cf. design §5.6.
+            # l'historique). BornÃƒÂ©e par identity_max_tokens. Cf. design Ã‚Â§5.6.
 
             _idblk = ""
 
@@ -1006,13 +1002,13 @@ def create_app(
                     max_tokens=_settings["identity_max_tokens"],
                 )
 
-            # TIER du harnais : un modèle DISTANT (API, non quantifié) se pilote seul -> prompt
+            # TIER du harnais : un modÃƒÂ¨le DISTANT (API, non quantifiÃƒÂ©) se pilote seul -> prompt
 
-            # ALLÉGÉ (identité + outils + mémoire + sécurité), sans le scaffolding de comportement
+            # ALLÃƒâ€°GÃƒâ€° (identitÃƒÂ© + outils + mÃƒÂ©moire + sÃƒÂ©curitÃƒÂ©), sans le scaffolding de comportement
 
-            # de chat.system.md qui ne sert qu'à un petit modèle local. Le flag `strong` sert
+            # de chat.system.md qui ne sert qu'ÃƒÂ  un petit modÃƒÂ¨le local. Le flag `strong` sert
 
-            # aussi (plus bas) à couper les gardes de comportement dans la boucle d'outils.
+            # aussi (plus bas) ÃƒÂ  couper les gardes de comportement dans la boucle d'outils.
 
             strong = bool(conv.model and conv.model in remote_model_ids)
 
@@ -1020,97 +1016,97 @@ def create_app(
 
             system_prompt = f"{_idblk}\n\n{base_prompt}" if _idblk else base_prompt
 
-            # Distant (strong) : la machine du provider encaisse le parallélisme -> on incite à
-            # GROUPER les sous-agents indépendants dans un même tour (ils tournent en parallèle).
+            # Distant (strong) : la machine du provider encaisse le parallÃƒÂ©lisme -> on incite ÃƒÂ 
+            # GROUPER les sous-agents indÃƒÂ©pendants dans un mÃƒÂªme tour (ils tournent en parallÃƒÂ¨le).
             if strong:
                 system_prompt += (
-                    "\n\nParallélisme : quand plusieurs sous-tâches sont INDÉPENDANTES (auditer/"
-                    "explorer des pans distincts), émets PLUSIEURS dispatch_agent dans le MÊME "
-                    "tour — ils s'exécutent EN PARALLÈLE, bien plus vite qu'un par tour. Un pan = "
+                    "\n\nParallÃƒÂ©lisme : quand plusieurs sous-tÃƒÂ¢ches sont INDÃƒâ€°PENDANTES (auditer/"
+                    "explorer des pans distincts), ÃƒÂ©mets PLUSIEURS dispatch_agent dans le MÃƒÅ ME "
+                    "tour Ã¢â‚¬â€ ils s'exÃƒÂ©cutent EN PARALLÃƒË†LE, bien plus vite qu'un par tour. Un pan = "
                     "un agent, lance-les ensemble."
                 )
 
             if catalog:
                 system_prompt += f"\n\n{catalog}"
 
-            # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
+            # Le modÃƒÂ¨le ignore par dÃƒÂ©faut sous quel backend il tourne (le prompt dit
 
-            # "Tu es Loom") -> il baratine quand on lui demande "quel modèle ?". On lui
+            # "Tu es Loom") -> il baratine quand on lui demande "quel modÃƒÂ¨le ?". On lui
 
-            # injecte son modèle courant pour qu'il réponde honnêtement. DISTANT vs LOCAL :
+            # injecte son modÃƒÂ¨le courant pour qu'il rÃƒÂ©ponde honnÃƒÂªtement. DISTANT vs LOCAL :
 
-            # sans ça un modèle servi par une API répétait « je tourne en local/offline sur
+            # sans ÃƒÂ§a un modÃƒÂ¨le servi par une API rÃƒÂ©pÃƒÂ©tait Ã‚Â« je tourne en local/offline sur
 
-            # llama.cpp » (la persona de Loom est « agent local ») -> confabulation d'infra.
+            # llama.cpp Ã‚Â» (la persona de Loom est Ã‚Â« agent local Ã‚Â») -> confabulation d'infra.
 
             if conv.model:
                 if conv.model in remote_model_ids:
                     _pm = remote_model_names.get(conv.model)
 
                     _label = (
-                        f"« {_pm} » (route « {conv.model} »)"
+                        f"Ã‚Â« {_pm} Ã‚Â» (route Ã‚Â« {conv.model} Ã‚Â»)"
                         if _pm
-                        else f"« {conv.model} »"
+                        else f"Ã‚Â« {conv.model} Ã‚Â»"
                     )
 
                     system_prompt += (
-                        f"\n\n# Ton moteur\nTon raisonnement est servi par le modèle DISTANT "
-                        f"{_label}, via une API externe — PAS en local. Tes OUTILS, eux, "
-                        "s'exécutent bien sur la machine de l'utilisateur, mais toi (le cerveau) "
-                        "non. Ne prétends donc JAMAIS être offline, ni tourner sur llama.cpp / "
+                        f"\n\n# Ton moteur\nTon raisonnement est servi par le modÃƒÂ¨le DISTANT "
+                        f"{_label}, via une API externe Ã¢â‚¬â€ PAS en local. Tes OUTILS, eux, "
+                        "s'exÃƒÂ©cutent bien sur la machine de l'utilisateur, mais toi (le cerveau) "
+                        "non. Ne prÃƒÂ©tends donc JAMAIS ÃƒÂªtre offline, ni tourner sur llama.cpp / "
                         "llama-swap / une carte graphique locale : ce serait faux. Si on te "
-                        "demande quel modèle/moteur tu utilises, donne ce nom honnêtement, sans "
-                        "inventer de détails d'infrastructure."
+                        "demande quel modÃƒÂ¨le/moteur tu utilises, donne ce nom honnÃƒÂªtement, sans "
+                        "inventer de dÃƒÂ©tails d'infrastructure."
                     )
 
                 else:
                     system_prompt += (
-                        f"\n\n# Ton moteur\nTu tournes sur le modèle local « {conv.model} ». "
-                        "Si on te demande quel modèle/moteur tu utilises, réponds-le "
-                        "honnêtement et directement (ce nom), sans esquiver."
+                        f"\n\n# Ton moteur\nTu tournes sur le modÃƒÂ¨le local Ã‚Â« {conv.model} Ã‚Â». "
+                        "Si on te demande quel modÃƒÂ¨le/moteur tu utilises, rÃƒÂ©ponds-le "
+                        "honnÃƒÂªtement et directement (ce nom), sans esquiver."
                     )
 
-            # Système : Loom détecte SEUL l'OS et injecte ses conventions (shell, commandes,
-            # chemins) -> le modèle produit du PowerShell sous Windows, du bash/unix sous
-            # macOS/Linux, sans qu'on code l'OS en dur dans le prompt. Source unique partagée
+            # SystÃƒÂ¨me : Loom dÃƒÂ©tecte SEUL l'OS et injecte ses conventions (shell, commandes,
+            # chemins) -> le modÃƒÂ¨le produit du PowerShell sous Windows, du bash/unix sous
+            # macOS/Linux, sans qu'on code l'OS en dur dans le prompt. Source unique partagÃƒÂ©e
             # avec run_shell (loom.runtime.platform_info) : jamais de divergence.
 
             system_prompt += "\n\n" + platform_detect().prompt_block()
 
-            # Dossier de travail courant : le modèle l'IGNORE sinon et le devine en sondant
+            # Dossier de travail courant : le modÃƒÂ¨le l'IGNORE sinon et le devine en sondant
 
-            # (git rev-parse à l'aveugle, list_dir…) -> tours gaspillés. On le lui dit, avec
+            # (git rev-parse ÃƒÂ  l'aveugle, list_dirÃ¢â‚¬Â¦) -> tours gaspillÃƒÂ©s. On le lui dit, avec
 
-            # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git. Reste EN BAS
+            # le rÃƒÂ©flexe anti-tÃƒÂ¢tonnement quand ce dossier n'est pas un repo git. Reste EN BAS
 
-            # (contexte volatil, près de l'action).
+            # (contexte volatil, prÃƒÂ¨s de l'action).
 
             _ws = _session().workspace
 
             system_prompt += (
                 f"\n\n# Dossier de travail courant\nTes commandes (run_shell) tournent dans "
-                f"`{_ws}` et les chemins relatifs s'y résolvent — n'y répète pas le nom de ce "
-                "dossier dans tes chemins. Si une commande git échoue par « not a git "
-                "repository », c'est que CE dossier n'est pas un repo : fais UN list_dir pour "
-                "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
-                "même commande à l'identique."
+                f"`{_ws}` et les chemins relatifs s'y rÃƒÂ©solvent Ã¢â‚¬â€ n'y rÃƒÂ©pÃƒÂ¨te pas le nom de ce "
+                "dossier dans tes chemins. Si une commande git ÃƒÂ©choue par Ã‚Â« not a git "
+                "repository Ã‚Â», c'est que CE dossier n'est pas un repo : fais UN list_dir pour "
+                "repÃƒÂ©rer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
+                "mÃƒÂªme commande ÃƒÂ  l'identique."
             )
 
             # Objectif de session (/goal), en DIRECTIVE DOUCE : pas de juge externe qui te
 
-            # contredit (retiré — il recalait des preuves correctes). Tu restes seul maître de
+            # contredit (retirÃƒÂ© Ã¢â‚¬â€ il recalait des preuves correctes). Tu restes seul maÃƒÂ®tre de
 
-            # ta propre vérification : ne te déclare pas fini tant que l'objectif n'est pas
+            # ta propre vÃƒÂ©rification : ne te dÃƒÂ©clare pas fini tant que l'objectif n'est pas
 
-            # ATTEINT ET PROUVÉ par tes exécutions (montre la sortie réelle) ; une fois prouvé,
+            # ATTEINT ET PROUVÃƒâ€° par tes exÃƒÂ©cutions (montre la sortie rÃƒÂ©elle) ; une fois prouvÃƒÂ©,
 
-            # dis-le et arrête-toi. L'utilisateur l'efface avec « /goal clear ».
+            # dis-le et arrÃƒÂªte-toi. L'utilisateur l'efface avec Ã‚Â« /goal clear Ã‚Â».
 
             if conv.goal:
                 system_prompt += (
                     f"\n\n# Objectif de session\nTant qu'il est actif, oriente ton travail vers "
-                    f"cet objectif et ne le déclare atteint qu'une fois PROUVÉ par tes propres "
-                    f"exécutions (sortie réelle affichée) :\n{conv.goal}"
+                    f"cet objectif et ne le dÃƒÂ©clare atteint qu'une fois PROUVÃƒâ€° par tes propres "
+                    f"exÃƒÂ©cutions (sortie rÃƒÂ©elle affichÃƒÂ©e) :\n{conv.goal}"
                 )
 
         except ValueError as exc:
@@ -1125,40 +1121,40 @@ def create_app(
 
         def generate():
 
-            # Annulation de CETTE session, lue par _confirm (même thread de génération).
+            # Annulation de CETTE session, lue par _confirm (mÃƒÂªme thread de gÃƒÂ©nÃƒÂ©ration).
             _confirm_local.ev = cancel_event
-            # Verrou modèle LOCAL : pris dans le try ci-dessous (avant le 1er appel modèle),
-            # libéré au finally. Distant -> jamais pris (vrai parallèle entre onglets).
+            # Verrou modÃƒÂ¨le LOCAL : pris dans le try ci-dessous (avant le 1er appel modÃƒÂ¨le),
+            # libÃƒÂ©rÃƒÂ© au finally. Distant -> jamais pris (vrai parallÃƒÂ¨le entre onglets).
             _local_held = False
 
-            # Profil du modèle : correctifs déterministes (cadratins, guillemets
+            # Profil du modÃƒÂ¨le : correctifs dÃƒÂ©terministes (cadratins, guillemets
 
-            # typographiques) appliqués au texte streamé du chat. Le profil existe
+            # typographiques) appliquÃƒÂ©s au texte streamÃƒÂ© du chat. Le profil existe
 
-            # déjà pour les outils d'écriture (via tool_factory) ; on le recharge ici
+            # dÃƒÂ©jÃƒÂ  pour les outils d'ÃƒÂ©criture (via tool_factory) ; on le recharge ici
 
-            # pour l'appliquer AUSSI aux réponses du modèle, pas seulement aux fichiers.
+            # pour l'appliquer AUSSI aux rÃƒÂ©ponses du modÃƒÂ¨le, pas seulement aux fichiers.
 
             _profile = load_profile(conv.model) if conv.model else None
 
-            if adopted_ws:  # informe l'UI que le dossier de travail a été adopté
+            if adopted_ws:  # informe l'UI que le dossier de travail a ÃƒÂ©tÃƒÂ© adoptÃƒÂ©
                 yield _sse("workspace", path=adopted_ws)
 
             answer = ""
 
-            actions: list[str] = []  # trace compacte des outils (anti-amnésie)
+            actions: list[str] = []  # trace compacte des outils (anti-amnÃƒÂ©sie)
 
             saved = False
             # Persistance AU FIL DE L'EAU : au lieu de tout sauver une seule fois EN FIN de tour
-            # (un long audit interrompu/rechargé/relancé perdait TOUT), on met à jour EN PLACE
-            # l'unique message assistant du tour (réponse en cours + trace compacte des actions)
-            # et on sauve à CHAQUE étape marquante (outil terminé, flux de texte) + à la fin.
+            # (un long audit interrompu/rechargÃƒÂ©/relancÃƒÂ© perdait TOUT), on met ÃƒÂ  jour EN PLACE
+            # l'unique message assistant du tour (rÃƒÂ©ponse en cours + trace compacte des actions)
+            # et on sauve ÃƒÂ  CHAQUE ÃƒÂ©tape marquante (outil terminÃƒÂ©, flux de texte) + ÃƒÂ  la fin.
             _turn = {"idx": None, "last": 0.0}
 
-            # Journal d'affichage TEMPS RÉEL : chaque événement visible est écrit à l'instant
-            # dans timeline.jsonl (append, zéro batch) -> rejouable au rechargement. On y met
-            # les événements qui reconstruisent la vue (raisonnement, texte, cartes d'outils) ;
-            # pas les compteurs (metrics/totals) ni les décorations live (tool_stream/args).
+            # Journal d'affichage TEMPS RÃƒâ€°EL : chaque ÃƒÂ©vÃƒÂ©nement visible est ÃƒÂ©crit ÃƒÂ  l'instant
+            # dans timeline.jsonl (append, zÃƒÂ©ro batch) -> rejouable au rechargement. On y met
+            # les ÃƒÂ©vÃƒÂ©nements qui reconstruisent la vue (raisonnement, texte, cartes d'outils) ;
+            # pas les compteurs (metrics/totals) ni les dÃƒÂ©corations live (tool_stream/args).
             _TL = {"reasoning", "text", "tool_call", "tool_result", "phase", "notice"}
 
             def _tl(event, **data):
@@ -1168,23 +1164,23 @@ def create_app(
 
             def _persist(final=False):
                 # On NE persiste pas les messages `tool` bruts (gonflerait le contexte + casserait
-                # le résumeur) : seulement le texte + la trace des actions. Un même tour = UN seul
-                # message assistant, mis à jour en place (pas de doublons).
+                # le rÃƒÂ©sumeur) : seulement le texte + la trace des actions. Un mÃƒÂªme tour = UN seul
+                # message assistant, mis ÃƒÂ  jour en place (pas de doublons).
                 nonlocal saved
 
                 body = answer
 
                 if actions:
-                    trace = "[Actions de ce tour : " + " · ".join(actions[:20]) + "]"
+                    trace = "[Actions de ce tour : " + " Ã‚Â· ".join(actions[:20]) + "]"
 
                     body = f"{body}\n\n{trace}" if body else trace
 
-                if not body:  # rien à dire ET rien fait -> pas de bulle vide
+                if not body:  # rien ÃƒÂ  dire ET rien fait -> pas de bulle vide
                     return
 
-                # Piloté par ÉVÉNEMENT (chaque outil terminé + fin), plus par un timer : le
-                # temps réel de l'affichage vient du journal `timeline.jsonl`, pas d'ici. Ce
-                # session.json ne porte que le contexte lean du modèle, inutile à chaque token.
+                # PilotÃƒÂ© par Ãƒâ€°VÃƒâ€°NEMENT (chaque outil terminÃƒÂ© + fin), plus par un timer : le
+                # temps rÃƒÂ©el de l'affichage vient du journal `timeline.jsonl`, pas d'ici. Ce
+                # session.json ne porte que le contexte lean du modÃƒÂ¨le, inutile ÃƒÂ  chaque token.
                 if _turn["idx"] is None:
                     conv.add("assistant", body)
                     _turn["idx"] = len(conv.messages) - 1
@@ -1194,13 +1190,13 @@ def create_app(
                 save()
                 saved = True
 
-            # Registre construit selon les outils activés pour CETTE conversation
+            # Registre construit selon les outils activÃƒÂ©s pour CETTE conversation
 
-            # (toggles UI) ET le workspace de la session active : sans ça les outils
+            # (toggles UI) ET le workspace de la session active : sans ÃƒÂ§a les outils
 
             # (write/edit/run_shell + sous-agent) retombent sur cfg.chat.workspace_dir
 
-            # et écrivent à côté du dossier ciblé.
+            # et ÃƒÂ©crivent ÃƒÂ  cÃƒÂ´tÃƒÂ© du dossier ciblÃƒÂ©.
 
             ws = _session().workspace
 
@@ -1208,15 +1204,15 @@ def create_app(
 
             use_tools = registry is not None and len(registry)
 
-            # Limites du modèle courant (distant = sa grande fenêtre ; local = global).
+            # Limites du modÃƒÂ¨le courant (distant = sa grande fenÃƒÂªtre ; local = global).
 
             eff_max_tokens, eff_compact = _model_limits(conv.model)
 
-            # `strong` (tier distant=fort) est calculé plus haut, à la construction du prompt :
+            # `strong` (tier distant=fort) est calculÃƒÂ© plus haut, ÃƒÂ  la construction du prompt :
 
-            # il coupe ici les gardes de comportement (act_nudge, claim_audit, coupe non-progrès).
+            # il coupe ici les gardes de comportement (act_nudge, claim_audit, coupe non-progrÃƒÂ¨s).
 
-            # On ne garde que outils + mémoire + sécurité. Un modèle local garde le harnais complet.
+            # On ne garde que outils + mÃƒÂ©moire + sÃƒÂ©curitÃƒÂ©. Un modÃƒÂ¨le local garde le harnais complet.
 
             if use_tools:
                 source = client.stream_chat_tools(
@@ -1243,26 +1239,26 @@ def create_app(
 
             interrupted = False
 
-            recv_confirmed = 0  # reçus confirmés par l'usage (tool-calls inclus)
+            recv_confirmed = 0  # reÃƒÂ§us confirmÃƒÂ©s par l'usage (tool-calls inclus)
 
-            cur_turn = 0  # reçus live du tour en cours (reset à chaque usage)
+            cur_turn = 0  # reÃƒÂ§us live du tour en cours (reset ÃƒÂ  chaque usage)
 
-            sent_tokens = 0  # envoyés (prompt) cumulés via l'usage
+            sent_tokens = 0  # envoyÃƒÂ©s (prompt) cumulÃƒÂ©s via l'usage
 
-            last_rate = 0.0  # dernier débit mesuré
+            last_rate = 0.0  # dernier dÃƒÂ©bit mesurÃƒÂ©
 
-            burst_start = None  # début de rafale (débit hors pauses outils)
+            burst_start = None  # dÃƒÂ©but de rafale (dÃƒÂ©bit hors pauses outils)
 
             burst_tokens = 0
 
             last_tok = None
 
-            # Auto-titre DÈS L'ENVOI (le titre dérive du MESSAGE, pas de la réponse). Pour un
-            # modèle DISTANT : on l'infère en tâche de fond tout de suite et on le pousse au
-            # client dès qu'il est prêt (interleavé), sans attendre la fin du tour -> l'onglet
-            # prend son vrai nom en ~1-2s même sur une génération longue. Pour un modèle LOCAL,
+            # Auto-titre DÃƒË†S L'ENVOI (le titre dÃƒÂ©rive du MESSAGE, pas de la rÃƒÂ©ponse). Pour un
+            # modÃƒÂ¨le DISTANT : on l'infÃƒÂ¨re en tÃƒÂ¢che de fond tout de suite et on le pousse au
+            # client dÃƒÂ¨s qu'il est prÃƒÂªt (interleavÃƒÂ©), sans attendre la fin du tour -> l'onglet
+            # prend son vrai nom en ~1-2s mÃƒÂªme sur une gÃƒÂ©nÃƒÂ©ration longue. Pour un modÃƒÂ¨le LOCAL,
             # on NE le fait PAS ici (llama-swap = 1 slot ; un appel concurrent contendrait avec
-            # la génération) : on garde le titrage en fin de tour, quand le slot est libre.
+            # la gÃƒÂ©nÃƒÂ©ration) : on garde le titrage en fin de tour, quand le slot est libre.
             _titled = {"value": None, "emitted": False}
             _title_ready = threading.Event()
             _immediate_title = (
@@ -1286,24 +1282,24 @@ def create_app(
                 ).start()
 
             try:
-                # Modèle LOCAL : llama-swap n'en sert qu'UN à la fois -> on sérialise via le
-                # verrou global (limitation machine connue, signalée à l'UI). Modèle DISTANT :
-                # pas de verrou -> cette session génère EN PARALLÈLE des autres onglets.
+                # ModÃƒÂ¨le LOCAL : llama-swap n'en sert qu'UN ÃƒÂ  la fois -> on sÃƒÂ©rialise via le
+                # verrou global (limitation machine connue, signalÃƒÂ©e ÃƒÂ  l'UI). ModÃƒÂ¨le DISTANT :
+                # pas de verrou -> cette session gÃƒÂ©nÃƒÂ¨re EN PARALLÃƒË†LE des autres onglets.
                 if conv.model and conv.model not in remote_model_ids:
                     if not _local_gen_lock.acquire(blocking=False):
                         yield _sse(
                             "notice",
                             text=(
-                                "modèle local occupé : une autre session génère déjà sur la "
-                                "machine — mise en file (le parallèle réel n'existe qu'avec un "
-                                "modèle distant)."
+                                "modÃƒÂ¨le local occupÃƒÂ© : une autre session gÃƒÂ©nÃƒÂ¨re dÃƒÂ©jÃƒÂ  sur la "
+                                "machine Ã¢â‚¬â€ mise en file (le parallÃƒÂ¨le rÃƒÂ©el n'existe qu'avec un "
+                                "modÃƒÂ¨le distant)."
                             ),
                         )
                         _local_gen_lock.acquire()
                     _local_held = True
 
                 for kind, payload in source:
-                    # Titre distant prêt (thread de fond) -> on le pousse dès la 1re occasion.
+                    # Titre distant prÃƒÂªt (thread de fond) -> on le pousse dÃƒÂ¨s la 1re occasion.
                     if (
                         _immediate_title
                         and _title_ready.is_set()
@@ -1317,9 +1313,9 @@ def create_app(
                             )
 
                     if cancel_event.is_set():
-                        # Une nouvelle soumission demande l'arrêt : on stoppe net
+                        # Une nouvelle soumission demande l'arrÃƒÂªt : on stoppe net
 
-                        # et on persiste ce qui a déjà été généré.
+                        # et on persiste ce qui a dÃƒÂ©jÃƒÂ  ÃƒÂ©tÃƒÂ© gÃƒÂ©nÃƒÂ©rÃƒÂ©.
 
                         interrupted = True
 
@@ -1333,8 +1329,8 @@ def create_app(
                             payload = _profile.apply_to_text(payload)
                         answer += payload
 
-                        # Temps réel : le texte est journalisé à l'instant (rejouable). Le
-                        # session.json (contexte) se met à jour aux frontières d'outils + fin.
+                        # Temps rÃƒÂ©el : le texte est journalisÃƒÂ© ÃƒÂ  l'instant (rejouable). Le
+                        # session.json (contexte) se met ÃƒÂ  jour aux frontiÃƒÂ¨res d'outils + fin.
                         yield _tl("text", text=payload)
 
                     elif kind == "tool_call":
@@ -1363,11 +1359,11 @@ def create_app(
                         _persist()  # checkpoint contexte (event-driven) : l'outil vient de finir
 
                     elif kind == "usage":
-                        # Fin d'un tour : llama-server donne le prompt réel et le completion
+                        # Fin d'un tour : llama-server donne le prompt rÃƒÂ©el et le completion
 
-                        # EXACT (tool-calls inclus) -> on cumule envoyés/reçus à travers les
+                        # EXACT (tool-calls inclus) -> on cumule envoyÃƒÂ©s/reÃƒÂ§us ÃƒÂ  travers les
 
-                        # tours ET les outils, et on réconcilie le tour courant.
+                        # tours ET les outils, et on rÃƒÂ©concilie le tour courant.
 
                         _p = payload.get("prompt_tokens", 0) or 0
                         _c = payload.get("completion_tokens", 0) or 0
@@ -1379,9 +1375,9 @@ def create_app(
 
                         cur_turn = 0
 
-                        # Cumul RÉEL de la session : chaque appel refacture tout le contexte en
-                        # INPUT -> on somme input/output/cache/coût sur TOUS les appels
-                        # (persisté), pas seulement le tour. C'est LA vraie somme facturée, et
+                        # Cumul RÃƒâ€°EL de la session : chaque appel refacture tout le contexte en
+                        # INPUT -> on somme input/output/cache/coÃƒÂ»t sur TOUS les appels
+                        # (persistÃƒÂ©), pas seulement le tour. C'est LA vraie somme facturÃƒÂ©e, et
                         # `cached` mesure si le prompt caching du provider mord.
                         _pin, _pout, _pcached = _price_of(conv.model)
                         conv.add_usage(_p, _c, _cached, _pin, _pout, _pcached)
@@ -1398,11 +1394,11 @@ def create_app(
                         yield _sse("totals", **_totals(conv))
 
                     elif kind == "sub_usage":
-                        # Conso d'un SOUS-AGENT (dispatch_agent) : ses tokens sont RÉELS et
-                        # facturés -> on les ajoute aux totaux de session (coût, N×, in/out/
+                        # Conso d'un SOUS-AGENT (dispatch_agent) : ses tokens sont RÃƒâ€°ELS et
+                        # facturÃƒÂ©s -> on les ajoute aux totaux de session (coÃƒÂ»t, NÃƒâ€”, in/out/
                         # cache). `set_context=False` : son prompt n'est PAS le contexte du fil
                         # principal, on ne touche donc pas la jauge de remplissage ni les
-                        # métriques per-tour (sent/recv) qui décrivent le tour principal.
+                        # mÃƒÂ©triques per-tour (sent/recv) qui dÃƒÂ©crivent le tour principal.
                         _sp = payload.get("prompt_tokens", 0) or 0
                         _sc = payload.get("completion_tokens", 0) or 0
                         _scached = payload.get("cached_tokens", 0) or 0
@@ -1423,15 +1419,15 @@ def create_app(
 
                     # Compteur live : chaque delta (texte OU arguments d'un tool_call) =
 
-                    # 1 vrai token streamé par llama-server. On compte aussi tool_args
+                    # 1 vrai token streamÃƒÂ© par llama-server. On compte aussi tool_args
 
-                    # pour que le compteur avance pendant la génération d'un appel (gros
+                    # pour que le compteur avance pendant la gÃƒÂ©nÃƒÂ©ration d'un appel (gros
 
-                    # write_file inclus) au lieu de se figer. On affiche le cumul + un débit
+                    # write_file inclus) au lieu de se figer. On affiche le cumul + un dÃƒÂ©bit
 
-                    # mesuré sur la rafale courante ; le timer se réinitialise après >1s sans
+                    # mesurÃƒÂ© sur la rafale courante ; le timer se rÃƒÂ©initialise aprÃƒÂ¨s >1s sans
 
-                    # token (pause d'exécution) pour que les tok/s reflètent la génération.
+                    # token (pause d'exÃƒÂ©cution) pour que les tok/s reflÃƒÂ¨tent la gÃƒÂ©nÃƒÂ©ration.
 
                     if kind in ("reasoning", "content", "tool_args"):
                         now = time.monotonic()
@@ -1468,17 +1464,17 @@ def create_app(
                     return
 
                 if not answer.strip():
-                    answer = "(le modèle a seulement réfléchi — augmente max_tokens)"
+                    answer = "(le modÃƒÂ¨le a seulement rÃƒÂ©flÃƒÂ©chi Ã¢â‚¬â€ augmente max_tokens)"
 
                     yield _sse("text", text=answer)
 
-                _persist(final=True)  # fin de tour : écriture finale garantie
+                _persist(final=True)  # fin de tour : ÃƒÂ©criture finale garantie
 
-                # Apprentissage post-tour (HORS de la loop d'action) : ne s'exécute que si le
+                # Apprentissage post-tour (HORS de la loop d'action) : ne s'exÃƒÂ©cute que si le
 
-                # tour a fait du vrai travail (>= reflect_min_actions). Toute défaillance est
+                # tour a fait du vrai travail (>= reflect_min_actions). Toute dÃƒÂ©faillance est
 
-                # avalée — la réponse utilisateur est déjà rendue (design §6, §11).
+                # avalÃƒÂ©e Ã¢â‚¬â€ la rÃƒÂ©ponse utilisateur est dÃƒÂ©jÃƒÂ  rendue (design Ã‚Â§6, Ã‚Â§11).
 
                 if (
                     _settings["reflect_enabled"]
@@ -1502,34 +1498,34 @@ def create_app(
 
                         # Trace VISIBLE (console/serve.log) : sinon l'apprentissage est une
 
-                        # boîte noire — on ne sait pas s'il a tourné ni ce qu'il a retenu.
+                        # boÃƒÂ®te noire Ã¢â‚¬â€ on ne sait pas s'il a tournÃƒÂ© ni ce qu'il a retenu.
 
                         if _res is None:
                             print(
-                                "[reflect] rien retenu (tour peu généralisable)",
+                                "[reflect] rien retenu (tour peu gÃƒÂ©nÃƒÂ©ralisable)",
                                 flush=True,
                             )
 
                         else:
                             print(
                                 f"[reflect] retenu : {len(_res.new_skills)} skill(s), "
-                                f"{len(_res.improved_skills)} amélioré(s), "
-                                f"{len(_res.episodes)} épisode(s), "
+                                f"{len(_res.improved_skills)} amÃƒÂ©liorÃƒÂ©(s), "
+                                f"{len(_res.episodes)} ÃƒÂ©pisode(s), "
                                 f"{len(_res.memory_updates) + len(_res.user_updates) + len(_res.soul_updates)} "
-                                "note(s) identité",
+                                "note(s) identitÃƒÂ©",
                                 flush=True,
                             )
 
                     except Exception as _e:  # noqa: BLE001 - best-effort, jamais bloquant
-                        print(f"[reflect] erreur ignorée : {_e}", flush=True)
+                        print(f"[reflect] erreur ignorÃƒÂ©e : {_e}", flush=True)
 
-                # Auto-titre : à la 1re vraie réponse, nommer la session (le modèle infère le
-                # sujet). On titre LA session de CETTE génération (`sess`), pas la session
-                # focus (_cur) — sinon, en multi-onglets concurrent, on titrerait la mauvaise.
+                # Auto-titre : ÃƒÂ  la 1re vraie rÃƒÂ©ponse, nommer la session (le modÃƒÂ¨le infÃƒÂ¨re le
+                # sujet). On titre LA session de CETTE gÃƒÂ©nÃƒÂ©ration (`sess`), pas la session
+                # focus (_cur) Ã¢â‚¬â€ sinon, en multi-onglets concurrent, on titrerait la mauvaise.
 
                 if _immediate_title:
                     # Distant : filet de secours si le thread de titre n'a pas fini avant la
-                    # fin de la boucle (ou tour sans événement) -> on l'attend brièvement.
+                    # fin de la boucle (ou tour sans ÃƒÂ©vÃƒÂ©nement) -> on l'attend briÃƒÂ¨vement.
                     if not _titled["emitted"]:
                         _title_ready.wait(timeout=8)
                         _titled["emitted"] = True
@@ -1550,13 +1546,13 @@ def create_app(
                 yield _sse("done")
 
             except GeneratorExit:
-                # L'utilisateur a soumis un nouveau message : le client a fermé le
+                # L'utilisateur a soumis un nouveau message : le client a fermÃƒÂ© le
 
-                # flux. On persiste la réponse PARTIELLE déjà reçue, puis on relaie
+                # flux. On persiste la rÃƒÂ©ponse PARTIELLE dÃƒÂ©jÃƒÂ  reÃƒÂ§ue, puis on relaie
 
-                # l'interruption (re-raise obligatoire pour le protocole générateur).
+                # l'interruption (re-raise obligatoire pour le protocole gÃƒÂ©nÃƒÂ©rateur).
 
-                _persist(final=True)  # client parti : écriture finale garantie
+                _persist(final=True)  # client parti : ÃƒÂ©criture finale garantie
 
                 raise
 
@@ -1564,7 +1560,7 @@ def create_app(
                 yield _sse("error", message=str(exc))
 
             finally:
-                _last_activity[0] = time.time()  # marque l'activité pour le keep-warm
+                _last_activity[0] = time.time()  # marque l'activitÃƒÂ© pour le keep-warm
 
                 if _local_held:
                     _local_gen_lock.release()
@@ -1615,9 +1611,9 @@ def create_app(
     @app.post("/cancel")
     def cancel():
 
-        # Bouton Stop : pose le signal d'annulation de LA session ciblée (par session_id, sinon
-        # la session focus) -> SA boucle /chat s'arrête net et libère son verrou. Les AUTRES
-        # sessions (onglets) ne sont PAS touchées. Sans effet si rien ne tourne pour elle.
+        # Bouton Stop : pose le signal d'annulation de LA session ciblÃƒÂ©e (par session_id, sinon
+        # la session focus) -> SA boucle /chat s'arrÃƒÂªte net et libÃƒÂ¨re son verrou. Les AUTRES
+        # sessions (onglets) ne sont PAS touchÃƒÂ©es. Sans effet si rien ne tourne pour elle.
 
         req_sid = (request.form.get("session_id") or "").strip()
         sess = _get_session(req_sid) if req_sid else _cur["session"]
@@ -1655,9 +1651,9 @@ def create_app(
 
     @app.post("/skills")
     def skills_update():
-        # Toggle des skills (façon /tools) : le formulaire porte les skills COCHÉS. Les
-        # décochés (tous les autres) deviennent `disabled_skills` de la session -> retirés
-        # du catalogue et de use_skill. Re-render le panneau (case maître incluse).
+        # Toggle des skills (faÃƒÂ§on /tools) : le formulaire porte les skills COCHÃƒâ€°S. Les
+        # dÃƒÂ©cochÃƒÂ©s (tous les autres) deviennent `disabled_skills` de la session -> retirÃƒÂ©s
+        # du catalogue et de use_skill. Re-render le panneau (case maÃƒÂ®tre incluse).
         conv, save = _ctx()
         enabled = set(request.form.getlist("skill"))
         all_names = [s.name for s in _all_skills()]
@@ -1667,8 +1663,8 @@ def create_app(
 
     @app.get("/skill")
     def skill_get():
-        # Source d'un skill pour l'éditeur : texte brut du SKILL.md, ou l'override de session
-        # s'il existe (ce que le modèle voit réellement pour cette session).
+        # Source d'un skill pour l'ÃƒÂ©diteur : texte brut du SKILL.md, ou l'override de session
+        # s'il existe (ce que le modÃƒÂ¨le voit rÃƒÂ©ellement pour cette session).
         conv, _ = _ctx()
         name = request.args.get("name", "")
         skill = next((s for s in _all_skills() if s.name == name), None)
@@ -1686,9 +1682,9 @@ def create_app(
 
     @app.post("/skill/save")
     def skill_save():
-        # Enregistre l'édition d'un skill. scope=session -> override de session (n'écrit
-        # PAS le disque) ; scope=global -> écrit le SKILL.md pour TOUTES les sessions et
-        # lève l'override de session (le fichier fait désormais foi).
+        # Enregistre l'ÃƒÂ©dition d'un skill. scope=session -> override de session (n'ÃƒÂ©crit
+        # PAS le disque) ; scope=global -> ÃƒÂ©crit le SKILL.md pour TOUTES les sessions et
+        # lÃƒÂ¨ve l'override de session (le fichier fait dÃƒÂ©sormais foi).
         conv, save = _ctx()
         name = request.form.get("name", "")
         body = request.form.get("body", "")
@@ -1700,7 +1696,7 @@ def create_app(
             try:
                 write_skill_source(skill, body)
             except OSError as exc:
-                return {"error": f"écriture impossible : {exc}"}, 400
+                return {"error": f"ÃƒÂ©criture impossible : {exc}"}, 400
             conv.set_skill_override(name, None)
             save()
             return {"ok": True, "scope": "global"}
@@ -1722,7 +1718,7 @@ def create_app(
     @app.route("/pick-folder", methods=["POST"])
     def pick_folder():
 
-        # Sous-processus : évite les soucis tkinter hors du thread principal de Flask.
+        # Sous-processus : ÃƒÂ©vite les soucis tkinter hors du thread principal de Flask.
 
         script = (
             "import tkinter, tkinter.filedialog as fd;"
@@ -1746,7 +1742,7 @@ def create_app(
         if proc.returncode != 0 and not path:
             return {
                 "path": "",
-                "error": (proc.stderr or "sélecteur indisponible")[:200],
+                "error": (proc.stderr or "sÃƒÂ©lecteur indisponible")[:200],
             }
 
         return {"path": path}
@@ -1762,15 +1758,15 @@ def create_app(
 
         save()
 
-        # Mémorise ce choix : il devient le défaut des prochaines sessions / lancements.
+        # MÃƒÂ©morise ce choix : il devient le dÃƒÂ©faut des prochaines sessions / lancements.
 
         session_store.set_default_model(model)
 
-        # Cycle de vie du modèle SUR LA MACHINE. Sélectionner un modèle LOCAL le CHARGE
-        # (warmup : llama-swap charge à la 1re requête, et swap l'ancien si besoin) ;
-        # passer à un modèle DISTANT (API) DÉCHARGE le local pour LIBÉRER LA VRAM. Les deux
-        # en tâche de fond (best-effort) : la réponse UI reste instantanée, l'indicateur
-        # d'état (/machine_state) reflète ensuite le résultat réel via llama-swap.
+        # Cycle de vie du modÃƒÂ¨le SUR LA MACHINE. SÃƒÂ©lectionner un modÃƒÂ¨le LOCAL le CHARGE
+        # (warmup : llama-swap charge ÃƒÂ  la 1re requÃƒÂªte, et swap l'ancien si besoin) ;
+        # passer ÃƒÂ  un modÃƒÂ¨le DISTANT (API) DÃƒâ€°CHARGE le local pour LIBÃƒâ€°RER LA VRAM. Les deux
+        # en tÃƒÂ¢che de fond (best-effort) : la rÃƒÂ©ponse UI reste instantanÃƒÂ©e, l'indicateur
+        # d'ÃƒÂ©tat (/machine_state) reflÃƒÂ¨te ensuite le rÃƒÂ©sultat rÃƒÂ©el via llama-swap.
         if model in remote_model_ids:
             threading.Thread(
                 target=client.unload_local, daemon=True, name="loom-unload"
@@ -1789,16 +1785,16 @@ def create_app(
             remote_model_ids=remote_model_ids,
         )
 
-    # ---- Gestionnaire de modèles (UI) : ajouter/tester/supprimer un modèle DISTANT à chaud,
-    # sans redémarrer. Un distant = URL + clé (rien en VRAM) -> l'ajout monte une route et met
-    # à jour les registres partagés en place. Persisté dans le store JSON (remote_store_path).
+    # ---- Gestionnaire de modÃƒÂ¨les (UI) : ajouter/tester/supprimer un modÃƒÂ¨le DISTANT ÃƒÂ  chaud,
+    # sans redÃƒÂ©marrer. Un distant = URL + clÃƒÂ© (rien en VRAM) -> l'ajout monte une route et met
+    # ÃƒÂ  jour les registres partagÃƒÂ©s en place. PersistÃƒÂ© dans le store JSON (remote_store_path).
     def _models_payload():
-        """Liste ordonnée pour reconstruire le <select> côté client (id + local/distant)."""
+        """Liste ordonnÃƒÂ©e pour reconstruire le <select> cÃƒÂ´tÃƒÂ© client (id + local/distant)."""
         return [{"id": m, "remote": m in remote_model_ids} for m in models]
 
     def _remote_list():
-        """Modèles distants montés, pour le panneau de config. Jamais la clé en clair :
-        seulement sa présence. `managed` = ajouté via l'UI (éditable/supprimable) vs déclaré
+        """ModÃƒÂ¨les distants montÃƒÂ©s, pour le panneau de config. Jamais la clÃƒÂ© en clair :
+        seulement sa prÃƒÂ©sence. `managed` = ajoutÃƒÂ© via l'UI (ÃƒÂ©ditable/supprimable) vs dÃƒÂ©clarÃƒÂ©
         dans local.toml (lecture seule ici)."""
         managed_ids = {m.get("id") for m in model_store.load(remote_store_path)}
         out = []
@@ -1814,16 +1810,16 @@ def create_app(
                     "max_tokens": model_max_tokens.get(mid),
                     "vision": mid in vision_models,
                     "has_key": info["has_key"],
-                    # Indice masqué (4 derniers car.) : l'utilisateur voit sa propre clé de
-                    # façon partielle, jamais la clé entière renvoyée au client.
-                    "key_hint": ("…" + key[-4:]) if key else "",
+                    # Indice masquÃƒÂ© (4 derniers car.) : l'utilisateur voit sa propre clÃƒÂ© de
+                    # faÃƒÂ§on partielle, jamais la clÃƒÂ© entiÃƒÂ¨re renvoyÃƒÂ©e au client.
+                    "key_hint": ("Ã¢â‚¬Â¦" + key[-4:]) if key else "",
                     "managed": mid in managed_ids,
                 }
             )
         return sorted(out, key=lambda x: x["id"])
 
     def _mount_remote(rec):
-        """Monte à chaud un modèle distant `rec` (dict) dans TOUS les registres partagés."""
+        """Monte ÃƒÂ  chaud un modÃƒÂ¨le distant `rec` (dict) dans TOUS les registres partagÃƒÂ©s."""
         mid = rec["id"]
         client.add_remote_route(
             mid,
@@ -1863,7 +1859,7 @@ def create_app(
         model = (b.get("model") or "").strip()
         mid = (b.get("id") or "").strip()
         key = (b.get("api_key") or "").strip()
-        if not key and mid:  # édition sans re-saisir la clé -> réutilise la stockée
+        if not key and mid:  # ÃƒÂ©dition sans re-saisir la clÃƒÂ© -> rÃƒÂ©utilise la stockÃƒÂ©e
             stored = {m["id"]: m for m in model_store.load(remote_store_path)}
             key = stored.get(mid, {}).get("api_key", "")
         if not (base_url and model):
@@ -1874,7 +1870,7 @@ def create_app(
     @app.post("/models/remote")
     def models_remote_upsert():
         if not remote_store_path:
-            return {"error": "store des modèles indisponible"}, 500
+            return {"error": "store des modÃƒÂ¨les indisponible"}, 500
         b = request.get_json(silent=True) or {}
         mid = (b.get("id") or "").strip()
         base_url = (b.get("base_url") or "").strip().rstrip("/")
@@ -1882,10 +1878,10 @@ def create_app(
         if not (mid and base_url and model):
             return {"error": "id, base_url et model sont requis"}, 400
         if mid in models and mid not in remote_model_ids:
-            return {"error": f"'{mid}' est déjà un modèle local"}, 400
+            return {"error": f"'{mid}' est dÃƒÂ©jÃƒÂ  un modÃƒÂ¨le local"}, 400
         stored = {m["id"]: m for m in model_store.load(remote_store_path)}
-        # Clé : si vide, on garde l'existante — soit du store géré, soit de la route montée
-        # (cas d'un modèle défini en config qu'on édite sans re-saisir la clé).
+        # ClÃƒÂ© : si vide, on garde l'existante Ã¢â‚¬â€ soit du store gÃƒÂ©rÃƒÂ©, soit de la route montÃƒÂ©e
+        # (cas d'un modÃƒÂ¨le dÃƒÂ©fini en config qu'on ÃƒÂ©dite sans re-saisir la clÃƒÂ©).
         key = (
             (b.get("api_key") or "").strip()
             or stored.get(mid, {}).get("api_key", "")
@@ -1900,8 +1896,8 @@ def create_app(
             "max_tokens": int(b["max_tokens"]) if b.get("max_tokens") else None,
             "vision": bool(b.get("vision")),
         }
-        # Un modèle DÉFINI EN CONFIG (monté mais absent du store géré) reste dans local.toml :
-        # on l'y édite en place (tomlkit, commentaires préservés). Sinon store JSON géré par l'UI.
+        # Un modÃƒÂ¨le DÃƒâ€°FINI EN CONFIG (montÃƒÂ© mais absent du store gÃƒÂ©rÃƒÂ©) reste dans local.toml :
+        # on l'y ÃƒÂ©dite en place (tomlkit, commentaires prÃƒÂ©servÃƒÂ©s). Sinon store JSON gÃƒÂ©rÃƒÂ© par l'UI.
         is_config = mid in remote_model_ids and mid not in stored
         with _toml_lock:
             if is_config and config_local_path:
@@ -1914,10 +1910,10 @@ def create_app(
     @app.delete("/models/remote/<mid>")
     def models_remote_delete(mid):
         if not remote_store_path:
-            return {"error": "store des modèles indisponible"}, 500
+            return {"error": "store des modÃƒÂ¨les indisponible"}, 500
         managed = {m.get("id") for m in model_store.load(remote_store_path)}
         if mid not in managed:
-            return {"error": "modèle non géré par l'UI (défini dans local.toml)"}, 400
+            return {"error": "modÃƒÂ¨le non gÃƒÂ©rÃƒÂ© par l'UI (dÃƒÂ©fini dans local.toml)"}, 400
         with _toml_lock:
             model_store.delete(remote_store_path, mid)
         client.remove_remote_route(mid)
@@ -1931,9 +1927,9 @@ def create_app(
             models.remove(mid)
         return {"ok": True, "models": _models_payload(), "remotes": _remote_list()}
 
-    # ---- Modèles LOCAUX : liste + édition du tuning MACHINE (offload GPU) dans model.toml.
-    # La définition (repo/filename/n_layers) est commune au modèle -> lecture seule ici ; le
-    # tuning (context/n_gpu_layers/cpu_moe/n_cpu_moe) est propre à cette machine -> éditable.
+    # ---- ModÃƒÂ¨les LOCAUX : liste + ÃƒÂ©dition du tuning MACHINE (offload GPU) dans model.toml.
+    # La dÃƒÂ©finition (repo/filename/n_layers) est commune au modÃƒÂ¨le -> lecture seule ici ; le
+    # tuning (context/n_gpu_layers/cpu_moe/n_cpu_moe) est propre ÃƒÂ  cette machine -> ÃƒÂ©ditable.
     _LOCAL_EDITABLE = {
         "context": "int",
         "n_gpu_layers": "int",
@@ -1970,10 +1966,10 @@ def create_app(
         mid = (b.get("id") or "").strip()
         key = (b.get("key") or "").strip()
         if key not in _LOCAL_EDITABLE:
-            return {"error": "champ non éditable"}, 400
+            return {"error": "champ non ÃƒÂ©ditable"}, 400
         spec = next((m for m in local_model_specs if m.get("id") == mid), None)
         if not spec or not spec.get("dir"):
-            return {"error": "modèle local inconnu"}, 404
+            return {"error": "modÃƒÂ¨le local inconnu"}, 404
         tp = Path(spec["dir"]) / "model.toml"
         if not tp.exists():
             return {"error": "model.toml introuvable"}, 404
@@ -1984,7 +1980,7 @@ def create_app(
         )
         truthy = ("1", "true", "on", "yes")
         try:
-            with _toml_lock:  # sérialise le read-modify-write (Flask threaded)
+            with _toml_lock:  # sÃƒÂ©rialise le read-modify-write (Flask threaded)
                 doc = tomlkit.parse(tp.read_text(encoding="utf-8"))
                 if empty:
                     if key in doc:
@@ -1998,9 +1994,9 @@ def create_app(
                 tp.write_text(tomlkit.dumps(doc), encoding="utf-8")
         except (ValueError, TypeError) as e:
             return {"ok": False, "error": str(e)[:120]}, 400
-        # Applique À CHAUD côté serveur modèle : régénère le yaml (llama-swap -watch-config le
-        # recharge) + décharge CE modèle -> il se relance avec le nouveau tuning au prochain
-        # usage, sans toucher au TOML à la main ni tout redémarrer.
+        # Applique Ãƒâ‚¬ CHAUD cÃƒÂ´tÃƒÂ© serveur modÃƒÂ¨le : rÃƒÂ©gÃƒÂ©nÃƒÂ¨re le yaml (llama-swap -watch-config le
+        # recharge) + dÃƒÂ©charge CE modÃƒÂ¨le -> il se relance avec le nouveau tuning au prochain
+        # usage, sans toucher au TOML ÃƒÂ  la main ni tout redÃƒÂ©marrer.
         applied = _regen_swap_yaml()
         if applied:
             threading.Thread(
@@ -2010,8 +2006,8 @@ def create_app(
             ).start()
         return {"ok": True, "applies": "model-reload" if applied else "restart"}
 
-    # ---- Console de configuration : introspection + édition des vrais fichiers TOML (deux
-    # couches commun/système), commentaires préservés via tomlkit (loom.runtime.config_schema).
+    # ---- Console de configuration : introspection + ÃƒÂ©dition des vrais fichiers TOML (deux
+    # couches commun/systÃƒÂ¨me), commentaires prÃƒÂ©servÃƒÂ©s via tomlkit (loom.runtime.config_schema).
     def _cfg_paths_ok():
         return bool(config_defaults_path and config_local_path)
 
@@ -2046,8 +2042,8 @@ def create_app(
         except (ValueError, OSError) as e:
             return {"ok": False, "error": str(e)[:160]}, 400
         if res.get("ok"):
-            _reload_app_config()  # applique À CHAUD les params app (permissions, tokens…)
-            _apply_to_model_server(section)  # régénère le yaml si param serveur/modèle
+            _reload_app_config()  # applique Ãƒâ‚¬ CHAUD les params app (permissions, tokensÃ¢â‚¬Â¦)
+            _apply_to_model_server(section)  # rÃƒÂ©gÃƒÂ©nÃƒÂ¨re le yaml si param serveur/modÃƒÂ¨le
         code = 200 if res.get("ok") else 400
         return res, code
 
@@ -2073,15 +2069,15 @@ def create_app(
 
     @app.get("/config/effective")
     def config_effective():
-        """Valeurs de config ACTUELLEMENT en vigueur dans l'app en cours (mémoire vive). Sert
-        à vérifier qu'une édition s'applique à chaud, sans redémarrer loom.web."""
+        """Valeurs de config ACTUELLEMENT en vigueur dans l'app en cours (mÃƒÂ©moire vive). Sert
+        ÃƒÂ  vÃƒÂ©rifier qu'une ÃƒÂ©dition s'applique ÃƒÂ  chaud, sans redÃƒÂ©marrer loom.web."""
         return dict(_settings)
 
     @app.get("/machine_state")
     def machine_state():
-        # État du modèle SUR LA MACHINE, pour l'indicateur UI. Vérité = llama-swap /running
-        # (best-effort ; le modèle peut aussi s'être déchargé seul via son TTL). On teste par
-        # sous-chaîne quel modèle est chargé, sans coupler au schéma JSON de llama-swap.
+        # Ãƒâ€°tat du modÃƒÂ¨le SUR LA MACHINE, pour l'indicateur UI. VÃƒÂ©ritÃƒÂ© = llama-swap /running
+        # (best-effort ; le modÃƒÂ¨le peut aussi s'ÃƒÂªtre dÃƒÂ©chargÃƒÂ© seul via son TTL). On teste par
+        # sous-chaÃƒÂ®ne quel modÃƒÂ¨le est chargÃƒÂ©, sans coupler au schÃƒÂ©ma JSON de llama-swap.
         conv, _ = _ctx()
         model = conv.model
         remote = model in remote_model_ids
@@ -2100,8 +2096,8 @@ def create_app(
 
     @app.get("/sysmon")
     def sysmon_metrics():
-        # Métriques système LIVE (CPU/RAM/GPU) pour le moniteur affiché avec un modèle LOCAL.
-        # nvidia-smi + psutil ; champs à None si une source manque (le front s'adapte).
+        # MÃƒÂ©triques systÃƒÂ¨me LIVE (CPU/RAM/GPU) pour le moniteur affichÃƒÂ© avec un modÃƒÂ¨le LOCAL.
+        # nvidia-smi + psutil ; champs ÃƒÂ  None si une source manque (le front s'adapte).
         from loom.runtime.sysmon import read_metrics
 
         return read_metrics()
@@ -2123,9 +2119,9 @@ def create_app(
 
     @app.get("/session_state")
     def session_state():
-        # État CLIENT d'une session, pour OUVRIR un onglet sans recharger la page : messages,
-        # modèle, thinking, workspace, outils actifs, compteur. Le multi-onglets s'appuie
-        # dessus (chaque onglet hydrate sa session à l'ouverture).
+        # Ãƒâ€°tat CLIENT d'une session, pour OUVRIR un onglet sans recharger la page : messages,
+        # modÃƒÂ¨le, thinking, workspace, outils actifs, compteur. Le multi-onglets s'appuie
+        # dessus (chaque onglet hydrate sa session ÃƒÂ  l'ouverture).
         sid = (request.args.get("id") or "").strip()
         sess = _get_session(sid)
         if sess is None:
@@ -2140,15 +2136,15 @@ def create_app(
             "model": conv.model,
             "active_tools": conv.active_tools,
             "usage_totals": _totals(conv),
-            # A-t-on un journal d'affichage à rejouer ? (sinon l'UI retombe sur `messages`).
+            # A-t-on un journal d'affichage ÃƒÂ  rejouer ? (sinon l'UI retombe sur `messages`).
             "has_timeline": bool(session_store.read_timeline(sess.id)),
         }
 
     @app.get("/session/<sid>/timeline")
     def session_timeline(sid):
-        """Journal d'affichage temps réel d'une session, pour REJOUER l'UI au rechargement
+        """Journal d'affichage temps rÃƒÂ©el d'une session, pour REJOUER l'UI au rechargement
         (raisonnement, texte, cartes d'outils exactement comme en direct). Les chunks 'text'/
-        'reasoning' consécutifs sont recollés pour un rejeu léger."""
+        'reasoning' consÃƒÂ©cutifs sont recollÃƒÂ©s pour un rejeu lÃƒÂ©ger."""
         out: list[dict] = []
         for e in session_store.read_timeline(sid):
             ev = e.get("event")
@@ -2196,9 +2192,9 @@ def create_app(
     @app.post("/session/workspace")
     def session_workspace():
 
-        # Réaffecte le dossier de travail de la SESSION ACTIVE (appelé par le sélecteur
+        # RÃƒÂ©affecte le dossier de travail de la SESSION ACTIVE (appelÃƒÂ© par le sÃƒÂ©lecteur
 
-        # de dossier). Sans ça, choisir un dossier ne s'appliquerait qu'à la création
+        # de dossier). Sans ÃƒÂ§a, choisir un dossier ne s'appliquerait qu'ÃƒÂ  la crÃƒÂ©ation
 
         # d'une nouvelle session -> les outils continueraient de cibler l'ancien.
 
@@ -2222,7 +2218,7 @@ def create_app(
 
         session_store.delete(sid)
 
-        # Si on supprime la session courante, on recharge l'active (ou on en crée une).
+        # Si on supprime la session courante, on recharge l'active (ou on en crÃƒÂ©e une).
 
         if _cur["session"] is not None and _cur["session"].id == sid:
             _cur["session"] = None
@@ -2231,23 +2227,23 @@ def create_app(
 
         return {"ok": True}
 
-    # --- Keep-warm : empêche l'OS d'évincer le modèle inactif (cold start après pause). --
+    # --- Keep-warm : empÃƒÂªche l'OS d'ÃƒÂ©vincer le modÃƒÂ¨le inactif (cold start aprÃƒÂ¨s pause). --
 
-    # Thread daemon qui ping le modèle de la session ACTIVE (1 token) quand : keep-warm
+    # Thread daemon qui ping le modÃƒÂ¨le de la session ACTIVE (1 token) quand : keep-warm
 
-    # activé, une vraie requête a déjà eu lieu (_last_activity > 0), et on est resté idle
+    # activÃƒÂ©, une vraie requÃƒÂªte a dÃƒÂ©jÃƒÂ  eu lieu (_last_activity > 0), et on est restÃƒÂ© idle
 
     # depuis >= keepwarm_interval. `_local_gen_lock` non bloquant => on ne ping JAMAIS pendant
 
-    # une génération LOCALE (--parallel 1). On ne ping QUE le modèle déjà chargé => pas de swap.
+    # une gÃƒÂ©nÃƒÂ©ration LOCALE (--parallel 1). On ne ping QUE le modÃƒÂ¨le dÃƒÂ©jÃƒÂ  chargÃƒÂ© => pas de swap.
 
     def _keepwarm_loop():
 
         while True:
-            interval = float(_settings["keepwarm_interval"])  # relu à chaud
+            interval = float(_settings["keepwarm_interval"])  # relu ÃƒÂ  chaud
             time.sleep(max(15.0, min(interval / 3.0, 60.0)))
 
-            # Activable/désactivable à chaud : si coupé, on ne ping pas (thread reste en veille).
+            # Activable/dÃƒÂ©sactivable ÃƒÂ  chaud : si coupÃƒÂ©, on ne ping pas (thread reste en veille).
             if not _settings["keepwarm_enabled"]:
                 continue
 
@@ -2257,7 +2253,7 @@ def create_app(
                 continue
 
             if not _local_gen_lock.acquire(blocking=False):
-                continue  # génération locale en cours => déjà chaud
+                continue  # gÃƒÂ©nÃƒÂ©ration locale en cours => dÃƒÂ©jÃƒÂ  chaud
 
             try:
                 sess = _cur["session"]
@@ -2267,9 +2263,9 @@ def create_app(
                 if not model:
                     continue
 
-                # Keep-warm = garder chaud le modèle LOCAL (éviter le cold start). Un modèle
-                # DISTANT n'a pas de cold start côté machine ET est PAYANT à l'appel : le
-                # pinger en boucle brûlerait des crédits pour rien -> on saute.
+                # Keep-warm = garder chaud le modÃƒÂ¨le LOCAL (ÃƒÂ©viter le cold start). Un modÃƒÂ¨le
+                # DISTANT n'a pas de cold start cÃƒÂ´tÃƒÂ© machine ET est PAYANT ÃƒÂ  l'appel : le
+                # pinger en boucle brÃƒÂ»lerait des crÃƒÂ©dits pour rien -> on saute.
                 if model in remote_model_ids:
                     continue
 
@@ -2282,7 +2278,7 @@ def create_app(
                 ):
                     pass
 
-                _last_activity[0] = time.time()  # gardé chaud => relance un intervalle
+                _last_activity[0] = time.time()  # gardÃƒÂ© chaud => relance un intervalle
 
             except Exception:  # noqa: BLE001 - keep-warm best-effort, jamais bloquant
                 pass
@@ -2290,8 +2286,8 @@ def create_app(
             finally:
                 _local_gen_lock.release()
 
-    # Thread toujours lancé (il dort à l'idle) : ainsi activer/désactiver keep-warm dans la
-    # console prend effet à chaud, sans redémarrer loom.web.
+    # Thread toujours lancÃƒÂ© (il dort ÃƒÂ  l'idle) : ainsi activer/dÃƒÂ©sactiver keep-warm dans la
+    # console prend effet ÃƒÂ  chaud, sans redÃƒÂ©marrer loom.web.
     threading.Thread(target=_keepwarm_loop, daemon=True, name="loom-keepwarm").start()
 
     return app
