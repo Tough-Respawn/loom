@@ -583,6 +583,26 @@ _WRITE_TOOLS = frozenset({"write_file", "append_file", "edit_file"})
 _BUG_SIGNAL_TOOLS = frozenset(
     {"run_shell", "check_page", "check_interactive", "format_code"}
 )
+# Outils PARALLEL-SAFE : lecture seule / indépendants, sans effet de bord, sans confirmation,
+# sans ordre entre eux. Pour un modèle DISTANT, un tour n'appelant QUE ceux-ci s'exécute en
+# CONCURRENCE (règle Loom : local = inline/1 slot ; distant = on exploite le parallélisme).
+# Exclus : écritures, run_shell, todos, notes-écriture, vérifs (check_*), use_skill, install,
+# et read_image (accusé + message user multimodal différé -> ordre sensible, on le sérialise).
+_PARALLEL_SAFE = frozenset(
+    {
+        "dispatch_agent",
+        "find_files",
+        "search_text",
+        "list_dir",
+        "read_file",
+        "read_document",
+        "web_search",
+        "fetch_url",
+        "recall",
+        "read_note",
+        "list_plugins",
+    }
+)
 _DEBUG_FORCE = (
     "STOP — plusieurs erreurs s'enchainent et corriger au coup par coup ne regle pas la "
     "cause. Methode debug OBLIGATOIRE maintenant, ne patche plus au hasard :\n"
@@ -1430,25 +1450,26 @@ class LoomClient:
             # Images inline (read_image) à faire VOIR au modèle : différées après TOUS
             # les résultats d'outils (les messages `tool` doivent rester contigus).
             image_followups: list[dict] = []
-            # PARALLÉLISME (distant uniquement). Règle Loom : local = 1 slot -> on sérialise ;
-            # distant = machine du provider -> on EXPLOITE le parallélisme. Cas ciblé et sûr :
-            # un tour où le modèle émet PLUSIEURS dispatch_agent (sous-agents indépendants) ->
-            # on les lance concurremment (1 thread chacun), leurs activités relayées en direct
-            # via une file, résultats recollés dans l'ordre. Tout le reste (écritures, shell,
-            # mix d'outils, modèle local) reste SÉQUENTIEL (garde-fous P1.1, confirm, etc.).
+            # PARALLÉLISME (distant uniquement). Règle Loom : local = inline / 1 slot llama-swap
+            # -> on sérialise (un sous-agent local = même slot = zéro gain) ; distant = machine du
+            # provider -> on EXPLOITE la concurrence. Cas sûr : un tour n'appelant QUE des outils
+            # PARALLEL-SAFE (lectures, recherches, dispatch_agent) -> on les lance concurremment
+            # (1 thread chacun, activité relayée en direct via une file, résultats recollés DANS
+            # L'ORDRE). Dès qu'un outil non-safe est présent (écriture, shell, todo, vérif, image),
+            # ou en local, tout reste SÉQUENTIEL (garde-fous P1.1, confirm, ordre... préservés).
             _seq_tool_calls = tool_calls
             _parallel = (
                 registry is not None
                 and self.is_remote(model)
                 and len(tool_calls) >= 2
-                and all(tc.get("name") == "dispatch_agent" for tc in tool_calls)
+                and all(tc.get("name") in _PARALLEL_SAFE for tc in tool_calls)
             )
             if _parallel:
                 import queue as _queue
 
                 _seq_tool_calls = []  # la boucle séquentielle ne fait rien ce tour
                 _q: _queue.Queue = _queue.Queue()
-                _res: dict = {}  # id -> (result, ok)
+                _res: dict = {}  # id -> (result, ok, args)
                 for (
                     _tc
                 ) in tool_calls:  # pastilles d'abord : elles se rempliront en parallèle
@@ -1460,46 +1481,56 @@ class LoomClient:
                     )
 
                 def _pworker(tc):
+                    name = tc["name"]
                     try:
                         pargs = json.loads(tc["arguments"] or "{}")
                     except json.JSONDecodeError:
                         _res[tc["id"]] = (
                             "erreur: arguments tronqués (réponse coupée).",
                             False,
+                            {},
                         )
                         _q.put((tc["id"], "__done__", None))
                         return
-                    parts: list[str] = []
                     try:
-                        for sk, sp in registry.run_stream(tc["name"], pargs):
-                            ln = _sub_activity_line(sk, sp)
-                            if ln:
-                                _q.put(
-                                    (
-                                        tc["id"],
-                                        "tool_stream",
-                                        {"id": tc["id"], "text": ln},
+                        if registry.is_streaming(
+                            name
+                        ):  # dispatch_agent : activité relayée live
+                            parts: list[str] = []
+                            for sk, sp in registry.run_stream(name, pargs):
+                                ln = _sub_activity_line(sk, sp)
+                                if ln:
+                                    _q.put(
+                                        (
+                                            tc["id"],
+                                            "tool_stream",
+                                            {"id": tc["id"], "text": ln},
+                                        )
                                     )
-                                )
-                            if sk == "content" and isinstance(sp, str):
-                                parts.append(sp)
-                        r = "".join(parts).strip() or "(le sous-agent n'a rien renvoyé)"
+                                if sk == "content" and isinstance(sp, str):
+                                    parts.append(sp)
+                            r = (
+                                "".join(parts).strip()
+                                or "(le sous-agent n'a rien renvoyé)"
+                            )
+                        else:  # lecture/recherche : exécution directe
+                            r = registry.run(name, pargs)
                         okp = not r.startswith("erreur")
-                    except Exception as e:  # noqa: BLE001 - un agent qui casse n'arrête pas les autres
+                    except Exception as e:  # noqa: BLE001 - un outil qui casse n'arrête pas les autres
                         r, okp = f"erreur: {e}", False
-                    _res[tc["id"]] = (r, okp)
+                    _res[tc["id"]] = (r, okp, pargs)
                     _q.put((tc["id"], "__done__", None))
 
                 _threads = [
                     threading.Thread(
-                        target=_pworker, args=(tc,), daemon=True, name="loom-agent"
+                        target=_pworker, args=(tc,), daemon=True, name="loom-parallel"
                     )
                     for tc in tool_calls
                 ]
                 for _t in _threads:
                     _t.start()
                 _left = len(_threads)
-                while _left > 0:  # relaie l'activité live des N agents au fil de l'eau
+                while _left > 0:  # relaie l'activité live des N outils au fil de l'eau
                     _tid, _kind, _payload = _q.get()
                     if _kind == "__done__":
                         _left -= 1
@@ -1510,20 +1541,28 @@ class LoomClient:
                 for tc in (
                     tool_calls
                 ):  # résultats DANS L'ORDRE (messages `tool` cohérents pour l'API)
-                    r, okp = _res.get(tc["id"], ("(vide)", False))
+                    name = tc["name"]
+                    r, okp, pargs = _res.get(tc["id"], ("(vide)", False, {}))
                     convo.append(
                         {"role": "tool", "tool_call_id": tc["id"], "content": r}
                     )
-                    executed = True
-                    if not okp:
+                    if name == "dispatch_agent" and not str(r).startswith("refusé"):
+                        executed = True
+                    if not okp and name in _BUG_SIGNAL_TOOLS:
                         fail_count += 1
+                    _pin = pargs.get("path")
                     yield (
                         "tool_result",
                         {
                             "id": tc["id"],
-                            "name": tc["name"],
+                            "name": name,
                             "ok": okp,
                             "preview": r[:300],
+                            "path": _pin,
+                            "detail": str(r)[:4000],
+                            "in_full": str(
+                                _pin or json.dumps(pargs, ensure_ascii=False)
+                            )[:8000],
                             "out_full": str(r)[:8000],
                         },
                     )
