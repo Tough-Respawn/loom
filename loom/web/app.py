@@ -813,7 +813,9 @@ def create_app(
             cancel_event.set()
 
             if not chat_lock.acquire(timeout=interrupt_wait):
-                return Response("occupÃƒÂ© : cette session gÃƒÂ©nÃƒÂ¨re dÃƒÂ©jÃƒÂ ", status=429)
+                return Response(
+                    "occupÃƒÂ© : cette session gÃƒÂ©nÃƒÂ¨re dÃƒÂ©jÃƒÂ ", status=429
+                )
 
         # On tient le verrou : repartir d'un signal d'annulation propre.
 
@@ -830,7 +832,7 @@ def create_app(
 
         # ensuite l'agent au travail (garde cÃƒÂ´tÃƒÂ© client.py) jusqu'ÃƒÂ  ce qu'un ÃƒÂ©valuateur le juge
 
-        # PROUVÃƒâ€° atteint. Ã‚Â« /goal Ã‚Â» seul = statut ; Ã‚Â« /goal clear|stop|Ã¢â‚¬Â¦ Ã‚Â» = efface. Ces deux-lÃƒÂ 
+        # PROUVÃƒâ€° atteint. Ã‚Â« /goal Ã‚Â» seul = statut ; Ã‚Â« /goal clear|stop|Ã¢â‚¬Â¦ Ã‚Â» = efface. Ces deux-lÃƒÂ
 
         # ne lancent pas de tour modÃƒÂ¨le (ack immÃƒÂ©diat) ; poser un objectif, si.
 
@@ -1016,7 +1018,7 @@ def create_app(
 
             system_prompt = f"{_idblk}\n\n{base_prompt}" if _idblk else base_prompt
 
-            # Distant (strong) : la machine du provider encaisse le parallÃƒÂ©lisme -> on incite ÃƒÂ 
+            # Distant (strong) : la machine du provider encaisse le parallÃƒÂ©lisme -> on incite ÃƒÂ
             # GROUPER les sous-agents indÃƒÂ©pendants dans un mÃƒÂªme tour (ils tournent en parallÃƒÂ¨le).
             if strong:
                 system_prompt += (
@@ -1137,7 +1139,9 @@ def create_app(
 
             _profile = load_profile(conv.model) if conv.model else None
 
-            if adopted_ws:  # informe l'UI que le dossier de travail a ÃƒÂ©tÃƒÂ© adoptÃƒÂ©
+            if (
+                adopted_ws
+            ):  # informe l'UI que le dossier de travail a ÃƒÂ©tÃƒÂ© adoptÃƒÂ©
                 yield _sse("workspace", path=adopted_ws)
 
             answer = ""
@@ -1155,7 +1159,15 @@ def create_app(
             # dans timeline.jsonl (append, zÃƒÂ©ro batch) -> rejouable au rechargement. On y met
             # les ÃƒÂ©vÃƒÂ©nements qui reconstruisent la vue (raisonnement, texte, cartes d'outils) ;
             # pas les compteurs (metrics/totals) ni les dÃƒÂ©corations live (tool_stream/args).
-            _TL = {"reasoning", "text", "tool_call", "tool_result", "phase", "notice"}
+            _TL = {
+                "reasoning",
+                "text",
+                "tool_call",
+                "tool_result",
+                "phase",
+                "notice",
+                "parallel",
+            }
 
             def _tl(event, **data):
                 if event in _TL:
@@ -1332,6 +1344,9 @@ def create_app(
                         # Temps rÃƒÂ©el : le texte est journalisÃƒÂ© ÃƒÂ  l'instant (rejouable). Le
                         # session.json (contexte) se met ÃƒÂ  jour aux frontiÃƒÂ¨res d'outils + fin.
                         yield _tl("text", text=payload)
+
+                    elif kind == "parallel":
+                        yield _tl("parallel", **payload)
 
                     elif kind == "tool_call":
                         yield _tl("tool_call", **payload)
@@ -1560,7 +1575,9 @@ def create_app(
                 yield _sse("error", message=str(exc))
 
             finally:
-                _last_activity[0] = time.time()  # marque l'activitÃƒÂ© pour le keep-warm
+                _last_activity[0] = (
+                    time.time()
+                )  # marque l'activitÃƒÂ© pour le keep-warm
 
                 if _local_held:
                     _local_gen_lock.release()
@@ -1859,7 +1876,9 @@ def create_app(
         model = (b.get("model") or "").strip()
         mid = (b.get("id") or "").strip()
         key = (b.get("api_key") or "").strip()
-        if not key and mid:  # ÃƒÂ©dition sans re-saisir la clÃƒÂ© -> rÃƒÂ©utilise la stockÃƒÂ©e
+        if (
+            not key and mid
+        ):  # ÃƒÂ©dition sans re-saisir la clÃƒÂ© -> rÃƒÂ©utilise la stockÃƒÂ©e
             stored = {m["id"]: m for m in model_store.load(remote_store_path)}
             key = stored.get(mid, {}).get("api_key", "")
         if not (base_url and model):
@@ -1913,7 +1932,9 @@ def create_app(
             return {"error": "store des modÃƒÂ¨les indisponible"}, 500
         managed = {m.get("id") for m in model_store.load(remote_store_path)}
         if mid not in managed:
-            return {"error": "modÃƒÂ¨le non gÃƒÂ©rÃƒÂ© par l'UI (dÃƒÂ©fini dans local.toml)"}, 400
+            return {
+                "error": "modÃƒÂ¨le non gÃƒÂ©rÃƒÂ© par l'UI (dÃƒÂ©fini dans local.toml)"
+            }, 400
         with _toml_lock:
             model_store.delete(remote_store_path, mid)
         client.remove_remote_route(mid)
@@ -2043,7 +2064,9 @@ def create_app(
             return {"ok": False, "error": str(e)[:160]}, 400
         if res.get("ok"):
             _reload_app_config()  # applique Ãƒâ‚¬ CHAUD les params app (permissions, tokensÃ¢â‚¬Â¦)
-            _apply_to_model_server(section)  # rÃƒÂ©gÃƒÂ©nÃƒÂ¨re le yaml si param serveur/modÃƒÂ¨le
+            _apply_to_model_server(
+                section
+            )  # rÃƒÂ©gÃƒÂ©nÃƒÂ¨re le yaml si param serveur/modÃƒÂ¨le
         code = 200 if res.get("ok") else 400
         return res, code
 
@@ -2278,7 +2301,9 @@ def create_app(
                 ):
                     pass
 
-                _last_activity[0] = time.time()  # gardÃƒÂ© chaud => relance un intervalle
+                _last_activity[0] = (
+                    time.time()
+                )  # gardÃƒÂ© chaud => relance un intervalle
 
             except Exception:  # noqa: BLE001 - keep-warm best-effort, jamais bloquant
                 pass
