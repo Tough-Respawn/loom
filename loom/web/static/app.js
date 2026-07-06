@@ -642,7 +642,7 @@ async function sendChat(sid, text, images) {
         if (sid === state.active) updateUsageMeter(evt);
         break;
       case "error":
-        push({ kind: "error", message: "Erreur : " + evt.message + " (Loom est-il lancé ?)" });
+        push({ kind: "error", message: "Erreur : " + evt.message + " (connexion à loom.web perdue ?)" });
         break;
     }
   };
@@ -654,7 +654,7 @@ async function sendChat(sid, text, images) {
     if (err.name === "AbortError") {
       if (asstId) patch(asstId, { done: true });
     } else {
-      push({ kind: "error", message: "Erreur : " + err.message + " (Loom est-il lancé ?)" });
+      push({ kind: "error", message: "Erreur : " + err.message + " (connexion à loom.web perdue ?)" });
     }
   } finally {
     if (thinkId) patch(thinkId, { active: false });
@@ -1458,21 +1458,32 @@ document.addEventListener("change", (e) => {
   } else if (t.id === "model-select") {
     // Mémorise le modèle sur l'onglet actif (sinon figé au switch), puis suit l'état machine.
     if (activeTab()) activeTab().model = t.value;
+    machineUnloaded = false; // re-sélection = warmup relancé côté serveur
     scheduleMachineRefresh();
   }
 });
 syncSkillsMaster();
 
-// --- état du modèle sur la machine (chargé / chargement / libre / serveur off) ---
+// --- état du modèle sur la machine (chargé / chargement / déchargé / libre / serveur off) ---
 let machineTimer = null;
+// Déchargement MANUEL (bouton) : sans ce flag, un modèle local sélectionné mais non
+// chargé s'afficherait « chargement… » à tort. Levé dès que le modèle recharge.
+let machineUnloaded = false;
 async function refreshMachineState() {
   const chip = document.getElementById("machine-chip");
+  const unloadBtn = document.getElementById("machine-unload");
+  const startBtn = document.getElementById("machine-server-start");
+  const stopBtn = document.getElementById("machine-server-stop");
+  const hideActions = () => {
+    for (const b of [unloadBtn, startBtn, stopBtn]) if (b) b.hidden = true;
+  };
   if (!chip) return "";
   let d;
   try {
     d = await (await fetch("/machine_state")).json();
   } catch {
     chip.textContent = "";
+    hideActions();
     return "";
   }
   // Moniteur système : visible UNIQUEMENT pour un modèle local (home), pas pour le cloud.
@@ -1489,35 +1500,124 @@ async function refreshMachineState() {
       text = "machine · libre (modèle distant)";
     }
   } else if (!d.reachable) {
-    cls = "off";
-    text = "machine · serveur local éteint";
+    if (d.starting) {
+      // Serveur lancé par loom.web (auto ou bouton), pas encore joignable.
+      cls = "busy";
+      text = "machine · démarrage du serveur…";
+    } else {
+      cls = "off";
+      text = "machine · serveur local éteint";
+    }
   } else if (d.model_loaded) {
-    cls = "on";
-    text = "machine · " + d.model + " chargé";
+    if (machineUnloaded) {
+      // Unload demandé mais llama-swap n'a pas fini de tuer le llama-server (~2 s) :
+      // état transitoire BUSY pour que le suivi continue jusqu'au vrai état final.
+      cls = "busy";
+      text = "machine · libération…";
+    } else {
+      cls = "on";
+      text = "machine · " + d.model + " chargé";
+    }
+  } else if (d.loading) {
+    // état « starting » réel de llama-swap (le chargement peut prendre 1-3 min).
+    // Un chargement en cours invalide un déchargement manuel antérieur.
+    machineUnloaded = false;
+    cls = "busy";
+    text = "machine · " + d.model + " chargement…";
+  } else if (machineUnloaded) {
+    cls = "free";
+    text = "machine · modèle déchargé (VRAM libre)";
   } else {
     cls = "busy";
     text = "machine · " + d.model + " chargement…";
   }
   chip.className = "machine-chip " + cls;
   chip.textContent = text;
+  // Actions contextuelles : chaque bouton n'apparaît que quand il a du sens.
+  // « décharger » : un modèle local occupe réellement la VRAM — PAS pendant un
+  // chargement (llama-swap ignore l'unload d'un modèle en état « starting »).
+  if (unloadBtn)
+    unloadBtn.hidden = !(
+      d.mode === "home" &&
+      d.reachable &&
+      d.any_loaded &&
+      !d.loading &&
+      !machineUnloaded
+    );
+  // « démarrer le serveur » : modèle local sélectionné, serveur éteint, pas déjà en route.
+  if (startBtn)
+    startBtn.hidden = !(d.mode === "home" && !d.reachable && !d.starting);
+  // « éteindre le serveur » : seulement l'instance GÉRÉE par loom.web (jamais une stack
+  // lancée à la main dans un terminal).
+  if (stopBtn) stopBtn.hidden = !(d.reachable && d.managed);
   return cls;
 }
 // Rafraîchit maintenant puis re-sonde : les 3 premiers passages (à 800 ms) laissent le POST
 // /model se persister avant de figer l'état ; ensuite on continue tant que c'est TRANSITOIRE
-// (chargement / libération) car un gros modèle met du temps à (dé)charger. Borné à ~40 s.
+// (démarrage serveur / chargement / libération). Borné à ~2 min : un démarrage à froid
+// (llama-swap + chargement d'un 35B) dépasse largement les 40 s de l'ancienne borne.
 function scheduleMachineRefresh() {
   if (machineTimer) clearTimeout(machineTimer);
   let tries = 0;
   const tick = async () => {
     const cls = await refreshMachineState();
     tries += 1;
-    if ((tries < 3 || cls === "busy") && tries < 14) {
+    if ((tries < 3 || cls === "busy") && tries < 42) {
       machineTimer = setTimeout(tick, tries < 3 ? 800 : 3000);
     }
   };
   tick();
 }
 scheduleMachineRefresh();
+// Boutons machine : chaque action POST puis re-suit l'état (le chip raconte la suite).
+// « décharger le modèle » : libère la VRAM sans changer de sélection ni quitter Loom
+// (llama-swap rechargera à la prochaine requête).
+document.getElementById("machine-unload")?.addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    await fetch("/machine/unload", { method: "POST" });
+    machineUnloaded = true;
+  } catch {
+    /* serveur local injoignable : l'état re-sondé ci-dessous l'affichera */
+  } finally {
+    btn.disabled = false;
+  }
+  scheduleMachineRefresh();
+});
+// « démarrer le serveur » : trigger manuel du serveur modèle (sinon il part tout seul à
+// la sélection d'un modèle local ou à la première interaction).
+document
+  .getElementById("machine-server-start")
+  ?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await fetch("/machine/server/start", { method: "POST" });
+    } catch {
+      /* loom.web injoignable : rien à faire de plus ici */
+    } finally {
+      btn.disabled = false;
+    }
+    scheduleMachineRefresh();
+  });
+// « éteindre le serveur » : tue l'arbre complet (llama-swap + llama-server) -> RAM/VRAM
+// rendues. Ne s'affiche que pour l'instance gérée par loom.web.
+document
+  .getElementById("machine-server-stop")
+  ?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await fetch("/machine/server/stop", { method: "POST" });
+      machineUnloaded = false;
+    } catch {
+      /* idem : l'état re-sondé fera foi */
+    } finally {
+      btn.disabled = false;
+    }
+    scheduleMachineRefresh();
+  });
 
 // Éditeur de skill (drawer latéral)
 const skDrawer = document.getElementById("skill-drawer");
@@ -1748,6 +1848,7 @@ function setSysmonVisible(on) {
   if (!el) return;
   if (on) {
     el.hidden = false;
+    smRestorePos();
     if (!sysmonTimer) {
       sysmonTick();
       sysmonTimer = setInterval(sysmonTick, 1200);
@@ -1760,6 +1861,53 @@ function setSysmonVisible(on) {
     }
   }
 }
+
+// --- moniteur déplaçable : on attrape la boîte n'importe où (aucun élément interactif
+// dedans), on la pose où on veut ; position mémorisée et re-clampée dans la fenêtre
+// à chaque affichage (changement de résolution / fenêtre redimensionnée). ---
+const SM_POS_KEY = "loomSysmonPos";
+function smPlace(el, l, t) {
+  l = Math.max(0, Math.min(l, window.innerWidth - el.offsetWidth));
+  t = Math.max(0, Math.min(t, window.innerHeight - el.offsetHeight));
+  el.style.left = l + "px";
+  el.style.top = t + "px";
+  el.style.right = "auto";
+}
+function smRestorePos() {
+  const el = document.getElementById("sysmon");
+  if (!el) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(SM_POS_KEY) || "null");
+    if (saved) smPlace(el, saved.l, saved.t);
+  } catch {
+    /* position corrompue : on garde le coin par défaut */
+  }
+}
+(function () {
+  const el = document.getElementById("sysmon");
+  if (!el) return;
+  let grab = null; // décalage curseur -> coin de la boîte pendant le drag
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    const r = el.getBoundingClientRect();
+    grab = { x: e.clientX - r.left, y: e.clientY - r.top };
+    el.classList.add("sm-drag");
+    el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!grab) return;
+    smPlace(el, e.clientX - grab.x, e.clientY - grab.y);
+  });
+  const drop = () => {
+    if (!grab) return;
+    grab = null;
+    el.classList.remove("sm-drag");
+    const r = el.getBoundingClientRect();
+    localStorage.setItem(SM_POS_KEY, JSON.stringify({ l: r.left, t: r.top }));
+  };
+  el.addEventListener("pointerup", drop);
+  el.addEventListener("lostpointercapture", drop);
+})();
 
 // --- Gestionnaire de modèles distants (panneau engrenage) : ajout/édition/suppression À CHAUD
 // (le backend monte la route sans redémarrer). Reconstruit le <select> après chaque mutation. ---

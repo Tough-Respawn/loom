@@ -202,6 +202,16 @@
     .machine-chip.free::before { background: var(--text-faint); }
     .machine-chip.off::before { background: var(--err); }
     @keyframes mc-pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+    /* Actions machine sous le chip : démarrer/éteindre le serveur, décharger le modèle.
+       Chaque bouton n'apparaît que quand son action a du sens (cf. refreshMachineState). */
+    .machine-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+    .machine-actions button {
+      padding: 2px 8px;
+      background: none; border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text-faint); font-size: 10px; font-family: inherit; cursor: pointer;
+    }
+    .machine-actions button:hover { color: var(--text); border-color: var(--accent-dim); }
+    .machine-actions button:disabled { opacity: .5; cursor: default; }
     #skills-panel { display: flex; flex-direction: column; gap: 3px; }
     #skills-panel .skill {
       display: flex; align-items: center; gap: 6px; background: var(--bg-elev);
@@ -263,9 +273,11 @@
     .skdr-actions button:hover { background: var(--bg-hover); color: var(--text); }
     .skdr-actions button.primary { background: var(--accent-dim); color: #fff; border-color: transparent; }
     .skdr-actions button.primary:hover { filter: brightness(1.12); }
-    /* --- moniteur système live (CPU/RAM/GPU), coin haut-droit, modèle LOCAL --- */
+    /* --- moniteur système live (CPU/RAM/GPU), coin haut-droit, modèle LOCAL ---
+       Descendu sous la barre du haut (compteur tokens) et déplaçable à la souris
+       (drag = toute la boîte, position mémorisée — cf. app.js). --- */
     #sysmon {
-      position: fixed; top: 10px; right: 12px; z-index: 30; width: 194px;
+      position: fixed; top: 56px; right: 12px; z-index: 30; width: 194px;
       background: rgba(17, 20, 27, .82); backdrop-filter: blur(9px);
       -webkit-backdrop-filter: blur(9px);
       border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px 8px;
@@ -273,7 +285,9 @@
       box-shadow: 0 6px 22px rgba(0, 0, 0, .38);
       font-size: 10.5px; color: var(--text-dim);
       animation: sm-in .18s ease;
+      cursor: grab; touch-action: none; user-select: none;
     }
+    #sysmon.sm-drag { cursor: grabbing; }
     #sysmon[hidden] { display: none; }
     @keyframes sm-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
     .sm-head {
@@ -899,6 +913,14 @@
         <div class="sb-label">Modèle</div>
         {% include "_models.html" %}
         <div id="machine-chip" class="machine-chip" title="État du modèle sur la machine"></div>
+        <div class="machine-actions">
+          <button id="machine-server-start" hidden
+            title="Démarrer le serveur modèle local (llama-swap) sans attendre une interaction">démarrer le serveur</button>
+          <button id="machine-unload" hidden
+            title="Décharger le modèle de la VRAM (il sera rechargé à la prochaine requête)">décharger le modèle</button>
+          <button id="machine-server-stop" hidden
+            title="Éteindre le serveur modèle et libérer toutes ses ressources (RAM/VRAM)">éteindre le serveur</button>
+        </div>
       </div>
       <div class="sb-section">
         <label id="thinking-toggle" title="Réflexion préalable">
