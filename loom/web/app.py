@@ -1132,23 +1132,17 @@ def create_app(
             actions: list[str] = []  # trace compacte des outils (anti-amnésie)
 
             saved = False
+            # Persistance AU FIL DE L'EAU : au lieu de tout sauver une seule fois EN FIN de tour
+            # (un long audit interrompu/rechargé/relancé perdait TOUT), on met à jour EN PLACE
+            # l'unique message assistant du tour (réponse en cours + trace compacte des actions)
+            # et on sauve à CHAQUE étape marquante (outil terminé, flux de texte) + à la fin.
+            _turn = {"idx": None, "last": 0.0}
 
-            def _persist():
-
-                # Idempotent. Persiste le texte final + une TRACE COMPACTE des actions
-
-                # (chemins lus/écrits, commandes) : sans elle, l'historique persisté est
-
-                # amnésique de ce que l'agent a fait (seul son texte survivait) et le tour
-
-                # suivant repartait à l'aveugle. On NE persiste pas les messages `tool`
-
-                # bruts (gonflerait le contexte + casserait le résumeur).
-
+            def _persist(final=False):
+                # On NE persiste pas les messages `tool` bruts (gonflerait le contexte + casserait
+                # le résumeur) : seulement le texte + la trace des actions. Un même tour = UN seul
+                # message assistant, mis à jour en place (pas de doublons).
                 nonlocal saved
-
-                if saved:
-                    return
 
                 body = answer
 
@@ -1160,11 +1154,20 @@ def create_app(
                 if not body:  # rien à dire ET rien fait -> pas de bulle vide
                     return
 
-                saved = True
+                # Throttle : on ne sauve pas à chaque token (I/O storm) ; ~1.5s = au fil de l'eau.
+                now = time.time()
+                if not final and (now - _turn["last"]) < 1.5:
+                    return
+                _turn["last"] = now
 
-                conv.add("assistant", body)
+                if _turn["idx"] is None:
+                    conv.add("assistant", body)
+                    _turn["idx"] = len(conv.messages) - 1
+                else:
+                    conv.messages[_turn["idx"]]["content"] = body
 
                 save()
+                saved = True
 
             # Registre construit selon les outils activés pour CETTE conversation
 
@@ -1307,6 +1310,8 @@ def create_app(
 
                         yield _sse("text", text=payload)
 
+                        _persist()  # checkpoint (throttlé ~1.5s) : le texte en cours survit
+
                     elif kind == "tool_call":
                         yield _sse("tool_call", **payload)
 
@@ -1329,6 +1334,8 @@ def create_app(
                             actions.append(line)
 
                         yield _sse("tool_result", **payload)
+
+                        _persist()  # checkpoint au fil de l'eau : l'outil vient de finir
 
                     elif kind == "usage":
                         # Fin d'un tour : llama-server donne le prompt réel et le completion
@@ -1408,7 +1415,9 @@ def create_app(
                         )
 
                 if interrupted:
-                    _persist()  # partiel sauvé, pas de 'done' (le client est parti)
+                    _persist(
+                        final=True
+                    )  # interrompu : on force la sauvegarde du travail fait
 
                     return
 
@@ -1417,7 +1426,7 @@ def create_app(
 
                     yield _sse("text", text=answer)
 
-                _persist()
+                _persist(final=True)  # fin de tour : écriture finale garantie
 
                 # Apprentissage post-tour (HORS de la loop d'action) : ne s'exécute que si le
 
@@ -1501,7 +1510,7 @@ def create_app(
 
                 # l'interruption (re-raise obligatoire pour le protocole générateur).
 
-                _persist()
+                _persist(final=True)  # client parti : écriture finale garantie
 
                 raise
 
