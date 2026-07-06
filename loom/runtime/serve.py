@@ -121,6 +121,8 @@ def build_launch(
         mmproj_path=mmproj_path,
         gpu_tuning=profile.has_gpu,
         n_parallel=cfg.n_parallel,
+        cpu_moe=cfg.model.cpu_moe,
+        n_cpu_moe=cfg.model.n_cpu_moe,
     )
 
 

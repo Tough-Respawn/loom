@@ -33,7 +33,7 @@ SECTION_LABELS = {
 # type : int | float | bool | str | secret | select | list
 # layer : commun | systeme      nature : fixe | override | libre
 # applies : live (effet immédiat / prochain appel) | restart (relance llama/loom requise)
-# editable défaut True ; options = valeurs d'un select.
+# options = valeurs d'un select.
 SPEC: list[dict] = [
     # -- server --
     {
@@ -543,8 +543,6 @@ def set_value(defaults_path, local_path, section: str, key: str, raw) -> dict:
     spec = _spec_for(section, key)
     if not spec:
         return {"ok": False, "error": f"paramètre inconnu: {section}.{key}"}
-    if spec.get("editable") is False:
-        return {"ok": False, "error": "paramètre en lecture seule"}
     val = _coerce(spec, raw)
     target = _target_path(spec, defaults_path, local_path)
     if val is None:
