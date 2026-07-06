@@ -50,6 +50,35 @@ llama-bench.exe -m <model.gguf> `
 - Le QAT est par ailleurs **meilleur en qualité** (quantisation apprise à l'entraînement,
   ~BF16 à 4 bits) et apporte la vision (mmproj).
 
+## Campagne 2026-07-06 — `--no-mmap` (mémoire pinnée) : LE gain gratuit
+
+Déclencheur : fork `thecodacus/llama.cpp` (branches `fable5/host-register` +
+`fable5/prefetch-experts`, la démo vidéo Claude Fable 5). Audit des diffs : le patch de
+pinning est un no-op sur Windows (`#ifdef _POSIX_MAPPED_FILES`), pas de PR upstream.
+MAIS le llama.cpp stock a un équivalent : `--no-mmap` charge les poids CPU dans le
+buffer hôte **pinné** CUDA -> uploads d'experts en DMA. Balayé au même protocole :
+
+| modèle (b9442, config serveur) | mmap (avant) | no-mmap (après) | gain |
+|---|---|---|---|
+| gemma uncensored pp512 | 197,1 ± 4,5 | 238,3 ± 0,4 / 231,1 ± 1,2 (re-run) | **+17-21 %** |
+| gemma uncensored tg128 | 12,7 | 12,9-13,7 | +1-8 % |
+| qwen3.6-35b pp512 | 116,3 ± 20,1 | 219,3 ± 15,5 | **+89 %** |
+| qwen3.6-35b tg128 | 16,0 | 17,2 ± 0,1 | +7,6 % |
+
+- Appliqué dans `server_args.py` (bloc `gpu_tuning`) -> les deux chemins (direct + swap).
+- La variance du prefill s'effondre aussi (±0,4 vs ±4,5) : chemin DMA stable.
+- Contreparties : chargement/hot-swap plus long (lecture complète, plus de page cache
+  partagé) et RAM **non-paginable** ≈ taille du modèle (qwen : ~20 Go sur 32).
+- Sweeps négatifs de la même campagne : `-t 12` (+8 % pp mais -10 % tg), `-ub 2048`
+  (neutre pp, -17 % tg) -> on garde t=6 / ub=512.
+- **b9888 testé et rejeté** : -10 % de prefill vs b9442 à config égale (170 vs 197 en
+  mmap, 216 vs 238 en no-mmap), +3 % tg seulement. La régression post-b9442 sur cette
+  2060 (déjà vue avec b9596) persiste -> on RESTE sur b9442. Binaire d'essai conservé
+  dans `C:\tools\llama-b9888\` pour ré-évaluation future.
+- Reste sur la table si besoin un jour : porter le pinning mmap sur Windows ou builder
+  `fable5/prefetch-experts` (env `GGML_SCHED_PREFETCH_EXPERTS=1`) — non justifié tant
+  que le no-mmap donne le gros du gain sans toolchain (nvcc/MSVC absents de la machine).
+
 ## MTP (décodage spéculatif) — testé puis ABANDONNÉ (2026-06-11)
 
 Essayé : drafter `mtp-gemma-4-26B-A4B-it.gguf` (240 Mo) via

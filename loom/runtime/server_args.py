@@ -75,6 +75,11 @@ def build_server_args(
             "q8_0",
             "--prio",
             "2",
+            # Poids CPU (experts MoE) chargés en mémoire hôte PINNÉE CUDA au lieu de mmap :
+            # les uploads vers le GPU passent en DMA -> +21% de prefill (gemma), +89% (qwen)
+            # au bench 2026-07-06. Contrepartie : chargement plus long et RAM non-paginable
+            # (~taille du modèle). cf. docs/bench-llama.md.
+            "--no-mmap",
         ]
     if mmproj_path:
         args += ["--mmproj", str(mmproj_path), "--no-mmproj-offload"]
