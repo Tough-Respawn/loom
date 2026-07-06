@@ -47,6 +47,7 @@ from loom.extend.skills import (
 
 from loom.prompts import CHAT_SYSTEM_STRONG
 from loom.runtime import model_store
+from loom.runtime.manager import ModelServerManager
 from loom.runtime.platform_info import detect as platform_detect
 
 from loom.runtime.models_profile import load_profile
@@ -559,6 +560,27 @@ def create_app(
     # Détails des modèles LOCAUX (onglet Modèles locaux) : id/dir/offload/context. `dir` porte
     # le model.toml -> édition du tuning machine via tomlkit.
     local_model_specs = list(local_models or [])
+
+    # Serveur modèle GÉRÉ par loom.web : démarré à la demande (sélection d'un modèle local,
+    # /chat, bouton « démarrer ») comme ENFANT du process -> il meurt avec loom.web (Job
+    # Object kill-on-close), et l'UI a un bouton « éteindre » pour libérer les ressources.
+    server_manager = ModelServerManager()
+
+    def _ensure_local_server(wait: float = 0.0) -> bool:
+        """Serveur modèle joignable ? Sinon DÉMARRAGE AUTO, puis attente bornée à `wait` s.
+        GGUF déjà présents -> llama-swap répond en ~1-2 s ; un premier téléchargement peut
+        dépasser `wait` (pas grave : l'UI suit l'état via /machine_state)."""
+        reachable, _ = client.running_local(timeout=2.0)
+        if reachable:
+            return True
+        server_manager.start()
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            time.sleep(0.7)
+            reachable, _ = client.running_local(timeout=2.0)
+            if reachable:
+                return True
+        return False
 
     remote_model_names = dict(
         remote_model_names or {}
@@ -1120,6 +1142,40 @@ def create_app(
 
             if adopted_ws:  # informe l'UI que le dossier de travail a été adopté
                 yield _sse("workspace", path=adopted_ws)
+
+            # Démarrage AUTO du serveur modèle, RACONTÉ dans le fil : notices streamées
+            # pendant le démarrage de la stack puis le chargement du modèle — l'utilisateur
+            # voit que ça travaille au lieu de paniquer devant un silence. Fait DANS le
+            # générateur (pas avant la Response) pour que ces étapes s'affichent en direct.
+            if conv.model and conv.model not in remote_model_ids:
+                _reachable, _running_txt = client.running_local(timeout=2.0)
+                if not _reachable:
+                    yield _sse(
+                        "notice",
+                        text="serveur modèle éteint — démarrage de la stack en cours…",
+                    )
+                    server_manager.start()
+                    _deadline = time.monotonic() + 90.0
+                    while time.monotonic() < _deadline and not cancel_event.is_set():
+                        time.sleep(0.7)
+                        _reachable, _running_txt = client.running_local(timeout=2.0)
+                        if _reachable:
+                            yield _sse("notice", text="serveur modèle démarré.")
+                            break
+                    if not _reachable and not cancel_event.is_set():
+                        yield _sse(
+                            "notice",
+                            text=(
+                                "le serveur modèle ne répond toujours pas (détails : "
+                                "var/logs/serve.log) — la génération va échouer."
+                            ),
+                        )
+                if _reachable and conv.model not in _running_txt:
+                    yield _sse(
+                        "notice",
+                        text="chargement du modèle en mémoire — la première réponse met "
+                        "plus de temps à démarrer…",
+                    )
 
             answer = ""
 
@@ -1765,8 +1821,14 @@ def create_app(
                 target=client.unload_local, daemon=True, name="loom-unload"
             ).start()
         elif model:
+            # Modèle LOCAL : démarre le serveur s'il est éteint (démarrage auto), PUIS
+            # warmup. Le tout en fond : la réponse UI reste instantanée, le chip suit.
+            def _start_and_warm(m=model):
+                _ensure_local_server(wait=90.0)
+                client.warmup_local(m)
+
             threading.Thread(
-                target=lambda m=model: client.warmup_local(m),
+                target=_start_and_warm,
                 daemon=True,
                 name="loom-warmup",
             ).start()
@@ -2075,17 +2137,72 @@ def create_app(
         model = conv.model
         remote = model in remote_model_ids
         reachable, running_txt = client.running_local()
-        model_loaded = bool(reachable and model and model in running_txt)
-        any_loaded = bool(
-            reachable and any(mid in running_txt for mid in local_model_ids)
-        )
+        # /running est parsé quand c'est possible : llama-swap distingue « starting »
+        # (chargement en cours) de « ready » (servable). Sans ça, le chip disait
+        # « chargé » dès le début du chargement, et un unload pendant « starting » est
+        # ignoré par llama-swap -> le bouton « décharger » doit se cacher à ce moment.
+        # Repli sous-chaîne si le JSON change (on reste découplé du schéma).
+        states: dict[str, str] = {}
+        try:
+            for entry in json.loads(running_txt).get("running", []):
+                states[str(entry.get("model", ""))] = str(entry.get("state", ""))
+        except (ValueError, AttributeError):
+            pass
+        if states or reachable:
+            model_loaded = bool(model and states.get(model) == "ready")
+            model_loading = bool(model and states.get(model) == "starting")
+            any_loaded = bool(
+                any(states.get(mid) in ("ready", "starting") for mid in local_model_ids)
+            )
+        else:
+            model_loaded = bool(reachable and model and model in running_txt)
+            model_loading = False
+            any_loaded = bool(
+                reachable and any(mid in running_txt for mid in local_model_ids)
+            )
+        if reachable:
+            server_manager.confirm_started()  # démarrage confirmé -> fin de l'état « démarrage »
         return {
             "mode": "remote" if remote else "home",
             "model": model,
             "reachable": reachable,
             "model_loaded": model_loaded,
+            "loading": model_loading,
             "any_loaded": any_loaded,
+            # Serveur GÉRÉ (lancé par loom.web) : conditionne le bouton « éteindre » —
+            # on ne propose jamais de tuer une stack lancée à la main hors Loom.
+            "managed": server_manager.owns_running(),
+            "starting": server_manager.starting,
         }
+
+    @app.post("/machine/unload")
+    def machine_unload():
+        # Déchargement À LA DEMANDE (bouton UI sous le chip machine) : libère la VRAM sans
+        # changer de modèle sélectionné. Synchrone : la réponse reflète le résultat réel
+        # (llama-swap tue le llama-server en ~1-2 s). Rechargé à la prochaine requête.
+        return {"ok": client.unload_local()}
+
+    @app.post("/machine/server/start")
+    def machine_server_start():
+        # Trigger MANUEL (bouton « démarrer le serveur ») : lance sans bloquer la requête ;
+        # l'UI suit la progression via /machine_state (état « démarrage… »). Puis warmup du
+        # modèle local sélectionné en fond : « démarrer » = « rendre prêt à répondre ».
+        ok = server_manager.start()
+        conv, _ = _ctx()
+        if conv.model and conv.model not in remote_model_ids:
+
+            def _warm(m=conv.model):
+                if _ensure_local_server(wait=90.0):
+                    client.warmup_local(m)
+
+            threading.Thread(target=_warm, daemon=True, name="loom-warmup").start()
+        return {"ok": ok}
+
+    @app.post("/machine/server/stop")
+    def machine_server_stop():
+        # Éteint l'arbre complet (serve.py + llama-swap + llama-server) et libère RAM/VRAM.
+        # Ne concerne QUE l'instance gérée par loom.web (cf. managed dans /machine_state).
+        return {"ok": server_manager.stop()}
 
     @app.get("/sysmon")
     def sysmon_metrics():
