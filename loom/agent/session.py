@@ -151,6 +151,54 @@ class SessionStore:
         )
         os.replace(tmp, f)
 
+    # --- Journal d'affichage TEMPS RÉEL (timeline.jsonl) ---------------------------------
+    # Append-only, UNE ligne par événement écrite À L'INSTANT où il sort (raisonnement, texte,
+    # appel/résultat d'outil…). Distinct de session.json (contexte lean du modèle) : ce journal
+    # sert à REJOUER l'UI au rechargement -> on retrouve exactement ce qui s'affichait en direct,
+    # cartes d'outils comprises. Vrai temps réel, pas de batch : append + flush par événement.
+    def _timeline_file(self, sid: str):
+        return self.session_dir(sid) / "timeline.jsonl"
+
+    def append_event(self, sid: str, event: str, data: dict) -> None:
+        """Écrit un événement d'affichage dans le journal, tout de suite. Best-effort."""
+        try:
+            p = self._timeline_file(sid)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps({"event": event, "data": data}, ensure_ascii=False)
+                    + "\n"
+                )
+                fh.flush()
+        except OSError:
+            pass
+
+    def read_timeline(self, sid: str) -> list[dict]:
+        """Relit le journal (liste ordonnée d'événements). Vide si absent/illisible."""
+        p = self._timeline_file(sid)
+        if not p.exists():
+            return []
+        out: list[dict] = []
+        try:
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        except OSError:
+            return []
+        return out
+
+    def clear_timeline(self, sid: str) -> None:
+        """Efface le journal (reset de conversation)."""
+        try:
+            self._timeline_file(sid).unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def load(self, sid: str) -> Session | None:
         f = self._file(sid)
         if not f.exists():
