@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -260,6 +261,11 @@ def build_app(cfg):
 def main() -> None:
     cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
     app = build_app(cfg)
+    # Le moniteur système poll GET /sysmon toutes les ~1,2 s : sans ce filtre, le log
+    # d'accès werkzeug est inondé et noie les requêtes utiles au debug.
+    logging.getLogger("werkzeug").addFilter(
+        lambda record: "/sysmon" not in record.getMessage()
+    )
     print(
         f"[loom-chat] http://127.0.0.1:{cfg.chat.web_port}  (modèle: http://127.0.0.1:{cfg.port}/v1)"
     )
