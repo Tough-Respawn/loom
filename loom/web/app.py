@@ -1397,6 +1397,27 @@ def create_app(
 
                         yield _sse("totals", **_totals(conv))
 
+                    elif kind == "sub_usage":
+                        # Conso d'un SOUS-AGENT (dispatch_agent) : ses tokens sont RÉELS et
+                        # facturés -> on les ajoute aux totaux de session (coût, N×, in/out/
+                        # cache). `set_context=False` : son prompt n'est PAS le contexte du fil
+                        # principal, on ne touche donc pas la jauge de remplissage ni les
+                        # métriques per-tour (sent/recv) qui décrivent le tour principal.
+                        _sp = payload.get("prompt_tokens", 0) or 0
+                        _sc = payload.get("completion_tokens", 0) or 0
+                        _scached = payload.get("cached_tokens", 0) or 0
+                        _pin, _pout, _pcached = _price_of(conv.model)
+                        conv.add_usage(
+                            _sp,
+                            _sc,
+                            _scached,
+                            _pin,
+                            _pout,
+                            _pcached,
+                            set_context=False,
+                        )
+                        yield _sse("totals", **_totals(conv))
+
                     elif kind == "phase":
                         yield _tl("phase", **payload)
 

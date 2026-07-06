@@ -1509,6 +1509,10 @@ class LoomClient:
                                     )
                                 if sk == "content" and isinstance(sp, str):
                                     parts.append(sp)
+                                elif (
+                                    sk == "usage"
+                                ):  # conso du sous-agent -> totaux de session
+                                    _q.put((tc["id"], "sub_usage", sp))
                             r = (
                                 "".join(parts).strip()
                                 or "(le sous-agent n'a rien renvoyé)"
@@ -1647,6 +1651,10 @@ class LoomClient:
                             yield ("tool_stream", {"id": tc["id"], "text": line})
                         if sub_kind == "content" and isinstance(sub_payload, str):
                             parts.append(sub_payload)
+                        elif (
+                            sub_kind == "usage"
+                        ):  # conso du sous-agent -> totaux de session
+                            yield ("sub_usage", sub_payload)
                     result = (
                         "".join(parts).strip() or "(le sous-agent n'a rien renvoyé)"
                     )

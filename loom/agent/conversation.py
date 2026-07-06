@@ -56,12 +56,17 @@ class Conversation:
         price_in: float,
         price_out: float,
         price_cached: float = 0.0,
+        set_context: bool = True,
     ) -> None:
         """Cumule un appel API dans les compteurs de session + le coût ($ / M tokens).
 
         `cached` = part de `prompt` servie par le cache (facturée `price_cached` au lieu de
         `price_in`) -> le coût distingue input frais et input caché ; price_cached=0 = pas de
-        remise (borne haute). Sert à MESURER si le prompt caching mord."""
+        remise (borne haute). Sert à MESURER si le prompt caching mord.
+
+        `set_context=False` pour la conso d'un SOUS-AGENT (dispatch_agent) : ses tokens comptent
+        dans les totaux (coût/N×), mais son prompt N'EST PAS le contexte du fil principal ->
+        on ne touche pas la jauge de remplissage."""
         prompt = int(prompt or 0)
         completion = int(completion or 0)
         cached = min(int(cached or 0), prompt)  # jamais > input total
@@ -69,8 +74,9 @@ class Conversation:
         self.tokens_out += completion
         self.tokens_cached += cached
         self.api_calls += 1
-        # Occupation courante de la fenêtre = le prompt du DERNIER appel (pas un cumul).
-        self.context_tokens = prompt
+        # Occupation courante de la fenêtre = le prompt du DERNIER appel du FIL PRINCIPAL.
+        if set_context:
+            self.context_tokens = prompt
         pc = price_cached if price_cached > 0 else price_in
         fresh = prompt - cached
         self.cost_usd += (
