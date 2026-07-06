@@ -1273,7 +1273,14 @@ class LoomClient:
                 # PAS de « écris plus court » trompeur ni de retry voué à re-échouer.
                 reason = {
                     "timeout": "le serveur a mis trop de temps à répondre (timeout).",
-                    "connection": "serveur de modèle injoignable (Loom est-il lancé ?).",
+                    # « injoignable » : dire QUOI lancer — loom.web tourne forcément (il
+                    # affiche ce message), c'est le serveur MODÈLE qui manque (ou l'API).
+                    "connection": (
+                        "API distante injoignable (réseau ou base_url à vérifier)."
+                        if self.is_remote(model or self.model)
+                        else "serveur de modèle local injoignable — lance la stack "
+                        "modèle (llama-swap / serve) ou choisis un modèle distant."
+                    ),
                     "model_not_found": (
                         f"modèle « {model or self.model} » introuvable ou non chargé "
                         "(vérifie le modèle sélectionné)."
