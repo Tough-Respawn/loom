@@ -182,13 +182,14 @@ function Think({ it }) {
   </details>`;
 }
 
-function IORow({ tag, text }) {
-  // Une ligne IN ou OUT : aperçu 1 ligne, clic pour déplier le bloc complet.
+function IORow({ tag, text, force }) {
+  // Une ligne IN ou OUT : aperçu 1 ligne, clic pour déplier le bloc complet. `force` rend la
+  // ligne toujours dépliable (arène d'agents : on veut TOUJOURS pouvoir lire l'entrée/sortie).
   const [open, setOpen] = useState(false);
   const full = text == null ? "" : String(text);
   if (!full) return null;
   const first = full.split("\n")[0];
-  const multi = full.indexOf("\n") >= 0 || first.length > 90;
+  const multi = force || full.indexOf("\n") >= 0 || first.length > 90;
   return html`<div class="tool-io">
     <div class="tool-io-row" onClick=${() => multi && setOpen(!open)}>
       <span class=${"io-tag io-" + tag.toLowerCase()}>${tag}</span>
@@ -221,9 +222,11 @@ function ToolPill({ it }) {
 // Chaque agent parallèle prend un NOM (grand explorateur/savant) au lieu de "dispatch_agent" :
 // thématique (ils explorent/cartographient le code) et lisible d'un coup d'œil. Assigné de façon
 // déterministe (stable au re-render ET au rejeu) mais varié d'un groupe à l'autre via un seed.
+// Chaque agent parallèle prend un nom de FOOTBALLEUR international (pour la blague) au lieu de
+// "dispatch_agent". Déterministe (stable au re-render/rejeu), varié d'un groupe à l'autre via seed.
 const AGENT_NAMES = [
-  "Ibn Battuta", "Al-Khwârizmî", "Ibn Sînâ", "Ibn Rushd",
-  "Al-Bîrûnî", "Ibn Khaldûn", "Al-Jazarî", "Al-Idrîsî",
+  "Zidane", "Messi", "Ronaldo", "Mbappé", "Ronaldinho", "Maradona",
+  "Benzema", "Mahrez", "Salah", "Modrić", "Iniesta", "Neymar",
 ];
 function _agentName(seed, i) {
   let h = 0;
@@ -231,15 +234,15 @@ function _agentName(seed, i) {
   return AGENT_NAMES[(h + i) % AGENT_NAMES.length];
 }
 
-// Une LANE d'agent : carte avec avatar + nom, barre de progression tant qu'il travaille, puis
-// les vues IN/OUT DÉPLIABLES (fondamental : cliquer pour lire l'entrée et la sortie complètes).
-function AgentLane({ it, name }) {
+// Une LANE d'agent : avatar + nom, barre de progression tant qu'il travaille, puis les vues
+// IN/OUT DÉPLIABLES (force=true : la flèche est TOUJOURS là, on clique pour lire tout).
+function AgentLane({ it, name, delay }) {
   const cls = it.pending ? " working" : it.ok ? " ok" : " ko";
   const status = it.pending ? "" : it.ok ? "✓" : "✕";
   const initial = (name || "A").trim().charAt(0);
   const inText = it.in_full != null ? it.in_full : "";
   const outText = it.out_full != null ? it.out_full : it.preview || "";
-  return html`<div class=${"agent-lane" + cls}>
+  return html`<div class=${"agent-lane" + cls} style=${{ animationDelay: delay }}>
     <div class="lane-head">
       <span class="lane-avatar">${initial}</span>
       <span class="lane-name">${name}</span>
@@ -251,13 +254,14 @@ function AgentLane({ it, name }) {
           <div class="lane-bar"><i></i></div>
         </div>`
       : html`<div class="lane-io">
-          ${inText ? html`<${IORow} tag="IN" text=${inText} />` : null}
-          <${IORow} tag="OUT" text=${outText} />
+          ${inText ? html`<${IORow} tag="IN" text=${inText} force=${true} />` : null}
+          <${IORow} tag="OUT" text=${outText} force=${true} />
         </div>`}
   </div>`;
 }
 
-// Arène parallèle : les N agents CÔTE À CÔTE (flex row) au lieu d'être empilés.
+// Arène parallèle : les N agents CÔTE À CÔTE, avec une entrée « distribuée » (chaque carte
+// apparaît avec un léger décalage) pour un effet plus vivant qu'un simple alignement.
 function ParallelArena({ lanes }) {
   const running = lanes.some((l) => l.pending);
   const seed = (lanes[0] && lanes[0].id) || "";
@@ -265,7 +269,12 @@ function ParallelArena({ lanes }) {
     <div class="arena-tag">${lanes.length} agents en parallèle</div>
     <div class="arena-lanes">
       ${lanes.map(
-        (l, i) => html`<${AgentLane} key=${l.id} it=${l} name=${_agentName(seed, i)} />`,
+        (l, i) => html`<${AgentLane}
+          key=${l.id}
+          it=${l}
+          name=${_agentName(seed, i)}
+          delay=${i * 0.09 + "s"}
+        />`,
       )}
     </div>
   </div>`;
