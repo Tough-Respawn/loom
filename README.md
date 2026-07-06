@@ -1,5 +1,7 @@
 # 🧵 Loom — un agent IA local, multimodal et offline
 
+<!-- RÔLE : pitch public (présentation, démarrage rapide). Suivi interne : ETAT_PROJET.md. Carte technique : loom.md. Historique versions : CHANGELOG.md. -->
+
 > Un modèle open-source qui **agit** sur ta machine avec des outils —
 > **100 % en local, sans internet.**
 
@@ -21,9 +23,8 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
     `read_image` (voir une image du disque : capture, schéma).
   - **Planifier / déléguer** : `manage_todos` (bloc-notes de plan), `dispatch_agent`
     (sous-agent à contexte isolé qui fait un gros chantier et ne renvoie qu'une synthèse).
-  - **Modifier / créer** : `write_file`, `append_file`, `edit_file` (remplacement
-    exact-unique), `replace_lines` / `insert_lines` (édition par ligne, indentation
-    préservée), `format_code` (ruff Python / prettier web).
+  - **Modifier / créer** : `write_file`, `append_file`, `edit_file`
+    (remplacement exact-unique), `format_code` (ruff Python / prettier web).
   - **Exécuter** : `run_shell` (PowerShell/bash, garde-fou deny-list, tue l'arbre au timeout).
   - **Web** : `web_search`, `fetch_url` (dégradés proprement hors-ligne).
   - **Vérifier le rendu** : `check_page` (charge une page HTML headless, exécute le JS,
@@ -70,7 +71,7 @@ Navigateur ──HTTP──► Loom (Flask :8000) ──OpenAI API──► llam
                         ├─ tools/           (capacités appelées par le modèle : localiser, lire, modifier, exécuter, web, todos, sous-agent…)
                         ├─ extend/          (skills = catalogue + use_skill ; plugins = store compatible Claude Code)
                         ├─ permissions.py   (deny-list dure + allow/ask/deny — filtre les appels d'outils)
-                        ├─ config.py        (config transverse depuis loom.config.toml)
+                        ├─ config.py        (config transverse depuis config/defaults.toml + local.toml)
                         ├─ prompts/         (prompts système)
                         ├─ runtime/         (llama.cpp : serve, swap, hardware, server_args, fetch, profils)
                         └─ web/             (serveur Flask + SSE + templates/static — la couche UI)
@@ -122,7 +123,7 @@ harness n'est **pas un bac à sable**.
 - **Le mode permission est ton vrai garde-fou.** En `ask` (recommandé), tu confirmes chaque
   écriture et chaque commande shell. En `allow`, l'agent agit sans rien demander : à réserver à
   un environnement que tu acceptes de voir modifié sans confirmation (VM, conteneur, compte
-  dédié). Réglage dans [loom/loom.config.toml](loom/loom.config.toml) → `[permissions] mode`.
+  dédié). Réglage dans [config/defaults.toml](config/defaults.toml) → `[permissions] mode`.
   Le défaut livré est `allow` ; **passe-le à `ask`** si tu n'es pas en environnement isolé.
 - **La deny-list n'est pas une frontière de sécurité.** Elle bloque quelques formes évidentes de
   commandes destructrices (`rm -rf`, `format`, `dd if=`) pour éviter l'**accident**. Elle ne
@@ -152,10 +153,10 @@ En clair : `ask` par défaut, et si tu veux l'autonomie `allow`, fais-le dans un
 
 ## Configuration
 
-Tout est dans [loom/loom.config.toml](loom/loom.config.toml) (`default_model`, contexte, ports,
+Tout est dans [config/defaults.toml](config/defaults.toml) (`default_model`, contexte, ports,
 outils armés, permissions). Les réglages spécifiques à une machine (chemin du binaire, override
-GPU) vont dans [loom/loom.config.personnel.toml](loom/loom.config.personnel.toml) — suivi par git
-comme exemple, à adapter à ta machine (les valeurs livrées sont celles d'une RTX 2060).
+GPU) vont dans [config/local.toml](config/local.toml) — gitignoré, à copier depuis
+`config/local.example.toml` et adapter à ta machine (les valeurs livrées sont celles d'une RTX 2060).
 
 ## Statut
 

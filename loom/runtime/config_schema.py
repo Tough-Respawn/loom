@@ -16,6 +16,7 @@ gestionnaire. Cette console couvre les sections scalaires.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TypedDict
 
 import tomlkit
 
@@ -34,7 +35,26 @@ SECTION_LABELS = {
 # layer : commun | systeme      nature : fixe | override | libre
 # applies : live (effet immédiat / prochain appel) | restart (relance llama/loom requise)
 # options = valeurs d'un select.
-SPEC: list[dict] = [
+
+
+class SpecEntry(TypedDict, total=False):
+    """Une entrée du SPEC : surface éditable d'un paramètre de config.
+
+    `total=False` car toutes les clés ne sont pas présentes sur chaque entrée
+    (ex. `options` n'existe que pour les `select`)."""
+
+    section: str
+    key: str
+    label: str
+    layer: str
+    nature: str
+    type: str
+    applies: str
+    help: str
+    options: list[str]
+
+
+SPEC: list[SpecEntry] = [
     # -- server --
     {
         "section": "server",
@@ -504,12 +524,12 @@ def describe(defaults_path: str | Path, local_path: str | Path) -> dict:
     }
 
 
-def _coerce(spec: dict, raw):
+def _coerce(spec: dict, raw: str | int | float | bool | None) -> object:
     """Convertit la valeur brute de l'UI selon le type déclaré. Renvoie None si vide (=reset)."""
     t = spec["type"]
     if raw is None:
         return None
-    if isinstance(raw, str) and raw.strip() == "" and t in ("int", "float"):
+    if isinstance(raw, str) and raw.strip() == "" and t in ("int", "float", "list"):
         return None
     if t == "int":
         return int(raw)
@@ -521,6 +541,10 @@ def _coerce(spec: dict, raw):
             if isinstance(raw, bool)
             else str(raw).lower() in ("1", "true", "on", "yes")
         )
+    if t == "list":
+        if isinstance(raw, list):
+            return [str(x) for x in raw]
+        return [x.strip() for x in str(raw).split(",") if x.strip()]
     return str(raw)  # str | secret | select
 
 
@@ -531,12 +555,18 @@ def _spec_for(section: str, key: str) -> dict | None:
     return None
 
 
-def _target_path(spec: dict, defaults_path, local_path) -> Path:
+def _target_path(spec: dict, defaults_path: str | Path, local_path: str | Path) -> Path:
     """Fichier cible selon la COUCHE : systeme -> local.toml, commun -> defaults.toml."""
     return Path(local_path if spec["layer"] == "systeme" else defaults_path)
 
 
-def set_value(defaults_path, local_path, section: str, key: str, raw) -> dict:
+def set_value(
+    defaults_path: str | Path,
+    local_path: str | Path,
+    section: str,
+    key: str,
+    raw: str | int | float | bool | None,
+) -> dict:
     """Écrit une valeur dans le bon fichier (par couche), commentaires PRÉSERVÉS (tomlkit).
     Valeur vide sur un champ numérique -> retrait de la clé (retour au défaut). Renvoie
     {ok, source} après écriture."""
@@ -559,7 +589,9 @@ def set_value(defaults_path, local_path, section: str, key: str, raw) -> dict:
     return {"ok": True, "source": spec["layer"]}
 
 
-def reset_value(defaults_path, local_path, section: str, key: str) -> dict:
+def reset_value(
+    defaults_path: str | Path, local_path: str | Path, section: str, key: str
+) -> dict:
     """Retire la clé de son fichier de couche (revient au défaut inférieur). Commentaires
     préservés. No-op si la clé n'y est pas."""
     spec = _spec_for(section, key)
