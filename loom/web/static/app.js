@@ -219,9 +219,6 @@ function ToolPill({ it }) {
   </div>`;
 }
 
-// Chaque agent parallèle prend un NOM (grand explorateur/savant) au lieu de "dispatch_agent" :
-// thématique (ils explorent/cartographient le code) et lisible d'un coup d'œil. Assigné de façon
-// déterministe (stable au re-render ET au rejeu) mais varié d'un groupe à l'autre via un seed.
 // Chaque agent parallèle prend un nom de FOOTBALLEUR international (pour la blague) au lieu de
 // "dispatch_agent". Déterministe (stable au re-render/rejeu), varié d'un groupe à l'autre via seed.
 const AGENT_NAMES = [
@@ -234,34 +231,30 @@ function _agentName(seed, i) {
   return AGENT_NAMES[(h + i) % AGENT_NAMES.length];
 }
 
-// Une LANE d'agent : avatar + nom, barre de progression tant qu'il travaille, puis les vues
-// IN/OUT DÉPLIABLES (force=true : la flèche est TOUJOURS là, on clique pour lire tout).
-function AgentLane({ it, name, delay }) {
+// Carte d'un agent : comme une pastille d'outil (avec IN/OUT dépliables, `force`), mais l'entête
+// porte un AVATAR + le NOM de l'agent. Empilées VERTICALEMENT dans le bloc (plus lisible).
+function AgentLane({ it, name }) {
   const cls = it.pending ? " working" : it.ok ? " ok" : " ko";
-  const status = it.pending ? "" : it.ok ? "✓" : "✕";
+  const status = it.pending ? (it.chars ? it.chars + " car." : "…") : it.ok ? "✓" : "✕";
   const initial = (name || "A").trim().charAt(0);
-  const inText = it.in_full != null ? it.in_full : "";
+  const inText = it.in_full != null ? it.in_full : it.cmd || it.path || "";
   const outText = it.out_full != null ? it.out_full : it.preview || "";
-  return html`<div class=${"agent-lane" + cls} style=${{ animationDelay: delay }}>
-    <div class="lane-head">
+  return html`<div class=${"agent-card" + cls}>
+    <div class="agent-head">
       <span class="lane-avatar">${initial}</span>
       <span class="lane-name">${name}</span>
       <span class="lane-status">${status}</span>
     </div>
-    ${it.pending
-      ? html`<div class="lane-work">
-          <pre class="lane-stream">${(it.stream || "…").slice(-500)}</pre>
-          <div class="lane-bar"><i></i></div>
-        </div>`
-      : html`<div class="lane-io">
-          ${inText ? html`<${IORow} tag="IN" text=${inText} force=${true} />` : null}
-          <${IORow} tag="OUT" text=${outText} force=${true} />
-        </div>`}
+    <${IORow} tag="IN" text=${inText} force=${true} />
+    ${it.pending ? null : html`<${IORow} tag="OUT" text=${outText} force=${true} />`}
+    ${it.stream && it.pending
+      ? html`<pre class="tool-stream">${it.stream.slice(-1400)}</pre>`
+      : null}
   </div>`;
 }
 
-// Arène parallèle : les N agents CÔTE À CÔTE, avec une entrée « distribuée » (chaque carte
-// apparaît avec un léger décalage) pour un effet plus vivant qu'un simple alignement.
+// Bloc « N agents en parallèle » : les cartes d'agents EMPILÉES verticalement (une sous l'autre),
+// pas côte à côte. Chaque carte est consommée du flux principal -> pas de double affichage.
 function ParallelArena({ lanes }) {
   const running = lanes.some((l) => l.pending);
   const seed = (lanes[0] && lanes[0].id) || "";
@@ -273,7 +266,6 @@ function ParallelArena({ lanes }) {
           key=${l.id}
           it=${l}
           name=${_agentName(seed, i)}
-          delay=${i * 0.09 + "s"}
         />`,
       )}
     </div>
@@ -438,19 +430,25 @@ function App() {
   }
   let _ui = 0;
   const items = t.timeline;
-  const consumed = new Set(); // lanes déjà rendues DANS une arène -> pas en double vertical
+  // PRÉ-PASSE : toute carte d'outil appartenant à un groupe parallèle est consommée par le bloc
+  // « N agents » -> on ne la rend JAMAIS en plus dans le flux vertical (pas de double affichage).
+  // Indépendant de l'ordre des events (robuste au streaming live comme au rejeu).
+  const consumed = new Set();
+  for (const it of items) {
+    if (it.kind === "parallel") {
+      (it.lanes || []).forEach((lid) => consumed.add("tool:" + lid));
+    }
+  }
   const out = [];
   for (const it of items) {
-    if (consumed.has(it.id)) continue;
     if (it.kind === "parallel") {
-      // Récupère les cartes d'outils du groupe (id "tool:"+laneId) pour les rendre côte à côte.
       const lanes = (it.lanes || [])
         .map((lid) => items.find((x) => x.id === "tool:" + lid))
         .filter(Boolean);
-      lanes.forEach((l) => consumed.add(l.id));
       out.push(html`<${ParallelArena} key=${it.id} lanes=${lanes} />`);
       continue;
     }
+    if (consumed.has(it.id)) continue; // carte d'agent : déjà dans son bloc
     let userIndex = null;
     if (it.kind === "user") userIndex = _ui++;
     out.push(html`<${Item} key=${it.id} it=${it} userIndex=${userIndex} />`);
