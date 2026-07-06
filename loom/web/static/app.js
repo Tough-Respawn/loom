@@ -218,32 +218,55 @@ function ToolPill({ it }) {
   </div>`;
 }
 
-// Une LANE d'agent dans l'arène parallèle : carte étroite, pulse tant qu'elle travaille,
-// se fige en ✓/✕ à la fin. L'activité live (tool_stream) défile dedans.
-function AgentLane({ it }) {
+// Chaque agent parallèle prend un NOM (grand explorateur/savant) au lieu de "dispatch_agent" :
+// thématique (ils explorent/cartographient le code) et lisible d'un coup d'œil. Assigné de façon
+// déterministe (stable au re-render ET au rejeu) mais varié d'un groupe à l'autre via un seed.
+const AGENT_NAMES = [
+  "Ibn Battuta", "Al-Khwârizmî", "Ibn Sînâ", "Ibn Rushd",
+  "Al-Bîrûnî", "Ibn Khaldûn", "Al-Jazarî", "Al-Idrîsî",
+];
+function _agentName(seed, i) {
+  let h = 0;
+  for (const c of String(seed || "")) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return AGENT_NAMES[(h + i) % AGENT_NAMES.length];
+}
+
+// Une LANE d'agent : carte avec avatar + nom, barre de progression tant qu'il travaille, puis
+// les vues IN/OUT DÉPLIABLES (fondamental : cliquer pour lire l'entrée et la sortie complètes).
+function AgentLane({ it, name }) {
   const cls = it.pending ? " working" : it.ok ? " ok" : " ko";
   const status = it.pending ? "" : it.ok ? "✓" : "✕";
-  const out = it.out_full != null ? it.out_full : it.preview || "";
+  const initial = (name || "A").trim().charAt(0);
+  const inText = it.in_full != null ? it.in_full : "";
+  const outText = it.out_full != null ? it.out_full : it.preview || "";
   return html`<div class=${"agent-lane" + cls}>
     <div class="lane-head">
-      <span class="lane-dot"></span>
-      <span class="lane-name">${it.name || "agent"}</span>
+      <span class="lane-avatar">${initial}</span>
+      <span class="lane-name">${name}</span>
       <span class="lane-status">${status}</span>
     </div>
     ${it.pending
-      ? html`<pre class="lane-stream">${(it.stream || "…").slice(-600)}</pre>`
-      : html`<div class="lane-out">${out.slice(0, 400)}</div>`}
+      ? html`<div class="lane-work">
+          <pre class="lane-stream">${(it.stream || "…").slice(-500)}</pre>
+          <div class="lane-bar"><i></i></div>
+        </div>`
+      : html`<div class="lane-io">
+          ${inText ? html`<${IORow} tag="IN" text=${inText} />` : null}
+          <${IORow} tag="OUT" text=${outText} />
+        </div>`}
   </div>`;
 }
 
-// Arène parallèle : les N agents CÔTE À CÔTE (flex row) au lieu d'être empilés. Tant qu'au
-// moins un travaille, l'arène est « running » (animation) ; tous finis -> settle.
+// Arène parallèle : les N agents CÔTE À CÔTE (flex row) au lieu d'être empilés.
 function ParallelArena({ lanes }) {
   const running = lanes.some((l) => l.pending);
+  const seed = (lanes[0] && lanes[0].id) || "";
   return html`<div class=${"agent-arena" + (running ? " running" : " done")}>
     <div class="arena-tag">${lanes.length} agents en parallèle</div>
     <div class="arena-lanes">
-      ${lanes.map((l) => html`<${AgentLane} key=${l.id} it=${l} />`)}
+      ${lanes.map(
+        (l, i) => html`<${AgentLane} key=${l.id} it=${l} name=${_agentName(seed, i)} />`,
+      )}
     </div>
   </div>`;
 }
