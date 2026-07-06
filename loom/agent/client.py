@@ -1470,6 +1470,15 @@ class LoomClient:
                 _seq_tool_calls = []  # la boucle séquentielle ne fait rien ce tour
                 _q: _queue.Queue = _queue.Queue()
                 _res: dict = {}  # id -> (result, ok, args)
+                # Signale à l'UI un GROUPE parallèle -> rendu en « arène » côté à côté (animation
+                # des agents qui tournent en même temps), pas des pastilles empilées.
+                yield (
+                    "parallel",
+                    {
+                        "ids": [tc["id"] for tc in tool_calls],
+                        "names": [tc["name"] for tc in tool_calls],
+                    },
+                )
                 for (
                     _tc
                 ) in tool_calls:  # pastilles d'abord : elles se rempliront en parallèle
