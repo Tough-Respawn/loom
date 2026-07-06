@@ -3,16 +3,13 @@
 
 from __future__ import annotations
 
+from loom.utils import estimate_tokens
+
 SUMMARY_SYSTEM = "Tu résumes des conversations de façon concise et fidèle, en français."
 SUMMARY_INSTRUCTION = (
     "Résume la conversation suivante en quelques phrases, en gardant les faits, décisions "
     "et informations importantes. Voici la conversation :\n\n"
 )
-
-
-def estimate_tokens(text: str) -> int:
-    """Estimation grossière : ~1 token pour 4 caractères (min 1)."""
-    return max(1, len(text) // 4)
 
 
 def effective_context_budget(

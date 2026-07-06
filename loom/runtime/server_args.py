@@ -21,6 +21,12 @@ def build_server_args(
 
     `n_parallel` fixe le nombre de slots (--parallel) de llama-server. Loom étant
     mono-flux, 1 suffit et laisse tout le pool KV (-c) au seul échange en cours.
+
+    `cpu_moe` offloade TOUS les experts MoE en RAM (`--cpu-moe`), `n_cpu_moe` n'en
+    offloade que N (`--n-cpu-moe N`, garde le reste sur GPU) ; incompatibles entre
+    eux, `n_cpu_moe` prioritaire. `gpu_tuning` active le profil GPU benchmarké
+    (Flash-Attention, cache KV q8_0, gros batch prompt). `mmproj_path` ajoute un
+    projet multimodal (`--mmproj`) pour les modèles vision.
     """
     args = [
         server_bin,

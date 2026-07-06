@@ -1,7 +1,7 @@
 # loom/runtime/serve.py
 """Lanceur cross-platform et auto-adaptatif de llama-server.
 
-Usage : uv run loom/serve.py
+Usage : uv run loom/runtime/serve.py
 Auto-détecte le hardware (GPU NVIDIA sinon CPU), résout la config,
 télécharge les GGUF du registre si absents, génère le llama-swap.yaml
 et démarre llama-swap (routeur multi-modèles, API OpenAI-compatible).
@@ -17,9 +17,9 @@ from loom.config import RuntimeConfig, load_config
 from loom.runtime.hardware import (
     HardwareProfile,
     detect_hardware,
-    recommend_gpu_layers,
 )
 from loom.runtime.models_fetch import ModelUnavailable, ensure_model
+from loom.runtime.ngl import resolve_ngl
 from loom.runtime.server_args import build_server_args
 from loom.runtime.swap import build_swap_config, write_swap_yaml
 
@@ -49,26 +49,6 @@ def _log(msg: str) -> None:
         pass
 
 
-def resolve_n_gpu_layers(
-    profile: HardwareProfile,
-    override: int | None,
-    model_size_mb: int,
-    total_layers: int,
-    kv_headroom_mb: int = 1024,
-) -> int:
-    """Override prioritaire ; sinon 0 en CPU, sinon recommandation auto.
-
-    `kv_headroom_mb` : marge VRAM réservée au KV + buffers (config gpu_kv_headroom_mb).
-    """
-    if override is not None:
-        return override
-    if not profile.has_gpu:
-        return 0
-    return recommend_gpu_layers(
-        profile.vram_free_mb, model_size_mb, total_layers, kv_headroom_mb
-    )
-
-
 def resolve_mmproj_path(
     mmproj_filename: str, models_dir: Path, repo: str = ""
 ) -> str | None:
@@ -95,11 +75,10 @@ def build_launch(
     model_path: Path,
     mmproj_path: str | None = None,
 ) -> list[str]:
-    n_gpu = resolve_n_gpu_layers(
+    n_gpu = resolve_ngl(
+        cfg.model,
         profile,
         cfg.override_n_gpu_layers,
-        cfg.model.size_mb,
-        cfg.model.n_layers,
         cfg.gpu_kv_headroom_mb,
     )
     # En mode GPU, threads = cœurs PHYSIQUES (≈ logiques/2 si HyperThreading) : au-delà,

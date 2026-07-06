@@ -6,7 +6,7 @@ variantes du *system prompt* sur le comportement réel du modèle local.
 ## Principe
 
 - **Eval set figé** (`cases.py`) : 6 cas, chacun ciblant un travers documenté du petit
-  modèle (thrash `replace_lines`, confabulation d'exécution, unix-ismes, recherche
+  modèle (échecs `edit_file`, confabulation d'exécution, unix-ismes, recherche
   inutile, sur-outillage, preuve HTML).
 - **A/B** : variante `old` = `git HEAD` des prompts, variante `new` = version sur disque.
 - **N runs par cas** (le modèle est stochastique : un run ne prouve rien).

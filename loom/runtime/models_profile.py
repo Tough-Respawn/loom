@@ -20,22 +20,24 @@ _SMART_QUOTES = {"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"'}
 _DASHES = {"\u2014": "-", "\u2013": "-"}
 
 
-def _normalize_quotes(content: str, suffix: str) -> str:
-    """Remplace les guillemets typographiques par ASCII, sauf dans les fichiers de prose."""
+def _normalize(content: str, suffix: str, mapping: dict[str, str]) -> str:
+    """Remplace les caractères de `mapping` par leur équivalent ASCII, sauf dans les
+    fichiers de prose (où les formes typographiques peuvent être voulues)."""
     if suffix.lower() in _PROSE_EXT:
         return content
-    for bad, good in _SMART_QUOTES.items():
+    for bad, good in mapping.items():
         content = content.replace(bad, good)
     return content
+
+
+def _normalize_quotes(content: str, suffix: str) -> str:
+    """Remplace les guillemets typographiques par ASCII, sauf dans les fichiers de prose."""
+    return _normalize(content, suffix, _SMART_QUOTES)
 
 
 def _normalize_dashes(content: str, suffix: str) -> str:
     """Remplace les cadratins (U+2014) et demi-cadratins (U+2013) par des tirets ASCII."""
-    if suffix.lower() in _PROSE_EXT:
-        return content
-    for bad, good in _DASHES.items():
-        content = content.replace(bad, good)
-    return content
+    return _normalize(content, suffix, _DASHES)
 
 
 # Registre curaté : nom de fix -> fonction (content, suffix) -> content.
@@ -134,6 +136,6 @@ def load_profile(model_id: str, models_dir: Path | None = None) -> Profile:
     path = (models_dir or MODELS_DIR) / model_id / "profile.md"
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return Profile(model_id, ())
     return Profile(model_id, tuple(_parse_frontmatter_fixes(text)))

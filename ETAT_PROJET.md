@@ -1,5 +1,7 @@
 # État du projet — Loom
 
+<!-- RÔLE : suivi interne (livré, état technique, reste/pistes, conventions). Pitch public : README.md. Carte technique : loom.md. Historique versions : CHANGELOG.md. -->
+
 > Dernière mise à jour : 2026-06-09
 
 Agent IA **local, multimodal et offline** : un modèle open-source rendu réellement utile par
@@ -48,7 +50,7 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   - lire : `read_file`, `read_document` (PDF/xlsx/docx), `read_image` (vision sur fichier) ;
   - planifier/déléguer : `manage_todos`, `dispatch_agent` (sous-agent isolé, anti-récursion) ;
   - modifier/créer : `write_file`, `append_file`, `edit_file`
-    (par ligne, indentation préservée), `format_code` (ruff/prettier) ;
+    (remplacement exact-unique), `format_code` (ruff/prettier) ;
   - exécuter : `run_shell` (deny-list dure, tue l'arbre au timeout) ;
   - web : `web_search`, `fetch_url` ;
   - vérifier le rendu : `check_page` (headless : erreurs console + **diagnostic de

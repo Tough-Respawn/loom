@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from loom.memory import identity as _id
 from loom.prompts import REFLECT_SYSTEM
+from loom.utils import now as _now
 
 _KEYS = (
     "new_skills",
@@ -30,15 +31,15 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,48}$")
 
 @dataclass
 class ReflectResult:
-    new_skills: list = field(default_factory=list)
-    improved_skills: list = field(default_factory=list)
-    episodes: list = field(default_factory=list)
-    memory_updates: list = field(default_factory=list)
-    user_updates: list = field(default_factory=list)
-    soul_updates: list = field(default_factory=list)
+    new_skills: list[dict] = field(default_factory=list)
+    improved_skills: list[dict] = field(default_factory=list)
+    episodes: list[dict] = field(default_factory=list)
+    memory_updates: list[str] = field(default_factory=list)
+    user_updates: list[str] = field(default_factory=list)
+    soul_updates: list[str] = field(default_factory=list)
 
 
-def validate_reflect_json(obj) -> ReflectResult | None:
+def validate_reflect_json(obj: Any) -> ReflectResult | None:
     """Filtre le JSON de reflect. Renvoie un ReflectResult propre, ou None si inexploitable.
 
     PURE (sans IO, sans modèle) -> testable. Rejette le hors-schéma en silence ; anti-trivial
@@ -87,10 +88,6 @@ def validate_reflect_json(obj) -> ReflectResult | None:
     return res
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _write_learned_skill(
     learned_dir: str, name: str, description: str, body: str, *, improve: bool
 ) -> None:
@@ -122,7 +119,7 @@ def _write_learned_skill(
 
 
 def apply_reflect(
-    res: ReflectResult, *, provider, paths: dict, learned_dir: str
+    res: ReflectResult, *, provider: Any, paths: dict, learned_dir: str
 ) -> None:
     """Écrit le résultat validé (skills appris, épisodes, identité). Appelé sous le
     try/except global de l'appelant : best-effort, jamais bloquant."""
@@ -142,7 +139,7 @@ def apply_reflect(
         _id.append_unique(paths["soul_path"], line)
 
 
-def _trajectory_summary(messages: list, actions: list, answer: str) -> str:
+def _trajectory_summary(messages: list[dict], actions: list[str], answer: str) -> str:
     """Condense le tour pour le prompt de reflect (borné)."""
     last_user = next(
         (
@@ -161,13 +158,13 @@ def _trajectory_summary(messages: list, actions: list, answer: str) -> str:
 
 
 def reflect(
-    messages: list,
-    actions: list,
+    messages: list[dict],
+    actions: list[str],
     answer: str,
     *,
-    client,
-    model,
-    provider,
+    client: Any,
+    model: str,
+    provider: Any,
     paths: dict,
     learned_dir: str,
 ) -> ReflectResult | None:

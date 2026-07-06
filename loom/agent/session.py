@@ -12,10 +12,10 @@ import os
 import shutil
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 from loom.agent.conversation import Conversation
+from loom.utils import now_iso as _now_iso
 
 
 @dataclass
@@ -59,10 +59,6 @@ class Session:
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
         )
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class SessionStore:

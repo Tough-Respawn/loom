@@ -15,8 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# ~4 caractères par token (même heuristique que loom/agent/context.py).
-_CHARS_PER_TOKEN = 4
+from loom.utils import CHARS_PER_TOKEN as _CHARS_PER_TOKEN
 
 # Cache mémoire {path: (mtime, contenu)} : on ne RELIT le disque que si le fichier a changé.
 # Évite 3 lectures par tour pour rien, tout en gardant l'édition à chaud (un write -> mtime

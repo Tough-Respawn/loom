@@ -2,8 +2,9 @@
 
 Loom héberge son PROPRE store, indépendant de ~/.claude : on installe n'importe quel plugin
 Claude Code et le modèle local s'en sert hors-ligne. Tranche 1 : store + install + découverte ;
-seuls les SKILLS sont consommés (par loom/skills.py). Agents/hooks/commands sont INVENTORIÉS
-mais pas encore câblés.
+seuls les SKILLS sont consommés (par loom/skills.py). Agents/hooks/commands NE sont PAS
+inventoriés ni câblés (retirés de la classe Plugin : tenir des champs vides non utilisés
+prêtait à confusion et faisait planter l'affichage).
 """
 
 from __future__ import annotations
@@ -14,8 +15,9 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
+
+from loom.utils import now_iso as _now_iso
 
 _DEFAULT_ROOT = "loom/plugins"
 
@@ -32,13 +34,6 @@ class Plugin:
     version: str = "unknown"
     description: str = ""
     skills: list[Path] = field(default_factory=list)
-    agents: list[Path] = field(default_factory=list)
-    hooks: list[Path] = field(default_factory=list)
-    commands: list[Path] = field(default_factory=list)
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def plugins_root(root: str | Path | None = None) -> Path:
@@ -69,20 +64,14 @@ def _read_manifest(plugin_dir: Path) -> dict | None:
     return _read_json(plugin_dir / ".claude-plugin" / "plugin.json", None)
 
 
-def _scan_components(plugin_dir: Path) -> dict[str, list[Path]]:
-    """Inventorie les 4 types de composants d'un plugin matérialisé."""
+def _scan_components(plugin_dir: Path) -> list[Path]:
+    """Inventorie les SKILLS d'un plugin matérialisé.
 
-    def md_glob(sub: str, pattern: str) -> list[Path]:
-        d = plugin_dir / sub
-        return sorted(d.glob(pattern)) if d.is_dir() else []
-
-    hooks_json = plugin_dir / "hooks" / "hooks.json"
-    return {
-        "skills": md_glob("skills", "*/SKILL.md"),
-        "agents": md_glob("agents", "*.md"),
-        "hooks": [hooks_json] if hooks_json.exists() else [],
-        "commands": md_glob("commands", "*.md"),
-    }
+    Seuls les skills sont consommés (par loom/skills). Les agents/hooks/commands
+    ne sont pas câblés -> non scannés.
+    """
+    d = plugin_dir / "skills"
+    return sorted(d.glob("*/SKILL.md")) if d.is_dir() else []
 
 
 def _plugin_from_dir(name: str, marketplace: str, plugin_dir: Path) -> Plugin | None:
@@ -97,10 +86,7 @@ def _plugin_from_dir(name: str, marketplace: str, plugin_dir: Path) -> Plugin | 
         path=plugin_dir,
         version=str(man.get("version") or "unknown"),
         description=(man.get("description") or "").strip(),
-        skills=comp["skills"],
-        agents=comp["agents"],
-        hooks=comp["hooks"],
-        commands=comp["commands"],
+        skills=comp,
     )
 
 
@@ -380,11 +366,7 @@ def plugin_remove(root: str | Path | None, ref: str) -> None:
 
 
 def _fmt_plugin(p: Plugin) -> str:
-    return (
-        f"{p.marketplace}/{p.name} ({p.version}) — "
-        f"skills:{len(p.skills)} agents:{len(p.agents)} "
-        f"hooks:{len(p.hooks)} commands:{len(p.commands)}"
-    )
+    return f"{p.marketplace}/{p.name} ({p.version}) — skills:{len(p.skills)}"
 
 
 def main(argv: list[str] | None = None) -> int:

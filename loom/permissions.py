@@ -103,10 +103,10 @@ class Decision:
 @dataclass
 class PermissionConfig:
     mode: str = "ask"  # 'ask' | 'allow' | 'allowlist' | 'deny_all'
-    workspace_root: str = "."
     allow_commands: list[str] = field(default_factory=list)
     allow_paths: list[str] = field(default_factory=list)
     deny_commands: list[str] = field(default_factory=list)
+    deny_paths: list[str] = field(default_factory=list)
 
 
 def parse_permissions(data: dict) -> PermissionConfig:
@@ -114,10 +114,10 @@ def parse_permissions(data: dict) -> PermissionConfig:
     p = data.get("permissions", {})
     return PermissionConfig(
         mode=p.get("mode", "ask"),
-        workspace_root=p.get("workspace_root", "."),
         allow_commands=list(p.get("allow_commands", [])),
         allow_paths=list(p.get("allow_paths", [])),
         deny_commands=list(p.get("deny_commands", [])),
+        deny_paths=list(p.get("deny_paths", [])),
     )
 
 
@@ -185,7 +185,13 @@ def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
     if tool_name in WRITE_TOOLS:
         rel = (args.get("path") or "").strip()
         # Plus de confinement au workspace : write/edit peuvent viser tout le système
-        # (Loom = agent généraliste). La deny-list dure reste le garde-fou.
+        # (Loom = agent généraliste). La deny-list dure (DEFAULT_PROTECTED_PATHS) +
+        # deny_paths custom restent le garde-fou, refusé MÊME en mode allow - comme
+        # DEFAULT_DENY pour le shell.
+        if is_protected_write_path(rel, cfg.deny_paths):
+            return Decision(
+                "deny", "chemin protégé par la politique de sécurité (deny_paths)"
+            )
         if cfg.mode == "deny_all":
             return Decision("deny", "mode deny_all")
         if cfg.mode == "allow":

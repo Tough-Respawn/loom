@@ -25,6 +25,8 @@ import threading
 
 import time
 
+import traceback
+
 from pathlib import Path
 
 
@@ -457,7 +459,8 @@ def create_app(
             from loom.permissions import evaluate
 
             c = load_config(config_defaults_path, config_local_path)
-        except Exception:  # noqa: BLE001 - reload best-effort, jamais fatal
+        except Exception as e:  # noqa: BLE001 - reload best-effort, jamais fatal
+            print(f"[loom] reload config échoué: {e}", flush=True)
             return
         _settings.update(
             max_tokens=c.chat.max_tokens,
@@ -483,7 +486,8 @@ def create_app(
             from loom.runtime.serve import regenerate_swap_yaml
 
             return bool(regenerate_swap_yaml(config_defaults_path, config_local_path))
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            print(f"[loom] regen swap yaml échoué: {e}", flush=True)
             return False
 
     def _apply_to_model_server(section):
@@ -789,6 +793,187 @@ def create_app(
 
         return render_template("index.html", **_index_context())
 
+    def _handle_goal_command(message, conv, save, chat_lock):
+        """Traite la commande /goal : pose/statut/efface l'objectif de session.
+
+        Retourne (message, response) : response non None = ack immédiat (return direct
+        dans chat()) ; response None = continuer le flux normal (message éventuellement
+        réécrit en consigne de démarrage)."""
+
+        if message == "/goal" or message.startswith("/goal "):
+            arg = message[len("/goal") :].strip()
+            if arg and arg.lower() not in _GOAL_CLEAR_WORDS:
+                # Pose l'objectif et AMORCE le travail : on remplace le message par une consigne
+                # de démarrage et on laisse le flux normal tourner, objectif désormais actif.
+                conv.set_goal(arg)
+                save()
+                message = (
+                    f"Objectif à atteindre : {arg}\n"
+                    "Commence MAINTENANT à agir pour l'atteindre, et PROUVE-le (exécute, montre "
+                    "la sortie réelle). Ne t'arrête pas tant qu'il n'est pas démontré atteint."
+                )
+                # (pas de return : on tombe dans la génération normale ci-dessous)
+            else:
+                if not arg:
+                    ack = (
+                        f"Objectif courant : « {conv.goal} » (actif jusqu'à preuve d'atteinte, "
+                        "/goal clear pour l'effacer)."
+                        if conv.goal
+                        else "Aucun objectif actif. Pose-en un : /goal <condition vérifiable>."
+                    )
+                else:
+                    conv.set_goal("")
+                    save()
+                    ack = "Objectif effacé - retour au mode normal (arrêt au stop naturel)."
+                chat_lock.release()
+
+                def _goal_ack():
+                    yield _sse("text", text=ack)
+                    yield _sse("done")
+
+                return message, Response(_goal_ack(), mimetype="text/event-stream")
+        return message, None
+
+    def _handle_init_command(message):
+        """Traite /init : adopte un dossier cible si fourni, et réécrit le message en consigne
+        de génération de fiche projet. Retourne le message (éventuellement réécrit)."""
+        if message == "/init" or message.startswith("/init "):
+            arg = message[len("/init") :].strip()
+            _sess = _session()
+            target_dir = _sess.workspace
+            if arg:
+                cand = Path(arg).expanduser()
+                if cand.is_dir():
+                    target_dir = str(cand.resolve())
+                    if target_dir != _sess.workspace:
+                        _sess.workspace = target_dir
+                        session_store.save(_sess)
+            target_display = str(Path(target_dir)).replace("\\", "/")
+            message = _init_message(target_display)
+            # (pas de return : le flux normal ci-dessous exécute la consigne)
+        return message
+
+    def _build_system_prompt(conv):
+        """Construit le system prompt complet : identité always-on + base (strong/local) +
+        catalogue des skills + déclaration du moteur + conventions OS + dossier de travail +
+        objectif de session. Retourne (system_prompt, strong)."""
+
+        skills = effective_skills(
+            collect_skills(skills_dir, plugins_dir, learned_dir=learned_skills_dir),
+            overrides=conv.skill_overrides,
+            disabled=conv.disabled_skills,
+        )
+
+        catalog = render_catalog(skills)
+
+        # Identité always-on (SOUL/USER/MEMORY) EN TÊTE : c'est la définition qui FAIT FOI
+        # de qui est Loom (rôle, persona, style). Le mode d'emploi opérationnel (outils,
+        # règles) de chat.system.md vient APRÈS et s'y conforme - on ne plante plus un
+        # cadrage générique d'abord pour le corriger 12k caractères plus loin. Always-on =>
+        # survit toujours à la microcompaction/summarization (qui ne touchent que
+        # l'historique). Bornée par identity_max_tokens. Cf. design §5.6.
+        _idblk = ""
+
+        if identity_paths:
+            from loom.memory.identity import identity_block
+
+            _idblk = identity_block(
+                identity_paths["soul_path"],
+                identity_paths["user_path"],
+                identity_paths["memory_md_path"],
+                max_tokens=_settings["identity_max_tokens"],
+            )
+
+        # TIER du harnais : un modèle DISTANT (API, non quantifié) se pilote seul -> prompt
+        # ALLÉGÉ (identité + outils + mémoire + sécurité), sans le scaffolding de comportement
+        # de chat.system.md qui ne sert qu'à un petit modèle local. Le flag `strong` sert
+        # aussi (plus bas) à couper les gardes de comportement dans la boucle d'outils.
+        strong = bool(conv.model and conv.model in remote_model_ids)
+
+        base_prompt = CHAT_SYSTEM_STRONG if strong else conv.system_prompt
+
+        system_prompt = f"{_idblk}\n\n{base_prompt}" if _idblk else base_prompt
+
+        # Distant (strong) : la machine du provider encaisse le parallélisme -> on incite à
+        # GROUPER les sous-agents indépendants dans un même tour (ils tournent en parallèle).
+        if strong:
+            system_prompt += (
+                "\n\nParallélisme : quand plusieurs sous-tâches sont INDÉPENDANTES (auditer/"
+                "explorer des pans distincts), émets PLUSIEURS dispatch_agent dans le MÊME "
+                "tour - ils s'exécutent EN PARALLÈLE, bien plus vite qu'un par tour. Un pan = "
+                "un agent, lance-les ensemble."
+            )
+
+        if catalog:
+            system_prompt += f"\n\n{catalog}"
+
+        # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
+        # "Tu es Loom") -> il baratine quand on lui demande "quel modèle ?". On lui
+        # injecte son modèle courant pour qu'il réponde honnêtement. DISTANT vs LOCAL :
+        # sans ça un modèle servi par une API répétait « je tourne en local/offline sur
+        # llama.cpp » (la persona de Loom est « agent local ») -> confabulation d'infra.
+        if conv.model:
+            if conv.model in remote_model_ids:
+                _pm = remote_model_names.get(conv.model)
+
+                _label = (
+                    f"« {_pm} » (route « {conv.model} »)"
+                    if _pm
+                    else f"« {conv.model} »"
+                )
+
+                system_prompt += (
+                    f"\n\n# Ton moteur\nTon raisonnement est servi par le modèle DISTANT "
+                    f"{_label}, via une API externe - PAS en local. Tes OUTILS, eux, "
+                    "s'exécutent bien sur la machine de l'utilisateur, mais toi (le cerveau) "
+                    "non. Ne prétends donc JAMAIS être offline, ni tourner sur llama.cpp / "
+                    "llama-swap / une carte graphique locale : ce serait faux. Si on te "
+                    "demande quel modèle/moteur tu utilises, donne ce nom honnêtement, sans "
+                    "inventer de détails d'infrastructure."
+                )
+
+            else:
+                system_prompt += (
+                    f"\n\n# Ton moteur\nTu tournes sur le modèle local « {conv.model} ». "
+                    "Si on te demande quel modèle/moteur tu utilises, réponds-le "
+                    "honnêtement et directement (ce nom), sans esquiver."
+                )
+
+        # Système : Loom détecte SEUL l'OS et injecte ses conventions (shell, commandes,
+        # chemins) -> le modèle produit du PowerShell sous Windows, du bash/unix sous
+        # macOS/Linux, sans qu'on code l'OS en dur dans le prompt. Source unique partagée
+        # avec run_shell (loom.runtime.platform_info) : jamais de divergence.
+        system_prompt += "\n\n" + platform_detect().prompt_block()
+
+        # Dossier de travail courant : le modèle l'IGNORE sinon et le devine en sondant
+        # (git rev-parse à l'aveugle, list_dir…) -> tours gaspillés. On le lui dit, avec
+        # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git. Reste EN BAS
+        # (contexte volatil, près de l'action).
+        _ws = _session().workspace
+
+        system_prompt += (
+            f"\n\n# Dossier de travail courant\nTes commandes (run_shell) tournent dans "
+            f"`{_ws}` et les chemins relatifs s'y résolvent - n'y répète pas le nom de ce "
+            "dossier dans tes chemins. Si une commande git échoue par « not a git "
+            "repository », c'est que CE dossier n'est pas un repo : fais UN list_dir pour "
+            "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
+            "même commande à l'identique."
+        )
+
+        # Objectif de session (/goal), en DIRECTIVE DOUCE : pas de juge externe qui te
+        # contredit (retiré - il recalait des preuves correctes). Tu restes seul maître de
+        # ta propre vérification : ne te déclare pas fini tant que l'objectif n'est pas
+        # ATTEINT ET PROUVÉ par tes exécutions (montre la sortie réelle) ; une fois prouvé,
+        # dis-le et arrête-toi. L'utilisateur l'efface avec « /goal clear ».
+        if conv.goal:
+            system_prompt += (
+                f"\n\n# Objectif de session\nTant qu'il est actif, oriente ton travail vers "
+                f"cet objectif et ne le déclare atteint qu'une fois PROUVÉ par tes propres "
+                f"exécutions (sortie réelle affichée) :\n{conv.goal}"
+            )
+
+        return system_prompt, strong
+
     @app.post("/chat")
     def chat():
 
@@ -822,83 +1007,17 @@ def create_app(
         conv = sess.conversation
         save = lambda: session_store.save(sess)  # noqa: E731
 
-        # Commande /goal : pilote l'OBJECTIF de complétion de la session.
+        # Commande /goal : pilote l'OBJECTIF de complétion de la session. La logique
+        # (pose/statut/efface) est factorisée dans _handle_goal_command, qui renvoie
+        # (message, response) : response non None = ack immédiat à retourner directement.
+        message, _goal_resp = _handle_goal_command(message, conv, save, chat_lock)
+        if _goal_resp is not None:
+            return _goal_resp
 
-        # « /goal <condition> » pose l'objectif ET DÉMARRE aussitôt une itération (comme /goal
-
-        # de Claude Code : « exécute une première itération immédiatement ») — l'objectif maintient
-
-        # ensuite l'agent au travail (garde côté client.py) jusqu'à ce qu'un évaluateur le juge
-
-        # PROUVÉ atteint. « /goal » seul = statut ; « /goal clear|stop|… » = efface. Ces deux-là
-
-        # ne lancent pas de tour modèle (ack immédiat) ; poser un objectif, si.
-
-        if message == "/goal" or message.startswith("/goal "):
-            arg = message[len("/goal") :].strip()
-
-            if arg and arg.lower() not in _GOAL_CLEAR_WORDS:
-                # Pose l'objectif et AMORCE le travail : on remplace le message par une consigne
-
-                # de démarrage et on laisse le flux normal tourner, objectif désormais actif.
-
-                conv.set_goal(arg)
-
-                save()
-
-                message = (
-                    f"Objectif à atteindre : {arg}\n"
-                    "Commence MAINTENANT à agir pour l'atteindre, et PROUVE-le (exécute, montre "
-                    "la sortie réelle). Ne t'arrête pas tant qu'il n'est pas démontré atteint."
-                )
-
-                # (pas de return : on tombe dans la génération normale ci-dessous)
-
-            else:
-                if not arg:
-                    ack = (
-                        f"Objectif courant : « {conv.goal} » (actif jusqu'à preuve d'atteinte, "
-                        "/goal clear pour l'effacer)."
-                        if conv.goal
-                        else "Aucun objectif actif. Pose-en un : /goal <condition vérifiable>."
-                    )
-
-                else:
-                    conv.set_goal("")
-
-                    save()
-
-                    ack = "Objectif effacé — retour au mode normal (arrêt au stop naturel)."
-
-                chat_lock.release()
-
-                def _goal_ack():
-
-                    yield _sse("text", text=ack)
-
-                    yield _sse("done")
-
-                return Response(_goal_ack(), mimetype="text/event-stream")
-
-        # Commande /init : génère une fiche projet `loom.md` À LA RACINE DU DOSSIER DE TRAVAIL
-        # de la session (celui défini dans l'UI, ou ciblé par « /init <chemin> »). Macro de
-        # prompt (pas de scanner figé) : on déplie une consigne et la boucle tool-use explore
-        # puis écrit le fichier. `/init <dossier existant>` adopte d'abord ce dossier comme
-        # workspace (exploration + écriture cohérentes).
-        if message == "/init" or message.startswith("/init "):
-            arg = message[len("/init") :].strip()
-            _sess = _session()
-            target_dir = _sess.workspace
-            if arg:
-                cand = Path(arg).expanduser()
-                if cand.is_dir():
-                    target_dir = str(cand.resolve())
-                    if target_dir != _sess.workspace:
-                        _sess.workspace = target_dir
-                        session_store.save(_sess)
-            target_display = str(Path(target_dir)).replace("\\", "/")
-            message = _init_message(target_display)
-            # (pas de return : le flux normal ci-dessous exécute la consigne)
+        # Commande /init : génère une fiche projet `loom.md` À LA RACINE DU DOSSIER
+        # de TRAVAIL de la session. Factorisé dans _handle_init_command (adopte un
+        # dossier cible si fourni, réécrit le message en consigne de génération).
+        message = _handle_init_command(message)
 
         # Plus de garde bloquant : un modèle texte-only ne reçoit PAS l'image inline (qui
 
@@ -970,154 +1089,16 @@ def create_app(
             ):
                 save()
 
-            skills = effective_skills(
-                collect_skills(skills_dir, plugins_dir, learned_dir=learned_skills_dir),
-                overrides=conv.skill_overrides,
-                disabled=conv.disabled_skills,
-            )
-
-            catalog = render_catalog(skills)
-
-            # Identité always-on (SOUL/USER/MEMORY) EN TÊTE : c'est la définition qui FAIT FOI
-
-            # de qui est Loom (rôle, persona, style). Le mode d'emploi opérationnel (outils,
-
-            # règles) de chat.system.md vient APRÈS et s'y conforme — on ne plante plus un
-
-            # cadrage générique d'abord pour le corriger 12k caractères plus loin. Always-on =>
-
-            # survit toujours à la microcompaction/summarization (qui ne touchent que
-
-            # l'historique). Bornée par identity_max_tokens. Cf. design §5.6.
-
-            _idblk = ""
-
-            if identity_paths:
-                from loom.memory.identity import identity_block
-
-                _idblk = identity_block(
-                    identity_paths["soul_path"],
-                    identity_paths["user_path"],
-                    identity_paths["memory_md_path"],
-                    max_tokens=_settings["identity_max_tokens"],
-                )
-
-            # TIER du harnais : un modèle DISTANT (API, non quantifié) se pilote seul -> prompt
-
-            # ALLÉGÉ (identité + outils + mémoire + sécurité), sans le scaffolding de comportement
-
-            # de chat.system.md qui ne sert qu'à un petit modèle local. Le flag `strong` sert
-
-            # aussi (plus bas) à couper les gardes de comportement dans la boucle d'outils.
-
-            strong = bool(conv.model and conv.model in remote_model_ids)
-
-            base_prompt = CHAT_SYSTEM_STRONG if strong else conv.system_prompt
-
-            system_prompt = f"{_idblk}\n\n{base_prompt}" if _idblk else base_prompt
-
-            # Distant (strong) : la machine du provider encaisse le parallélisme -> on incite à
-            # GROUPER les sous-agents indépendants dans un même tour (ils tournent en parallèle).
-            if strong:
-                system_prompt += (
-                    "\n\nParallélisme : quand plusieurs sous-tâches sont INDÉPENDANTES (auditer/"
-                    "explorer des pans distincts), émets PLUSIEURS dispatch_agent dans le MÊME "
-                    "tour — ils s'exécutent EN PARALLÈLE, bien plus vite qu'un par tour. Un pan = "
-                    "un agent, lance-les ensemble."
-                )
-
-            if catalog:
-                system_prompt += f"\n\n{catalog}"
-
-            # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
-
-            # "Tu es Loom") -> il baratine quand on lui demande "quel modèle ?". On lui
-
-            # injecte son modèle courant pour qu'il réponde honnêtement. DISTANT vs LOCAL :
-
-            # sans ça un modèle servi par une API répétait « je tourne en local/offline sur
-
-            # llama.cpp » (la persona de Loom est « agent local ») -> confabulation d'infra.
-
-            if conv.model:
-                if conv.model in remote_model_ids:
-                    _pm = remote_model_names.get(conv.model)
-
-                    _label = (
-                        f"« {_pm} » (route « {conv.model} »)"
-                        if _pm
-                        else f"« {conv.model} »"
-                    )
-
-                    system_prompt += (
-                        f"\n\n# Ton moteur\nTon raisonnement est servi par le modèle DISTANT "
-                        f"{_label}, via une API externe — PAS en local. Tes OUTILS, eux, "
-                        "s'exécutent bien sur la machine de l'utilisateur, mais toi (le cerveau) "
-                        "non. Ne prétends donc JAMAIS être offline, ni tourner sur llama.cpp / "
-                        "llama-swap / une carte graphique locale : ce serait faux. Si on te "
-                        "demande quel modèle/moteur tu utilises, donne ce nom honnêtement, sans "
-                        "inventer de détails d'infrastructure."
-                    )
-
-                else:
-                    system_prompt += (
-                        f"\n\n# Ton moteur\nTu tournes sur le modèle local « {conv.model} ». "
-                        "Si on te demande quel modèle/moteur tu utilises, réponds-le "
-                        "honnêtement et directement (ce nom), sans esquiver."
-                    )
-
-            # Système : Loom détecte SEUL l'OS et injecte ses conventions (shell, commandes,
-            # chemins) -> le modèle produit du PowerShell sous Windows, du bash/unix sous
-            # macOS/Linux, sans qu'on code l'OS en dur dans le prompt. Source unique partagée
-            # avec run_shell (loom.runtime.platform_info) : jamais de divergence.
-
-            system_prompt += "\n\n" + platform_detect().prompt_block()
-
-            # Dossier de travail courant : le modèle l'IGNORE sinon et le devine en sondant
-
-            # (git rev-parse à l'aveugle, list_dir…) -> tours gaspillés. On le lui dit, avec
-
-            # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git. Reste EN BAS
-
-            # (contexte volatil, près de l'action).
-
-            _ws = _session().workspace
-
-            system_prompt += (
-                f"\n\n# Dossier de travail courant\nTes commandes (run_shell) tournent dans "
-                f"`{_ws}` et les chemins relatifs s'y résolvent — n'y répète pas le nom de ce "
-                "dossier dans tes chemins. Si une commande git échoue par « not a git "
-                "repository », c'est que CE dossier n'est pas un repo : fais UN list_dir pour "
-                "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
-                "même commande à l'identique."
-            )
-
-            # Objectif de session (/goal), en DIRECTIVE DOUCE : pas de juge externe qui te
-
-            # contredit (retiré — il recalait des preuves correctes). Tu restes seul maître de
-
-            # ta propre vérification : ne te déclare pas fini tant que l'objectif n'est pas
-
-            # ATTEINT ET PROUVÉ par tes exécutions (montre la sortie réelle) ; une fois prouvé,
-
-            # dis-le et arrête-toi. L'utilisateur l'efface avec « /goal clear ».
-
-            if conv.goal:
-                system_prompt += (
-                    f"\n\n# Objectif de session\nTant qu'il est actif, oriente ton travail vers "
-                    f"cet objectif et ne le déclare atteint qu'une fois PROUVÉ par tes propres "
-                    f"exécutions (sortie réelle affichée) :\n{conv.goal}"
-                )
-
+            system_prompt, strong = _build_system_prompt(conv)
         except ValueError as exc:
             chat_lock.release()
 
             return Response(str(exc), status=400)
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             chat_lock.release()
-
-            return Response(f"erreur: {exc}", status=500)
+            traceback.print_exc()
+            return Response("erreur interne", status=500)
 
         def generate():
 
@@ -1567,8 +1548,9 @@ def create_app(
 
                 raise
 
-            except Exception as exc:  # noqa: BLE001 - on remonte l'erreur au client SSE
-                yield _sse("error", message=str(exc))
+            except Exception:  # noqa: BLE001 - on remonte l'erreur au client SSE
+                traceback.print_exc()
+                yield _sse("error", message="erreur interne")
 
             finally:
                 _last_activity[0] = time.time()  # marque l'activité pour le keep-warm

@@ -8,13 +8,7 @@ sous-modules : base, read, fs, shell, web.
 
 from __future__ import annotations
 
-from loom.tools.base import (
-    AVAILABLE_TOOLS,
-    ToolError,
-    ToolRegistry,
-    ToolSpec,
-    _resolve_in_root,
-)
+from loom.tools.base import AVAILABLE_TOOLS, ToolError, ToolRegistry, ToolSpec
 from loom.tools.read import make_read_document, make_read_file, make_read_image
 
 __all__ = [
@@ -22,7 +16,6 @@ __all__ = [
     "ToolError",
     "ToolRegistry",
     "ToolSpec",
-    "_resolve_in_root",
     "build_registry",
     "make_read_document",
     "make_read_file",
@@ -31,28 +24,14 @@ __all__ = [
 
 # Outils confiés à un SOUS-AGENT (dispatch_agent) : TOUT sauf dispatch_agent lui-même
 # (anti-récursion) et manage_todos (le plan reste celui du fil principal). Le sous-agent
-# peut écrire/exécuter — un ouvrier en lecture seule ne sert à rien ; la deny-list dure
+# peut écrire/exécuter - un ouvrier en lecture seule ne sert à rien ; la deny-list dure
 # de run_shell et la politique de permission s'appliquent comme au fil principal.
 # SYNCHRO : cette liste est décrite dans prompts/subagent.system.md (section TES OUTILS).
-# Si tu ajoutes/retires un outil ici, mets ce prompt à jour — sinon le sous-agent ignore
-# un outil qu'il a (ou en invoque un qu'il n'a pas).
+# Si tu ajoutes/retires un outil dans AVAILABLE_TOOLS, cette liste se met à jour
+# automatiquement - mais mets le prompt à jour aussi.
+_SUBAGENT_EXCLUDED = {"dispatch_agent", "manage_todos"}
 _SUBAGENT_TOOLS = [
-    "find_files",
-    "search_text",
-    "list_dir",
-    "read_file",
-    "read_document",
-    "read_image",
-    "web_search",
-    "fetch_url",
-    "write_file",
-    "append_file",
-    "edit_file",
-    "format_code",
-    "run_shell",
-    "check_page",
-    "check_interactive",
-    "serve_and_check",
+    t["name"] for t in AVAILABLE_TOOLS if t["name"] not in _SUBAGENT_EXCLUDED
 ]
 
 

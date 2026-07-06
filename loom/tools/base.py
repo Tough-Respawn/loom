@@ -17,6 +17,10 @@ import difflib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from loom.runtime.models_profile import Profile
 
 
 class ToolError(Exception):
@@ -188,7 +192,7 @@ class ToolSpec:
 class ToolRegistry:
     """Collection d'outils : expose les schémas et exécute par nom (sans lever)."""
 
-    def __init__(self, specs: list[ToolSpec], profile=None) -> None:
+    def __init__(self, specs: list[ToolSpec], profile: "Profile | None" = None) -> None:
         self._specs = {s.name: s for s in specs}
         self._profile = (
             profile  # loom.runtime.models_profile.Profile | None (duck-typed)

@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from loom.tools._net import categorize_ip
 from loom.tools.base import ToolError, ToolSpec
 from loom.tools.trust import untrusted
 
@@ -49,14 +50,8 @@ def _resolve_validated(url: str) -> tuple[str | None, str | None]:
     pinned: str | None = None
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
+        cat = categorize_ip(ip)
+        if cat != "public":
             return f"hôte interdit (adresse interne/privée : {ip})", None
         if pinned is None:
             pinned = str(ip)
@@ -247,18 +242,6 @@ def fetch_page(url: str, cfg: WebSearchConfig, snippet: str = "") -> str:
     if not text:
         return snippet
     return _truncate(text, cfg.max_chars_per_page)
-
-
-def available(cfg: WebSearchConfig) -> bool:
-    """Indique si la recherche est utilisable (sans jamais lever)."""
-    if not cfg.enabled:
-        return False
-    backend = _pick_backend(cfg)
-    if backend == "searxng":
-        return bool(cfg.searxng_url)
-    if backend == "tavily":
-        return bool(cfg.tavily_api_key)
-    return True
 
 
 def _format_results(query: str, results: list[dict], cfg: WebSearchConfig) -> str:
