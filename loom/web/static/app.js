@@ -663,6 +663,88 @@ function _hydrateTimeline(t, messages) {
   );
 }
 
+// Rejoue le JOURNAL d'affichage temps réel (timeline.jsonl) : reconstruit la vue EXACTEMENT
+// comme en direct — raisonnement, texte, cartes d'outils (avec résultats). Utilisé au
+// chargement/ouverture quand la session a un journal ; sinon on retombe sur les messages.
+function _replayTimeline(t, events) {
+  const byTool = {};
+  let think = null,
+    asst = null;
+  const add = (item) => {
+    item.id = item.id || uid();
+    t.timeline.push(item);
+    return item;
+  };
+  (events || []).forEach((e) => {
+    const d = e.data || {};
+    switch (e.event) {
+      case "user":
+        think = null;
+        asst = null;
+        add({
+          kind: "user",
+          content: d.content,
+          raw: typeof d.content === "string" ? d.content : "",
+          done: true,
+        });
+        break;
+      case "reasoning":
+        if (asst) asst = null;
+        if (!think)
+          think = add({ kind: "think", role: "", text: "", active: false, done: true });
+        think.text += d.text || "";
+        break;
+      case "text":
+        if (think) think = null;
+        if (!asst) asst = add({ kind: "assistant", raw: "", done: true });
+        asst.raw += d.text || "";
+        break;
+      case "tool_call": {
+        think = null;
+        asst = null;
+        const tid = "tool:" + (d.id || d.name);
+        if (!byTool[tid])
+          byTool[tid] = add({ id: tid, kind: "tool", name: d.name, pending: true });
+        break;
+      }
+      case "tool_result": {
+        const tid = "tool:" + (d.id || d.name);
+        let it = byTool[tid];
+        if (!it) it = byTool[tid] = add({ id: tid, kind: "tool", name: d.name });
+        Object.assign(it, {
+          name: d.name,
+          path: d.path,
+          cmd: d.cmd,
+          ok: d.ok,
+          preview: d.preview,
+          detail: d.detail,
+          in_full: d.in_full,
+          out_full: d.out_full,
+          pending: false,
+        });
+        break;
+      }
+    }
+  });
+}
+
+// Charge l'affichage d'une session dans son onglet : rejoue le journal temps réel s'il existe
+// (vue riche), sinon retombe sur les messages persistés (sessions legacy sans journal).
+async function _loadDisplay(t, sid, hasTimeline, messages) {
+  if (hasTimeline) {
+    try {
+      const tl = await (
+        await fetch("/session/" + encodeURIComponent(sid) + "/timeline")
+      ).json();
+      if (tl.events && tl.events.length) {
+        _replayTimeline(t, tl.events);
+        return;
+      }
+    } catch {}
+  }
+  _hydrateTimeline(t, messages);
+}
+
 async function openTab(sid) {
   if (!state.tabs[sid]) {
     let d;
@@ -686,7 +768,7 @@ async function openTab(sid) {
       history: _userTexts(d.messages),
       histIdx: -1,
     };
-    _hydrateTimeline(t, d.messages);
+    await _loadDisplay(t, sid, d.has_timeline, d.messages);
     state.tabs[sid] = t;
     state.order.push(sid);
   }
@@ -822,6 +904,20 @@ function addSidebarSession(d) {
     state.tabs[sid] = t0;
     state.order.push(sid);
     state.active = sid;
+    // Async : si la session active a un journal temps réel, on remplace l'affichage par le
+    // REJEU (raisonnement + cartes d'outils, comme en direct) au lieu des simples bulles.
+    (async () => {
+      try {
+        const tl = await (
+          await fetch("/session/" + encodeURIComponent(sid) + "/timeline")
+        ).json();
+        if (tl.events && tl.events.length) {
+          t0.timeline = [];
+          _replayTimeline(t0, tl.events);
+          if (state.active === sid) scheduleRender();
+        }
+      } catch {}
+    })();
   }
 }
 renderTabs();

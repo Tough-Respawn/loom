@@ -788,6 +788,9 @@ def create_app(
 
         save()
 
+        # Le fil repart à neuf -> on efface aussi le journal d'affichage temps réel.
+        session_store.clear_timeline(_session().id)
+
         return render_template("index.html", **_index_context())
 
     @app.post("/chat")
@@ -959,6 +962,10 @@ def create_app(
             conv.add("user", content)
 
             save()
+
+            # Journal d'affichage temps réel : on y consigne le message user (le journal est la
+            # source de RÉ-AFFICHAGE au rechargement -> il doit être complet, user inclus).
+            session_store.append_event(sess.id, "user", {"content": message})
 
             # Gestion du contexte : résumé auto si trop long
 
@@ -1138,6 +1145,17 @@ def create_app(
             # et on sauve à CHAQUE étape marquante (outil terminé, flux de texte) + à la fin.
             _turn = {"idx": None, "last": 0.0}
 
+            # Journal d'affichage TEMPS RÉEL : chaque événement visible est écrit à l'instant
+            # dans timeline.jsonl (append, zéro batch) -> rejouable au rechargement. On y met
+            # les événements qui reconstruisent la vue (raisonnement, texte, cartes d'outils) ;
+            # pas les compteurs (metrics/totals) ni les décorations live (tool_stream/args).
+            _TL = {"reasoning", "text", "tool_call", "tool_result", "phase", "notice"}
+
+            def _tl(event, **data):
+                if event in _TL:
+                    session_store.append_event(sess.id, event, data)
+                return _sse(event, **data)
+
             def _persist(final=False):
                 # On NE persiste pas les messages `tool` bruts (gonflerait le contexte + casserait
                 # le résumeur) : seulement le texte + la trace des actions. Un même tour = UN seul
@@ -1154,12 +1172,9 @@ def create_app(
                 if not body:  # rien à dire ET rien fait -> pas de bulle vide
                     return
 
-                # Throttle : on ne sauve pas à chaque token (I/O storm) ; ~1.5s = au fil de l'eau.
-                now = time.time()
-                if not final and (now - _turn["last"]) < 1.5:
-                    return
-                _turn["last"] = now
-
+                # Piloté par ÉVÉNEMENT (chaque outil terminé + fin), plus par un timer : le
+                # temps réel de l'affichage vient du journal `timeline.jsonl`, pas d'ici. Ce
+                # session.json ne porte que le contexte lean du modèle, inutile à chaque token.
                 if _turn["idx"] is None:
                     conv.add("assistant", body)
                     _turn["idx"] = len(conv.messages) - 1
@@ -1301,19 +1316,19 @@ def create_app(
                         break
 
                     if kind == "reasoning":
-                        yield _sse("reasoning", text=payload)
+                        yield _tl("reasoning", text=payload)
 
                     elif kind == "content":
                         if _profile is not None:
                             payload = _profile.apply_to_text(payload)
                         answer += payload
 
-                        yield _sse("text", text=payload)
-
-                        _persist()  # checkpoint (throttlé ~1.5s) : le texte en cours survit
+                        # Temps réel : le texte est journalisé à l'instant (rejouable). Le
+                        # session.json (contexte) se met à jour aux frontières d'outils + fin.
+                        yield _tl("text", text=payload)
 
                     elif kind == "tool_call":
-                        yield _sse("tool_call", **payload)
+                        yield _tl("tool_call", **payload)
 
                     elif kind == "tool_request":
                         yield _sse("tool_request", **payload)
@@ -1333,9 +1348,9 @@ def create_app(
                         if line and line not in actions:
                             actions.append(line)
 
-                        yield _sse("tool_result", **payload)
+                        yield _tl("tool_result", **payload)
 
-                        _persist()  # checkpoint au fil de l'eau : l'outil vient de finir
+                        _persist()  # checkpoint contexte (event-driven) : l'outil vient de finir
 
                     elif kind == "usage":
                         # Fin d'un tour : llama-server donne le prompt réel et le completion
@@ -1373,7 +1388,7 @@ def create_app(
                         yield _sse("totals", **_totals(conv))
 
                     elif kind == "phase":
-                        yield _sse("phase", **payload)
+                        yield _tl("phase", **payload)
 
                     # Compteur live : chaque delta (texte OU arguments d'un tool_call) =
 
@@ -2094,7 +2109,26 @@ def create_app(
             "model": conv.model,
             "active_tools": conv.active_tools,
             "usage_totals": _totals(conv),
+            # A-t-on un journal d'affichage à rejouer ? (sinon l'UI retombe sur `messages`).
+            "has_timeline": bool(session_store.read_timeline(sess.id)),
         }
+
+    @app.get("/session/<sid>/timeline")
+    def session_timeline(sid):
+        """Journal d'affichage temps réel d'une session, pour REJOUER l'UI au rechargement
+        (raisonnement, texte, cartes d'outils exactement comme en direct). Les chunks 'text'/
+        'reasoning' consécutifs sont recollés pour un rejeu léger."""
+        out: list[dict] = []
+        for e in session_store.read_timeline(sid):
+            ev = e.get("event")
+            d = e.get("data") or {}
+            if ev in ("text", "reasoning") and out and out[-1].get("event") == ev:
+                out[-1]["data"]["text"] = (out[-1]["data"].get("text") or "") + (
+                    d.get("text") or ""
+                )
+            else:
+                out.append({"event": ev, "data": dict(d)})
+        return {"events": out}
 
     @app.post("/session/new")
     def session_new():
