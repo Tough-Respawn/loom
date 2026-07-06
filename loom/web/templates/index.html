@@ -810,7 +810,10 @@
     .agent-arena.done .arena-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
     @keyframes arena-blink { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
     .arena-lanes { display: flex; gap: 8px; overflow-x: auto; align-items: stretch; padding-bottom: 2px; }
-    .agent-lane { flex: 1 0 0; min-width: 165px; max-width: 340px; background: var(--bg); border: 1px solid var(--border-soft); border-radius: 8px; padding: 9px 11px; }
+    .agent-lane { flex: 1 0 0; min-width: 165px; max-width: 340px; background: var(--bg); border: 1px solid var(--border-soft); border-radius: 8px; padding: 9px 11px; animation: lane-in .4s cubic-bezier(.2,.75,.3,1) both; }
+    /* Entrée « distribuée » : chaque carte monte + apparaît, décalée (animationDelay par index). */
+    @keyframes lane-in { from { opacity: 0; transform: translateY(14px) scale(.94); } to { opacity: 1; transform: none; } }
+    .agent-lane .tool-io-row { cursor: pointer; }
     .agent-lane.working { border-color: var(--accent-dim); }
     .agent-lane.ko { border-color: var(--err); }
     .lane-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
