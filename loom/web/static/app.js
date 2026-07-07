@@ -525,7 +525,16 @@ async function sendChat(sid, text, images) {
 
   if (sid === state.active) setMetrics(0, 0, null); // liveness immédiate si onglet affiché
 
+  // Suivi des SILENCES du flux : au-delà de 2,5 s sans événement alors que ça génère,
+  // on affiche la ligne d'activité (label selon la phase : avant le 1er token = le
+  // contexte s'ingère ; après = le modèle mouline sans streamer).
+  let lastEvtAt = Date.now();
+  let sawToken = false;
+
   const onEvent = (evt) => {
+    lastEvtAt = Date.now();
+    if (evt.type === "text" || evt.type === "reasoning" || evt.type === "tool_args")
+      sawToken = true;
     switch (evt.type) {
       case "parallel":
         // Groupe d'outils lancés EN PARALLÈLE (distant) : on clôt les bulles en cours et on
@@ -647,6 +656,20 @@ async function sendChat(sid, text, images) {
     }
   };
 
+  // N'écrit l'indicateur QUE pour l'onglet affiché (les flux d'arrière-plan ne le
+  // pilotent pas) ; nettoyé au finally et à l'activation d'un autre onglet.
+  const gaTimer = setInterval(() => {
+    if (sid !== state.active) return;
+    const quiet = Date.now() - lastEvtAt > 2500;
+    setGenActivity(
+      t.streaming && quiet
+        ? sawToken
+          ? "le modèle travaille"
+          : "préparation du contexte (prefill)"
+        : null,
+    );
+  }, 500);
+
   try {
     await streamSSE("/chat", fd, onEvent, ac.signal);
     if (asstId) patch(asstId, { done: true });
@@ -657,6 +680,8 @@ async function sendChat(sid, text, images) {
       push({ kind: "error", message: "Erreur : " + err.message + " (connexion à loom.web perdue ?)" });
     }
   } finally {
+    clearInterval(gaTimer);
+    if (sid === state.active) setGenActivity(null);
     if (thinkId) patch(thinkId, { active: false });
     // Fin de CE flux : si c'est encore le flux courant de l'onglet (pas remplacé par une
     // nouvelle soumission), on marque l'onglet non-générant et on fige son compteur.
@@ -869,6 +894,9 @@ function activateTab(sid) {
   const prev = state.tabs[state.active];
   if (prev && inputEl) prev.draft = inputEl.value;
   state.active = sid;
+  // Ligne d'activité : propre à l'onglet quitté — le timer du flux de CET onglet la
+  // repeindra dans les 500 ms s'il est en silence, sinon elle doit disparaître.
+  setGenActivity(null);
   // Le serveur suit ce focus (pour /model, /tools, /reset, /pick-folder qui opèrent sur _cur).
   postForm("/session/activate", { id: sid }).catch(() => {});
   // Synchronise les contrôles de la sidebar/topbar à cet onglet.
@@ -1041,6 +1069,21 @@ function reflectWorkdir() {
   if (workdirPath) workdirPath.textContent = loomWorkdir;
 }
 reflectWorkdir();
+
+// --- Ligne d'activité (silences du flux) : le serveur travaille sans émettre (prefill
+// post-compaction, chargement modèle, réflexion muette) -> label + points animés au-dessus
+// du composer, au lieu d'un silence qui ressemble à un plantage. ---
+const genActivity = document.getElementById("gen-activity");
+const gaLabel = document.getElementById("ga-label");
+function setGenActivity(label) {
+  if (!genActivity) return;
+  if (!label) {
+    genActivity.hidden = true;
+    return;
+  }
+  genActivity.hidden = false;
+  if (gaLabel && gaLabel.textContent !== label) gaLabel.textContent = label;
+}
 
 // --- Compteur live de génération (tokens réels + débit mesuré, piloté par le backend) ---
 const genMetrics = document.getElementById("gen-metrics");

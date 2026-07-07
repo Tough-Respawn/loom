@@ -629,6 +629,21 @@
     .gen-metrics.done { color: var(--text-faint); border-color: var(--border); background: var(--bg-elev); }
     .gen-metrics.done .gm-dot { animation: none; background: var(--text-faint); }
     @keyframes gmpulse { 0%,100%{opacity:1} 50%{opacity:.2} }
+    /* Ligne d'activité au-dessus du composer : visible quand le flux est SILENCIEUX
+       mais que le serveur travaille (prefill, chargement, réflexion muette). */
+    .gen-activity {
+      display: flex; align-items: center; gap: 7px; padding: 4px 2px 6px;
+      font-size: 11px; color: var(--text-dim); letter-spacing: .2px;
+    }
+    .gen-activity[hidden] { display: none; }
+    .gen-activity .ga-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--warn);
+      flex: none; animation: gmpulse 1s ease-in-out infinite;
+    }
+    .gen-activity .ga-dots::after {
+      content: ""; animation: gadots 1.4s steps(4, end) infinite;
+    }
+    @keyframes gadots { 0%{content:""} 25%{content:"."} 50%{content:".."} 75%{content:"…"} }
     .topbar-spacer { flex: 1; }
     /* Compteur de consommation RÉELLE cumulée de la session (input rejoué + output + coût).
        Distinct de gen-metrics (per-tour) : muet, pas de pulse — c'est un total persistant. */
@@ -1059,6 +1074,12 @@
     <nav class="msg-nav" id="msg-nav" hidden aria-label="Navigateur de prompts"></nav>
     <div class="composer-wrap">
       <div class="composer-inner">
+        <!-- Indicateur d'activité pendant les SILENCES du flux (prefill post-compaction,
+             chargement modèle, longue réflexion sans deltas) : le serveur travaille sans
+             rien émettre, on le DIT au lieu de laisser croire à un plantage. -->
+        <div id="gen-activity" class="gen-activity" hidden>
+          <span class="ga-dot"></span><span id="ga-label"></span><span class="ga-dots"></span>
+        </div>
         <div id="previewWrap"></div>
         <form id="chat">
           <div class="composer">

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
 
 from loom.agent.inline_image import (
@@ -83,6 +84,18 @@ def _classify_api_error(exc: APIError) -> str:
     if status is not None and status < 500:
         return "other"
     return "overflow"
+
+
+def _classify_stream_error(exc: Exception) -> str:
+    """Erreur pendant le STREAM : le SDK openai n'enrobe que la phase de requête ; en
+    pleine itération, httpx fuit À NU (ReadTimeout vécu en prod : prefill post-compaction
+    plus long que le timeout de lecture -> traceback brut au lieu du message propre).
+    On range ces exceptions dans les mêmes catégories d'action que les APIError."""
+    if isinstance(exc, APIError):
+        return _classify_api_error(exc)
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    return "connection"
 
 
 # --- Mode debug (LOOM_DEBUG=1) : trace l'échange avec le modèle dans le terminal -------
@@ -701,10 +714,15 @@ class LoomClient:
         self.model = model
         self.timeout = timeout
         self.max_retries = max_retries
+        # Serveur LOCAL : timeout de LECTURE long. Pendant un gros prefill (contexte
+        # recalculé après compaction : plusieurs minutes à ~200 t/s) ou un chargement de
+        # modèle, llama-server n'émet RIEN — c'est du travail légitime, pas une panne.
+        # Un read=120s coupait ces phases (ReadTimeout vécu). Connexion/écriture restent
+        # au timeout court : un serveur éteint doit échouer vite.
         self._client = OpenAI(
             base_url=base_url,
             api_key=api_key,
-            timeout=timeout,
+            timeout=httpx.Timeout(float(timeout), read=max(600.0, float(timeout))),
             max_retries=max_retries,
         )
         # Routes vers des modèles DISTANTS (API OpenAI-compatible) : id de modèle ->
@@ -1193,8 +1211,8 @@ class LoomClient:
                         "finish_reason": collector["finish_reason"],
                     },
                 )
-            except APIError as exc:
-                kind = _classify_api_error(exc)
+            except (APIError, httpx.HTTPError) as exc:
+                kind = _classify_stream_error(exc)
                 log_event("api.error", level="WARN", kind=kind, msg=str(exc)[:140])
                 # DÉBORDEMENT D'ENTRÉE : la requête (prompt + historique + résultats d'outils
                 # accumulés) dépasse la fenêtre de contexte. On NE crashe PAS et on ne demande
@@ -1272,7 +1290,11 @@ class LoomClient:
                 # Erreurs NON récupérables : pas un overflow -> message clair et stop net,
                 # PAS de « écris plus court » trompeur ni de retry voué à re-échouer.
                 reason = {
-                    "timeout": "le serveur a mis trop de temps à répondre (timeout).",
+                    "timeout": (
+                        "le serveur a mis trop de temps à répondre (timeout) — souvent "
+                        "un long recalcul de contexte (après compaction) ; relance, le "
+                        "cache rend la reprise plus rapide."
+                    ),
                     # « injoignable » : dire QUOI lancer — loom.web tourne forcément (il
                     # affiche ce message), c'est le serveur MODÈLE qui manque (ou l'API).
                     "connection": (
