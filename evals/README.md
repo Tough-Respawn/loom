@@ -5,9 +5,12 @@ variantes du *system prompt* sur le comportement réel du modèle local.
 
 ## Principe
 
-- **Eval set figé** (`cases.py`) : 6 cas, chacun ciblant un travers documenté du petit
+- **Eval set figé** (`cases.py`) : 9 cas, chacun ciblant un travers documenté du petit
   modèle (échecs `edit_file`, confabulation d'exécution, unix-ismes, recherche
-  inutile, sur-outillage, preuve HTML).
+  inutile, sur-outillage, preuve HTML, régression CRLF, délégation `dispatch_agent`,
+  saturation de contexte). Un cas peut pré-injecter un **historique synthétique**
+  (`history`) et un seuil de compaction (`compact_tokens`) pour exercer la compaction
+  sans payer une longue session live.
 - **A/B** : variante `old` = `git HEAD` des prompts, variante `new` = version sur disque.
 - **N runs par cas** (le modèle est stochastique : un run ne prouve rien).
 - **Double grader** :
@@ -37,9 +40,24 @@ uv run python -m evals.run_eval --model qwen3.6-35b-a3b-abliterated
 
 ## Sortie
 
-Tableau comparatif (runs réussis / total par cas, ancien vs nouveau) + juge moyen + tours
-moyen. Détail dans `evals/out/report.json` et un transcript Markdown par run sous
-`evals/out/<variante>/`.
+Tableau comparatif (runs réussis / total par cas, ancien vs nouveau) + **coût par cas**
+(tours modèle, appels outils, tokens in/out, durée, raison d'arrêt) : « ce cas passe,
+mais coûte 11 tours et 38 appels » se voit, pas seulement le pass/fail. Détail dans
+`evals/out/report.json` et un transcript Markdown par run sous `evals/out/<variante>/`.
+
+- **stop_reason** (event `done` de la boucle) : `natural`, `repeat_stop`,
+  `loop_degenerate`, `max_iters`, `context_irreducible`, `output_overflow`,
+  `api_error`, `crash`.
+- **Baseline persistante** : chaque run épingle un résumé compact par commit sous
+  `evals/out/history/<sha>.json` — l'A/B mesure le delta du diff courant, l'historique
+  mesure la dérive sur des semaines.
+- **Variance** : les métriques de coût sur 3 runs sont BRUYANTES (modèle stochastique) :
+  un delta de 1-2 tours ne tranche rien. Ne conclure que sur effets larges, ou monter
+  `--runs 5+` sur les cas ciblés.
+
+Le `--self-test` exécute aussi des **tests par injection** des garde-fous (JSON d'appel
+tronqué, appel émis en texte, boucle de dégénérescence, microcompact, force-fit) : ces
+chemins ne se testent pas en E2E, on ne force pas un modèle à produire un appel cassé.
 
 ## Lire les résultats
 
