@@ -522,6 +522,16 @@ _CLEARED_TOOL = (
     "que tu l'as encore.]"
 )
 
+# Note de RECENTRAGE après un force-fit : un historique tronqué mais encore répétitif
+# induit l'IMITATION (observé en éval : le modèle a « continué » la série de vieux tours
+# archivés au lieu d'exécuter la tâche). La note casse le motif et repointe la demande.
+# Préfixe '[harnais' = reconnue par _force_fit (jamais prise pour la tâche courante).
+_REFOCUS_NOTE = (
+    "[harnais : les tours ci-dessus ont été TRONQUÉS pour tenir dans la fenêtre. "
+    "L'historique tronqué est du contexte ARCHIVÉ : ne l'imite pas, ne le continue pas. "
+    "Reprends la DERNIÈRE demande utilisateur telle quelle et exécute-la avec tes outils.]"
+)
+
 
 # --- Anti « parle sans agir » --------------------------------------------------------
 # Échec central d'un petit modèle : il ÉCRIT l'intention (« je vais lire X ») ou AFFIRME
@@ -687,16 +697,28 @@ def _msg_chars(content) -> int:
     return 0
 
 
-def _microcompact_tools(convo: list[dict], keep_recent_tools: int) -> int:
+def _microcompact_tools(
+    convo: list[dict], keep_recent_tools: int, min_clear_chars: int = 400
+) -> int:
     """Vide le CONTENU des plus vieux messages role:tool (garde les `keep_recent_tools`
-    derniers intacts), en place. Renvoie le nb de messages allégés."""
+    derniers intacts), en place. Renvoie le nb de messages allégés.
+
+    SÉLECTIF : un petit résultat (accusé « modifié : x.py », code retour, message
+    d'erreur court) est une PREUVE dense — le vider ne libère presque rien (le
+    placeholder fait ~370 car.) et détruit de l'information que le modèle re-paierait
+    en re-lecture. On ne vide que les GROS résultats (dumps de fichiers, stdouts
+    longs) : le volumineux part, les preuves techniques restent."""
     idx = [i for i, m in enumerate(convo) if m.get("role") == "tool"]
     older = idx[:-keep_recent_tools] if keep_recent_tools else idx
     n = 0
     for i in older:
-        if convo[i].get("content") != _CLEARED_TOOL:
-            convo[i] = {**convo[i], "content": _CLEARED_TOOL}
-            n += 1
+        content = convo[i].get("content")
+        if content == _CLEARED_TOOL:
+            continue
+        if isinstance(content, str) and len(content) <= min_clear_chars:
+            continue
+        convo[i] = {**convo[i], "content": _CLEARED_TOOL}
+        n += 1
     return n
 
 
@@ -714,8 +736,10 @@ _SUMMARY_SYSTEM = (
     "window. Output a DENSE summary in terse English bullet points — no prose, no "
     "preamble, never restate these instructions. Preserve VERBATIM every file path, "
     "identifier, function/variable name, shell command, URL and numeric value. Capture, "
-    "in order: GOAL, what was DONE, what was LEARNED/DECIDED, current STATE of the code, "
-    "and what remains TODO. Stay faithful; when unsure, keep the literal token."
+    "in order: GOAL, what was DONE, what was LEARNED/DECIDED — including approaches "
+    "REJECTED and why (so they are not retried) — ERRORS hit with their exact messages, "
+    "current STATE of the code, and what remains TODO. Stay faithful; when unsure, keep "
+    "the literal token."
 )
 
 
@@ -764,23 +788,55 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
     def _total() -> int:
         return len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
 
-    guard = 0
-    while _total() > budget_chars and guard < 5000:
-        guard += 1
-        # Message au contenu le plus long (str ou parts texte).
+    _CLIP_FLOOR = 200
+
+    def _longest(skip: int) -> tuple[int, int]:
+        """(index, taille) du message au contenu le plus long, hors `skip`."""
         idx, longest = -1, 0
         for i, m in enumerate(convo):
+            if i == skip:
+                continue
             c = m.get("content")
             n = len(c) if isinstance(c, str) else _msg_chars(c)
             if n > longest:
                 longest, idx = n, i
-        if idx >= 0 and longest > 120:
+        return idx, longest
+
+    guard = 0
+    while _total() > budget_chars and guard < 5000:
+        guard += 1
+        # SÉLECTIF : la TÂCHE COURANTE (dernier message user) est exemptée du clip tant
+        # qu'il reste autre chose à réduire — c'est elle que le modèle doit exécuter
+        # après la coupe (une grosse spec collée par l'utilisateur EST la tâche).
+        task_idx = max(
+            (
+                i
+                for i, m in enumerate(convo)
+                if m.get("role") == "user"
+                and not str(m.get("content", "")).startswith("[harnais")
+            ),
+            default=-1,
+        )
+        # Un message est « épuisé » sous _CLIP_FLOOR : le clip tête+queue produit
+        # ~120 car. + marqueur (~50) — re-clipper sous ce plancher ne décroît PLUS
+        # (boucle sans progrès, vue au self-test). > _CLIP_FLOOR garantit la
+        # décroissance stricte : len/2 + marqueur < len dès que len > 2×marqueur.
+        idx, longest = _longest(skip=task_idx)
+        if longest <= _CLIP_FLOOR:  # plus rien d'autre : la tâche en dernier recours
+            idx, longest = _longest(skip=-1)
+        if idx >= 0 and longest > _CLIP_FLOOR:
             c = convo[idx].get("content")
             if isinstance(c, str):
+                # Clip TÊTE + QUEUE (pas tête seule) : la fin d'un long contenu porte
+                # souvent la conclusion/l'erreur — la preuve — plus que son milieu.
                 keep = max(120, len(c) // 2)
+                head = keep * 2 // 3
+                tail = keep - head
                 convo[idx] = {
                     **convo[idx],
-                    "content": c[:keep] + " …[tronqué pour tenir dans le contexte]",
+                    "content": c[:head]
+                    + " …[milieu tronqué pour tenir dans le contexte]… "
+                    + c[len(c) - tail :],
                 }
             elif isinstance(c, list):
                 parts = []
@@ -1328,6 +1384,9 @@ class LoomClient:
             0  # échecs cumulés d'outils d'exécution/vérif ce tour (cascade de bugs)
         )
         debug_forced = False  # méthode debug déjà imposée ce tour ? (anti-nag)
+        refocus_done = (
+            False  # note de recentrage post-force-fit déjà émise ? (une seule)
+        )
 
         def _ctx_est() -> int:
             # Estimation ~3 car./token du contexte VIVANT (prompt + convo courant). Sert à
@@ -1369,6 +1428,9 @@ class LoomClient:
                     # fenêtre lui-même).
                     if not self.is_remote(model) and _ctx_est() > compact_after_tokens:
                         _force_fit(convo, system_prompt, compact_after_tokens * 3)
+                        if not refocus_done:
+                            refocus_done = True
+                            convo.append({"role": "user", "content": _REFOCUS_NOTE})
                         _debug(
                             "FORCE_FIT_PREVENTIF",
                             f"un résultat récent trop gros -> clip avant l'appel "
@@ -1560,6 +1622,9 @@ class LoomClient:
                     base = compact_after_tokens or _ctx_est() or 8000
                     budget = max(1500, int(base * 3 * shrink))
                     _force_fit(convo, system_prompt, budget)
+                    if not refocus_done:
+                        refocus_done = True
+                        convo.append({"role": "user", "content": _REFOCUS_NOTE})
                     log_event(
                         "guard",
                         level="WARN",
