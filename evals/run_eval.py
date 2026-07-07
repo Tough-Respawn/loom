@@ -24,6 +24,7 @@ import argparse
 import json
 import re
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -52,10 +53,22 @@ class Trajectory:
     final_text: str = ""
     reasoning: str = ""
     error: str | None = None
+    # Métriques de COÛT par run (le pass/fail seul cache un « ça passe mais en 11 tours
+    # et 38 appels ») : tours MODÈLE (un event usage par appel modèle) distincts des
+    # appels OUTILS, tokens réels, raison d'arrêt (event 'done' de la boucle), durée.
+    model_turns: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0
+    stop_reason: str = ""
+    duration_s: float = 0.0
 
     @property
-    def n_turns(self) -> int:
+    def n_tool_calls(self) -> int:
         return len(self.tool_calls)
+
+    # Rétro-compat des checks existants : n_turns a toujours compté les APPELS D'OUTILS.
+    n_turns = n_tool_calls
 
 
 # --- prompts variantes -------------------------------------------------------
@@ -108,10 +121,17 @@ def run_one(
         active_model=model,
     )
     prompt = case.prompt.replace("{NOTES_PATH}", (ws / "docs" / "notes.md").as_posix())
+    # Cas à HISTORIQUE pré-rempli (saturation de contexte) : les vieux tours synthétiques
+    # précèdent la tâche, sans coûter leur génération live sur le modèle local.
+    messages = [
+        *(getattr(case, "history", None) or []),
+        {"role": "user", "content": prompt},
+    ]
     traj = Trajectory()
+    t0 = time.monotonic()
     try:
         for kind, payload in client.stream_chat_tools(
-            [{"role": "user", "content": prompt}],
+            messages,
             chat_prompt,
             max_tokens=cfg.chat.max_tokens,
             model=model,
@@ -119,11 +139,23 @@ def run_one(
             thinking=False,
             max_iters=max_iters,
             permission=perm,
+            # Par cas : un seuil bas force la compaction préventive (cas saturation) ;
+            # None = comme avant (pas de compaction préventive sur le chemin d'éval).
+            compact_after_tokens=getattr(case, "compact_tokens", None),
         ):
             if kind == "content":
                 traj.final_text += payload
             elif kind == "reasoning":
                 traj.reasoning += payload
+            elif kind == "usage":
+                # Un event usage par appel modèle (réel ou estimé) -> compteur de TOURS
+                # MODÈLE + cumul des tokens. L'usage estimé (provider muet) compte pareil.
+                traj.model_turns += 1
+                traj.prompt_tokens += payload.get("prompt_tokens") or 0
+                traj.completion_tokens += payload.get("completion_tokens") or 0
+                traj.cached_tokens += payload.get("cached_tokens") or 0
+            elif kind == "done":
+                traj.stop_reason = payload.get("reason") or ""
             elif kind == "tool_result":
                 # L'event `tool_call` ne porte que {id, name} ; les ARGUMENTS réels
                 # (path lu/écrit, commande shell) ne sont exposés que dans `tool_result`
@@ -143,6 +175,8 @@ def run_one(
                 )
     except Exception as e:  # un run qui plante = donnée, pas un crash du harnais
         traj.error = f"{type(e).__name__}: {e}"
+        traj.stop_reason = traj.stop_reason or "crash"
+    traj.duration_s = round(time.monotonic() - t0, 1)
     return traj
 
 
@@ -235,7 +269,13 @@ def run_variant(
                     {
                         "checks": checks,
                         "passed": case_passed(checks),
-                        "n_turns": traj.n_turns,
+                        "n_model_turns": traj.model_turns,
+                        "n_tool_calls": traj.n_tool_calls,
+                        "prompt_tokens": traj.prompt_tokens,
+                        "completion_tokens": traj.completion_tokens,
+                        "cached_tokens": traj.cached_tokens,
+                        "stop_reason": traj.stop_reason,
+                        "duration_s": traj.duration_s,
                         "error": traj.error,
                         "tools": [n for n, _ in traj.tool_calls],
                         "final": (traj.final_text or "")[:800],
@@ -246,7 +286,10 @@ def run_variant(
                 mark = "ok" if runs_data[-1]["passed"] else "XX"
                 print(
                     f"  [{name}] {case.id} run{k + 1}/{runs} [{mark}] "
-                    f"tours={traj.n_turns} outils={runs_data[-1]['tools']}"
+                    f"stop={traj.stop_reason or '?'} tours={traj.model_turns} "
+                    f"outils={len(traj.tool_calls)} "
+                    f"tok={traj.prompt_tokens}/{traj.completion_tokens} "
+                    f"{traj.duration_s}s {runs_data[-1]['tools']}"
                     + (f" ERREUR={traj.error}" if traj.error else "")
                 )
         results[case.id] = runs_data
@@ -261,6 +304,11 @@ def _save_transcript(variant, case_id, k, traj, checks, jd):
     for n, a in traj.tool_calls:
         lines.append(f"- {n}({json.dumps(a, ensure_ascii=False)[:200]})")
     lines.append("\n## Réponse finale\n" + (traj.final_text or "(vide)"))
+    lines.append(
+        f"\n## Coût\nstop={traj.stop_reason or '?'} tours_modèle={traj.model_turns} "
+        f"outils={len(traj.tool_calls)} tok_in={traj.prompt_tokens} "
+        f"tok_out={traj.completion_tokens} durée={traj.duration_s}s"
+    )
     lines.append("\n## Checks code")
     for c, v in checks.items():
         lines.append(f"- [{'x' if v else ' '}] {c}")
@@ -280,7 +328,20 @@ def report(all_results: dict, runs: int):
     head = "cas".ljust(16) + "".join(v.ljust(14) for v in variants)
     print(head)
     print("-" * len(head))
-    summary = {v: {"pass": 0, "tot": 0, "jscore": [], "turns": []} for v in variants}
+    summary = {
+        v: {
+            "pass": 0,
+            "tot": 0,
+            "jscore": [],
+            "turns": [],
+            "tools": [],
+            "tok_in": [],
+            "tok_out": [],
+            "dur": [],
+            "stops": {},
+        }
+        for v in variants
+    }
     case_ids = [c.id for c in CASES if any(c.id in all_results[v] for v in variants)]
     for cid in case_ids:
         row = cid.ljust(16)
@@ -288,10 +349,18 @@ def report(all_results: dict, runs: int):
             rd = all_results[v].get(cid, [])
             p = sum(1 for r in rd if r["passed"])
             row += f"{p}/{len(rd)}".ljust(14)
-            summary[v]["pass"] += p
-            summary[v]["tot"] += len(rd)
-            summary[v]["turns"] += [r["n_turns"] for r in rd]
-            summary[v]["jscore"] += [
+            s = summary[v]
+            s["pass"] += p
+            s["tot"] += len(rd)
+            s["turns"] += [r.get("n_model_turns", 0) for r in rd]
+            s["tools"] += [r.get("n_tool_calls", 0) for r in rd]
+            s["tok_in"] += [r.get("prompt_tokens", 0) for r in rd]
+            s["tok_out"] += [r.get("completion_tokens", 0) for r in rd]
+            s["dur"] += [r.get("duration_s", 0.0) for r in rd]
+            for r in rd:
+                sr = r.get("stop_reason") or "?"
+                s["stops"][sr] = s["stops"].get(sr, 0) + 1
+            s["jscore"] += [
                 r["judge"]["score"]
                 for r in rd
                 if r.get("judge") and isinstance(r["judge"].get("score"), (int, float))
@@ -303,11 +372,42 @@ def report(all_results: dict, runs: int):
         s = summary[v]
         tot += f"{s['pass']}/{s['tot']}".ljust(14)
     print(tot)
+
+    def _avg(xs) -> str:
+        return f"{sum(xs) / len(xs):.1f}" if xs else "n/a"
+
     for v in variants:
         s = summary[v]
         js = f"{sum(s['jscore']) / len(s['jscore']):.2f}" if s["jscore"] else "n/a"
-        tn = f"{sum(s['turns']) / len(s['turns']):.1f}" if s["turns"] else "n/a"
-        print(f"  {v}: juge moyen={js}/5  tours moyen={tn}")
+        stops = " ".join(f"{k}={n}" for k, n in sorted(s["stops"].items()))
+        print(
+            f"  {v}: juge moyen={js}/5  tours modèle moy={_avg(s['turns'])}  "
+            f"outils moy={_avg(s['tools'])}  tok in/out moy={_avg(s['tok_in'])}/"
+            f"{_avg(s['tok_out'])}  durée moy={_avg(s['dur'])}s  stops: {stops}"
+        )
+    # COÛT PAR CAS : « ce cas passe, mais à quel prix » — le pass/fail seul le cache.
+    print("\nCOÛT PAR CAS (moyennes par variante) :")
+    for cid in case_ids:
+        for v in variants:
+            rd = all_results[v].get(cid, [])
+            if not rd:
+                continue
+            stops = " ".join(
+                f"{k}={n}"
+                for k, n in sorted(
+                    {
+                        sr: sum(1 for r in rd if (r.get("stop_reason") or "?") == sr)
+                        for sr in {r.get("stop_reason") or "?" for r in rd}
+                    }.items()
+                )
+            )
+            print(
+                f"  {cid.ljust(16)} [{v}] tours={_avg([r.get('n_model_turns', 0) for r in rd])} "
+                f"outils={_avg([r.get('n_tool_calls', 0) for r in rd])} "
+                f"tok={_avg([r.get('prompt_tokens', 0) for r in rd])}/"
+                f"{_avg([r.get('completion_tokens', 0) for r in rd])} "
+                f"durée={_avg([r.get('duration_s', 0.0) for r in rd])}s  stops: {stops}"
+            )
     _OUT.mkdir(parents=True, exist_ok=True)
     (_OUT / "report.json").write_text(
         json.dumps(all_results, ensure_ascii=False, indent=2), encoding="utf-8"
