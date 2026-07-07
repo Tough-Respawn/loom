@@ -37,6 +37,19 @@ def git_show(rel: str) -> str:
     return r.stdout
 
 
+def git_head_sha() -> str:
+    """SHA court de git HEAD (baseline persistante : épingler un report par commit).
+    '' si git indisponible — l'épinglage est alors simplement sauté."""
+    r = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def load_eval_config():
     """Charge la config Loom depuis les fichiers standard.
 
