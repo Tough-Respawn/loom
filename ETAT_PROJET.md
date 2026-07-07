@@ -119,6 +119,35 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
 - **Plus de tout-petit modèle** (4B abandonnés) → on peut se fier aux schémas d'outils (le
   modèle les lit), d'où la délégation prompt → schéma.
 
+## Déjà essayé, rejeté
+Décisions négatives **mesurées dans ce projet**. Toute piste qui recoupe une de ces lignes doit
+d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsifiée.
+
+- **Orchestrateur déterministe** (build/vérificateur, rail réflexion) : SUPPRIMÉ (2026-06-04 et
+  2026-06-09). Bridait le modèle et gonflait le coût ; le tool-use pur (le modèle décide) est
+  validé live. Fiabiliser via prompt/erreurs/outils, jamais via un workflow rigide.
+- **Restreindre le menu d'outils** (gating, outils non exposés) : la root cause des travers
+  non-agentic était précisément des outils **non semés** sur les sessions (corrigé). Un gating
+  dynamique recréerait l'angle mort et casserait le prompt caching (préfixe stable requis,
+  94-98 % de hit mesuré côté distant).
+- **Édition par numéros de ligne** (`replace_lines`, `insert_lines`) : retirés (ADR 0003).
+  Les numéros se périment après chaque edit → thrash → arrêt anti-loop. `edit_file`
+  exact-match est l'unique éditeur chirurgical.
+- **Mur de temps** (`max_seconds` 300 s) : retiré, il décapitait le raisonnement en plein vol.
+  Bornes = tours + non-progrès, jamais l'horloge.
+- **Speculative decoding** (drafter MTP) : testé puis retiré. Gain tg réel médiocre, build
+  régressait, incompatible MoE/multimodal.
+- **Sweeps `n_batch`/`ubatch`** : testés, aucun gain utile. Build llama.cpp b9888 : rejeté
+  (régression). Les gains runtime pinnés = `--no-mmap` (+21 % prefill Gemma / +89 % Qwen) et
+  QAT `n_cpu_moe=40` (+15 % prefill).
+- **Contexte local > 24576** : borné par les 6 Go de VRAM malgré KV q8_0 + flash-attn.
+  Ce n'est pas de la prudence, c'est la limite physique.
+- **Dé-emphaser les règles critiques du prompt** (ex. PowerShell) : régression mesurée
+  (qwen 0/3 ; retour à 3/3 en rétablissant l'emphase). Un modèle local a besoin d'impératifs
+  fermes, même si la doc frontière conseille l'inverse.
+- **Petits modèles denses (4B)** : abandonnés (2026-06-09). Cible = MoE 24B+ avec experts en
+  RAM (`--cpu-moe`) ; les outils/prompts ne compensent pas un modèle sous la barre.
+
 ## Reste / pistes
 1. **Banc d'éval** (design figé, `docs/superpowers/specs/2026-06-09-loom-banc-eval.md`) :
    instrument répétable, **juge LLM** (pas de déterministe) + métriques. Construction différée.

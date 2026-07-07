@@ -107,3 +107,4 @@ uv run python -m evals.run_review_eval           # éval du skill code-review
 - **Éval** : `default_model` de config est un distant → forcer `--model qwen…` pour évaluer le local (seul à révéler une régression du prompt). Le jeu de cas **n'exerce pas `dispatch_agent`** → le prompt sous-agent n'est pas encore testé par l'A/B.
 - **Machine de dev** : RTX 2060 (6 Go VRAM) + **~32 Go RAM** (pas 64 — barrette non installée/détectée) : contraint la taille des modèles chargeables.
 - **Tranches plugins à venir** : hooks (PostToolUse, exécute du code tiers → porte de confiance) et agents (personas dispatchables).
+- **Avant de proposer une piste** (orchestrateur, gating d'outils, édition par ligne, speculative decoding, sweeps batch…) : lire « Déjà essayé, rejeté » dans `ETAT_PROJET.md`. Plusieurs bonnes idées générales ont déjà été testées et falsifiées ici.
