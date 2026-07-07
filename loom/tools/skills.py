@@ -25,16 +25,16 @@ def make_use_skill(skills_provider: Callable[[], list[Skill]]) -> ToolSpec:
     return ToolSpec(
         name="use_skill",
         description=(
-            "Charge les instructions d'un skill listé dans « Skills disponibles » du prompt "
-            "système. Appelle-le DÈS qu'un skill correspond à la demande, puis suis son "
-            "contenu. Argument : name (le nom exact du catalogue, ex. 'plugin:skill')."
+            "Loads the instructions of a skill listed in 'Available skills' of the system "
+            "prompt. Call it AS SOON AS a skill matches the request, then follow its "
+            "content. Argument: name (the exact catalog name, e.g. 'plugin:skill')."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Nom exact du skill au catalogue.",
+                    "description": "Exact skill name in the catalog.",
                 }
             },
             "required": ["name"],

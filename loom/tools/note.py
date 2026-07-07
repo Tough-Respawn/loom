@@ -60,26 +60,26 @@ def make_write_note(conversation) -> ToolSpec:
     return ToolSpec(
         name="write_note",
         description=(
-            "Consigne une note DURABLE dans ta mémoire de session. À utiliser pour ce que "
-            "tu dois retenir au-delà de quelques tours : chemins de fichiers, valeurs "
-            "clés, décisions, état d'avancement. Les résultats d'outils (lectures, "
-            "recherches) peuvent être effacés du contexte quand il se remplit — une note, "
-            "elle, persiste : relis-la (read_note) au lieu de re-lire un fichier entier. "
-            "Append par défaut ; replace=true repart d'une note propre quand l'ancienne "
-            "est périmée. Note une SYNTHÈSE, pas un copier-coller de fichier."
+            "Records a DURABLE note in your session memory. Use it for anything you "
+            "need to retain beyond a few turns: file paths, key values, decisions, "
+            "progress state. Tool results (reads, searches) may be cleared from the "
+            "context when it fills up — a note, however, persists: re-read it "
+            "(read_note) instead of re-reading a whole file. Append by default; "
+            "replace=true starts from a clean note when the old one is stale. Record "
+            "a SUMMARY, not a copy-paste of a file."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "note": {
                     "type": "string",
-                    "description": "Le contenu de la note (synthèse concise).",
+                    "description": "The note content (concise summary).",
                 },
                 "replace": {
                     "type": "boolean",
                     "description": (
-                        "Si true, efface les notes existantes et repart de celle-ci. "
-                        "Défaut false (ajoute à la suite)."
+                        "If true, clears the existing notes and starts from this one. "
+                        "Default false (appends)."
                     ),
                 },
             },
@@ -98,10 +98,10 @@ def make_read_note(conversation) -> ToolSpec:
     return ToolSpec(
         name="read_note",
         description=(
-            "Relit tes notes de session (mémoire durable écrite avec write_note). "
-            "Réflexe à avoir quand tu reprends le fil ou que tu doutes d'avoir oublié "
-            "quelque chose : tes notes survivent à la purge du contexte, pas les "
-            "résultats d'outils. Moins coûteux que re-lire un fichier."
+            "Re-reads your session notes (durable memory written with write_note). "
+            "A reflex to have when you pick the thread back up or suspect you've "
+            "forgotten something: your notes survive context purging, tool results "
+            "don't. Cheaper than re-reading a file."
         ),
         parameters={"type": "object", "properties": {}},
         run=run,

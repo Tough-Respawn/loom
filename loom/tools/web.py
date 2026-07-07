@@ -276,16 +276,16 @@ def make_web_search(cfg: WebSearchConfig) -> ToolSpec:
     return ToolSpec(
         name="web_search",
         description=(
-            "Recherche des informations à jour sur le web et renvoie les "
-            "principaux résultats (titre, URL, extrait). Renvoie un message "
-            "explicite si le réseau est indisponible."
+            "Searches the web for up-to-date information and returns the top "
+            "results (title, URL, snippet). Returns an explicit message if the "
+            "network is unavailable."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Requête de recherche en langage naturel.",
+                    "description": "Natural-language search query.",
                 }
             },
             "required": ["query"],
@@ -314,16 +314,16 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
     return ToolSpec(
         name="fetch_url",
         description=(
-            "Récupère le contenu TEXTE d'une URL précise (page web, doc en ligne) et "
-            "le renvoie. Utilise-le quand tu as DÉJÀ l'URL. Si tu n'as pas d'URL, "
-            "lance d'abord web_search."
+            "Fetches and returns the TEXT content of a specific URL (web page, "
+            "online doc). Use it when you ALREADY have the URL. If you don't have "
+            "a URL, run web_search first."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "URL complète à lire (http:// ou https://).",
+                    "description": "Full URL to read (http:// or https://).",
                 }
             },
             "required": ["url"],

@@ -67,29 +67,29 @@ def make_manage_todos(conversation) -> ToolSpec:
     return ToolSpec(
         name="manage_todos",
         description=(
-            "Tient à jour ta liste de tâches pour une demande en plusieurs étapes : "
-            "pose ton plan, puis réémets la liste COMPLÈTE à chaque progrès en changeant "
-            "les statuts. Sert de mémoire externe pour ne pas perdre le fil. Chaque tâche "
-            "= {content, status} avec status parmi pending, in_progress, done. Marque "
-            "in_progress AVANT d'attaquer une étape, done une fois vérifiée."
+            "Keeps your task list up to date for a multi-step request: lay out your "
+            "plan, then re-emit the FULL list on every progress step, updating the "
+            "statuses. Serves as external memory so you don't lose track. Each task "
+            "= {content, status} with status one of pending, in_progress, done. Mark "
+            "in_progress BEFORE starting a step, done once it's verified."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "todos": {
                     "type": "array",
-                    "description": "Liste COMPLÈTE des tâches, à jour.",
+                    "description": "The FULL, up-to-date task list.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "content": {
                                 "type": "string",
-                                "description": "Intitulé de la tâche.",
+                                "description": "Task label.",
                             },
                             "status": {
                                 "type": "string",
                                 "enum": ["pending", "in_progress", "done"],
-                                "description": "État de la tâche.",
+                                "description": "Task status.",
                             },
                         },
                         "required": ["content", "status"],
