@@ -83,9 +83,11 @@ def make_write_file(
         name="write_file",
         description=(
             "Crée ou écrase un fichier avec le contenu fourni. Chemin relatif au "
-            "dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/out.txt'). Pour un "
-            "GROS fichier (qui dépasserait la limite de tokens d'une réponse) : écris le "
-            "DÉBUT ici, puis complète par petits morceaux avec append_file."
+            "dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/out.txt'). Nouveau "
+            "fichier, ou réécriture COMPLÈTE d'un PETIT fichier. GROS fichier (>~150 lignes, "
+            "qui dépasserait la limite de tokens et serait tronqué) : écris le squelette "
+            "(imports + 1re unité) ici, puis complète avec append_file, une UNITÉ LOGIQUE "
+            "COMPLÈTE par appel (fonction/composant entier), jamais coupée au milieu."
         ),
         parameters={
             "type": "object",
