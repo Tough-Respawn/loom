@@ -158,12 +158,12 @@ def make_format_code(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="format_code",
         description=(
-            "Reformate proprement un fichier de code EN PLACE selon son langage : Python "
-            "(.py) avec ruff (corrige les soucis PEP8 sûrs + indentation/style), web "
-            "(.js/.ts/.jsx/.tsx/.json/.html/.css/.scss/.md/.yaml/.vue) avec prettier. "
-            "Appelle-le APRÈS avoir écrit ou édité un fichier de code pour qu'il soit "
-            "proprement indenté et conforme, au lieu de soigner l'alignement à la main. "
-            "Renvoie ce qui a changé et les éventuels problèmes restants à corriger."
+            "Cleanly reformats a code file IN PLACE according to its language: Python "
+            "(.py) with ruff (fixes safe PEP8 issues + indentation/style), web "
+            "(.js/.ts/.jsx/.tsx/.json/.html/.css/.scss/.md/.yaml/.vue) with prettier. "
+            "Call it AFTER writing or editing a code file so it is "
+            "properly indented and compliant, instead of fixing alignment by hand. "
+            "Returns what changed and any remaining issues to fix."
         ),
         parameters={
             "type": "object",
@@ -171,8 +171,8 @@ def make_format_code(workspace_dir: str) -> ToolSpec:
                 "path": {
                     "type": "string",
                     "description": (
-                        "Chemin du fichier à reformater (relatif au dossier de travail "
-                        "ou absolu)."
+                        "Path of the file to reformat (relative to the working directory "
+                        "or absolute)."
                     ),
                 }
             },

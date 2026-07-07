@@ -22,13 +22,13 @@ def make_add_marketplace(root) -> ToolSpec:
     return ToolSpec(
         name="add_marketplace",
         description=(
-            "Ajoute une marketplace de plugins Claude Code (URL git ou chemin local) au store "
-            "de Loom. Prérequis pour install_plugin."
+            "Adds a Claude Code plugin marketplace (git URL or local path) to Loom's "
+            "store. Prerequisite for install_plugin."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "source": {"type": "string", "description": "URL git ou chemin local."}
+                "source": {"type": "string", "description": "Git URL or local path."}
             },
             "required": ["source"],
         },
@@ -55,8 +55,8 @@ def make_install_plugin(root) -> ToolSpec:
     return ToolSpec(
         name="install_plugin",
         description=(
-            "Installe un plugin depuis une marketplace ajoutée. ref = '<plugin>' ou "
-            "'<plugin>@<marketplace>'. Rend ses skills disponibles via use_skill."
+            "Installs a plugin from an added marketplace. ref = '<plugin>' or "
+            "'<plugin>@<marketplace>'. Makes its skills available via use_skill."
         ),
         parameters={
             "type": "object",
@@ -85,7 +85,7 @@ def make_list_plugins(root) -> ToolSpec:
 
     return ToolSpec(
         name="list_plugins",
-        description="Liste les plugins installés et l'inventaire de leurs composants.",
+        description="Lists installed plugins and the inventory of their components.",
         parameters={"type": "object", "properties": {}},
         run=run,
     )

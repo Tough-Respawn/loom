@@ -85,12 +85,12 @@ def make_dispatch_agent(
     return ToolSpec(
         name="dispatch_agent",
         description=(
-            "Délègue une TÂCHE autonome à un sous-agent à contexte isolé (il a les "
-            "mêmes outils que toi : lecture, écriture, shell). Utilise-le quand la "
-            "tâche suppose d'explorer/lire/modifier beaucoup et que tu ne veux qu'une "
-            "SYNTHÈSE en retour, pas tout le détail dans ton contexte. Donne une "
-            "consigne précise et autonome (objectif + critère de fini) ; le sous-agent "
-            "agit puis te renvoie ce qu'il a fait. Il ne peut PAS déléguer à son tour."
+            "Delegates a self-contained TASK to a sub-agent with an isolated context (it "
+            "has the same tools as you: read, write, shell). Use it when the task "
+            "requires exploring/reading/modifying a lot and you only want a SYNTHESIS "
+            "back, not all the detail in your context. Give a precise, self-contained "
+            "instruction (objective + done criterion); the sub-agent acts then returns "
+            "what it did. It CANNOT delegate in turn."
         ),
         parameters={
             "type": "object",
@@ -98,7 +98,7 @@ def make_dispatch_agent(
                 "task": {
                     "type": "string",
                     "description": (
-                        "Question ou tâche de recherche précise et autonome à déléguer."
+                        "Precise, self-contained question or research task to delegate."
                     ),
                 }
             },
