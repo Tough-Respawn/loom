@@ -34,8 +34,7 @@ from flask import Flask, Response, render_template, request
 
 
 from loom.agent import context
-
-from loom.agent.client import set_debug_log_path
+from loom.agent.client import _msg_chars, set_debug_log_path
 
 from loom.extend.skills import (
     collect_skills,
@@ -51,6 +50,7 @@ from loom.runtime.manager import ModelServerManager
 from loom.runtime.platform_info import detect as platform_detect
 
 from loom.runtime.models_profile import load_profile
+from loom.runtime.stay_awake import StayAwake
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -597,6 +597,10 @@ def create_app(
     _sess_locks: dict[str, threading.Lock] = {}
     _sess_cancel: dict[str, threading.Event] = {}
     _local_gen_lock = threading.Lock()
+    # Garde-éveil : tant qu'une génération tourne, on empêche la VEILLE du système (l'écran
+    # peut s'éteindre) -> le travail continue en arrière-plan au lieu de geler à la mise en
+    # veille (« network error »). No-op hors Windows.
+    _stay_awake = StayAwake()
     # Événement d'annulation de la génération EN COURS sur CE thread (pour _confirm, qui tourne
     # dans le thread de génération) — posé au début de /chat.
     _confirm_local = threading.local()
@@ -800,6 +804,16 @@ def create_app(
     def index() -> str:
 
         return render_template("index.html", **_index_context())
+
+    @app.get("/favicon.ico")
+    def favicon():
+        # Requête par défaut du navigateur (silence le 404) : on sert le SVG de la trame.
+        # Le <link rel="icon" type="image/svg+xml"> reste la source primaire de l'onglet.
+        from flask import send_from_directory
+
+        return send_from_directory(
+            app.static_folder, "favicon.svg", mimetype="image/svg+xml"
+        )
 
     @app.post("/reset")
     def reset() -> str:
@@ -1104,13 +1118,10 @@ def create_app(
             # source de RÉ-AFFICHAGE au rechargement -> il doit être complet, user inclus).
             session_store.append_event(sess.id, "user", {"content": message})
 
-            # Gestion du contexte : résumé auto si trop long
-
-            if context.summarize(
-                conv, client, _settings["context_budget"], _settings["keep_recent"]
-            ):
-                save()
-
+            # Résumé auto pré-tour : DÉPLACÉ dans generate() (plus bas) pour être VISIBLE
+            # dans le stream (label d'activité « compaction… ») au lieu d'un blocage muet
+            # avant le 1er octet. Le prompt système ne dépend pas de l'historique -> on le
+            # construit ici sans attendre le résumé.
             system_prompt, strong = _build_system_prompt(conv)
         except ValueError as exc:
             chat_lock.release()
@@ -1124,6 +1135,11 @@ def create_app(
 
         def generate():
 
+            # Empêche la mise en veille du système tant que CE tour génère (release au
+            # finally) : sans ça, une veille par inactivité gèle loom.web + llama.cpp et la
+            # génération meurt (« connexion perdue »). L'écran peut s'éteindre, le travail
+            # continue en arrière-plan.
+            _stay_awake.acquire()
             # Annulation de CETTE session, lue par _confirm (même thread de génération).
             _confirm_local.ev = cancel_event
             # Verrou modèle LOCAL : pris dans le try ci-dessous (avant le 1er appel modèle),
@@ -1242,6 +1258,48 @@ def create_app(
             # (write/edit/run_shell + sous-agent) retombent sur cfg.chat.workspace_dir
 
             # et écrivent à côté du dossier ciblé.
+
+            # Résumé PRÉ-TOUR (proactif), DANS le stream pour être VISIBLE : si l'historique
+            # dépasse le budget, on émet le label d'activité « compaction… », on résume, on
+            # trace une carte, puis on efface le label. Gate `needs_summary` d'abord (sans
+            # appel modèle) pour ne montrer le label QUE si un résumé va vraiment tourner.
+            # Placé APRÈS le démarrage du serveur modèle (le résumé appelle le modèle).
+            # LOCAL UNIQUEMENT : un modèle DISTANT a une grande fenêtre et gère lui-même son
+            # contexte + son prefix-cache ; réécrire son historique casserait ce cache et
+            # coûterait des tokens pour rien. On ne compacte donc que le local.
+            _is_local_model = bool(conv.model) and conv.model not in remote_model_ids
+            # SEUIL relatif à la FENÊTRE, pas le `context_budget` (3000) absolu : ce dernier
+            # est comparé à system_prompt + messages, or le prompt système SEUL fait ~11k
+            # tokens -> le seuil 3000 était TOUJOURS dépassé et la compaction partait à CHAQUE
+            # message (même « poursuis »), en appelant le modèle (lent). On la déclenche
+            # désormais seulement près de la saturation (même seuil que le microcompact).
+            _, _pre_threshold = _model_limits(conv.model)
+            if (
+                _is_local_model
+                and context.needs_summary(
+                    conv.system_prompt, conv.messages, _pre_threshold
+                )
+                and len(conv.messages) > _settings["keep_recent"]
+            ):
+                yield _sse("status", label="compaction du contexte…")
+                if context.summarize(
+                    conv, client, _pre_threshold, _settings["keep_recent"]
+                ):
+                    save()
+                    # Jauge à jour TOUT DE SUITE (estimation ~3 car./token), sans attendre
+                    # l'usage réel du 1er appel du tour.
+                    conv.context_tokens = (
+                        len(conv.system_prompt)
+                        + sum(_msg_chars(m.get("content")) for m in conv.messages)
+                    ) // 3
+                    yield _tl(
+                        "tool_result",
+                        name="(compaction)",
+                        ok=True,
+                        preview="Contexte résumé pour libérer de la place. Je reprends.",
+                    )
+                    yield _sse("totals", **_totals(conv))
+                yield _sse("status", label="")  # efface le label d'activité
 
             ws = _session().workspace
 
@@ -1366,7 +1424,20 @@ def create_app(
 
                         break
 
-                    if kind == "reasoning":
+                    if kind == "status":
+                        # Signal d'activité (ex. compaction en cours) : piloté vers le label
+                        # animé au-dessus du composer, comme « le modèle tourne ».
+                        yield _sse("status", **payload)
+
+                    elif kind == "context_estimate":
+                        # Compaction : la jauge de contexte est rafraîchie IMMÉDIATEMENT
+                        # (estimation), sans attendre l'usage réel du prochain appel — sinon
+                        # elle resterait au pic pendant tout l'appel suivant. L'usage réel du
+                        # tour d'après la corrigera de toute façon.
+                        conv.context_tokens = int(payload.get("tokens", 0) or 0)
+                        yield _sse("totals", **_totals(conv))
+
+                    elif kind == "reasoning":
                         yield _tl("reasoning", text=payload)
 
                     elif kind == "content":
@@ -1615,6 +1686,7 @@ def create_app(
                     _local_gen_lock.release()
 
                 chat_lock.release()
+                _stay_awake.release()  # plus de veille bloquée si plus aucune génération
 
         return Response(generate(), mimetype="text/event-stream")
 
@@ -1656,6 +1728,43 @@ def create_app(
         save()
 
         return {"text": text}
+
+    @app.post("/compact")
+    def compact():
+        """Compaction MANUELLE (bouton près de la jauge de contexte) : résume les vieux
+        tours de la session ciblée en un bloc dense et remplace l'historique. session_id =
+        onglet ciblé, sinon la session focus. Refuse si une génération tourne (le verrou de
+        session est pris) — on ne mute pas l'historique sous une boucle active. Renvoie les
+        compteurs d'usage à jour (jauge de contexte ré-estimée) + `collapsed`."""
+        req_sid = (request.form.get("session_id") or "").strip()
+        sess = _get_session(req_sid) if req_sid else _session()
+        if sess is None:
+            return Response("session introuvable", status=404)
+        lock = _lock_for(sess.id)
+        if not lock.acquire(blocking=False):
+            return Response("occupé : cette session génère déjà", status=429)
+        try:
+            conv = sess.conversation
+            # DÉTERMINISTE et INSTANTANÉ (aucun appel modèle -> pas de blocage de plusieurs
+            # minutes). Cible = prompt système (INCOMPRESSIBLE) + ~4000 car. (~1,3k tokens)
+            # de conversation : on clippe le reste de l'historique.
+            target_chars = len(conv.system_prompt) + 4000
+            new_msgs, freed = client.compact_conversation(
+                conv.messages,
+                system_prompt=conv.system_prompt,
+                target_chars=target_chars,
+            )
+            if freed:
+                conv.messages = new_msgs
+                # `freed` = tokens réellement libérés (delta de la conversation, le prompt
+                # système s'annule). On le RETRANCHE du ctx réel du dernier appel -> jauge à
+                # jour immédiatement ET exacte (pas une ré-estimation qui oublierait les
+                # schémas d'outils). L'usage réel du prochain tour confirmera au token près.
+                conv.context_tokens = max(0, conv.context_tokens - freed)
+                session_store.save(sess)
+        finally:
+            lock.release()
+        return {**_totals(conv), "collapsed": freed}
 
     @app.post("/cancel")
     def cancel():

@@ -700,6 +700,110 @@ def _microcompact_tools(convo: list[dict], keep_recent_tools: int) -> int:
     return n
 
 
+# --- Compaction par RÉSUMÉ (dernier étage, avec LLM) ---------------------------------
+# Le microcompact ne touche QUE les résultats d'outils. Quand ce sont les TOURS du modèle
+# (assistant/reasoning, contenu écrit inline) qui saturent, vider les tool results ne
+# suffit plus -> autrefois on abandonnait. Ici on RÉSUME les vieux tours en un bloc dense
+# et on poursuit. Le résumé est en ANGLAIS TÉLÉGRAPHIQUE : le plus dense en tokens à
+# fidélité égale (le français coûte ~15-20 % de tokens en plus), et il colle aux
+# identifiants de code déjà anglais. On préserve les littéraux (chemins, noms, valeurs).
+_SUMMARY_MARKER = "[SESSION SUMMARY — older turns compacted to fit the context window]"
+
+_SUMMARY_SYSTEM = (
+    "You compact a coding agent's own conversation so it fits the model's context "
+    "window. Output a DENSE summary in terse English bullet points — no prose, no "
+    "preamble, never restate these instructions. Preserve VERBATIM every file path, "
+    "identifier, function/variable name, shell command, URL and numeric value. Capture, "
+    "in order: GOAL, what was DONE, what was LEARNED/DECIDED, current STATE of the code, "
+    "and what remains TODO. Stay faithful; when unsure, keep the literal token."
+)
+
+
+def _flatten_msg(content) -> str:
+    """Texte brut d'un contenu de message (str ou liste de parts multimodales)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out = []
+        for p in content:
+            if isinstance(p, dict):
+                out.append(str(p.get("text") or p.get("content") or ""))
+            else:
+                out.append(str(p))
+        return "\n".join(x for x in out if x)
+    return "" if content is None else str(content)
+
+
+def _flatten_for_summary(old: list[dict], budget_chars: int) -> str:
+    """Aplatit les vieux tours en UN texte borné à envoyer au résumeur. Le convo déborde
+    déjà la fenêtre -> on ne peut pas tout renvoyer : on garde le 1er message (le BUT) puis
+    on remplit depuis la FIN (le plus récent = le plus utile pour l'état courant) jusqu'au
+    budget ; le milieu ancien saute. '' si rien à aplatir."""
+    if not old:
+        return ""
+    head = f"[{old[0].get('role', '?')}] {_flatten_msg(old[0].get('content'))}"
+    tail_parts: list[str] = []
+    used = len(head)
+    for m in reversed(old[1:]):
+        seg = f"[{m.get('role', '?')}] {_flatten_msg(m.get('content'))}"
+        if used + len(seg) + 40 > budget_chars:
+            tail_parts.append("[...older turns elided...]")
+            break
+        tail_parts.append(seg)
+        used += len(seg) + 2
+    return head + "\n\n" + "\n\n".join(reversed(tail_parts))
+
+
+def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool:
+    """Réduction DÉTERMINISTE de dernier recours (AUCUN LLM) : clippe les contenus les plus
+    gros — et, à défaut, drope les messages les plus anciens (garde toujours les 2 derniers)
+    — jusqu'à passer sous `budget_chars`. GARANTIT un fit tant que `system_prompt` seul tient
+    dans le budget. Sert à ne JAMAIS s'arrêter pour saturation : on tronque plutôt qu'on
+    abandonne. Mute `convo` en place ; renvoie True si on tient le budget après réduction."""
+
+    def _total() -> int:
+        return len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
+
+    guard = 0
+    while _total() > budget_chars and guard < 5000:
+        guard += 1
+        # Message au contenu le plus long (str ou parts texte).
+        idx, longest = -1, 0
+        for i, m in enumerate(convo):
+            c = m.get("content")
+            n = len(c) if isinstance(c, str) else _msg_chars(c)
+            if n > longest:
+                longest, idx = n, i
+        if idx >= 0 and longest > 120:
+            c = convo[idx].get("content")
+            if isinstance(c, str):
+                keep = max(120, len(c) // 2)
+                convo[idx] = {
+                    **convo[idx],
+                    "content": c[:keep] + " …[tronqué pour tenir dans le contexte]",
+                }
+            elif isinstance(c, list):
+                parts = []
+                for p in c:
+                    t = p.get("text") if isinstance(p, dict) else None
+                    if isinstance(t, str) and len(t) > 120:
+                        parts.append(
+                            {**p, "text": t[: max(120, len(t) // 2)] + " …[tronqué]"}
+                        )
+                    else:
+                        parts.append(p)
+                convo[idx] = {**convo[idx], "content": parts}
+            else:
+                convo[idx] = {**convo[idx], "content": "…[tronqué]"}
+        elif len(convo) > 2:
+            # Plus rien de clippable mais encore trop : on drope le plus ancien (on garde
+            # toujours au moins les 2 derniers messages -> décroissance stricte, terminaison).
+            convo.pop(0)
+        else:
+            break
+    return _total() <= budget_chars
+
+
 class LoomClient:
     def __init__(
         self,
@@ -755,6 +859,99 @@ class LoomClient:
             r = self._routes[model]
             return r["client"], r["model"], r["enable_thinking_param"]
         return self._client, (model or self.model), True
+
+    def summarize_slice(
+        self,
+        old_messages: list[dict],
+        model: str | None = None,
+        budget_chars: int = 30000,
+    ) -> str:
+        """PRIMITIVE UNIQUE de résumé, partagée par TOUS les chemins de compaction : l'étage
+        de la boucle d'outils, le résumé pré-tour (context.summarize) et le bouton manuel.
+        Aplatit les vieux tours (borné), appelle le modèle en NON-stream, retire le <think>.
+        Renvoie le texte du résumé, ou '' si rien à résumer / réponse vide / appel en échec.
+        FAIL-SOFT : ne lève jamais (un résumé raté ne doit jamais crasher l'appelant)."""
+        body = _flatten_for_summary(list(old_messages), budget_chars)
+        if not body.strip():
+            return ""
+        oai, api_model, _ = self._resolve(model)
+        try:
+            resp = oai.chat.completions.create(
+                model=api_model,
+                messages=[
+                    {"role": "system", "content": _SUMMARY_SYSTEM},
+                    {"role": "user", "content": body},
+                ],
+                # 700 (et non 2000) : un résumé dense/télégraphique n'a pas besoin de plus,
+                # et sur un modèle local lent (~8 tok/s) 2000 tokens = plusieurs MINUTES.
+                max_tokens=700,
+                temperature=0.2,
+            )
+            summary = (resp.choices[0].message.content or "").strip()
+        except Exception as exc:  # noqa: BLE001 - best-effort : jamais crasher l'appelant
+            log_event(
+                "summary.error",
+                level="WARN",
+                msg=f"{type(exc).__name__}: {str(exc)[:120]}",
+            )
+            return ""
+        # Modèle « thinking » (Qwen/local) : le raisonnement peut précéder le contenu -> on
+        # ne garde que l'après-</think>.
+        if "</think>" in summary:
+            summary = summary.split("</think>")[-1].strip()
+        return summary.strip()
+
+    def summarize_old_turns(
+        self,
+        convo: list[dict],
+        model: str | None = None,
+        keep_recent: int = 6,
+        budget_chars: int = 30000,
+    ) -> int:
+        """Résume les vieux tours EN PLACE via `summarize_slice` (garde les `keep_recent`
+        derniers intacts). Renvoie le nb de messages remplacés (0 = trop peu à résumer,
+        réponse vide, ou appel en échec — rien n'est touché)."""
+        cut = len(convo) - keep_recent
+        if cut < 2:
+            return 0  # trop peu de vieux tours (ou convo plus courte que keep_recent)
+        # Ne pas orpheliner un résultat d'outil : si la queue conservée débute par un
+        # role:tool dont l'appel part au résumé, on pousse ces tool vers le bloc résumé
+        # (certains providers rejettent un message tool sans tool_calls le précédant).
+        while cut < len(convo) and convo[cut].get("role") == "tool":
+            cut += 1
+        summary = self.summarize_slice(convo[:cut], model, budget_chars)
+        if not summary:
+            return 0
+        convo[:cut] = [{"role": "user", "content": f"{_SUMMARY_MARKER}\n{summary}"}]
+        return cut
+
+    def compact_conversation(
+        self,
+        messages: list[dict],
+        system_prompt: str = "",
+        target_chars: int | None = None,
+        keep_recent_tools: int = 2,
+    ) -> tuple[list[dict], int]:
+        """Compaction MANUELLE (bouton UI) : DÉTERMINISTE et INSTANTANÉE sur une COPIE.
+
+        AUCUN appel modèle : un résumé LLM sur un modèle local lent (~8 tok/s × 2000 tokens)
+        bloquerait le bouton PLUSIEURS MINUTES (observé live : /compact figé à « … », verrou
+        tenu, 429 sur les clics suivants). Ici c'est purement local/instantané :
+        1. vide les vieux résultats d'outils (`_microcompact_tools`) ;
+        2. si `target_chars` est donné, CLIPPE le contexte vivant pour tenir dessous
+           (`_force_fit`) — libère la conversation jusqu'au plancher. Le prompt système +
+           les schémas d'outils, eux, sont INCOMPRESSIBLES (souvent l'essentiel du ctx).
+        Renvoie (messages, tokens_libérés_estimés) ; 0 = déjà au plus bas."""
+        convo = list(messages)
+
+        def _tot() -> int:
+            return len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
+
+        before = _tot()
+        _microcompact_tools(convo, keep_recent_tools)
+        if target_chars:
+            _force_fit(convo, system_prompt, target_chars)
+        return convo, max(0, (before - _tot()) // 3)
 
     def local_server_root(self) -> str:
         """Racine du serveur LOCAL (llama-swap) : la base_url SANS le suffixe `/v1`.
@@ -1075,6 +1272,7 @@ class LoomClient:
         permission=None,
         confirm=None,
         max_overflow_retries: int = 2,
+        max_summaries: int = 1,
         repeat_limit: int = 3,
         compact_after_tokens: int | None = None,
         keep_recent_tools: int = 4,
@@ -1109,6 +1307,8 @@ class LoomClient:
         oai, api_model, native = self._resolve(model)
         tools = registry.openai_tools() if registry else None
         overflow_retries = 0
+        summary_retries = 0  # nb de compactions PAR RÉSUMÉ déjà tentées
+        force_fits = 0  # nb de réductions DÉTERMINISTES forcées (dernier recours, jamais d'arrêt)
         prev_sig_set = None  # jeu d'appels du tour précédent (détecteur de non-progrès)
         repeat_streak = 0
         executed = (
@@ -1122,6 +1322,15 @@ class LoomClient:
             0  # échecs cumulés d'outils d'exécution/vérif ce tour (cascade de bugs)
         )
         debug_forced = False  # méthode debug déjà imposée ce tour ? (anti-nag)
+
+        def _ctx_est() -> int:
+            # Estimation ~3 car./token du contexte VIVANT (prompt + convo courant). Sert à
+            # rafraîchir la jauge IMMÉDIATEMENT après une compaction, sans attendre l'usage
+            # réel du prochain appel (sinon la jauge reste au pic pendant tout l'appel suivant).
+            return (
+                len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
+            ) // 3
+
         for _ in range(max_iters):
             # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
             # résultats d'outils AVANT d'appeler le modèle (évite l'overflow sur une
@@ -1142,6 +1351,35 @@ class LoomClient:
                             f"{cleared} résultat(s) d'outil allégé(s) (~{approx} tokens "
                             f"> seuil {compact_after_tokens}).",
                         )
+                        # Jauge à jour TOUT DE SUITE (sinon elle reste au pic tant que
+                        # l'appel suivant n'a pas rendu son usage réel).
+                        yield ("context_estimate", {"tokens": _ctx_est()})
+                    # ESCALADE PRÉVENTIVE : vider les vieux résultats ne suffit pas quand UN
+                    # résultat RÉCENT est géant (ex. read_file d'un gros JSON minifié -> 74k
+                    # car.) — le microcompact le GARDE (il fait partie des récents). Résultat :
+                    # avant, on touchait quand même l'overflow (400 / pic à 100 %) et on ne
+                    # rattrapait qu'en réactif. Ici, si ça déborde ENCORE, on FORCE-FIT AVANT
+                    # l'appel -> plus jamais de 400. Local uniquement (le distant gère sa
+                    # fenêtre lui-même).
+                    if not self.is_remote(model) and _ctx_est() > compact_after_tokens:
+                        _force_fit(convo, system_prompt, compact_after_tokens * 3)
+                        _debug(
+                            "FORCE_FIT_PREVENTIF",
+                            f"un résultat récent trop gros -> clip avant l'appel "
+                            f"(~{_ctx_est()} tokens <= seuil {compact_after_tokens}).",
+                        )
+                        yield (
+                            "tool_result",
+                            {
+                                "name": "(compaction préventive)",
+                                "ok": True,
+                                "preview": (
+                                    "Contexte réduit AVANT saturation (un résultat récent "
+                                    "trop gros pour la fenêtre). Je continue."
+                                ),
+                            },
+                        )
+                        yield ("context_estimate", {"tokens": _ctx_est()})
             kwargs = build_create_kwargs(
                 api_model,
                 convo,
@@ -1222,41 +1460,136 @@ class LoomClient:
                 # reprend avec SES messages (ce qu'il a déjà fait) intacts ; les gros résultats
                 # d'outils deviennent le placeholder _CLEARED_TOOL (qui dit de ne pas refaire).
                 if kind == "context_overflow":
-                    if overflow_retries >= max_overflow_retries:
-                        yield (
-                            "content",
-                            "\n[génération interrompue : contexte saturé même après "
-                            "compaction. Le travail déjà écrit est conservé ; relance une "
-                            "demande plus ciblée pour continuer.]",
+                    # Jauge HONNÊTE : la requête qui vient d'échouer a dépassé la fenêtre,
+                    # mais un 400 ne rend pas d'usage -> la jauge serait restée au dernier
+                    # appel réussi (ex. 66 %), donnant l'impression qu'on compacte trop tôt.
+                    # On pousse l'estimation du contexte VIVANT (qui a débordé) : la jauge
+                    # monte au pic (~100 %) AVANT la compaction, puis redescend après.
+                    yield ("context_estimate", {"tokens": _ctx_est()})
+                    # ÉTAGE 1-2 : vider les vieux résultats d'outils (sans LLM, sûr, gratuit).
+                    if overflow_retries < max_overflow_retries:
+                        overflow_retries += 1
+                        keep = (
+                            1 if overflow_retries == 1 else 0
+                        )  # 2e retry : on vide tout
+                        cleared = _microcompact_tools(convo, keep)
+                        log_event(
+                            "guard",
+                            level="WARN",
+                            kind="context_overflow",
+                            retry=overflow_retries,
+                            cleared=cleared,
                         )
-                        return
-                    overflow_retries += 1
-                    keep = 1 if overflow_retries == 1 else 0  # 2e retry : on vide tout
-                    cleared = _microcompact_tools(convo, keep)
+                        _debug(
+                            "CONTEXT_OVERFLOW",
+                            f"compaction dure (keep={keep}) : {cleared} résultat(s) d'outil "
+                            f"vidé(s), retry {overflow_retries}/{max_overflow_retries}.",
+                        )
+                        yield (
+                            "tool_result",
+                            {
+                                "name": "(compaction)",
+                                "ok": True,
+                                "preview": (
+                                    f"Contexte saturé : {cleared} ancien(s) résultat(s) "
+                                    "d'outil allégé(s) pour libérer de la place. Je reprends "
+                                    "où j'en étais."
+                                ),
+                            },
+                        )
+                        yield ("context_estimate", {"tokens": _ctx_est()})
+                        continue
+                    # ÉTAGE 3 : les tool results sont tous vidés et ça déborde encore -> ce
+                    # sont les TOURS du modèle qui saturent. On RÉSUME les vieux tours en un
+                    # bloc dense (anglais) et on poursuit, au lieu d'abandonner. Une seule
+                    # fois (max_summaries) ; borné pour ne pas boucler.
+                    # LOCAL UNIQUEMENT : un distant a une grande fenêtre + gère son propre
+                    # contexte/cache ; on ne réécrit pas son historique (cache-bust). S'il
+                    # déborde vraiment (rare), on tombe sur l'arrêt propre ci-dessous.
+                    if not self.is_remote(model) and summary_retries < max_summaries:
+                        summary_retries += 1
+                        # VISIBLE pendant le résumé (appel modèle bloquant, muet) : label
+                        # d'activité « compaction… » comme « le modèle tourne », sinon
+                        # l'UI paraît figée. Effacé dès que le tool_result/texte reprend.
+                        yield ("status", {"label": "compaction du contexte (résumé)…"})
+                        collapsed = self.summarize_old_turns(
+                            convo, model, keep_recent=6, budget_chars=30000
+                        )
+                        if collapsed:
+                            overflow_retries = (
+                                0  # convo réduit : le microcompact peut resservir
+                            )
+                            log_event(
+                                "guard",
+                                level="WARN",
+                                kind="context_summarized",
+                                collapsed=collapsed,
+                            )
+                            _debug(
+                                "CONTEXT_SUMMARY",
+                                f"{collapsed} ancien(s) tour(s) résumé(s) en un bloc, "
+                                "reprise à partir du résumé.",
+                            )
+                            yield (
+                                "tool_result",
+                                {
+                                    "name": "(résumé de session)",
+                                    "ok": True,
+                                    "preview": (
+                                        f"Contexte saturé : {collapsed} anciens tours "
+                                        "résumés en un bloc dense pour libérer de la place. "
+                                        "Je reprends à partir du résumé."
+                                    ),
+                                },
+                            )
+                            yield ("context_estimate", {"tokens": _ctx_est()})
+                            continue
+                    # ÉTAGE 4 : FORCE-FIT déterministe (AUCUN LLM) — on ne s'arrête JAMAIS
+                    # pour saturation. Le résumé a gardé des messages récents encore trop
+                    # gros ? On CLIPPE le contexte vivant sous un budget qui RÉTRÉCIT à chaque
+                    # passe (géométrique : contre l'erreur d'estimation chars/token et le cas
+                    # où même clippé ça re-déborde), puis on relance. Converge toujours.
+                    force_fits += 1
+                    shrink = max(0.12, 0.7**force_fits)
+                    base = compact_after_tokens or _ctx_est() or 8000
+                    budget = max(1500, int(base * 3 * shrink))
+                    _force_fit(convo, system_prompt, budget)
                     log_event(
                         "guard",
                         level="WARN",
-                        kind="context_overflow",
-                        retry=overflow_retries,
-                        cleared=cleared,
+                        kind="context_force_fit",
+                        force_fit=force_fits,
+                        est_tokens=_ctx_est(),
                     )
                     _debug(
-                        "CONTEXT_OVERFLOW",
-                        f"compaction dure (keep={keep}) : {cleared} résultat(s) d'outil vidé(s), "
-                        f"retry {overflow_retries}/{max_overflow_retries}.",
+                        "FORCE_FIT",
+                        f"passe {force_fits} : contexte clippé sous ~{budget} car. "
+                        f"(~{_ctx_est()} tokens), reprise.",
                     )
                     yield (
                         "tool_result",
                         {
-                            "name": "(compaction)",
+                            "name": "(compaction forcée)",
                             "ok": True,
                             "preview": (
-                                f"Contexte saturé : {cleared} ancien(s) résultat(s) d'outil "
-                                "résumé(s) pour libérer de la place. Je reprends où j'en étais."
+                                f"Contexte réduit de force (passe {force_fits}) pour tenir "
+                                "dans la fenêtre. Je continue."
                             ),
                         },
                     )
-                    continue
+                    yield ("context_estimate", {"tokens": _ctx_est()})
+                    if force_fits < 8:
+                        continue
+                    # Garde-fou ANTI-RUNAWAY : après 8 réductions géométriques (budget ~12 %
+                    # du seuil), si ça déborde ENCORE, c'est dégénéré (prompt système ~ la
+                    # fenêtre entière) — là seulement, on s'arrête pour ne pas boucler.
+                    yield (
+                        "content",
+                        "\n[génération interrompue : contexte irréductible même après "
+                        "compaction forcée — cas anormal (prompt système trop grand pour la "
+                        "fenêtre ?). Le travail déjà écrit est conservé.]",
+                    )
+                    return
                 # OVERFLOW : tool_call vraisemblablement tronqué par max_tokens (5xx ou
                 # erreur sans statut). On NE crashe PAS : on demande de découper et on
                 # relance (reprise bornée par max_overflow_retries), sinon stop propre.

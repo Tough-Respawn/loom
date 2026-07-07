@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Loom favicon : trame tissée (chaîne + trame), monochrome dark muté.
+       Fils verticaux et horizontaux qui passent DESSUS/DESSOUS en alternance (plain weave) :
+       on trace la trame, puis la chaîne par-dessus, puis on "recouvre" la chaîne aux
+       croisements où la trame doit repasser au-dessus -> effet tissé réel. -->
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="#20242c" stroke="#2c323e" stroke-width="1"/>
+  <g stroke="#b8c0cc" stroke-width="2.8" stroke-linecap="round" fill="none">
+    <!-- trame (horizontale) -->
+    <line x1="7" y1="9"  x2="25" y2="9"/>
+    <line x1="7" y1="16" x2="25" y2="16"/>
+    <line x1="7" y1="23" x2="25" y2="23"/>
+    <!-- chaîne (verticale) — passe au-dessus de la trame partout, pour l'instant -->
+    <line x1="9"  y1="7" x2="9"  y2="25"/>
+    <line x1="16" y1="7" x2="16" y2="25"/>
+    <line x1="23" y1="7" x2="23" y2="25"/>
+    <!-- recouvrements : aux croisements "trame dessus" (damier), on repose un segment
+         horizontal PAR-DESSUS la chaîne -> alternance dessus/dessous = tissage. -->
+    <line x1="5.5"  y1="9"  x2="12.5" y2="9"/>
+    <line x1="19.5" y1="9"  x2="26.5" y2="9"/>
+    <line x1="12.5" y1="16" x2="19.5" y2="16"/>
+    <line x1="5.5"  y1="23" x2="12.5" y2="23"/>
+    <line x1="19.5" y1="23" x2="26.5" y2="23"/>
+  </g>
+</svg>
