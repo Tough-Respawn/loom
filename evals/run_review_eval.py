@@ -78,7 +78,11 @@ def run_one(client, model, skill_body, case, cfg, perm, max_iters):
     system = f"{_CHAT}\n\n# Skill actif - code-review\n{skill_body}"
     convo = Conversation(system_prompt=system)
     traj = Trajectory()
-    with tempfile.TemporaryDirectory(prefix=f"loom_rev_{case.id}_") as tmp:
+    # ignore_cleanup_errors : cf. run_eval — un processus enfant qui tient encore le
+    # workspace au cleanup (Windows) ne doit pas avorter l'éval entière.
+    with tempfile.TemporaryDirectory(
+        prefix=f"loom_rev_{case.id}_", ignore_cleanup_errors=True
+    ) as tmp:
         registry = build_registry(
             workspace_dir=tmp,
             max_bytes=cfg.chat.read_file_max_bytes,
