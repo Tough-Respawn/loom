@@ -21,8 +21,11 @@ node_modules/
 # Traces de playwright-mcp (debug UI)
 .playwright-mcp/
 
-# Sorties des runs d'éval (transcripts, report.json, logs) — pas le harnais lui-même
-evals/out/
+# Sorties des runs d'éval (transcripts, report.json, logs) — pas le harnais lui-même.
+# EXCEPTION : les baselines épinglées par commit (out/history/) sont VERSIONNÉES —
+# c'est elles qui mesurent la dérive entre commits (résumés compacts, pas de transcripts).
+evals/out/*
+!evals/out/history/
 evals/out_review/
 # Claude Code config
 .claude/
