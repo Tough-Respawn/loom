@@ -69,9 +69,12 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
         text = _decode_text(data)
         if text is None:
             raise ToolError(f"fichier binaire non lisible : {rel}")
+        total_chars = len(text)
+        if total_chars == 0:
+            return f"[fichier vide : {rel}]"
+
         # Fenêtre de lecture (1-based, optionnelle) : lire un GROS fichier par TRANCHES
-        # plutôt que tout d'un coup -> on ne dépasse pas le contexte. Sans start_line on
-        # part du début ; on s'arrête à line_count lignes OU au cap de caractères.
+        # plutôt que tout d'un coup -> on ne dépasse jamais le contexte.
         try:
             start = int(args.get("start_line") or 1)
         except (TypeError, ValueError):
@@ -83,19 +86,65 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
             count = None if lc in (None, "") else int(lc)
         except (TypeError, ValueError):
             raise ToolError("line_count doit être un entier") from None
+        sc = args.get("start_char")
+        try:
+            start_char = None if sc in (None, "") else int(sc)
+        except (TypeError, ValueError):
+            raise ToolError("start_char doit être un entier (1-based)") from None
 
         lines = text.splitlines()
         total = len(lines)
         if total == 0:
             return f"[fichier vide : {rel}]"
-        if start > total:
+
+        # REPLI PAR CARACTÈRES : le découpage par lignes est inutile sur un fichier
+        # MONO-LIGNE (JSON/CSS/JS minifié = une ligne géante) — le cap `max_bytes` ne
+        # coupe qu'ENTRE lignes, donc une ligne de 74k passerait entière et saturerait le
+        # contexte. On bascule en lecture par CARACTÈRES si `start_char` est fourni, OU
+        # automatiquement dès qu'une ligne de la fenêtre dépasse le budget. Ainsi UNE
+        # lecture ne renvoie JAMAIS plus de `max_bytes` caractères.
+        if start > total and start_char is None:
             raise ToolError(f"start_line={start} hors fichier : {rel} a {total} lignes")
+        end_check = total if count is None else min(total, start - 1 + count)
+        longest = max((len(lines[i]) for i in range(start - 1, end_check)), default=0)
+        if start_char is not None or longest > max_bytes:
+            if start_char is None:
+                start_char = 1  # auto-bascule : on lit depuis le début, par caractères
+            if start_char < 1:
+                raise ToolError("start_char doit être >= 1 (1-based)")
+            if start_char > total_chars:
+                raise ToolError(
+                    f"start_char={start_char} hors fichier : {rel} a {total_chars} caractères"
+                )
+            chunk = text[start_char - 1 : start_char - 1 + max_bytes]
+            end_char = start_char - 1 + len(chunk)
+            head = (
+                f"[LECTURE PAR CARACTÈRES — {rel} est peu/pas découpé en lignes (ex. minifié) : "
+                "je le lis par tranches de caractères, pas par lignes.]\n"
+            )
+            if end_char >= total_chars:
+                footer = (
+                    f"\n[FIN DU FICHIER — caractères {start_char}–{total_chars} sur "
+                    f"{total_chars}.]"
+                )
+            else:
+                footer = (
+                    f"\n[affiché caractères {start_char}–{end_char} sur {total_chars} — le "
+                    f"FICHIER continue. Lis la SUITE avec read_file(path, "
+                    f"start_char={end_char + 1}).]"
+                )
+            return head + chunk + footer
+
+        # MODE LIGNES : sélection bornée par line_count ET par le cap de caractères. On
+        # coupe AVANT de dépasser `max_bytes` (jamais d'overshoot d'une ligne entière ; les
+        # lignes plus grosses que le budget sont déjà parties en mode caractères ci-dessus).
         end_limit = total if count is None else min(total, start - 1 + count)
-        # Sélection bornée par line_count ET par le cap de caractères (garde-fou contexte).
         selected: list[str] = []
         chars = 0
         i = start - 1
-        while i < end_limit and chars <= max_bytes:
+        while i < end_limit:
+            if selected and chars + len(lines[i]) + 1 > max_bytes:
+                break
             selected.append(lines[i])
             chars += len(lines[i]) + 1
             i += 1
@@ -131,8 +180,10 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
             "Lit un fichier texte (avec numéros de ligne) et le renvoie. Chemin relatif "
             "au dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/notes.txt'). "
             "GROS fichier : lis par TRANCHES avec start_line (et éventuellement "
-            "line_count) — le pied de réponse t'indique où continuer. Pour viser une "
-            "zone précise, fais d'abord search_text puis read_file(start_line=…)."
+            "line_count) — le pied de réponse t'indique où continuer. Fichier MINIFIÉ "
+            "(JSON/CSS/JS sur une seule ligne) : la lecture bascule AUTOMATIQUEMENT par "
+            "caractères ; continue alors avec start_char (le pied te donne la valeur). "
+            "Pour viser une zone précise, fais d'abord search_text puis read_file(start_line=…)."
         ),
         parameters={
             "type": "object",
@@ -156,6 +207,15 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
                     "description": (
                         "Nombre de lignes à lire depuis start_line (défaut : jusqu'à la "
                         "fin ou la limite de taille)."
+                    ),
+                },
+                "start_char": {
+                    "type": "integer",
+                    "description": (
+                        "Position de départ EN CARACTÈRES (1-based) pour les fichiers "
+                        "MINIFIÉS/mono-ligne où start_line ne découpe rien. En général "
+                        "inutile : la bascule est automatique — reprends la valeur donnée "
+                        "dans le pied « lis la suite avec start_char=… »."
                     ),
                 },
             },
