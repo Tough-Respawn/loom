@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Loom</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="alternate icon" href="/favicon.ico">
   <script>
     (function(){try{var t=localStorage.getItem('loom-theme');if(!t)t='dark';var a=localStorage.getItem('loom-accent');if(!a)a='green';document.documentElement.setAttribute('data-theme',t);document.documentElement.setAttribute('data-accent',a);}catch(e){}})();
   </script>
@@ -675,6 +677,16 @@
     .usage-meter .um-ctx.crit .um-ctx-bar i { background: var(--err); }
     .usage-meter .um-ctx.warn #um-ctx-pct { color: var(--warn); }
     .usage-meter .um-ctx.crit #um-ctx-pct { color: var(--err); }
+    .usage-meter .um-compact {
+      margin-left: 4px; padding: 1px 6px; font-size: 9.5px; font-weight: 600;
+      color: var(--text-faint); background: transparent;
+      border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+      line-height: 1.4;
+    }
+    .usage-meter .um-compact:hover { color: var(--text); border-color: var(--text-faint); }
+    .usage-meter .um-compact:disabled { opacity: 0.5; cursor: default; }
+    .usage-meter .um-ctx.warn .um-compact { color: var(--warn); border-color: var(--warn); }
+    .usage-meter .um-ctx.crit .um-compact { color: var(--err); border-color: var(--err); }
     .sidebar-toggle {
       display: none; background: var(--bg-elev); border: 1px solid var(--border);
       color: var(--text-dim); padding: 6px 10px; border-radius: 6px; cursor: pointer;
@@ -1063,6 +1075,8 @@
           <span class="um-ctx-sep">·</span> ctx
           <span class="um-ctx-bar"><i id="um-ctx-fill"></i></span>
           <span id="um-ctx-pct">0%</span>
+          <button type="button" class="um-compact" id="um-compact"
+                  title="Compacter maintenant : résume les vieux tours en un bloc dense pour libérer du contexte. Indisponible pendant une génération (la compaction automatique s'en charge alors) — affiche « génération en cours ».">compacter</button>
         </span>
       </span>
     </div>

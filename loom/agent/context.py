@@ -5,12 +5,6 @@ from __future__ import annotations
 
 from loom.utils import estimate_tokens
 
-SUMMARY_SYSTEM = "Tu résumes des conversations de façon concise et fidèle, en français."
-SUMMARY_INSTRUCTION = (
-    "Résume la conversation suivante en quelques phrases, en gardant les faits, décisions "
-    "et informations importantes. Voici la conversation :\n\n"
-)
-
 
 def effective_context_budget(
     configured_budget: int, context: int, max_tokens: int, margin: int = 512
@@ -47,43 +41,26 @@ def needs_summary(system_prompt: str, messages: list[dict], budget: int) -> bool
     return conversation_tokens(system_prompt, messages) > budget
 
 
-def _render(messages: list[dict]) -> str:
-    lines = []
-    for m in messages:
-        c = m["content"]
-        if isinstance(c, str):
-            text = c
-        else:
-            text = " ".join(p.get("text", "[image]") for p in c)
-        lines.append(f"{m['role']}: {text}")
-    return "\n".join(lines)
-
-
 def summarize(conversation, client, budget: int, keep_recent: int) -> bool:
-    """Si au-dessus du budget, remplace les vieux messages par un résumé. Renvoie True si résumé."""
+    """Résumé PRÉ-TOUR (proactif) : si l'historique dépasse `budget`, remplace les vieux
+    messages par un résumé dense. Renvoie True si un résumé a bien eu lieu.
+
+    Délègue à la PRIMITIVE UNIQUE `client.summarize_slice` (partagée avec l'étage de la
+    boucle d'outils et le bouton manuel) : anglais télégraphique, littéraux préservés,
+    strip du <think>, et FAIL-SOFT (modèle injoignable / API en erreur -> '' au lieu de
+    lever -> ici on renvoie False, plus jamais de 500 sur /chat comme le WinError 10061)."""
     msgs = conversation.messages
     if not needs_summary(conversation.system_prompt, msgs, budget):
         return False
     if len(msgs) <= keep_recent:
         return False
     old, recent = msgs[:-keep_recent], msgs[-keep_recent:]
-    prompt = SUMMARY_INSTRUCTION + _render(old)
-    # Le résumé tourne sur le modèle de la SESSION. Sans ça, stream_chat retombe sur le
-    # placeholder self.model = "local" (jamais chargé), que llama-swap rejette -> 500 sur
-    # /chat dès que le fil dépasse le budget de contexte.
     model = getattr(conversation, "model", None)
-    summary = "".join(
-        text
-        for kind, text in client.stream_chat(
-            [{"role": "user", "content": prompt}], SUMMARY_SYSTEM, model=model
-        )
-        if kind == "content"
-    )
+    summary = client.summarize_slice(old, model=model)
+    if not summary:
+        return False
     conversation.messages = [
-        {
-            "role": "user",
-            "content": f"[Résumé de la conversation précédente : {summary}]",
-        },
+        {"role": "user", "content": f"[Conversation summary so far: {summary}]"},
         *recent,
     ]
     return True

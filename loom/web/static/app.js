@@ -535,6 +535,15 @@ async function sendChat(sid, text, images) {
     lastEvtAt = Date.now();
     if (evt.type === "text" || evt.type === "reasoning" || evt.type === "tool_args")
       sawToken = true;
+    // Le vrai flux reprend -> lève un éventuel label forcé (ex. « compaction… »), sauf
+    // l'event `status` lui-même qui le pose/efface.
+    if (
+      evt.type === "text" ||
+      evt.type === "reasoning" ||
+      evt.type === "tool_result" ||
+      evt.type === "tool_call"
+    )
+      t.forcedActivity = null;
     switch (evt.type) {
       case "parallel":
         // Groupe d'outils lancés EN PARALLÈLE (distant) : on clôt les bulles en cours et on
@@ -650,6 +659,13 @@ async function sendChat(sid, text, images) {
         t.meter = evt;
         if (sid === state.active) updateUsageMeter(evt);
         break;
+      case "status":
+        // Signal d'activité explicite (ex. compaction en cours) : label FORCÉ, prioritaire
+        // sur la détection de silence du timer, affiché comme « le modèle tourne ». Effacé
+        // par un label vide, ou dès que le vrai flux reprend (content/reasoning/tool_result).
+        t.forcedActivity = evt.label || null;
+        if (sid === state.active) setGenActivity(t.forcedActivity);
+        break;
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (connexion à loom.web perdue ?)" });
         break;
@@ -660,6 +676,11 @@ async function sendChat(sid, text, images) {
   // pilotent pas) ; nettoyé au finally et à l'activation d'un autre onglet.
   const gaTimer = setInterval(() => {
     if (sid !== state.active) return;
+    // Label FORCÉ (compaction…) prioritaire sur la détection de silence.
+    if (t.forcedActivity) {
+      setGenActivity(t.forcedActivity);
+      return;
+    }
     const quiet = Date.now() - lastEvtAt > 2500;
     setGenActivity(
       t.streaming && quiet
@@ -1165,6 +1186,47 @@ function updateUsageMeter(t) {
   usageMeter.hidden = !(t.api_calls > 0 || t.tokens_in > 0 || t.tokens_out > 0);
 }
 updateUsageMeter(INIT.usage_totals);
+
+// Bouton « compacter » (près de la jauge de contexte) : résume les vieux tours en un bloc
+// dense pour libérer du contexte SANS attendre la saturation. Cible la session active de
+// l'onglet ; met à jour la jauge avec les compteurs renvoyés.
+const compactBtn = document.getElementById("um-compact");
+if (compactBtn) {
+  compactBtn.addEventListener("click", async () => {
+    const prev = compactBtn.textContent;
+    compactBtn.disabled = true;
+    compactBtn.textContent = "…";
+    // Feedback LISIBLE : un refus (429 = génération en cours) ou un « rien à compacter »
+    // clignotait 1,5 s et repartait -> on le ratait, d'où l'impression que « rien ne se
+    // passe ». On garde le message plus longtemps (surtout pour 429/erreur) et on le rend
+    // explicite. Pendant une génération, la compaction AUTO gère déjà le contexte.
+    let msg = "erreur",
+      hold = 3000;
+    try {
+      const data = state.active ? { session_id: state.active } : {};
+      const r = await postForm("/compact", data);
+      if (r.ok) {
+        const d = await r.json();
+        updateUsageMeter(d);
+        if (d.collapsed) {
+          msg = "✓ −" + d.collapsed;
+          hold = 1800;
+        } else {
+          msg = "déjà compact";
+        }
+      } else if (r.status === 429) {
+        msg = "génération en cours";
+      }
+    } catch (_e) {
+      msg = "erreur";
+    }
+    compactBtn.textContent = msg;
+    setTimeout(() => {
+      compactBtn.textContent = prev;
+      compactBtn.disabled = false;
+    }, hold);
+  });
+}
 
 // --- drawer réglages ---
 const settingsBtn = document.getElementById("settings-btn");
