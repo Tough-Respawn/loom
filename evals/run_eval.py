@@ -527,11 +527,55 @@ def _injection_tests() -> bool:
         convo[4]["content"]
     )
 
+    # 4b. Microcompact SÉLECTIF : les petits résultats (preuves denses : erreur courte,
+    #     accusé d'écriture) SURVIVENT ; seuls les gros dumps sont vidés.
+    convo_s = [
+        {
+            "role": "tool",
+            "tool_call_id": "a",
+            "content": "erreur: exit=1 (module manquant)",
+        },
+        {"role": "tool", "tool_call_id": "b", "content": "gros dump de fichier " * 100},
+        {"role": "tool", "tool_call_id": "c", "content": "modifié : calc.py"},
+    ]
+    cleared_s = _microcompact_tools(convo_s, keep_recent_tools=0)
+    checks["microcompact sélectif : petites preuves gardées"] = (
+        cleared_s == 1
+        and "exit=1" in convo_s[0]["content"]
+        and convo_s[2]["content"] == "modifié : calc.py"
+    )
+
     # 5. Force-fit : converge TOUJOURS sous le budget (dernier recours anti-saturation),
     #    sans jamais descendre sous 2 messages.
     convo2 = [{"role": "user", "content": "x" * 20000} for _ in range(10)]
     ok_fit = _force_fit(convo2, "system", 5000)
     checks["force-fit converge sous budget"] = ok_fit and len(convo2) >= 2
+
+    # 5b. Force-fit SÉLECTIF : la TÂCHE COURANTE (dernier user, hors notes '[harnais')
+    #     reste INTACTE tant qu'il reste autre chose à réduire.
+    task = "Lis le fichier facts.txt et donne le code d'accès."
+    convo3 = [
+        {"role": "user", "content": "ballast archivé " * 2000},
+        {"role": "assistant", "content": "ballast archivé " * 2000},
+        {"role": "user", "content": task},
+        {"role": "user", "content": "[harnais : note de recentrage]"},
+    ]
+    _force_fit(convo3, "system", 4000)
+    checks["force-fit préserve la tâche courante"] = any(
+        m.get("content") == task for m in convo3
+    )
+
+    # 5c. Force-fit clippe TÊTE+QUEUE : la fin d'un long contenu (conclusion, erreur)
+    #     survit au clip, pas seulement son début.
+    convo4 = [
+        {"role": "assistant", "content": "DEBUT " + "x" * 10000 + " FIN"},
+        {"role": "user", "content": "tâche"},
+    ]
+    _force_fit(convo4, "", 6000)
+    c4 = str(convo4[0]["content"])
+    checks["force-fit garde tête ET queue"] = c4.startswith("DEBUT") and c4.endswith(
+        "FIN"
+    )
 
     ok = all(checks.values())
     print("INJECTION des garde-fous (payloads cassés, aucun modèle requis)\n")
