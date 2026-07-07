@@ -38,8 +38,14 @@ def git_show(rel: str) -> str:
 
 
 def load_eval_config():
-    """Charge la config Loom depuis les fichiers standard."""
-    return load_config(_RT / "loom.config.toml", _RT / "loom.config.personnel.toml")
+    """Charge la config Loom depuis les fichiers standard.
+
+    La config vit à la racine du repo (`config/defaults.toml` versionné +
+    `config/local.toml` surcharge machine, gitignored) depuis le refactor repo-layout ;
+    l'ancien chemin `loom/loom.config.toml` n'existe plus.
+    """
+    _cfg = _ROOT / "config"
+    return load_config(_cfg / "defaults.toml", _cfg / "local.toml")
 
 
 def make_client(cfg, model: str) -> tuple[LoomClient, str]:
