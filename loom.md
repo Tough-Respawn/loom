@@ -45,7 +45,7 @@ from-claude-to-local-haranessed-llm/
 │   │   ├── skills.py plugins.py         # use_skill, list/add/install plugins
 │   │   └── trust.py                     # frontière de confiance (ingestion)
 │   ├── extend/                # skills (catalogue + use_skill) + store plugins (compatible Claude Code)
-│   ├── prompts/               # prompts système .md (chat.system, subagent, reflect) + identity/ (SOUL/USER/MEMORY)
+│   ├── prompts/               # prompts système .md EN ANGLAIS (chat.system, subagent, reflect) — instructions EN, réponse FR imposée ; POLITIQUE seule (la mécanique des outils vit dans les schémas) + identity/ (SOUL/USER/MEMORY)
 │   ├── runtime/               # serve.py (lanceur llama.cpp auto-adaptatif + regen swap yaml), swap.py, hardware.py, server_args.py, models_fetch.py, models_profile.py, platform_info.py (détection OS), sysmon.py (moniteur CPU/RAM/GPU), config_schema.py (introspection config pour la console), model_store.py (store des modèles distants gérés par l'UI)
 │   ├── memory/                # provider SQLite FTS5 (local.py) + identity.py
 │   ├── models/                # découvertes par dossier <id>/ (model.toml + profile.md + GGUF gitignoré) ; _TEMPLATE/ suivi
@@ -80,7 +80,7 @@ Deux processus : `serve.py` = moteur llama.cpp (lance llama-swap avec `-watch-co
 
 ```powershell
 uv run python -m evals.run_eval --self-test      # hors-ligne : valide les graders sans modèle
-uv run python -m evals.run_eval --runs 3         # A/B ancien vs nouveau prompt
+uv run python -m evals.run_eval --runs 3 --model qwen3.6-35b-a3b-abliterated   # A/B git HEAD vs disque (le default_model est un distant → forcer le local)
 uv run python -m evals.run_review_eval           # éval du skill code-review
 ```
 
@@ -92,6 +92,8 @@ uv run python -m evals.run_review_eval           # éval du skill code-review
 - **Config** : `config/defaults.toml` (versionné) + `config/local.toml` (surcharge machine, gitignored). Overrides GPU et chemins binaires dans `local.toml`.
 - **Modèles** : découverts par dossier `loom/models/<id>/`, GGUF jamais versionné. `config/defaults.toml` → `[chat] default_model` choisit celui chargé au démarrage.
 - **Front** : zéro build, libs JS vendorées dans `loom/web/static/` (Preact, htm, marked, MathJax, DOMPurify, htmx).
+- **Prompts en ANGLAIS** (`chat.system.md`, `subagent.system.md`) : instructions EN (denses), **réponse dans la langue de l'utilisateur — FR par défaut, imposée dans le prompt**. Bascule validée par A/B (`evals/`).
+- **Un gotcha d'outil se met dans le SCHÉMA de l'outil** (`ToolSpec(description=…)`), pas dans le prompt : le prompt ne porte que la politique. Les schémas (aussi en anglais) sont la source unique de la mécanique.
 - **CI/CD** : aucune CI propre au projet détectée (pas de `.github/` à la racine du repo).
 
 ## Points d'attention
@@ -102,4 +104,6 @@ uv run python -m evals.run_review_eval           # éval du skill code-review
 - **Pas de suite de tests** : la non-régression repose sur smokes + ruff + Playwright + les évals, pas sur pytest.
 - **Pas de LICENSE** détectée à la racine.
 - **Banc d'éval complet** (juge LLM, métriques) : design figé (`docs/superpowers/specs/`), construction différée.
+- **Éval** : `default_model` de config est un distant → forcer `--model qwen…` pour évaluer le local (seul à révéler une régression du prompt). Le jeu de cas **n'exerce pas `dispatch_agent`** → le prompt sous-agent n'est pas encore testé par l'A/B.
+- **Machine de dev** : RTX 2060 (6 Go VRAM) + **~32 Go RAM** (pas 64 — barrette non installée/détectée) : contraint la taille des modèles chargeables.
 - **Tranches plugins à venir** : hooks (PostToolUse, exécute du code tiers → porte de confiance) et agents (personas dispatchables).
