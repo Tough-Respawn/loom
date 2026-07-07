@@ -2,7 +2,7 @@
 
 <!-- RÔLE : suivi interne (livré, état technique, reste/pistes, conventions). Pitch public : README.md. Carte technique : loom.md. Historique versions : CHANGELOG.md. -->
 
-> Dernière mise à jour : 2026-06-09
+> Dernière mise à jour : 2026-07-07
 
 Agent IA **local, multimodal et offline** : un modèle open-source rendu réellement utile par
 un **harness tool-use** — la boucle qui lui donne des outils et la logique de les enchaîner.
@@ -38,7 +38,8 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
 - Chat web Flask + **Preact/htm** (déclaratif, zéro build), **streaming SSE**, markdown rendu.
 - **Sessions** : un fil persistant par projet (historique + outils actifs), CRUD depuis l'UI,
   **titre inféré** par le modèle (plus de « Nouvelle session »).
-- **Résumé auto** du contexte (`context.py`) quand l'historique devient long.
+- **Compaction du contexte** multi-étages (microcompact → résumé → force-fit) — locale
+  uniquement, visible dans le fil, ne s'arrête jamais pour saturation (cf. « Prompts & contexte »).
 - **Vision** (coller un screenshot ou `read_image`), **thinking** togglable, **interruption**
   (nouvelle soumission = stop net), **multi-modèles** (sélecteur + `swap.py`).
 
@@ -60,6 +61,35 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
 - **Politique de décision + séquencement** dans `loom/prompts/chat.system.md`.
 - **Garde-fous de boucle** non-bloquants : plafond de tours + détecteur de non-progrès
   (mêmes appels répétés → stop). **Pas de mur de temps** (retiré : décapitait le raisonnement).
+
+### Prompts & contexte (juillet 2026)
+- **Prompts système en ANGLAIS** (`chat.system.md`, `subagent.system.md`) : instructions EN
+  (plus denses en tokens), **réponse imposée dans la langue de l'utilisateur — FR par défaut**.
+  Validé par A/B sur `evals/` (EN **15/18** > FR **13/18** sur le qwen local).
+- **Mécanique des outils dans les SCHÉMAS**, plus dans le prompt : le prompt ne garde que la
+  **politique** (quand utiliser quoi, séquences, règles d'or) ; les gotchas (gros fichier →
+  append, serveur → serve_and_check, etc.) vivent dans le `description` des `ToolSpec`, aussi
+  passés en anglais. Prompt chat **~40 % plus court** (~3810 → ~2280 tokens) ; A/B de
+  confirmation **18/18 = 18/18**, aucune régression. → **Convention** : un gotcha d'outil
+  s'écrit dans le schéma de l'outil, PAS dans le prompt.
+- **Compaction durcie** (LOCALE uniquement — un distant gère son cache) : primitive unique
+  `client.summarize_slice` (résumé anglais télégraphique, **fail-soft** : injoignable → skip,
+  plus de 500) ; étage **force-fit déterministe** = ne s'arrête JAMAIS pour saturation (clippe
+  pour tenir) ; **bouton « compacter » manuel** instantané (aucun appel modèle) ; jauge de
+  contexte MAJ en temps réel ; seuil de résumé pré-tour corrigé (il partait à chaque message,
+  comparé à un budget < prompt système). Visible dans le fil (label « compaction… »).
+- **`edit_file` : matching agnostique CRLF/LF** — `read_file` montre du LF, le fichier disque
+  est souvent CRLF (Windows) → toute édition multi-ligne échouait ; on normalise en LF pour
+  matcher, on ré-applique le style d'origine à l'écriture.
+- **`read_file` : repli par plage de caractères** (`start_char`) pour les fichiers mono-ligne
+  (JSON/CSS/JS minifiés) — une lecture ne renvoie jamais plus que le cap.
+- **Garde-éveil système** (`loom/runtime/stay_awake.py`) : pas de veille par inactivité pendant
+  une génération (écran éteignable, le travail continue). No-op hors Windows.
+- **Favicon** (trame tissée SVG) + route `/favicon.ico`.
+- **Harnais d'éval réparé** : chemin config (`config/`), lancer avec
+  `--model qwen3.6-35b-a3b-abliterated` (le `default_model` est un distant). A/B = HEAD (git)
+  vs disque. Grader `edit_block` jugé sur l'**E2E** (« zéro échec » informatif). **Trou connu** :
+  le jeu de cas n'exerce PAS `dispatch_agent` (le sous-agent n'est pas testé).
 
 ### Skills & plugins
 - **Skills déclenchés par le modèle** (`loom/extend/skills.py`) : le prompt système annonce un
@@ -83,6 +113,11 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
 ## État technique
 - **Pas de suite de tests** (choix produit) : vérification par **smokes** (`uv run python -c`),
   **ruff**, et **Playwright** pour le rendu. Branche de référence : `master`.
+- **Éval prompts opérationnelle** : `uv run python -m evals.run_eval --runs 3 --model qwen3.6-35b-a3b-abliterated`
+  (serveur modèle `:8080` requis). Plancher : tous les cas passent **18/18** après les fixes de juillet.
+- **Machine de dev** : 6 Go VRAM (RTX 2060) + **~32 Go RAM** (⚠️ pas 64 : upgrade non installé/détecté).
+- **Plus de tout-petit modèle** (4B abandonnés) → on peut se fier aux schémas d'outils (le
+  modèle les lit), d'où la délégation prompt → schéma.
 
 ## Reste / pistes
 1. **Banc d'éval** (design figé, `docs/superpowers/specs/2026-06-09-loom-banc-eval.md`) :
