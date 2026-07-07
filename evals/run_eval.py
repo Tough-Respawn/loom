@@ -418,8 +418,88 @@ def report(all_results: dict, runs: int):
 # --- self-test (sans modèle) -------------------------------------------------
 
 
+def _injection_tests() -> bool:
+    """Tests DÉTERMINISTES des garde-fous du harnais, par INJECTION de payloads cassés.
+
+    Ces chemins (JSON d'appel malformé, appel émis en texte, dégénérescence en boucle,
+    compaction) ne se testent PAS en E2E : on ne force pas un modèle stochastique à
+    produire un appel cassé à la demande. On injecte donc directement les payloads
+    dans les fonctions de garde (même patron que les trajectoires synthétiques)."""
+    from loom.agent.client import (
+        _force_fit,
+        _microcompact_tools,
+        _safe_args,
+        _salvage_tool_calls,
+        _scan_repeat,
+    )
+
+    checks: dict[str, bool] = {}
+
+    # 1. JSON d'appel TRONQUÉ (réponse coupée par max_tokens) : l'historique doit rester
+    #    sain ({}), sinon chaque requête suivante casse en 500 parse error (cascade).
+    checks["JSON cassé -> args remis à {}"] = (
+        _safe_args('{"path": "a.py", "old') == "{}"
+    )
+    checks["JSON valide -> conservé"] = (
+        _safe_args('{"path": "a.py"}') == '{"path": "a.py"}'
+    )
+
+    # 2. Appel d'outil émis EN TEXTE (channel structuré vide) : le filet doit le
+    #    reconstruire depuis les deux formats connus (Hermes/JSON et XML-ish).
+    hermes = 'bla <tool_call>{"name": "read_file", "arguments": {"path": "x.py"}}</tool_call>'
+    got = _salvage_tool_calls(hermes, "")
+    checks["salvage Hermes/JSON"] = bool(got) and got[0]["name"] == "read_file"
+    xmlish = (
+        "<function=run_shell><parameter=command>Get-ChildItem</parameter></function>"
+    )
+    got = _salvage_tool_calls("", xmlish)
+    checks["salvage XML-ish"] = bool(got) and got[0]["name"] == "run_shell"
+    checks["texte sans appel -> rien"] = (
+        _salvage_tool_calls("bonjour, voilà.", "") == []
+    )
+
+    # 3. Dégénérescence en BOUCLE (même longue ligne répétée) : coupe au seuil ; les
+    #    courtes lignes de code répétées (`},`) ne déclenchent pas.
+    counts: dict[str, int] = {}
+    loop_line = "Je vais maintenant créer les fichiers du projet.\n"
+    hit = None
+    for _ in range(12):
+        _, hit = _scan_repeat(loop_line, counts)
+        if hit:
+            break
+    checks["boucle détectée au seuil"] = hit is not None
+    counts2: dict[str, int] = {}
+    _, hit2 = _scan_repeat("},\n" * 50, counts2)
+    checks["lignes courtes de code ignorées"] = hit2 is None
+
+    # 4. Microcompact : vide les VIEUX résultats d'outils, garde les N derniers intacts.
+    convo = [
+        {"role": "tool", "tool_call_id": str(i), "content": f"gros résultat {i}" * 50}
+        for i in range(5)
+    ]
+    cleared = _microcompact_tools(convo, keep_recent_tools=2)
+    checks["microcompact vide les vieux"] = cleared == 3 and "gros résultat 4" in str(
+        convo[4]["content"]
+    )
+
+    # 5. Force-fit : converge TOUJOURS sous le budget (dernier recours anti-saturation),
+    #    sans jamais descendre sous 2 messages.
+    convo2 = [{"role": "user", "content": "x" * 20000} for _ in range(10)]
+    ok_fit = _force_fit(convo2, "system", 5000)
+    checks["force-fit converge sous budget"] = ok_fit and len(convo2) >= 2
+
+    ok = all(checks.values())
+    print("INJECTION des garde-fous (payloads cassés, aucun modèle requis)\n")
+    for name, v in checks.items():
+        print(f"  [{'ok' if v else 'XX'}] {name}")
+    print()
+    return ok
+
+
 def self_test():
-    """Valide que chaque grader s'exécute et renvoie un dict[str,bool], sans modèle."""
+    """Valide que chaque grader s'exécute et renvoie un dict[str,bool], sans modèle,
+    et exécute les tests d'injection des garde-fous du harnais."""
+    guards_ok = _injection_tests()
     print("SELF-TEST des graders (aucun modèle requis)\n")
     # Trajectoire synthétique « bon agent » minimale.
     traj = Trajectory(
@@ -451,6 +531,7 @@ def self_test():
             except Exception as e:
                 ok = False
                 print(f"  [XX] {case.id}: {type(e).__name__}: {e}")
+    ok = ok and guards_ok
     print("\nSELF-TEST", "VERT" if ok else "ROUGE")
     return ok
 
