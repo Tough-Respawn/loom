@@ -203,32 +203,45 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
         if path.is_dir():
             raise ToolError(f"'{rel}' est un répertoire, pas un fichier")
         try:
-            text = path.read_bytes().decode("utf-8")
+            raw = path.read_bytes().decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ToolError(f"fichier binaire non éditable : {rel}") from exc
+        # Matching AGNOSTIQUE aux fins de ligne. read_file montre du LF (splitlines) -> le
+        # modèle copie un old_string en LF, alors que le fichier sur disque est souvent CRLF
+        # (Windows). AVANT, `text.count(old_string)` échouait sur tout extrait multi-ligne
+        # d'un fichier CRLF. On normalise TOUT en LF pour chercher/remplacer, puis on
+        # ré-applique le style du fichier (CRLF) à l'écriture -> l'édition marche quel que
+        # soit le style, et le fichier garde ses fins de ligne d'origine.
+        is_crlf = "\r\n" in raw
+        text = raw.replace("\r\n", "\n")
+        old_string = old_string.replace("\r\n", "\n")
+        new_string = new_string.replace("\r\n", "\n")
         count = text.count(old_string)
         if count == 0:
-            crlf = old_string.replace("\n", "\r\n")
-            if crlf != old_string and crlf in text:
-                hint = " — le fichier est en CRLF, mets des \\r\\n dans old_string"
-            else:
-                hint = (
-                    " — old_string doit être COPIÉ TEL QUEL du fichier (indentation et "
-                    "espaces EXACTS). Si tu veux AJOUTER du code à la FIN (compléter un "
-                    "fichier), n'utilise PAS edit_file : utilise append_file."
-                )
-            raise ToolError(f"old_string introuvable dans {rel}{hint}")
+            raise ToolError(
+                f"old_string introuvable dans {rel} — copie l'extrait EXACT du fichier "
+                "(indentation et espaces au caractère près). Pour AJOUTER du code à la FIN, "
+                "utilise append_file, pas edit_file."
+            )
         if count > 1 and not replace_all:
             locs = ", ".join(str(n) for n in _occurrence_lines(text, old_string)[:12])
             raise ToolError(
                 f"old_string ambigu : {count} occurrences (lignes {locs}) dans {rel}. "
                 "Ajoute du contexte pour rendre old_string unique, OU passe replace_all=true."
             )
-        if replace_all:
-            _atomic_write(path, text.replace(old_string, new_string))
-            return f"modifié : {rel} ({count} occurrence(s))"
-        _atomic_write(path, text.replace(old_string, new_string, 1))
-        return f"modifié : {rel}"
+        result = (
+            text.replace(old_string, new_string)
+            if replace_all
+            else text.replace(old_string, new_string, 1)
+        )
+        if is_crlf:
+            result = result.replace("\n", "\r\n")
+        _atomic_write(path, result)
+        return (
+            f"modifié : {rel} ({count} occurrence(s))"
+            if replace_all
+            else f"modifié : {rel}"
+        )
 
     return ToolSpec(
         name="edit_file",
@@ -267,4 +280,3 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
         },
         run=run,
     )
-
