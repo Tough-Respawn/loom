@@ -257,7 +257,13 @@ def run_variant(
             continue
         runs_data = []
         for k in range(runs):
-            with tempfile.TemporaryDirectory(prefix=f"loom_eval_{case.id}_") as tmp:
+            # ignore_cleanup_errors : sous Windows, un processus lancé par l'agent
+            # (run_shell, navigateur de check_page) peut encore tenir le workspace au
+            # cleanup -> WinError 32 qui AVORTAIT toute l'éval. Un dossier temp orphelin
+            # est acceptable ; perdre le run ne l'est pas.
+            with tempfile.TemporaryDirectory(
+                prefix=f"loom_eval_{case.id}_", ignore_cleanup_errors=True
+            ) as tmp:
                 ws = Path(tmp)
                 case.setup(ws)
                 traj = run_one(
