@@ -239,11 +239,21 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
         if is_crlf:
             result = result.replace("\n", "\r\n")
         _atomic_write(path, result)
-        return (
+        msg = (
             f"modifié : {rel} ({count} occurrence(s))"
             if replace_all
             else f"modifié : {rel}"
         )
+        # Read-back CONDITIONNEL (édits à risque seulement : multi-ligne ou gros bloc).
+        # Systématique, il gonflerait tours/tokens sur chaque petit édit ; ciblé, il
+        # coupe le cycle « edit -> affirme -> faux » sans re-lire tout le fichier.
+        if "\n" in old_string or "\n" in new_string or len(new_string) > 200:
+            line = _occurrence_lines(text, old_string)[0]
+            msg += (
+                f" — édition multi-ligne : relis la zone modifiée (read_file, "
+                f"start_line {line}) pour VÉRIFIER avant d'affirmer que c'est bon."
+            )
+        return msg
 
     return ToolSpec(
         name="edit_file",
