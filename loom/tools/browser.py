@@ -311,15 +311,13 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="check_page",
         description=(
-            "Charge une page web (URL http(s):// OU chemin d'un fichier .html local) dans "
-            "un navigateur headless, EXECUTE son JavaScript, et renvoie : les ERREURS de "
-            "la console, le nombre d'éléments correspondant a count_selectors (ex "
-            "'.cell,#board'), et un extrait du texte visible. SERS-T'EN pour VERIFIER "
-            "qu'une page HTML que tu viens d'ecrire s'affiche et fonctionne (0 erreur "
-            "console, éléments attendus presents) AU LIEU de supposer que ca marche. Pour "
-            "une appli servie par un SERVEUR (Next.js, Vite, Flask) qui n'est pas encore "
-            "lance, utilise plutot serve_and_check. Si des erreurs apparaissent, corrige "
-            "puis relance jusqu'a 0 erreur."
+            "Loads a web page (http(s):// URL OR path to a local .html file) in a headless "
+            "browser, EXECUTES its JavaScript, and returns: the console ERRORS, the number of "
+            "elements matching count_selectors (e.g. '.cell,#board'), and an excerpt of the "
+            "visible text. USE IT to VERIFY that an HTML page you just wrote renders and works "
+            "(0 console errors, expected elements present) INSTEAD of assuming it works. For an "
+            "app served by a SERVER (Next.js, Vite, Flask) that isn't started yet, use "
+            "serve_and_check instead. If errors show up, fix them then rerun until 0 errors."
         ),
         parameters={
             "type": "object",
@@ -327,21 +325,21 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
                 "url": {
                     "type": "string",
                     "description": (
-                        "URL http(s):// ou chemin d'un fichier .html (relatif au dossier "
-                        "de travail ou absolu)."
+                        "http(s):// URL or path to a .html file (relative to the working "
+                        "directory or absolute)."
                     ),
                 },
                 "wait_selector": {
                     "type": "string",
                     "description": (
-                        "Selecteur CSS a attendre avant de lire la page (optionnel)."
+                        "CSS selector to wait for before reading the page (optional)."
                     ),
                 },
                 "count_selectors": {
                     "type": "string",
                     "description": (
-                        "Selecteurs CSS a compter, separes par des virgules (ex "
-                        "'.cell,.flag') - pour vérifier que des éléments sont bien rendus."
+                        "CSS selectors to count, comma-separated (e.g. "
+                        "'.cell,.flag') - to verify that elements are actually rendered."
                     ),
                 },
             },
@@ -476,7 +474,9 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
             # Echec de démarrage : diag depuis le log, puis on tue et on nettoie.
             try:
                 logf.flush()
-                tail = Path(logpath).read_text(encoding="utf-8", errors="replace")[-1200:]
+                tail = Path(logpath).read_text(encoding="utf-8", errors="replace")[
+                    -1200:
+                ]
             except OSError:
                 tail = ""
             if proc.poll() is not None:
@@ -516,17 +516,17 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="serve_and_check",
         description=(
-            "Gere le CYCLE DE VIE d'un serveur local pour prouver qu'une appli a SERVEUR "
-            "(Next.js, Vite, Flask...) s'affiche/marche. run_shell ne peut PAS garder un "
-            "serveur vivant (il le tue au timeout) et NE lance JAMAIS un serveur toi-meme via "
-            "Start-Process/start (ca ouvre le .ps1 dans un éditeur et ne survit pas) : passe "
-            "TOUJOURS par cet outil.\n"
-            "action='start' (defaut) : démarre 'command' en arrière-plan, attend que 'url' "
-            "reponde, charge la page en navigateur headless (erreurs console, éléments, texte) "
-            "et LAISSE LE SERVEUR VIVANT -> tu peux ensuite tester d'AUTRES pages du meme "
-            "serveur (check_page/check_interactive, ou serve_and_check sur une autre url). "
-            "action='stop' : arrête le serveur d'id donne (ou TOUS si pas d'id) -> fais-le "
-            "QUAND TU AS TA REPONSE. Pour une page .html STATIQUE (sans serveur), prefere "
+            "Manages the LIFECYCLE of a local server to prove that a SERVER-backed app "
+            "(Next.js, Vite, Flask...) renders/works. run_shell CANNOT keep a server alive "
+            "(it kills it at the timeout) and NEVER start a server yourself via "
+            "Start-Process/start (that opens the .ps1 in an editor and doesn't survive): ALWAYS "
+            "go through this tool.\n"
+            "action='start' (default): starts 'command' in the background, waits for 'url' to "
+            "respond, loads the page in a headless browser (console errors, elements, text) "
+            "and LEAVES THE SERVER ALIVE -> you can then test OTHER pages of the same server "
+            "(check_page/check_interactive, or serve_and_check on another url). "
+            "action='stop': stops the server with the given id (or ALL if no id) -> do it "
+            "WHEN YOU HAVE YOUR ANSWER. For a STATIC .html page (no server), prefer "
             "check_page."
         ),
         parameters={
@@ -536,52 +536,52 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                     "type": "string",
                     "enum": ["start", "stop"],
                     "description": (
-                        "'start' (defaut) démarre+vérifie+laissé vivant ; 'stop' ferme un "
-                        "serveur laissé vivant (via id, ou tous si id absent)."
+                        "'start' (default) starts+checks+leaves alive; 'stop' closes a "
+                        "server left alive (via id, or all if id absent)."
                     ),
                 },
                 "id": {
                     "type": "string",
                     "description": (
-                        "Pour action='stop' : id du serveur a fermer (rendu au 'start', ex. "
-                        "'srv1'). Absent = ferme TOUS les serveurs laisses vivants."
+                        "For action='stop': id of the server to close (returned by 'start', "
+                        "e.g. 'srv1'). Absent = closes ALL servers left alive."
                     ),
                 },
                 "command": {
                     "type": "string",
                     "description": (
-                        "action='start' : commande qui démarre le serveur (ex. 'npm run dev "
-                        "-- --port 3000'). Lancee en arrière-plan, laissée vivante."
+                        "action='start': command that starts the server (e.g. 'npm run dev "
+                        "-- --port 3000'). Launched in the background, left alive."
                     ),
                 },
                 "url": {
                     "type": "string",
                     "description": (
-                        "action='start' : URL http(s):// ou joindre le serveur (ex. "
+                        "action='start': http(s):// URL where to reach the server (e.g. "
                         "'http://127.0.0.1:3000')."
                     ),
                 },
                 "cwd": {
                     "type": "string",
                     "description": (
-                        "Dossier ou lancer la commande (relatif au dossier de travail ou "
-                        "absolu). Defaut : le dossier de travail."
+                        "Directory where to run the command (relative to the working "
+                        "directory or absolute). Default: the working directory."
                     ),
                 },
                 "wait_selector": {
                     "type": "string",
-                    "description": "Selecteur CSS a attendre avant de lire la page (optionnel).",
+                    "description": "CSS selector to wait for before reading the page (optional).",
                 },
                 "count_selectors": {
                     "type": "string",
                     "description": (
-                        "Selecteurs CSS a compter, separes par des virgules (ex '.card,nav')."
+                        "CSS selectors to count, comma-separated (e.g. '.card,nav')."
                     ),
                 },
                 "ready_timeout": {
                     "type": "integer",
                     "description": (
-                        "Secondes max d'attente que le port reponde (defaut 45, max 120)."
+                        "Max seconds to wait for the port to respond (default 45, max 120)."
                     ),
                 },
             },
@@ -792,22 +792,22 @@ def make_check_interactive(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="check_interactive",
         description=(
-            "Prouve qu'une page HTML est JOUABLE : joue une sequence d'actions reelles "
-            "(click, rightclick, dblclick, hover, type) sur des sélecteurs CSS et vérifie, "
-            "APRES chaque action, une post-condition dans le DOM. Va plus loin que check_page "
-            "(qui ne fait que charger). Utilise-le pour prouver « cliquer une cellule la "
-            "révèle », « clic droit pose un drapeau », « restart réinitialise »."
+            "Proves that an HTML page is PLAYABLE: plays a sequence of real actions "
+            "(click, rightclick, dblclick, hover, type) on CSS selectors and checks, "
+            "AFTER each action, a post-condition in the DOM. Goes further than check_page "
+            "(which only loads). Use it to prove 'clicking a cell reveals it', 'right-click "
+            "places a flag', 'restart resets'."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "Page HTML (chemin .html ou URL).",
+                    "description": "HTML page (.html path or URL).",
                 },
                 "steps": {
                     "type": "array",
-                    "description": "Actions a jouer dans l'ordre.",
+                    "description": "Actions to play in order.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -824,15 +824,15 @@ def make_check_interactive(workspace_dir: str) -> ToolSpec:
                             },
                             "selector": {
                                 "type": "string",
-                                "description": "Cible CSS de l'action.",
+                                "description": "CSS target of the action.",
                             },
                             "text": {
                                 "type": "string",
-                                "description": "Texte a saisir (op=type).",
+                                "description": "Text to enter (op=type).",
                             },
                             "expect": {
                                 "type": "object",
-                                "description": "Post-condition DOM apres l'action.",
+                                "description": "DOM post-condition after the action.",
                                 "properties": {
                                     "selector": {"type": "string"},
                                     "check": {

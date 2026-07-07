@@ -177,13 +177,13 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
     return ToolSpec(
         name="read_file",
         description=(
-            "Lit un fichier texte (avec numéros de ligne) et le renvoie. Chemin relatif "
-            "au dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/notes.txt'). "
-            "GROS fichier : lis par TRANCHES avec start_line (et éventuellement "
-            "line_count) — le pied de réponse t'indique où continuer. Fichier MINIFIÉ "
-            "(JSON/CSS/JS sur une seule ligne) : la lecture bascule AUTOMATIQUEMENT par "
-            "caractères ; continue alors avec start_char (le pied te donne la valeur). "
-            "Pour viser une zone précise, fais d'abord search_text puis read_file(start_line=…)."
+            "Reads a text file (with line numbers) and returns it. Path relative to the "
+            "working directory OR absolute (e.g. 'C:/Users/moi/Desktop/notes.txt'). "
+            "LARGE file: read it in CHUNKS with start_line (and optionally line_count) — "
+            "the response footer tells you where to continue. MINIFIED file (JSON/CSS/JS "
+            "on a single line): reading switches AUTOMATICALLY to characters; then "
+            "continue with start_char (the footer gives you the value). To target a "
+            "precise area, first run search_text then read_file(start_line=…)."
         ),
         parameters={
             "type": "object",
@@ -191,31 +191,31 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
                 "path": {
                     "type": "string",
                     "description": (
-                        "Chemin du fichier : relatif au dossier de travail ou absolu "
-                        "(ex: 'C:/Users/moi/notes.txt')."
+                        "File path: relative to the working directory or absolute "
+                        "(e.g. 'C:/Users/moi/notes.txt')."
                     ),
                 },
                 "start_line": {
                     "type": "integer",
                     "description": (
-                        "Première ligne à lire (1-based, défaut 1). Pour lire la suite "
-                        "d'un gros fichier déjà entamé."
+                        "First line to read (1-based, default 1). To read the rest of a "
+                        "large file already started."
                     ),
                 },
                 "line_count": {
                     "type": "integer",
                     "description": (
-                        "Nombre de lignes à lire depuis start_line (défaut : jusqu'à la "
-                        "fin ou la limite de taille)."
+                        "Number of lines to read from start_line (default: to the end or "
+                        "the size limit)."
                     ),
                 },
                 "start_char": {
                     "type": "integer",
                     "description": (
-                        "Position de départ EN CARACTÈRES (1-based) pour les fichiers "
-                        "MINIFIÉS/mono-ligne où start_line ne découpe rien. En général "
-                        "inutile : la bascule est automatique — reprends la valeur donnée "
-                        "dans le pied « lis la suite avec start_char=… »."
+                        "Start position IN CHARACTERS (1-based) for MINIFIED/single-line "
+                        "files where start_line splits nothing. Generally unnecessary: the "
+                        "switch is automatic — reuse the value given in the footer "
+                        "'read the rest with start_char=…'."
                     ),
                 },
             },
@@ -299,10 +299,10 @@ def make_read_document(workspace_dir: str, max_chars: int = 20000) -> ToolSpec:
     return ToolSpec(
         name="read_document",
         description=(
-            "Extrait et renvoie le TEXTE d'un document : PDF (.pdf), Excel (.xlsx) ou "
-            "Word (.docx). Chemin relatif au dossier de travail OU absolu. Utilise-le "
-            "pour lire/résumer une facture, un tableur, un rapport. Pour un fichier "
-            "TEXTE (.txt/.md/.py...), utilise read_file à la place."
+            "Extracts and returns the TEXT of a document: PDF (.pdf), Excel (.xlsx) or "
+            "Word (.docx). Path relative to the working directory OR absolute. Use it to "
+            "read/summarize an invoice, a spreadsheet, a report. For a TEXT file "
+            "(.txt/.md/.py...), use read_file instead."
         ),
         parameters={
             "type": "object",
@@ -310,8 +310,8 @@ def make_read_document(workspace_dir: str, max_chars: int = 20000) -> ToolSpec:
                 "path": {
                     "type": "string",
                     "description": (
-                        "Chemin du document (.pdf/.xlsx/.docx) : relatif au dossier de "
-                        "travail ou absolu (ex: 'C:/Users/moi/Desktop/facture.pdf')."
+                        "Document path (.pdf/.xlsx/.docx): relative to the working "
+                        "directory or absolute (e.g. 'C:/Users/moi/Desktop/facture.pdf')."
                     ),
                 }
             },
@@ -376,13 +376,13 @@ def make_read_image(
     return ToolSpec(
         name="read_image",
         description=(
-            "Accède à une IMAGE SUR DISQUE (png/jpg/jpeg/gif/webp/bmp) depuis son CHEMIN. Si "
-            "tu es un modèle multimodal, tu la VOIS ; sinon, un modèle vision te la DÉCRIT en "
-            "texte (tu peux poser une `question` ciblée : « quel est le texte exact ? », "
-            "« décris le layout »). Pour un fichier présent sur disque dont tu connais le "
-            "chemin (relatif au dossier de travail ou absolu), y compris les images jointes au "
-            "chat qui te sont signalées avec leur chemin. Sert à décrire, lire un texte, "
-            "comparer un rendu. PDF/Excel/Word -> read_document ; texte -> read_file."
+            "Accesses an IMAGE ON DISK (png/jpg/jpeg/gif/webp/bmp) from its PATH. If you "
+            "are a multimodal model, you SEE it; otherwise, a vision model DESCRIBES it to "
+            "you in text (you can ask a targeted `question`: 'what is the exact text?', "
+            "'describe the layout'). For a file present on disk whose path you know "
+            "(relative to the working directory or absolute), including images attached to "
+            "the chat that are flagged to you with their path. Use it to describe, read "
+            "text, compare a rendering. PDF/Excel/Word -> read_document; text -> read_file."
         ),
         parameters={
             "type": "object",
@@ -390,16 +390,16 @@ def make_read_image(
                 "path": {
                     "type": "string",
                     "description": (
-                        "Chemin de l'image : relatif au dossier de travail ou absolu "
-                        "(ex: 'C:/Users/moi/Desktop/capture.png')."
+                        "Image path: relative to the working directory or absolute "
+                        "(e.g. 'C:/Users/moi/Desktop/capture.png')."
                     ),
                 },
                 "question": {
                     "type": "string",
                     "description": (
-                        "Optionnel : ce que tu veux savoir de l'image (ignoré si tu la vois "
-                        "directement ; utilisé pour cibler la description quand un modèle "
-                        "vision la décrit pour toi)."
+                        "Optional: what you want to know about the image (ignored if you "
+                        "see it directly; used to target the description when a vision "
+                        "model describes it for you)."
                     ),
                 },
             },

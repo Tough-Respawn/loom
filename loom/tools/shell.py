@@ -165,18 +165,18 @@ def make_run_shell(
     return ToolSpec(
         name="run_shell",
         description=(
-            f"Exécute une commande shell ({detect().shell_label}) dans le workspace et "
-            "renvoie le code de sortie, stdout et stderr. Pour DEMARRER-VERIFIER-ARRETER "
-            "un serveur web (Next.js/Vite/Flask), utilise serve_and_check. La commande doit "
-            "TERMINER (pas de GUI ni de serveur qui tourne en boucle : ils seront tués au "
-            "timeout). Les commandes destructrices sont refusées."
+            f"Runs a shell command ({detect().shell_label}) in the workspace and "
+            "returns the exit code, stdout and stderr. To START-CHECK-STOP "
+            "a web server (Next.js/Vite/Flask), use serve_and_check. The command must "
+            "TERMINATE (no GUI or server running in a loop: they will be killed at the "
+            "timeout). Destructive commands are refused."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Commande shell à exécuter dans le workspace.",
+                    "description": "Shell command to run in the workspace.",
                 }
             },
             "required": ["command"],

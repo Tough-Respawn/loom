@@ -82,12 +82,12 @@ def make_write_file(
     return ToolSpec(
         name="write_file",
         description=(
-            "Crée ou écrase un fichier avec le contenu fourni. Chemin relatif au "
-            "dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/out.txt'). Nouveau "
-            "fichier, ou réécriture COMPLÈTE d'un PETIT fichier. GROS fichier (>~150 lignes, "
-            "qui dépasserait la limite de tokens et serait tronqué) : écris le squelette "
-            "(imports + 1re unité) ici, puis complète avec append_file, une UNITÉ LOGIQUE "
-            "COMPLÈTE par appel (fonction/composant entier), jamais coupée au milieu."
+            "Creates or overwrites a file with the provided content. Path relative to the "
+            "working directory OR absolute (e.g. 'C:/Users/me/Desktop/out.txt'). New "
+            "file, or COMPLETE rewrite of a SMALL file. LARGE file (>~150 lines, which "
+            "would exceed the token limit and be truncated): write the skeleton "
+            "(imports + 1st unit) here, then complete it with append_file, one COMPLETE "
+            "LOGICAL UNIT per call (whole function/component), never cut in the middle."
         ),
         parameters={
             "type": "object",
@@ -95,12 +95,12 @@ def make_write_file(
                 "path": {
                     "type": "string",
                     "description": (
-                        "Chemin du fichier : relatif au dossier de travail ou absolu."
+                        "File path: relative to the working directory or absolute."
                     ),
                 },
                 "content": {
                     "type": "string",
-                    "description": "Contenu complet à écrire dans le fichier.",
+                    "description": "Full content to write to the file.",
                 },
             },
             "required": ["path", "content"],
@@ -147,10 +147,10 @@ def make_append_file(
     return ToolSpec(
         name="append_file",
         description=(
-            "AJOUTE du contenu à la FIN d'un fichier (le crée s'il n'existe pas). Sert à "
-            "écrire un GROS fichier SANS dépasser la limite de tokens : write_file pour le "
-            "début, puis append_file plusieurs fois pour la suite, par PETITS morceaux. "
-            "Chemin relatif au dossier de travail ou absolu."
+            "APPENDS content to the END of a file (creates it if it does not exist). Used to "
+            "write a LARGE file WITHOUT exceeding the token limit: write_file for the "
+            "beginning, then append_file several times for the rest, in SMALL chunks. "
+            "Path relative to the working directory or absolute."
         ),
         parameters={
             "type": "object",
@@ -158,12 +158,12 @@ def make_append_file(
                 "path": {
                     "type": "string",
                     "description": (
-                        "Chemin du fichier : relatif au dossier de travail ou absolu."
+                        "File path: relative to the working directory or absolute."
                     ),
                 },
                 "content": {
                     "type": "string",
-                    "description": "Morceau de contenu à ajouter à la fin du fichier.",
+                    "description": "Chunk of content to append to the end of the file.",
                 },
             },
             "required": ["path", "content"],
@@ -248,13 +248,13 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="edit_file",
         description=(
-            "Modifie un fichier existant en remplaçant old_string par new_string (chemin "
-            "relatif au dossier de travail ou absolu). TON éditeur chirurgical : lis le "
-            "fichier (read_file), copie l'extrait EXACT à changer dans old_string "
-            "(indentation et espaces au caractère près), remplacement dans new_string. "
-            "old_string doit être UNIQUE (sinon l'erreur liste les lignes — ajoute du "
-            "contexte, ou replace_all=true pour toutes les occurrences). Pour réécrire "
-            "une grande portion, write_file."
+            "Edits an existing file by replacing old_string with new_string (path "
+            "relative to the working directory or absolute). YOUR surgical editor: read the "
+            "file (read_file), copy the EXACT snippet to change into old_string "
+            "(indentation and whitespace character-for-character), replacement in new_string. "
+            "old_string must be UNIQUE (otherwise the error lists the lines — add "
+            "context, or replace_all=true for all occurrences). To rewrite "
+            "a large portion, use write_file."
         ),
         parameters={
             "type": "object",
@@ -262,20 +262,20 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
                 "path": {
                     "type": "string",
                     "description": (
-                        "Chemin du fichier : relatif au dossier de travail ou absolu."
+                        "File path: relative to the working directory or absolute."
                     ),
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "Texte exact à remplacer (unique, sauf si replace_all).",
+                    "description": "Exact text to replace (unique, unless replace_all).",
                 },
                 "new_string": {
                     "type": "string",
-                    "description": "Texte de remplacement.",
+                    "description": "Replacement text.",
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": "Remplacer TOUTES les occurrences identiques (défaut: false).",
+                    "description": "Replace ALL identical occurrences (default: false).",
                 },
             },
             "required": ["path", "old_string", "new_string"],

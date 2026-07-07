@@ -169,11 +169,11 @@ def make_find_files(workspace_dir: str, *, max_results: int = 200) -> ToolSpec:
     return ToolSpec(
         name="find_files",
         description=(
-            "Trouve des fichiers par MOTIF glob. Relatif au dossier de travail "
-            "(ex: '**/*.py', '**/config.*') OU absolu pour chercher ailleurs "
-            "(ex: 'C:/Users/moi/Desktop/projet/**/*.md'). Sert à LOCALISER un fichier "
-            "ou voir la structure. Renvoie les chemins (relatifs si dans le dossier de "
-            "travail, absolus sinon)."
+            "Finds files by glob PATTERN. Relative to the working directory "
+            "(e.g. '**/*.py', '**/config.*') OR absolute to search elsewhere "
+            "(e.g. 'C:/Users/moi/Desktop/projet/**/*.md'). Use it to LOCATE a file "
+            "or see the structure. Returns the paths (relative if inside the working "
+            "directory, absolute otherwise)."
         ),
         parameters={
             "type": "object",
@@ -181,8 +181,8 @@ def make_find_files(workspace_dir: str, *, max_results: int = 200) -> ToolSpec:
                 "pattern": {
                     "type": "string",
                     "description": (
-                        "Motif glob relatif au dossier de travail (ex: '**/*.md') "
-                        "ou ABSOLU pour chercher ailleurs (ex: 'C:/Users/moi/docs/**/*.pdf')."
+                        "Glob pattern relative to the working directory (e.g. '**/*.md') "
+                        "or ABSOLUTE to search elsewhere (e.g. 'C:/Users/moi/docs/**/*.pdf')."
                     ),
                 }
             },
@@ -348,22 +348,22 @@ def make_search_text(
     return ToolSpec(
         name="search_text",
         description=(
-            "Cherche une EXPRESSION RÉGULIÈRE dans le contenu des fichiers et renvoie "
-            "les correspondances (fichier:ligne: texte). Sert à trouver OÙ est "
-            "défini/utilisé un symbole, une chaîne, une fonction. Filtre optionnel "
-            "'glob' relatif au dossier de travail (ex: '**/*.py') ou absolu pour "
-            "chercher ailleurs. Pour lire un fichier entier, utilise plutôt read_file."
+            "Searches for a REGULAR EXPRESSION in file contents and returns the "
+            "matches (file:line: text). Use it to find WHERE a symbol, a string, or a "
+            "function is defined/used. Optional 'glob' filter relative to the working "
+            "directory (e.g. '**/*.py') or absolute to search elsewhere. To read an "
+            "entire file, use read_file instead."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Expression régulière à chercher (syntaxe Python re).",
+                    "description": "Regular expression to search for (Python re syntax).",
                 },
                 "glob": {
                     "type": "string",
-                    "description": "Filtre glob optionnel des fichiers (ex: '**/*.js').",
+                    "description": "Optional glob filter on files (e.g. '**/*.js').",
                 },
             },
             "required": ["pattern"],
@@ -404,10 +404,10 @@ def make_list_dir(workspace_dir: str, *, max_entries: int = 300) -> ToolSpec:
     return ToolSpec(
         name="list_dir",
         description=(
-            "Liste le contenu d'un dossier (sous-dossiers suffixés '/'). Chemin relatif "
-            "au dossier de travail OU absolu (ex: 'C:/Users/moi/Desktop/projet'). Renvoie "
-            "des chemins PRÊTS À L'EMPLOI (préfixés du dossier listé) : copie-les tels quels "
-            "dans read_file/edit. Pour une recherche large par motif, find_files est mieux."
+            "Lists the contents of a directory (sub-directories suffixed with '/'). Path "
+            "relative to the working directory OR absolute (e.g. 'C:/Users/moi/Desktop/projet'). "
+            "Returns READY-TO-USE paths (prefixed with the listed directory): copy them as-is "
+            "into read_file/edit. For a broad pattern search, find_files is better."
         ),
         parameters={
             "type": "object",
@@ -415,8 +415,8 @@ def make_list_dir(workspace_dir: str, *, max_entries: int = 300) -> ToolSpec:
                 "path": {
                     "type": "string",
                     "description": (
-                        "Dossier à lister : relatif au dossier de travail (défaut '.') "
-                        "ou chemin absolu (ex: 'C:/Users/moi/Desktop/projet')."
+                        "Directory to list: relative to the working directory (default '.') "
+                        "or absolute path (e.g. 'C:/Users/moi/Desktop/projet')."
                     ),
                 }
             },

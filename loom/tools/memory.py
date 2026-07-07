@@ -42,25 +42,25 @@ def make_remember(provider, paths: dict) -> ToolSpec:
     return ToolSpec(
         name="remember",
         description=(
-            "Capitalise un fait DURABLE et de haute valeur dans ta mémoire persistante "
-            "(elle survit à la session). kind='episodic' (défaut) : range une "
-            "leçon/observation dans le store cherchable (à retrouver via recall). "
-            "kind='memory' : fait général durable (convention projet, détail "
-            "d'environnement). kind='profile' : fait stable sur l'utilisateur. kind='soul' : "
-            "trait de ta propre persona. Écris la LEÇON dense, pas le log brut. Ne mémorise "
-            "que ce qui resservira."
+            "Banks a DURABLE, high-value fact into your persistent memory "
+            "(it survives the session). kind='episodic' (default): files a "
+            "lesson/observation into the searchable store (to be retrieved via recall). "
+            "kind='memory': durable general fact (project convention, environment "
+            "detail). kind='profile': stable fact about the user. kind='soul': "
+            "a trait of your own persona. Write the dense LESSON, not the raw log. Only "
+            "memorize what will be useful again."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "text": {
                     "type": "string",
-                    "description": "Le fait à mémoriser (synthèse dense).",
+                    "description": "The fact to memorize (dense summary).",
                 },
                 "kind": {
                     "type": "string",
                     "enum": ["episodic", "memory", "profile", "soul"],
-                    "description": "Où ranger : episodic (store) | memory | profile | soul.",
+                    "description": "Where to file it: episodic (store) | memory | profile | soul.",
                 },
             },
             "required": ["text"],
@@ -95,20 +95,20 @@ def make_recall(provider, *, summarize=None, threshold: int = 5) -> ToolSpec:
     return ToolSpec(
         name="recall",
         description=(
-            "Interroge ta mémoire persistante (épisodes des sessions passées) par recherche "
-            "plein-texte. À utiliser quand une tâche ressemble à du déjà-vu : tu peux avoir "
-            "une leçon ou une procédure mémorisée. Argument : query (mots-clés)."
+            "Queries your persistent memory (episodes from past sessions) via full-text "
+            "search. Use it when a task feels familiar: you may have a memorized lesson "
+            "or procedure. Argument: query (keywords)."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Mots-clés de ce que tu cherches.",
+                    "description": "Keywords for what you are looking for.",
                 },
                 "k": {
                     "type": "integer",
-                    "description": "Nombre de souvenirs (défaut 5, max 10).",
+                    "description": "Number of memories (default 5, max 10).",
                 },
             },
             "required": ["query"],
