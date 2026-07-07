@@ -415,6 +415,51 @@ def report(all_results: dict, runs: int):
     print(f"\nDétail : {_OUT}\\report.json + transcripts par variante.")
 
 
+def pin_baseline(all_results: dict, runs: int, model: str) -> None:
+    """Épingle un résumé COMPACT du run sous out/history/<sha>.json : la baseline
+    persistante par commit. L'A/B git HEAD vs disque mesure le delta du diff COURANT ;
+    l'historique épinglé mesure la DÉRIVE sur des semaines (re-run même commit = remplacé).
+    Résumé seul (pass + coûts moyens par cas), pas les transcripts : diff-able et léger."""
+    from datetime import datetime, timezone
+
+    from evals.harness import git_head_sha
+
+    sha = git_head_sha()
+    if not sha:
+        print("(baseline non épinglée : git indisponible)")
+        return
+
+    def _mean(xs) -> float:
+        return round(sum(xs) / len(xs), 1) if xs else 0.0
+
+    cases_summary: dict = {}
+    for variant, cases in all_results.items():
+        for cid, rd in cases.items():
+            entry = cases_summary.setdefault(cid, {})
+            entry[variant] = {
+                "pass": sum(1 for r in rd if r["passed"]),
+                "runs": len(rd),
+                "model_turns": _mean([r.get("n_model_turns", 0) for r in rd]),
+                "tool_calls": _mean([r.get("n_tool_calls", 0) for r in rd]),
+                "prompt_tokens": _mean([r.get("prompt_tokens", 0) for r in rd]),
+                "completion_tokens": _mean([r.get("completion_tokens", 0) for r in rd]),
+                "duration_s": _mean([r.get("duration_s", 0.0) for r in rd]),
+                "stops": sorted({r.get("stop_reason") or "?" for r in rd}),
+            }
+    hist = _OUT / "history"
+    hist.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "sha": sha,
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "model": model,
+        "runs": runs,
+        "cases": cases_summary,
+    }
+    path = hist / f"{sha}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Baseline épinglée : {path}")
+
+
 # --- self-test (sans modèle) -------------------------------------------------
 
 
@@ -580,6 +625,7 @@ def main():
             only,
         )
     report(all_results, args.runs)
+    pin_baseline(all_results, args.runs, model)
 
 
 if __name__ == "__main__":
