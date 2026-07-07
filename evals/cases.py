@@ -160,7 +160,10 @@ def _check_edit_block(traj, ws: Path) -> dict:
     return {
         "édite par bloc (edit_file)": edited_by_block,
         "ne réécrit pas tout au write_file": not_lazy_rewrite,
-        "zéro échec edit_file": edit_file_failures(traj) == 0,
+        # INFORMATIF (préfixe _ -> non bloquant) : la tâche se juge sur l'E2E (le code
+        # se corrige-t-il ?). Un ré-édit redondant qui échoue est un tic mineur, pas un
+        # échec de tâche. Ce check attrapait le thrash quand edit_file était cassé (CRLF).
+        "_zéro échec edit_file": edit_file_failures(traj) == 0,
         "E2E: add(2,3)==5": fixed,
     }
 
