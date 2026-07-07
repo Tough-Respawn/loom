@@ -1300,6 +1300,12 @@ class LoomClient:
         PAS de mur de temps : sur un modèle local lent, un chrono global décapitait
         la boucle en plein travail (cf. session démineur). Les bornes sont le NOMBRE
         de tours et le NON-PROGRÈS, jamais l'horloge.
+
+        Chaque sortie émet un event terminal ('done', {'reason': ...}) : 'natural'
+        (stop du modèle), 'repeat_stop', 'loop_degenerate', 'max_iters',
+        'context_irreducible', 'output_overflow', 'api_error'. Les consommateurs
+        qui ne s'en servent pas l'ignorent (dispatch if/elif) ; les évals s'en
+        servent comme stop_reason mesurable au lieu de pattern-matcher les textes.
         """
         convo = list(messages)
         # Résolu une fois : le modèle est fixe pour tout l'appel. Route vers l'endpoint
@@ -1589,6 +1595,7 @@ class LoomClient:
                         "compaction forcée — cas anormal (prompt système trop grand pour la "
                         "fenêtre ?). Le travail déjà écrit est conservé.]",
                     )
+                    yield ("done", {"reason": "context_irreducible"})
                     return
                 # OVERFLOW : tool_call vraisemblablement tronqué par max_tokens (5xx ou
                 # erreur sans statut). On NE crashe PAS : on demande de découper et on
@@ -1600,6 +1607,7 @@ class LoomClient:
                             f"\n[génération interrompue : {str(exc)[:160]}. "
                             "Fichiers déjà écrits conservés.]",
                         )
+                        yield ("done", {"reason": "output_overflow"})
                         return
                     overflow_retries += 1
                     log_event(
@@ -1643,6 +1651,7 @@ class LoomClient:
                     "other": f"erreur du serveur de modèle : {str(exc)[:160]}",
                 }[kind]
                 yield ("content", f"\n[génération interrompue : {reason}]")
+                yield ("done", {"reason": "api_error", "kind": kind})
                 return
 
             tool_calls = collector["tool_calls"]
@@ -1668,6 +1677,7 @@ class LoomClient:
                             "\n[génération interrompue : le modèle tournait en boucle (même "
                             "phrase répétée) sans agir. Reformule ou découpe la demande.]",
                         )
+                        yield ("done", {"reason": "loop_degenerate"})
                         return
                     loop_breaks += 1
                     nudge = (
@@ -1760,6 +1770,7 @@ class LoomClient:
                     _debug(label, nudge)
                     log_event("guard", kind=label)
                     continue
+                yield ("done", {"reason": "natural"})
                 return  # réponse finale déjà streamée (stop naturel du modèle)
 
             # Non-progrès : même jeu d'appels (outils+args) que le tour précédent ? On EXCLUT
@@ -1789,6 +1800,7 @@ class LoomClient:
                         "content",
                         "\n(arrêt : le modèle réémet les mêmes appels sans progresser).",
                     )
+                    yield ("done", {"reason": "repeat_stop"})
                     return
 
             convo.append(
@@ -2133,6 +2145,7 @@ class LoomClient:
             f"\n(arrêt : backstop anti-runaway atteint après {max_iters} tours d'outils — "
             "cas anormal ; relance pour reprendre là où ça s'est arrêté).",
         )
+        yield ("done", {"reason": "max_iters"})
 
 
 def _close(stream) -> None:
