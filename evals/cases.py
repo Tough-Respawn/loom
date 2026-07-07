@@ -28,6 +28,12 @@ class EvalCase:
     rubric: str
     setup: Callable[[Path], None]
     check: Callable[[object, Path], dict]
+    # Historique SYNTHÉTIQUE pré-injecté avant le prompt (cas saturation de contexte :
+    # simuler une longue session sans payer sa génération live). None = cas normal.
+    history: list | None = None
+    # Seuil compact_after_tokens passé à la boucle pour CE cas (None = pas de compaction
+    # préventive, comportement historique). Un seuil bas force le chemin de compaction.
+    compact_tokens: int | None = None
 
 
 # --- helpers de lecture de trajectoire ---------------------------------------
@@ -113,8 +119,73 @@ _NOTES_MD = (
 )
 
 
+# Fichier CRLF sur disque (régression du fix edit_file de juillet 2026 : matching
+# agnostique aux fins de ligne + réécriture dans le style d'origine). Écrit en BYTES
+# pour garantir les \r\n quels que soient l'OS et la config git.
+_CONFIG_PY_CRLF = (
+    "TIMEOUT = 30\r\n"
+    "RETRIES = 3\r\n"
+    "\r\n"
+    "\r\n"
+    "def effective_timeout():\r\n"
+    "    # délai effectif avant abandon\r\n"
+    "    return TIMEOUT * RETRIES\r\n"
+)
+
+# Mini-projet à inventorier (cas dispatch) : 5 fonctions réparties dans 2 dossiers.
+_INVENTORY_FILES = {
+    "src/alpha.py": "def alpha_load():\n    pass\n\n\ndef alpha_save():\n    pass\n",
+    "src/beta.py": "def beta_run():\n    pass\n",
+    "lib/gamma.py": "def gamma_parse():\n    pass\n",
+    "lib/delta.py": "def delta_merge():\n    pass\n",
+}
+_INVENTORY_FUNCS = (
+    "alpha_load",
+    "alpha_save",
+    "beta_run",
+    "gamma_parse",
+    "delta_merge",
+)
+
+# Ballast d'historique (cas saturation) : de vieux tours verbeux et JETABLES, que la
+# compaction peut clipper sans perdre la tâche. ~4k caractères par message.
+_BALLAST_TXT = (
+    "Compte-rendu détaillé de l'étape précédente du projet (archivable) : nous avons "
+    "passé en revue la structure des dossiers, discuté des conventions de nommage, "
+    "évalué plusieurs pistes d'optimisation qui n'ont finalement pas été retenues, et "
+    "consigné de longues listes de vérifications intermédiaires sans impact sur la "
+    "suite. Rien dans ce paragraphe n'est nécessaire pour la prochaine tâche. "
+) * 8
+_SQUEEZE_HISTORY = [
+    {
+        "role": "user" if i % 2 == 0 else "assistant",
+        "content": f"[tour archivé n°{i + 1}] {_BALLAST_TXT}",
+    }
+    for i in range(8)
+]
+
+_FACTS_TXT = (
+    "Référence interne du projet.\nLe code d'accès est 4732.\nNe pas diffuser.\n"
+)
+
+
 def _noop(ws: Path) -> None:
     pass
+
+
+def _seed_config_crlf(ws: Path) -> None:
+    (ws / "config.py").write_bytes(_CONFIG_PY_CRLF.encode("utf-8"))
+
+
+def _seed_inventory(ws: Path) -> None:
+    for rel, content in _INVENTORY_FILES.items():
+        p = ws / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+
+def _seed_facts(ws: Path) -> None:
+    (ws / "facts.txt").write_text(_FACTS_TXT, encoding="utf-8")
 
 
 def _seed_calc(ws: Path) -> None:
@@ -232,6 +303,85 @@ def _check_direct_answer(traj, ws: Path) -> dict:
     }
 
 
+def _check_crlf_edit(traj, ws: Path) -> dict:
+    edited_by_block = used(traj, "edit_file")
+    not_lazy_rewrite = not any(
+        (a.get("path", "").endswith("config.py")) for a in calls_to(traj, "write_file")
+    )
+    # E2E : la marge est-elle réellement ajoutée ? (30*3 + 5 = 95)
+    fixed = False
+    try:
+        r = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import config; assert config.effective_timeout()==95; print('OK')",
+            ],
+            cwd=ws,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        fixed = r.returncode == 0
+    except Exception:
+        fixed = False
+    # Garde de régression du fix CRLF : le fichier doit GARDER ses fins de ligne
+    # d'origine après édition (edit_file ré-applique le style du fichier).
+    crlf_kept = False
+    try:
+        crlf_kept = b"\r\n" in (ws / "config.py").read_bytes()
+    except OSError:
+        crlf_kept = False
+    return {
+        "édite par bloc (edit_file)": edited_by_block,
+        "ne réécrit pas tout au write_file": not_lazy_rewrite,
+        "E2E: effective_timeout()==95": fixed,
+        "fins de ligne CRLF conservées": crlf_kept,
+        "_zéro échec edit_file": edit_file_failures(traj) == 0,
+    }
+
+
+def _check_dispatch(traj, ws: Path) -> dict:
+    # E2E : la synthèse nomme-t-elle les fonctions réellement présentes ? (>=3/5 :
+    # tolérance à une omission, pas à une exploration bâclée)
+    text = traj.final_text or ""
+    named = sum(1 for f in _INVENTORY_FUNCS if f in text)
+    explored = (
+        used(traj, "dispatch_agent")
+        or used(traj, "read_file")
+        or used(traj, "search_text")
+        or used(traj, "list_dir")
+        or used(traj, "find_files")
+    )
+    return {
+        "a exploré le projet (outils)": explored,
+        "synthèse correcte (>=3 fonctions nommées)": named >= 3,
+        # INFORMATIF : la délégation est la voie attendue mais on juge l'E2E — un
+        # modèle qui inventorie correctement sans dispatch_agent n'échoue pas
+        # (leçon : ne pas re-prescrire un chemin, cf. « Déjà essayé, rejeté »).
+        "_a délégué (dispatch_agent)": used(traj, "dispatch_agent"),
+    }
+
+
+def _check_context_squeeze(traj, ws: Path) -> dict:
+    # La compaction préventive a-t-elle tourné ? (déterministe : le ballast injecté
+    # dépasse largement le seuil compact_tokens du cas)
+    compacted = any(
+        str(r.get("name", "")).startswith("(compaction")
+        or str(r.get("name", "")) in ("(résumé de session)",)
+        for r in traj.tool_results
+    )
+    read_facts = any(
+        "facts" in str(a.get("path", "")) or "facts" in str(a.get("command", ""))
+        for _, a in traj.tool_calls
+    )
+    return {
+        "compaction déclenchée (historique saturé)": compacted,
+        "lit facts.txt malgré la compaction": read_facts,
+        "E2E: répond 4732": "4732" in (traj.final_text or ""),
+    }
+
+
 # --- l'eval set --------------------------------------------------------------
 
 CASES: list[EvalCase] = [
@@ -278,6 +428,50 @@ CASES: list[EvalCase] = [
         rubric="L'agent lit directement le chemin fourni et résume, sans étape de recherche.",
         setup=_seed_notes,
         check=_check_path_given,
+    ),
+    EvalCase(
+        id="crlf_edit",
+        prompt=(
+            "Dans le fichier config.py de ce dossier, modifie effective_timeout pour "
+            "ajouter une marge de 5 secondes au résultat (TIMEOUT * RETRIES + 5). "
+            "Ne change rien d'autre."
+        ),
+        rubric=(
+            "effective_timeout() de config.py retourne TIMEOUT * RETRIES + 5 (soit 95), "
+            "via une édition chirurgicale, sans réécrire le fichier ni casser le reste."
+        ),
+        setup=_seed_config_crlf,
+        check=_check_crlf_edit,
+    ),
+    EvalCase(
+        id="dispatch_probe",
+        prompt=(
+            "Fais l'inventaire de ce projet : pour chacun des dossiers src/ et lib/, "
+            "liste les fonctions définies dans les fichiers .py, puis rends-moi une "
+            "synthèse courte (dossier -> fonctions). C'est un travail d'exploration "
+            "volumineux : délègue-le si c'est plus efficace."
+        ),
+        rubric=(
+            "La synthèse liste correctement les fonctions des deux dossiers (alpha_load, "
+            "alpha_save, beta_run dans src/ ; gamma_parse, delta_merge dans lib/)."
+        ),
+        setup=_seed_inventory,
+        check=_check_dispatch,
+    ),
+    EvalCase(
+        id="context_squeeze",
+        prompt=(
+            "Lis le fichier facts.txt de ce dossier et donne-moi le code d'accès, "
+            "rien d'autre."
+        ),
+        rubric=(
+            "Malgré un long historique de conversation saturé (compacté), l'agent lit "
+            "facts.txt et répond le code 4732."
+        ),
+        setup=_seed_facts,
+        check=_check_context_squeeze,
+        history=_SQUEEZE_HISTORY,
+        compact_tokens=1500,
     ),
     EvalCase(
         id="direct_answer",
