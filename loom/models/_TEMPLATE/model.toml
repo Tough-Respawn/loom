@@ -23,4 +23,4 @@ size_mb = 5000                               # taille approx. du GGUF en Mo (pou
 # --- MoE : offload des experts en RAM pour faire tenir un gros modèle sur peu de VRAM ---
 # cpu_moe = true            # tous les experts routés en RAM (attention/dense restent GPU)
 # n_cpu_moe = 35            # variante fine : n premières couches d'experts en RAM, le reste GPU
-#                           # (monte n jusqu'à ~remplir la VRAM ; cf. gemma4-26b / qwen3.6-35b)
+#                           # (monte n jusqu'à ~remplir la VRAM ; cf. qwen3.6-35b / ornith-1.0-35b)
