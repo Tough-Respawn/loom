@@ -1294,27 +1294,36 @@ def create_app(
                     eng = _engine_for(_im)
                     eng.ensure_up()
                     yield _sse("status", label="génération de l'image…")
-                    png = eng.generate(
+                    data, ext = eng.generate(
                         Path(_im.workflow_path).read_text(encoding="utf-8"),
                         prompt,
+                        timeout=float(_im.timeout),
                         image_path=src_image,
                     )
-                    name = f"loom_{int(time.time() * 1000)}.png"
+                    name = f"loom_{int(time.time() * 1000)}{ext}"
                     _generated_dir.mkdir(parents=True, exist_ok=True)
-                    (_generated_dir / name).write_bytes(png)
-                    # Copie dans le workspace de la session : l'image appartient au projet.
+                    (_generated_dir / name).write_bytes(data)
+                    # Copie dans le workspace de la session : le média appartient au projet.
                     loc = str(_generated_dir / name)
                     try:
                         ws_dir = Path(_sess.workspace) / "images"
                         ws_dir.mkdir(parents=True, exist_ok=True)
-                        (ws_dir / name).write_bytes(png)
+                        (ws_dir / name).write_bytes(data)
                         loc = str(ws_dir / name)
                     except OSError:
                         pass
-                    md = (
-                        f"![{(prompt or 'image')[:80]}](/genimg/{name})\n\n"
-                        f"Image écrite : `{loc}`"
-                    )
+                    if ext in (".png", ".jpg", ".jpeg", ".webp"):
+                        md = (
+                            f"![{(prompt or 'image')[:80]}](/genimg/{name})\n\n"
+                            f"Image écrite : `{loc}`"
+                        )
+                    else:
+                        # Vidéo (webm/mp4) : le markdown image ne la lit pas — lien
+                        # cliquable, le navigateur la joue dans un onglet.
+                        md = (
+                            f"[vidéo générée — cliquer pour lire](/genimg/{name})\n\n"
+                            f"Vidéo écrite : `{loc}`"
+                        )
                     if refined:
                         # Le prompt réellement envoyé au diffuseur, visible dans le fil :
                         # l'utilisateur voit ce que l'affinage a fait de sa demande.

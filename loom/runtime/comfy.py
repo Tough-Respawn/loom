@@ -144,13 +144,15 @@ class ComfyEngine:
         prompt: str,
         timeout: float = 600.0,
         image_path: str | None = None,
-    ) -> bytes:
-        """Injecte prompt+seed dans le template, soumet, attend, renvoie le PNG (bytes).
+    ) -> tuple[bytes, str]:
+        """Injecte prompt+seed dans le template, soumet, attend, renvoie le média
+        produit : (bytes, extension) — « .png » pour une image, « .webm »/« .mp4 »
+        pour une vidéo (workflows Wan). L'appelant nomme le fichier avec l'extension.
 
         Le prompt est injecté via json.dumps (jamais de collage brut : guillemets et
         retours à la ligne restent un JSON valide). {SEED} : entier aléatoire 63 bits
         -> chaque message donne une image différente, comme le « randomize » de l'UI.
-        {IMAGE} (workflows d'ÉDITION, ex. Kontext) : photo d'entrée uploadée puis
+        {IMAGE} (édition/i2v, ex. Kontext ou Wan i2v) : photo d'entrée uploadée puis
         référencée par son nom — requise si le template la déclare."""
         wf = workflow_template.replace(
             '"{PROMPT}"', json.dumps(prompt, ensure_ascii=False)
@@ -203,19 +205,28 @@ class ComfyEngine:
                     "génération échouée côté ComfyUI : "
                     + (msgs[0] if msgs else "?")[:200]
                 )
+            # Sortie = premier fichier produit, quel que soit le nœud d'écriture :
+            # SaveImage range sous "images", SaveWEBM/PreviewVideo sous d'autres clés —
+            # on scanne toute liste de dicts porteurs d'un "filename".
             for out in entry.get("outputs", {}).values():
-                for im in out.get("images", []):
-                    q = urllib.parse.urlencode(
-                        {
-                            "filename": im["filename"],
-                            "subfolder": im.get("subfolder", ""),
-                            "type": im.get("type", "output"),
-                        }
-                    )
-                    with urllib.request.urlopen(
-                        f"{self.base}/view?{q}", timeout=30
-                    ) as resp:
-                        return resp.read()
+                for lst in out.values():
+                    if not isinstance(lst, list):
+                        continue
+                    for im in lst:
+                        if not (isinstance(im, dict) and im.get("filename")):
+                            continue
+                        q = urllib.parse.urlencode(
+                            {
+                                "filename": im["filename"],
+                                "subfolder": im.get("subfolder", ""),
+                                "type": im.get("type", "output"),
+                            }
+                        )
+                        with urllib.request.urlopen(
+                            f"{self.base}/view?{q}", timeout=120
+                        ) as resp:
+                            ext = Path(im["filename"]).suffix or ".png"
+                            return resp.read(), ext
         raise ComfyError(f"génération sans réponse après {int(timeout)} s (timeout).")
 
     def free(self, keep_ram: bool = False) -> None:
