@@ -115,6 +115,15 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   **ruff**, et **Playwright** pour le rendu. Branche de référence : `master`.
 - **Éval prompts opérationnelle** : `uv run python -m evals.run_eval --runs 3 --model qwen3.6-35b-a3b-abliterated`
   (serveur modèle `:8080` requis). Plancher : tous les cas passent **18/18** après les fixes de juillet.
+- **Éval instrumentée (2026-07-08)** : 9 cas (dont crlf_edit, dispatch_probe, context_squeeze),
+  coût par cas (stop_reason via event `done`, tours modèle vs appels outils, tokens, durée),
+  tests par injection des garde-fous dans `--self-test`, **baselines épinglées par commit**
+  (`evals/out/history/`, versionnées). Référence courante : `d3b5a5b` = **26/27**, stops 100 %
+  naturels. ⚠️ l'éval n'a PAS le garde-éveil de loom.web : machine en veille = timeouts fantômes.
+- **Compaction sélective (2026-07-08)** : microcompact garde les petits résultats (preuves),
+  force-fit exempte la tâche courante (clip ET pop), clip tête+queue, plancher de budget
+  « système + jeu de travail », sweep des tool results orphelins, note de recentrage
+  anti-imitation après force-fit. Chaque règle est née d'un échec observé en éval.
 - **Machine de dev** : 6 Go VRAM (RTX 2060) + **~32 Go RAM** (⚠️ pas 64 : upgrade non installé/détecté).
 - **Plus de tout-petit modèle** (4B abandonnés) → on peut se fier aux schémas d'outils (le
   modèle les lit), d'où la délégation prompt → schéma.
@@ -149,8 +158,9 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   RAM (`--cpu-moe`) ; les outils/prompts ne compensent pas un modèle sous la barre.
 
 ## Reste / pistes
-1. **Banc d'éval** (design figé, `docs/superpowers/specs/2026-06-09-loom-banc-eval.md`) :
-   instrument répétable, **juge LLM** (pas de déterministe) + métriques. Construction différée.
+1. **Banc d'éval** : largement LIVRÉ le 2026-07-08 (cf. État technique : coûts, baselines,
+   injections). Reste : réponse VIDE du modèle (0 token) traitée comme stop naturel silencieux
+   → un retry borné ; plus de runs (`--runs 5+`) avant de trancher sur les métriques de coût.
 2. **Tranches plugins suivantes** : moteur de **hooks** (PostToolUse — exécute du code tiers,
    nécessite une porte de confiance), **agents** des plugins → personas dispatchables.
 3. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite).
