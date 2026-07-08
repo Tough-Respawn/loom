@@ -171,13 +171,21 @@ def build_app(cfg):
 
     plugins_dir = str(_plugins_root(getattr(cfg.chat, "plugins_root", None)))
 
+    # Modèles IMAGE (ComfyUI) : découverts par dossier models/_IMAGE/<id>/, sélectionnables
+    # dans l'UI comme les LLM (un message = une image).
+    from loom.runtime.image_models import discover_image_models
+
+    image_models = discover_image_models()
+
     sessions_root = data_root / "sessions"
     store = SessionStore(
         sessions_root,
         cfg.chat.system_prompt,
         default_tools=cfg.chat.tools_enabled,
         default_model=cfg.default_model,
-        known_models=[m.id for m in cfg.models] + [rm.id for rm in cfg.remote_models],
+        known_models=[m.id for m in cfg.models]
+        + [rm.id for rm in cfg.remote_models]
+        + [im.id for im in image_models],
     )
     if not store.list() and conversation.messages:
         seed = store.create(workspace=cfg.chat.workspace_dir, title="Session importée")
@@ -254,6 +262,7 @@ def build_app(cfg):
         config_defaults_path=str(CONFIG_PATH),
         config_local_path=str(PERSONAL_CONFIG_PATH),
         local_models=local_models,
+        image_models=image_models,
     )
     return app
 

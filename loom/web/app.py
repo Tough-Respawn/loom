@@ -46,6 +46,7 @@ from loom.extend.skills import (
 
 from loom.prompts import CHAT_SYSTEM_STRONG
 from loom.runtime import model_store
+from loom.runtime.comfy import ComfyEngine, ComfyError
 from loom.runtime.manager import ModelServerManager
 from loom.runtime.platform_info import detect as platform_detect
 
@@ -368,6 +369,7 @@ def create_app(
     config_defaults_path=None,
     config_local_path=None,
     local_models=None,
+    image_models=None,
 ) -> Flask:
 
     app = Flask(__name__)
@@ -557,6 +559,39 @@ def create_app(
     # ids des modèles LOCAUX (servis par llama-swap sur la machine) = tout sauf les distants.
     # Sert à /machine_state (quel modèle machine est chargé).
     local_model_ids = [m for m in (models or []) if m not in remote_model_ids]
+
+    # Modèles IMAGE (ComfyUI) : troisième type après local/distant. Sélectionnables comme
+    # les autres ; un message user = un prompt d'image = une image dans le chat. Le moteur
+    # ComfyUI est un processus externe géré (kill-on-close), un par (dir, port) — en
+    # pratique un seul. AUCUNE dépendance Python côté Loom : HTTP seulement.
+    image_models = list(image_models or [])
+    image_model_ids = {m.id for m in image_models}
+    _image_by_id = {m.id: m for m in image_models}
+    models = list(models or []) + [m.id for m in image_models]
+    _engines: dict[tuple, ComfyEngine] = {}
+    _engines_lock = threading.Lock()
+
+    def _engine_for(im) -> ComfyEngine:
+        key = (im.comfy_dir, im.comfy_port)
+        with _engines_lock:
+            if key not in _engines:
+                _engines[key] = ComfyEngine(im.comfy_dir, im.comfy_port)
+            return _engines[key]
+
+    def _free_image_engines() -> None:
+        """Rend la VRAM tenue par un moteur image (best-effort, rapide) : appelé avant
+        une génération LOCALE — 6 Go ne tiennent pas la diffusion ET le LLM."""
+        with _engines_lock:
+            engines = list(_engines.values())
+        for eng in engines:
+            if eng.is_up(timeout=0.5):
+                eng.free()
+
+    _generated_dir = (
+        Path(remote_store_path).resolve().parent / "generated"
+        if remote_store_path
+        else Path("var") / "generated"
+    )
     # Détails des modèles LOCAUX (onglet Modèles locaux) : id/dir/offload/context. `dir` porte
     # le model.toml -> édition du tuning machine via tomlkit.
     local_model_specs = list(local_models or [])
@@ -746,6 +781,7 @@ def create_app(
             "usage_totals": _totals(conv),
             "models": models,
             "remote_model_ids": remote_model_ids,
+            "image_model_ids": image_model_ids,
             "current_model": conv.model,
             "thinking": conv.thinking,
             "available_tools": available_tools,
@@ -804,6 +840,14 @@ def create_app(
     def index() -> str:
 
         return render_template("index.html", **_index_context())
+
+    @app.get("/genimg/<path:name>")
+    def genimg(name: str):
+        # Sert les PNG générés (var/generated) au markdown du chat. send_from_directory
+        # refuse les traversées de chemin.
+        from flask import send_from_directory
+
+        return send_from_directory(_generated_dir, name, mimetype="image/png")
 
     @app.get("/favicon.ico")
     def favicon():
@@ -1133,6 +1177,68 @@ def create_app(
             traceback.print_exc()
             return Response("erreur interne", status=500)
 
+        # --- Modèle IMAGE sélectionné : court-circuit de la boucle tool-use. Un message
+        # user = un prompt d'image = une image dans la conversation. Même GPU que le LLM
+        # local -> même sérialisation (_local_gen_lock) ; VRAM libérée (unload_local)
+        # avant la diffusion ; erreurs TOUJOURS lisibles (patron « génération interrompue »).
+        if conv.model in image_model_ids:
+            _im = _image_by_id[conv.model]
+
+            def generate_image():
+                _stay_awake.acquire()
+                _img_held = False
+                _sess = _session()
+
+                def _finish(md_text: str):
+                    conv.add("assistant", md_text)
+                    save()
+                    session_store.append_event(_sess.id, "text", {"text": md_text})
+                    return _sse("text", text=md_text)
+
+                try:
+                    yield _sse("status", label="préparation du moteur image…")
+                    _local_gen_lock.acquire()
+                    _img_held = True
+                    client.unload_local()  # VRAM libre pour la diffusion
+                    eng = _engine_for(_im)
+                    eng.ensure_up()
+                    yield _sse("status", label="génération de l'image…")
+                    png = eng.generate(
+                        Path(_im.workflow_path).read_text(encoding="utf-8"), message
+                    )
+                    name = f"loom_{int(time.time() * 1000)}.png"
+                    _generated_dir.mkdir(parents=True, exist_ok=True)
+                    (_generated_dir / name).write_bytes(png)
+                    # Copie dans le workspace de la session : l'image appartient au projet.
+                    loc = str(_generated_dir / name)
+                    try:
+                        ws_dir = Path(_sess.workspace) / "images"
+                        ws_dir.mkdir(parents=True, exist_ok=True)
+                        (ws_dir / name).write_bytes(png)
+                        loc = str(ws_dir / name)
+                    except OSError:
+                        pass
+                    md = (
+                        f"![{(message or 'image')[:80]}](/genimg/{name})\n\n"
+                        f"Image écrite : `{loc}`"
+                    )
+                    yield _finish(md)
+                except ComfyError as exc:
+                    yield _finish(f"[génération d'image interrompue : {exc}]")
+                except Exception as exc:  # noqa: BLE001 - jamais de stacktrace dans le chat
+                    traceback.print_exc()
+                    yield _finish(
+                        f"[génération d'image interrompue : erreur interne — {str(exc)[:160]}]"
+                    )
+                finally:
+                    if _img_held:
+                        _local_gen_lock.release()
+                    chat_lock.release()
+                    _stay_awake.release()
+                    yield _sse("status", label="")
+
+            return Response(generate_image(), mimetype="text/event-stream")
+
         def generate():
 
             # Empêche la mise en veille du système tant que CE tour génère (release au
@@ -1400,6 +1506,9 @@ def create_app(
                         )
                         _local_gen_lock.acquire()
                     _local_held = True
+                    # Un moteur image encore chargé tiendrait la VRAM que le LLM va
+                    # réclamer : le vider d'abord (best-effort, rapide si rien à vider).
+                    _free_image_engines()
 
                 for kind, payload in source:
                     # Titre distant prêt (thread de fond) -> on le pousse dès la 1re occasion.
@@ -1929,6 +2038,19 @@ def create_app(
             threading.Thread(
                 target=client.unload_local, daemon=True, name="loom-unload"
             ).start()
+        elif model in image_model_ids:
+            # Modèle IMAGE : libérer la VRAM du LLM et préchauffer ComfyUI en fond
+            # (équivalent du warmup local : la 1re image n'attend pas le démarrage).
+            def _prep_image(m=model):
+                client.unload_local()
+                try:
+                    _engine_for(_image_by_id[m]).ensure_up()
+                except ComfyError as exc:
+                    print(f"[loom] préchauffage ComfyUI : {exc}", flush=True)
+
+            threading.Thread(
+                target=_prep_image, daemon=True, name="loom-image-warmup"
+            ).start()
         elif model:
             # Modèle LOCAL : démarre le serveur s'il est éteint (démarrage auto), PUIS
             # warmup. Le tout en fond : la réponse UI reste instantanée, le chip suit.
@@ -1947,6 +2069,7 @@ def create_app(
             models=models,
             current_model=conv.model,
             remote_model_ids=remote_model_ids,
+            image_model_ids=image_model_ids,
         )
 
     # ---- Gestionnaire de modèles (UI) : ajouter/tester/supprimer un modèle DISTANT à chaud,
@@ -1954,7 +2077,14 @@ def create_app(
     # à jour les registres partagés en place. Persisté dans le store JSON (remote_store_path).
     def _models_payload():
         """Liste ordonnée pour reconstruire le <select> côté client (id + local/distant)."""
-        return [{"id": m, "remote": m in remote_model_ids} for m in models]
+        return [
+            {
+                "id": m,
+                "remote": m in remote_model_ids,
+                "image": m in image_model_ids,
+            }
+            for m in models
+        ]
 
     def _remote_list():
         """Modèles distants montés, pour le panneau de config. Jamais la clé en clair :
