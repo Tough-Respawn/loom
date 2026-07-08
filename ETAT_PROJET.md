@@ -177,7 +177,10 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
    candidat qualité, mais archi custom sans support sd.cpp, licence « other »). Contrainte
    clé 6 Go VRAM : UN modèle à la fois → l'outil décharge le LLM (`unload_local()`, existe)
    le temps de générer, rechargement auto à la requête suivante. v1 = appel CLI par image ;
-   l'UI affiche déjà les images inline (mécanique read_image).
+   l'UI affiche déjà les images inline (mécanique read_image). Voie alternative (installée
+   le 2026-07-08) : **ComfyUI en serveur API** (`C:\tools\ComfyUI`, venv isolé — AUCUNE
+   dépendance ajoutée à Loom) : `POST /prompt` + `/free` pour rendre la VRAM ; couvre
+   Krea-2-Turbo GGUF (archi non supportée par sd.cpp) ; process pilotable via manager.py.
 7. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
    dossier `loom/models/<id>/` sans redémarrer. Repérage 2026-07-08 : la mécanique existe
    déjà à moitié — `loom.web._regen_swap_yaml()` régénère le yaml et llama-swap
