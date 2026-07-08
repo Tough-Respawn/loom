@@ -703,7 +703,12 @@ def main():
             only,
         )
     report(all_results, args.runs)
-    pin_baseline(all_results, args.runs, model)
+    # Un run FILTRÉ (--cases) n'est pas une baseline : l'épingler écraserait le résumé
+    # complet du commit avec un partiel (vécu : repro d'un seul cas -> baseline mutilée).
+    if only:
+        print("(baseline non épinglée : run partiel via --cases)")
+    else:
+        pin_baseline(all_results, args.runs, model)
 
 
 if __name__ == "__main__":
