@@ -47,7 +47,9 @@ mais coûte 11 tours et 38 appels » se voit, pas seulement le pass/fail. Détai
 
 - **stop_reason** (event `done` de la boucle) : `natural`, `repeat_stop`,
   `loop_degenerate`, `max_iters`, `context_irreducible`, `output_overflow`,
-  `api_error`, `crash`.
+  `api_error`, `empty_response`, `crash`.
+- **Garde-éveil** : le run maintient le système éveillé (module `stay_awake` de loom) —
+  sans lui, la veille par inactivité suspendait les runs longs (timeouts fantômes).
 - **Baseline persistante** : chaque run épingle un résumé compact par commit sous
   `evals/out/history/<sha>.json` — l'A/B mesure le delta du diff courant, l'historique
   mesure la dérive sur des semaines.
