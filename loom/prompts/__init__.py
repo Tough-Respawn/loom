@@ -24,3 +24,7 @@ CHAT_SYSTEM = _load("chat.system.md")
 CHAT_SYSTEM_STRONG = _load("chat.system.strong.md")
 SUBAGENT_SYSTEM = _load("subagent.system.md")
 REFLECT_SYSTEM = _load("reflect.system.md")
+# Affinage des prompts image : réécrit la demande utilisateur (toute langue) en UN prompt
+# de diffusion anglais propre. Utilisé par la branche image de /chat quand le modèle image
+# déclare un `refiner` dans son model.toml.
+IMAGE_REFINE_SYSTEM = _load("image_refine.system.md")
