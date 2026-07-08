@@ -47,6 +47,7 @@ from loom.extend.skills import (
 from loom.prompts import CHAT_SYSTEM_STRONG
 from loom.runtime import model_store
 from loom.runtime.comfy import ComfyEngine, ComfyError
+from loom.runtime.hardware import ram_available_mb
 from loom.runtime.manager import ModelServerManager
 from loom.runtime.platform_info import detect as platform_detect
 
@@ -578,14 +579,36 @@ def create_app(
                 _engines[key] = ComfyEngine(im.comfy_dir, im.comfy_port)
             return _engines[key]
 
-    def _free_image_engines() -> None:
+    # Marge RAM (Mo) gardée libre AU-DELÀ du LLM à charger : OS, cache KV, pics
+    # transitoires. En dessous, on ne garde pas le cache image (jamais d'OOM pour
+    # une optimisation de confort).
+    _RAM_KEEP_MARGIN_MB = 4096
+
+    def _free_image_engines(llm_size_mb: int = 0) -> bool | None:
         """Rend la VRAM tenue par un moteur image (best-effort, rapide) : appelé avant
-        une génération LOCALE — 6 Go ne tiennent pas la diffusion ET le LLM."""
+        une génération LOCALE — 6 Go ne tiennent pas la diffusion ET le LLM.
+
+        La RAM, elle, est arbitrée : si le LLM entrant tient À CÔTÉ du cache image
+        (RAM disponible mesurée >= size_mb du LLM + marge), on garde le cache
+        (keep_ram) — la prochaine image repart de la RAM, pas du disque. Machine
+        étroite (ex. 32 Go) ou taille inconnue -> cache vidé, comportement historique.
+        Renvoie True (cache gardé), False (cache vidé) ou None (aucun moteur actif)."""
         with _engines_lock:
             engines = list(_engines.values())
-        for eng in engines:
-            if eng.is_up(timeout=0.5):
-                eng.free()
+        up = [eng for eng in engines if eng.is_up(timeout=0.5)]
+        if not up:
+            return None
+        keep = bool(llm_size_mb) and ram_available_mb() >= (
+            llm_size_mb + _RAM_KEEP_MARGIN_MB
+        )
+        for eng in up:
+            eng.free(keep_ram=keep)
+        return keep
+
+    def _local_size_mb(mid) -> int:
+        """size_mb (model.toml) d'un modèle local, 0 si inconnu."""
+        spec = next((m for m in local_model_specs if m.get("id") == mid), None)
+        return int(spec.get("size_mb") or 0) if spec else 0
 
     _generated_dir = (
         Path(remote_store_path).resolve().parent / "generated"
@@ -1508,7 +1531,18 @@ def create_app(
                     _local_held = True
                     # Un moteur image encore chargé tiendrait la VRAM que le LLM va
                     # réclamer : le vider d'abord (best-effort, rapide si rien à vider).
-                    _free_image_engines()
+                    # Son cache RAM n'est gardé que si le LLM tient à côté (64 Go : oui ;
+                    # machine étroite : non, et on le DIT — l'utilisateur comprend
+                    # pourquoi la prochaine image rechargera depuis le disque).
+                    if _free_image_engines(_local_size_mb(conv.model)) is False:
+                        yield _sse(
+                            "notice",
+                            text=(
+                                "moteur image déchargé de la RAM (insuffisante pour "
+                                "garder LLM + cache image ensemble) : la prochaine "
+                                "image repaiera le chargement disque."
+                            ),
+                        )
 
                 for kind, payload in source:
                     # Titre distant prêt (thread de fond) -> on le pousse dès la 1re occasion.
