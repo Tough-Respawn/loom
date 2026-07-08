@@ -1222,12 +1222,47 @@ def create_app(
                     yield _sse("status", label="préparation du moteur image…")
                     _local_gen_lock.acquire()
                     _img_held = True
+                    # Affinage du prompt (best-effort, JAMAIS bloquant) : le refiner
+                    # déclaré par le modèle image (model.toml, id d'un modèle Loom)
+                    # réécrit la demande — quelle que soit la langue — en prompt de
+                    # diffusion anglais. Séquence VRAM sûre : le refiner est servi par
+                    # llama-swap D'ABORD, puis déchargé (unload_local ci-dessous) —
+                    # LLM et diffusion ne co-résident jamais.
+                    prompt, refined = message, False
+                    if _im.refiner and _im.refiner in models:
+                        yield _sse(
+                            "status", label=f"affinage du prompt ({_im.refiner})…"
+                        )
+                        try:
+                            if _im.refiner in remote_model_ids or _ensure_local_server(
+                                wait=90.0
+                            ):
+                                out = ""
+                                for kind, chunk in client.stream_chat(
+                                    [{"role": "user", "content": message}],
+                                    IMAGE_REFINE_SYSTEM,
+                                    max_tokens=256,
+                                    model=_im.refiner,
+                                    thinking=False,
+                                ):
+                                    if kind == "content":
+                                        out += chunk
+                                out = " ".join(out.split()).strip().strip('"')
+                                if out:
+                                    prompt, refined = out, True
+                        except Exception:  # noqa: BLE001 - affinage best-effort
+                            traceback.print_exc()
+                        if not refined:
+                            yield _sse(
+                                "notice",
+                                text="affinage indisponible — prompt envoyé tel quel.",
+                            )
                     client.unload_local()  # VRAM libre pour la diffusion
                     eng = _engine_for(_im)
                     eng.ensure_up()
                     yield _sse("status", label="génération de l'image…")
                     png = eng.generate(
-                        Path(_im.workflow_path).read_text(encoding="utf-8"), message
+                        Path(_im.workflow_path).read_text(encoding="utf-8"), prompt
                     )
                     name = f"loom_{int(time.time() * 1000)}.png"
                     _generated_dir.mkdir(parents=True, exist_ok=True)
@@ -1242,9 +1277,13 @@ def create_app(
                     except OSError:
                         pass
                     md = (
-                        f"![{(message or 'image')[:80]}](/genimg/{name})\n\n"
+                        f"![{(prompt or 'image')[:80]}](/genimg/{name})\n\n"
                         f"Image écrite : `{loc}`"
                     )
+                    if refined:
+                        # Le prompt réellement envoyé au diffuseur, visible dans le fil :
+                        # l'utilisateur voit ce que l'affinage a fait de sa demande.
+                        md += f"\n\nPrompt affiné ({_im.refiner}) : `{prompt}`"
                     yield _finish(md)
                 except ComfyError as exc:
                     yield _finish(f"[génération d'image interrompue : {exc}]")
