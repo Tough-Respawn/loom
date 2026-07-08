@@ -128,7 +128,19 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   2026-07-08) : marge d'offload MoE élargie (quants Q5/Q6 du 35B envisageables) et
   cohabitation RAM confortable LLM + moteur image.
 - **Plus de tout-petit modèle** (4B abandonnés) → on peut se fier aux schémas d'outils (le
-  modèle les lit), d'où la délégation prompt → schéma.
+  modèle les lit), d'où la délégation prompt → schéma. EXCEPTION assumée : le **refiner
+  image** `gemma4-e4b-heretic` (E4B décensuré) — pas un cerveau d'agent, un traducteur
+  une-passe (demande toute-langue → prompt de diffusion anglais lossless, ou instruction
+  d'édition si photo jointe), servi puis déchargé avant la diffusion.
+- **Parc multimédia (2026-07-08)** : racine des modèles CONFIGURABLE (`[storage]
+  models_root`, ici `E:/loom-models`) avec l'arbo unique `local/{text,image,video}` +
+  `remote` + `_TEMPLATE` (replis legacy supprimés). ComfyUI garde ses poids à part
+  (`E:/comfyui-models` via `extra_model_paths.yaml`). Modèles servis : image =
+  krea2-turbo, **chroma1-hd** (8.9B décensuré par conception), **z-image-turbo** (6B
+  photoréaliste rapide), **flux-kontext** (édition de photo par instruction, `{IMAGE}` +
+  chemin dans le message) ; vidéo = **wan22-t2v / wan22-i2v** (TI2V-5B, webm ~3 s,
+  `timeout` par modèle). Sortie vidéo gérée (extension dynamique, lien cliquable).
+  ⚠️ chaîne Chroma/Z-Image/Kontext/Wan **pas encore validée en génération réelle**.
 
 ## Déjà essayé, rejeté
 Décisions négatives **mesurées dans ce projet**. Toute piste qui recoupe une de ces lignes doit

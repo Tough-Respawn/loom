@@ -14,6 +14,10 @@ from loom.tools.web import WebSearchConfig
 # Le prompt système du chat vit dans loom/prompts/chat.system.md (source de vérité).
 DEFAULT_SYSTEM_PROMPT = CHAT_SYSTEM
 
+# Racine des modèles par défaut : dans le package (loom/models). Surchageable par
+# [storage] models_root (config/local.toml) — ex. E:/loom-models sur la machine du user.
+_PACKAGE_MODELS = Path(__file__).resolve().parent / "models"
+
 
 @dataclass
 class ChatConfig:
@@ -153,6 +157,11 @@ class RuntimeConfig:
     # bas -> débordement en mémoire partagée (Windows) qui écroule tout. À régler par machine.
     gpu_kv_headroom_mb: int = 1024
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
+    # Racine des modèles ([storage] models_root, ex. E:/loom-models — arbo
+    # local/{text,image,video} + remote + _TEMPLATE) et dossier des modèles TEXTE
+    # résolu (root/local/text si la nouvelle arbo existe, sinon racine à plat legacy).
+    models_root: Path = field(default_factory=lambda: _PACKAGE_MODELS)
+    models_dir: Path = field(default_factory=lambda: _PACKAGE_MODELS)
 
     def model_by_id(self, model_id: str) -> ModelConfig:
         for m in self.models:
@@ -300,16 +309,25 @@ def load_config(
         recall_summarize=bool(me.get("recall_summarize", True)),
         recall_summarize_threshold=int(me.get("recall_summarize_threshold", 5)),
     )
-    # Découverte par dossier (loom/models/<id>/model.toml) ; repli sur l'ancien bloc
+    # Racine des modèles : [storage] models_root (ex. E:/loom-models) sinon le package
+    # (loom/models). Arbo UNIQUE, où que soit la racine : local/{text,image,video}
+    # + remote + _TEMPLATE (pas de layout legacy — migration 2026-07-08).
+    st = data.get("storage", {})
+    models_root = Path(st.get("models_root") or _PACKAGE_MODELS).resolve()
+    models_dir = models_root / "local" / "text"
+    # Les profils par modèle (models_profile) se résolvent contre cette racine partout
+    # (outils, app web) sans la faire circuler dans chaque signature.
+    from loom.runtime import models_profile as _mp
+
+    _mp.set_models_root(models_root)
+    # Découverte par dossier (<models_dir>/<id>/model.toml) ; repli sur l'ancien bloc
     # [[models]] de la config si aucun dossier-modèle n'est présent (transition douce).
-    # NB : résolu contre le PACKAGE (loom/models), pas contre le fichier de config — celui-ci
-    # vit désormais dans config/ à la racine du repo, alors que les modèles restent dans loom/.
-    models = _discover_models(Path(__file__).resolve().parent / "models")
+    models = _discover_models(models_dir)
     if not models:
         models = [_parse_model(rm) for rm in data.get("models", [])]
     if not models:
         raise ValueError(
-            "aucun modèle : crée loom/models/<id>/model.toml (ou un bloc [[models]])"
+            f"aucun modèle : crée {models_dir}\\<id>\\model.toml (ou un bloc [[models]])"
         )
     remote_models = [_parse_remote_model(rm) for rm in data.get("remote_models", [])]
     default_model = ch.get("default_model") or models[0].id
@@ -328,4 +346,6 @@ def load_config(
         chat=chat,
         memory=memory,
         permissions=parse_permissions(data),
+        models_root=models_root,
+        models_dir=models_dir,
     )

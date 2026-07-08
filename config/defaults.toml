@@ -26,6 +26,13 @@ swap_bin = "llama-swap"
 # n_gpu_layers = 35
 # threads = 8
 
+# ================================ Stockage ==================================
+[storage]
+# Racine des modèles — arbo : local/{text,image,video} + remote + _TEMPLATE.
+# Par défaut dans le package (loom/models) ; pointe-la vers un gros disque dans
+# config/local.toml, ex. :
+# models_root = "E:/loom-models"
+
 # ============================== Chat / runtime ==============================
 [chat]
 

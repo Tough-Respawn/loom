@@ -1,39 +1,45 @@
 # Modèles Loom
 
-Un modèle = un **dossier** `loom/models/<id>/` contenant :
-- `model.toml` — métadonnées (source GGUF, offload, contexte, vision). Voir `_TEMPLATE/model.toml`.
-- `profile.md` *(optionnel)* — consignes/quirks propres au modèle, injectées dans son contexte.
-- le `<...>.gguf` — le poids (et un `*.mmproj-*.gguf` pour la vision). **Gitignoré** : jamais
-  distribué, chacun fournit le sien.
+La racine des modèles est **configurable** : `[storage] models_root` dans
+`config/local.toml` (ex. `E:/loom-models`). À défaut, c'est ce dossier du package
+(`loom/models/`). L'arborescence ci-dessous est LA convention, où que soit la racine.
+Le repo ne suit que `_TEMPLATE/` et ce README : les modèles sont personnels, jamais
+poussés.
 
-`<id>` (le nom du dossier) apparaît dans le sélecteur UI et sert à `default_model`
-(`[chat]` de `loom.config.toml`). La découverte scanne ce dossier au démarrage.
+## Arborescence
 
-## Local vs distant, d'un coup d'œil
-La racine de `models/` ne contient que du **LOCAL** (un dossier = un GGUF servi par
-llama.cpp). Les modèles **DISTANTS** (API OpenAI-compatible, définis via le panneau
-engrenage / `config/local.toml`) n'ont ici que leur éventuel `profile.md`, groupé sous
-**`_REMOTE/<id>/`** — le préfixe `_` les exclut de la découverte locale, comme `_TEMPLATE`.
+```
+<models_root>/
+  local/
+    text/    <id>/model.toml (+ .gguf, profile.md)   -> LLM servis par llama.cpp
+    image/   <id>/model.toml + workflow.json         -> ComfyUI, un message = une image
+    video/   <id>/model.toml + workflow.json         -> ComfyUI, un message = un clip
+  remote/    <id>/profile.md                         -> profils des modèles API
+  _TEMPLATE/ gabarit d'un modèle texte
+```
 
-## Modèles IMAGE (`_IMAGE/<id>/`)
-Un modèle image = un dossier sous `_IMAGE/` : `model.toml` (label, taille par défaut,
-racine/port ComfyUI) + `workflow.json` (graphe ComfyUI **format API** avec `{PROMPT}`
-et `{SEED}`). Sélectionnable dans l'UI comme un LLM : un message = une image. Le moteur
-est ComfyUI (install séparée, venv privé) ; Loom le démarre et lui parle en HTTP.
-Ajouter un modèle image = copier un dossier, éditer deux fichiers — comme les GGUF.
+## Modèles TEXTE (`local/text/<id>/`)
+- `model.toml` — métadonnées (source GGUF, offload, contexte, vision). Voir `_TEMPLATE/`.
+- `profile.md` *(optionnel)* — consignes/quirks du modèle, injectés dans son contexte.
+- le `.gguf` (et un `*.mmproj-*.gguf` pour la vision) — téléchargé par Loom si absent.
+
+`<id>` (le nom du dossier) apparaît dans le sélecteur UI et sert à `default_model`.
+
+## Modèles IMAGE / VIDÉO (`local/image/`, `local/video/`)
+Même format dans les deux : `model.toml` (label, taille, racine/port ComfyUI, `refiner`,
+`timeout`) + `workflow.json` (graphe ComfyUI **format API** avec `{PROMPT}`, `{SEED}`
+et, pour l'édition/i2v, `{IMAGE}`). Le moteur est ComfyUI (install séparée, venv privé) ;
+Loom le démarre et lui parle en HTTP. Les POIDS ComfyUI (unet/encodeurs/vae) vivent dans
+leur propre dossier (ex. `E:/comfyui-models`, référencé par `extra_model_paths.yaml`
+dans l'install ComfyUI).
 
 `refiner = "<id d'un modèle Loom>"` *(optionnel)* : avant la diffusion, ce modèle réécrit
-ta demande — quelle que soit la langue — en UN prompt de diffusion anglais propre (sujet,
-cadrage, lumière, style), affiché sous l'image. Recommandé : un petit modèle local
-décensuré (ex. `gemma4-e4b-heretic`) — il est servi PUIS déchargé avant la diffusion,
-jamais deux modèles résidents. Absent ou indisponible -> le prompt part brut.
+ta demande — quelle que soit la langue — en UN prompt anglais propre (description, ou
+instruction d'édition si une photo est jointe), affiché sous le résultat. Recommandé :
+un petit local décensuré (ex. `gemma4-e4b-heretic`) — servi PUIS déchargé avant la
+diffusion, jamais deux résidents. `{IMAGE}` : mets le CHEMIN de ta photo dans le message
+(guillemets si espaces). `timeout` : budget d'attente (s), à monter pour la vidéo.
 
-## Ajouter ton modèle
-1. `cp -r loom/models/_TEMPLATE loom/models/<ton-id>` (ou copie le dossier à la main).
-2. Édite `loom/models/<ton-id>/model.toml` (`repo`/`filename`, `n_layers`, `size_mb`, et
-   `cpu_moe`/`n_cpu_moe`/`context` selon ta VRAM).
-3. Dépose le `.gguf` dans le dossier (ou laisse Loom le télécharger depuis `repo`/`filename`).
-4. (Optionnel) pointe `default_model = "<ton-id>"` dans `loom.config.toml`.
-
-Les dossiers de modèles personnels sont **gitignorés** (seul `_TEMPLATE/` est suivi) : le repo
-reste agnostique, tu branches les tiens sans les pousser.
+## Ajouter un modèle
+- Texte : copie `_TEMPLATE/` vers `local/text/<ton-id>/`, édite `model.toml`.
+- Image/vidéo : copie un dossier existant de `local/image/`, édite les deux fichiers.
