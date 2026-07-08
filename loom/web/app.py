@@ -1241,7 +1241,9 @@ def create_app(
                                 for kind, chunk in client.stream_chat(
                                     [{"role": "user", "content": message}],
                                     IMAGE_REFINE_SYSTEM,
-                                    max_tokens=256,
+                                    # Verbeux assumé : l'encodeur (Qwen3-VL) digère les
+                                    # prompts longs, et la fidélité prime sur la concision.
+                                    max_tokens=512,
                                     model=_im.refiner,
                                     thinking=False,
                                 ):
