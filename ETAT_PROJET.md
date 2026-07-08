@@ -140,7 +140,11 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   photoréaliste rapide), **flux-kontext** (édition de photo par instruction, `{IMAGE}` +
   chemin dans le message) ; vidéo = **wan22-t2v / wan22-i2v** (TI2V-5B, webm ~3 s,
   `timeout` par modèle). Sortie vidéo gérée (extension dynamique, lien cliquable).
-  ⚠️ chaîne Chroma/Z-Image/Kontext/Wan **pas encore validée en génération réelle**.
+  **Chaîne VALIDÉE E2E le 2026-07-09** (UI réelle via Playwright, prompts français,
+  refiner actif partout) : z-image 93 s à froid ; chroma 5 min 39 (timeout monté à
+  1200) ; kontext 5 min 30 (pose/identité préservées) ; krea 2 min depuis E: ; wan
+  t2v et i2v ~6 min le clip (73 frames 832x480 webm, mouvement cohérent, photo
+  d'entrée = première frame) ; retour LLM local : Q4 chargé du T7 en ~40 s, pong OK.
 
 ## Déjà essayé, rejeté
 Décisions négatives **mesurées dans ce projet**. Toute piste qui recoupe une de ces lignes doit
