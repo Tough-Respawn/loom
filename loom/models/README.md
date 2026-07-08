@@ -9,6 +9,12 @@ Un modèle = un **dossier** `loom/models/<id>/` contenant :
 `<id>` (le nom du dossier) apparaît dans le sélecteur UI et sert à `default_model`
 (`[chat]` de `loom.config.toml`). La découverte scanne ce dossier au démarrage.
 
+## Local vs distant, d'un coup d'œil
+La racine de `models/` ne contient que du **LOCAL** (un dossier = un GGUF servi par
+llama.cpp). Les modèles **DISTANTS** (API OpenAI-compatible, définis via le panneau
+engrenage / `config/local.toml`) n'ont ici que leur éventuel `profile.md`, groupé sous
+**`_REMOTE/<id>/`** — le préfixe `_` les exclut de la découverte locale, comme `_TEMPLATE`.
+
 ## Ajouter ton modèle
 1. `cp -r loom/models/_TEMPLATE loom/models/<ton-id>` (ou copie le dossier à la main).
 2. Édite `loom/models/<ton-id>/model.toml` (`repo`/`filename`, `n_layers`, `size_mb`, et

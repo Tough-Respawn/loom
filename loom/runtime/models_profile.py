@@ -129,13 +129,21 @@ def _parse_frontmatter_fixes(text: str) -> list[str]:
 
 
 def load_profile(model_id: str, models_dir: Path | None = None) -> Profile:
-    """Charge le profil d'un modèle depuis loom/models/<id>/profile.md. Absent/illisible
-    -> profil vide (aucun fix). Ne lève jamais."""
+    """Charge le profil d'un modèle depuis loom/models/<id>/profile.md — ou, pour un
+    modèle DISTANT, loom/models/_REMOTE/<id>/profile.md : les profils distants (un
+    profile.md sans GGUF ni model.toml) sont groupés sous _REMOTE/ pour que la racine
+    de models/ ne montre que le LOCAL d'un coup d'œil (le préfixe '_' les exclut déjà
+    de la découverte locale). Absent/illisible -> profil vide (aucun fix). Ne lève jamais."""
     if not model_id:
         return _EMPTY
-    path = (models_dir or MODELS_DIR) / model_id / "profile.md"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return Profile(model_id, ())
-    return Profile(model_id, tuple(_parse_frontmatter_fixes(text)))
+    base = models_dir or MODELS_DIR
+    for path in (
+        base / model_id / "profile.md",
+        base / "_REMOTE" / model_id / "profile.md",
+    ):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        return Profile(model_id, tuple(_parse_frontmatter_fixes(text)))
+    return Profile(model_id, ())
