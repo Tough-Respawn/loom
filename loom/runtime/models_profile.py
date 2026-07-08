@@ -12,6 +12,17 @@ from pathlib import Path
 # Ce module vit dans loom/runtime/ : remonter de DEUX niveaux jusqu'à la racine loom/
 # où se trouve models/ (sinon on chercherait loom/runtime/models/, inexistant -> profils muets).
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+# Racine EFFECTIVE : surchargée au chargement de la config ([storage] models_root,
+# ex. E:/loom-models) via set_models_root — les appels à load_profile n'ont pas à la
+# faire circuler.
+_ROOT = MODELS_DIR
+
+
+def set_models_root(root: Path) -> None:
+    """Pointe les profils sur la racine configurée (appelé par loom.config.load_config)."""
+    global _ROOT
+    _ROOT = Path(root)
+
 
 # Fichiers de PROSE : on n'y touche pas (les guillemets typographiques peuvent y être voulus).
 _PROSE_EXT = frozenset({".md", ".markdown", ".txt", ".rst"})
@@ -129,17 +140,15 @@ def _parse_frontmatter_fixes(text: str) -> list[str]:
 
 
 def load_profile(model_id: str, models_dir: Path | None = None) -> Profile:
-    """Charge le profil d'un modèle depuis loom/models/<id>/profile.md — ou, pour un
-    modèle DISTANT, loom/models/_REMOTE/<id>/profile.md : les profils distants (un
-    profile.md sans GGUF ni model.toml) sont groupés sous _REMOTE/ pour que la racine
-    de models/ ne montre que le LOCAL d'un coup d'œil (le préfixe '_' les exclut déjà
-    de la découverte locale). Absent/illisible -> profil vide (aucun fix). Ne lève jamais."""
+    """Charge le profil d'un modèle depuis la racine configurée (ex. E:/loom-models) :
+    local/text/<id>/profile.md pour un LOCAL, remote/<id>/profile.md pour un DISTANT.
+    Absent/illisible -> profil vide (aucun fix). Ne lève jamais."""
     if not model_id:
         return _EMPTY
-    base = models_dir or MODELS_DIR
+    base = models_dir or _ROOT
     for path in (
-        base / model_id / "profile.md",
-        base / "_REMOTE" / model_id / "profile.md",
+        base / "local" / "text" / model_id / "profile.md",
+        base / "remote" / model_id / "profile.md",
     ):
         try:
             text = path.read_text(encoding="utf-8")

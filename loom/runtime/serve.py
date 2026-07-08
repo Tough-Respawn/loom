@@ -180,7 +180,7 @@ def _run(args: list[str], bin_name: str, hint: str) -> int:
 def launch_direct(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
     """Un seul modèle : llama-server directement, pas besoin de llama-swap."""
     model = cfg.model  # = modèle par défaut
-    base = Path(model.dir) if model.dir else MODELS_DIR
+    base = Path(model.dir) if model.dir else cfg.models_dir
     model_path = base / model.filename
     mmproj_path = resolve_mmproj_path(model.mmproj_filename, base, repo=model.repo)
     args = build_launch(cfg, profile, model_path, mmproj_path)
@@ -197,7 +197,7 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         cfg.models,
         profile,
         llama_bin=cfg.server_bin,
-        models_dir=str(MODELS_DIR),
+        models_dir=str(cfg.models_dir),
         context=cfg.context,
         override_n_gpu_layers=cfg.override_n_gpu_layers,
     )
@@ -237,7 +237,7 @@ def regenerate_swap_yaml(
             cfg.models,
             profile,
             llama_bin=cfg.server_bin,
-            models_dir=str(MODELS_DIR),
+            models_dir=str(cfg.models_dir),
             context=cfg.context,
             override_n_gpu_layers=cfg.override_n_gpu_layers,
         )
@@ -259,7 +259,7 @@ def main() -> int:
     _log(f"[loom] Profil détecté : {profile}")
 
     try:
-        ensure_all_models(cfg.models, MODELS_DIR)
+        ensure_all_models(cfg.models, cfg.models_dir)
     except ModelUnavailable as exc:
         # Modèle absent et non téléchargeable : on guide l'utilisateur (quoi poser, où)
         # et on sort proprement (code 1, sans stacktrace).

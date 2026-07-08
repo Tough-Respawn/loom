@@ -171,11 +171,12 @@ def build_app(cfg):
 
     plugins_dir = str(_plugins_root(getattr(cfg.chat, "plugins_root", None)))
 
-    # Modèles IMAGE (ComfyUI) : découverts par dossier models/_IMAGE/<id>/, sélectionnables
-    # dans l'UI comme les LLM (un message = une image).
+    # Modèles IMAGE/VIDÉO (ComfyUI) : découverts sous la racine configurée
+    # (local/image + local/video, legacy _IMAGE), sélectionnables dans l'UI comme
+    # les LLM (un message = une image ou un clip).
     from loom.runtime.image_models import discover_image_models
 
-    image_models = discover_image_models()
+    image_models = discover_image_models(cfg.models_root)
 
     sessions_root = data_root / "sessions"
     store = SessionStore(
