@@ -44,7 +44,7 @@ from loom.extend.skills import (
     write_skill_source,
 )
 
-from loom.prompts import CHAT_SYSTEM_STRONG
+from loom.prompts import CHAT_SYSTEM_STRONG, IMAGE_REFINE_SYSTEM
 from loom.runtime import model_store
 from loom.runtime.comfy import ComfyEngine, ComfyError
 from loom.runtime.hardware import ram_available_mb
