@@ -30,7 +30,7 @@ swap_bin = "llama-swap"
 [chat]
 
 # Modèle chargé au démarrage (le sélecteur de l'UI hot-swap ensuite)
-default_model = "gemma4-26b-a4b-uncensored"
+default_model = "qwen3.6-35b-a3b-abliterated"
 
 # system_prompt centralisé dans loom/prompts/chat.system.md (pas ici)
 history_path = "var/conversation.json"
