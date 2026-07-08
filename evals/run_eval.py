@@ -407,8 +407,10 @@ def report(all_results: dict, runs: int):
                     }.items()
                 )
             )
+            turns = [r.get("n_model_turns", 0) for r in rd]
             print(
-                f"  {cid.ljust(16)} [{v}] tours={_avg([r.get('n_model_turns', 0) for r in rd])} "
+                f"  {cid.ljust(16)} [{v}] tours={_avg(turns)} "
+                f"(min {min(turns)}/max {max(turns)}) "
                 f"outils={_avg([r.get('n_tool_calls', 0) for r in rd])} "
                 f"tok={_avg([r.get('prompt_tokens', 0) for r in rd])}/"
                 f"{_avg([r.get('completion_tokens', 0) for r in rd])} "
@@ -442,12 +444,19 @@ def pin_baseline(all_results: dict, runs: int, model: str) -> None:
     for variant, cases in all_results.items():
         for cid, rd in cases.items():
             entry = cases_summary.setdefault(cid, {})
+            turns = [r.get("n_model_turns", 0) for r in rd]
+            toks = [r.get("prompt_tokens", 0) for r in rd]
             entry[variant] = {
                 "pass": sum(1 for r in rd if r["passed"]),
                 "runs": len(rd),
-                "model_turns": _mean([r.get("n_model_turns", 0) for r in rd]),
+                "model_turns": _mean(turns),
+                # Extrêmes PAR CAS : une moyenne avale les événements de queue (le run
+                # pathologique à 20 tours devient invisible dans une moyenne de 5) ;
+                # or c'est la queue qu'on surveille entre commits, pas le centre.
+                "model_turns_minmax": [min(turns), max(turns)] if turns else [0, 0],
                 "tool_calls": _mean([r.get("n_tool_calls", 0) for r in rd]),
-                "prompt_tokens": _mean([r.get("prompt_tokens", 0) for r in rd]),
+                "prompt_tokens": _mean(toks),
+                "prompt_tokens_max": max(toks) if toks else 0,
                 "completion_tokens": _mean([r.get("completion_tokens", 0) for r in rd]),
                 "duration_s": _mean([r.get("duration_s", 0.0) for r in rd]),
                 "stops": sorted({r.get("stop_reason") or "?" for r in rd}),
