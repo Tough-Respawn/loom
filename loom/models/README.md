@@ -15,6 +15,13 @@ llama.cpp). Les modèles **DISTANTS** (API OpenAI-compatible, définis via le pa
 engrenage / `config/local.toml`) n'ont ici que leur éventuel `profile.md`, groupé sous
 **`_REMOTE/<id>/`** — le préfixe `_` les exclut de la découverte locale, comme `_TEMPLATE`.
 
+## Modèles IMAGE (`_IMAGE/<id>/`)
+Un modèle image = un dossier sous `_IMAGE/` : `model.toml` (label, taille par défaut,
+racine/port ComfyUI) + `workflow.json` (graphe ComfyUI **format API** avec `{PROMPT}`
+et `{SEED}`). Sélectionnable dans l'UI comme un LLM : un message = une image. Le moteur
+est ComfyUI (install séparée, venv privé) ; Loom le démarre et lui parle en HTTP.
+Ajouter un modèle image = copier un dossier, éditer deux fichiers — comme les GGUF.
+
 ## Ajouter ton modèle
 1. `cp -r loom/models/_TEMPLATE loom/models/<ton-id>` (ou copie le dossier à la main).
 2. Édite `loom/models/<ton-id>/model.toml` (`repo`/`filename`, `n_layers`, `size_mb`, et
