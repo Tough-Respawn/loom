@@ -158,11 +158,15 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   RAM (`--cpu-moe`) ; les outils/prompts ne compensent pas un modèle sous la barre.
 
 ## Reste / pistes
-1. **Banc d'éval** : largement LIVRÉ le 2026-07-08 (cf. État technique : coûts, baselines,
-   injections). Reste : réponse VIDE du modèle (0 token) traitée comme stop naturel silencieux
-   → un retry borné ; plus de runs (`--runs 5+`) avant de trancher sur les métriques de coût.
-2. **Tranches plugins suivantes** : moteur de **hooks** (PostToolUse — exécute du code tiers,
-   nécessite une porte de confiance), **agents** des plugins → personas dispatchables.
+1. **Banc d'éval** : LIVRÉ le 2026-07-08, retry réponse vide et min/max par cas compris.
+   Reste : laisser les baselines s'accumuler au fil des commits ; surveiller la queue
+   `crlf_edit` (hint read-back → fignolage, 1/15 runs — escalades pré-validées en ADR/mémoire).
+2. **Tranches plugins suivantes** : moteur de **hooks** (repérage fait 2026-07-08 :
+   format CC = `hooks/hooks.json` par plugin, événements → commandes + timeout,
+   `${CLAUDE_PLUGIN_ROOT}`, protocole stdin JSON/exit code ; tranche 1 recommandée =
+   **PostToolUse seul** (feedback sans pouvoir de blocage) + porte de confiance à
+   l'installation — le store ne scanne aujourd'hui QUE les skills) ; puis **agents**
+   des plugins → personas dispatchables.
 3. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite).
 4. **RAG** (skills volumineux) si le catalogue grossit ; **audio**.
 5. **Mémoire projet auto-injectée** (`LOOM.md` par workspace, rechargé dans le system prompt) —
