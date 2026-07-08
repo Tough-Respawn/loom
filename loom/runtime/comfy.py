@@ -3,7 +3,10 @@
 d'un workflow API et récupération du PNG. HTTP uniquement (urllib), aucune dépendance.
 
 VRAM (6 Go) : UN modèle à la fois — l'appelant décharge le LLM (unload_local) AVANT
-generate(), et appelle free() quand on rebascule sur un modèle texte."""
+generate(), et appelle free() quand on rebascule sur un modèle texte. RAM : free()
+peut GARDER les poids image en cache (keep_ram=True) quand la machine est assez
+large pour LLM + cache image ensemble — la prochaine image évite le rechargement
+disque. L'arbitrage (RAM disponible vs taille du LLM) vit côté web/app.py."""
 
 from __future__ import annotations
 
@@ -166,11 +169,17 @@ class ComfyEngine:
                         return resp.read()
         raise ComfyError(f"génération sans réponse après {int(timeout)} s (timeout).")
 
-    def free(self) -> None:
-        """Rend la VRAM (déchargement des modèles image) — best-effort, jamais bloquant."""
+    def free(self, keep_ram: bool = False) -> None:
+        """Rend la VRAM (déchargement des modèles image) — best-effort, jamais bloquant.
+
+        keep_ram=True garde les poids en cache RAM : la prochaine image repart du
+        cache au lieu du disque. À réserver aux machines où LLM + cache tiennent
+        ensemble (l'appelant décide, cf. _free_image_engines dans web/app.py)."""
         try:
             self._post(
-                "/free", {"unload_models": True, "free_memory": True}, timeout=10
+                "/free",
+                {"unload_models": True, "free_memory": not keep_ram},
+                timeout=10,
             )
         except (urllib.error.URLError, OSError, ComfyError):
             pass
