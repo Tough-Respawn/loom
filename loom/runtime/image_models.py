@@ -30,6 +30,9 @@ class ImageModel:
     # Vide = pas d'affinage, le prompt part brut. Séquence VRAM sûre : le refiner est
     # servi par llama-swap PUIS déchargé avant la diffusion (jamais deux résidents).
     refiner: str = ""
+    # Budget d'attente de la génération (s). 600 suffit à une image ; un modèle VIDÉO
+    # (Wan) sur petit GPU se compte en dizaines de minutes -> à monter dans model.toml.
+    timeout: int = 600
 
 
 def discover_image_models(models_dir: Path | None = None) -> list[ImageModel]:
@@ -60,6 +63,7 @@ def discover_image_models(models_dir: Path | None = None) -> list[ImageModel]:
                 comfy_port=int(data.get("comfy_port") or 8188),
                 workflow_path=str(wf_p),
                 refiner=str(data.get("refiner") or ""),
+                timeout=int(data.get("timeout") or 600),
             )
         )
     return out
