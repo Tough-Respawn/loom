@@ -1361,6 +1361,7 @@ class LoomClient:
         max_act_nudges: int = 2,
         max_length_continues: int = 30,
         max_loop_breaks: int = 2,
+        max_empty_retries: int = 2,
         strong: bool = False,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
@@ -1385,7 +1386,8 @@ class LoomClient:
 
         Chaque sortie émet un event terminal ('done', {'reason': ...}) : 'natural'
         (stop du modèle), 'repeat_stop', 'loop_degenerate', 'max_iters',
-        'context_irreducible', 'output_overflow', 'api_error'. Les consommateurs
+        'context_irreducible', 'output_overflow', 'api_error', 'empty_response'
+        (réponse vide malgré les relances). Les consommateurs
         qui ne s'en servent pas l'ignorent (dispatch if/elif) ; les évals s'en
         servent comme stop_reason mesurable au lieu de pattern-matcher les textes.
         """
@@ -1413,6 +1415,7 @@ class LoomClient:
         refocus_done = (
             False  # note de recentrage post-force-fit déjà émise ? (une seule)
         )
+        empty_retries = 0  # nb de relances sur réponse VIDE (0 texte, 0 tool call)
 
         def _ctx_est() -> int:
             # Estimation ~3 car./token du contexte VIVANT (prompt + convo courant). Sert à
@@ -1832,6 +1835,37 @@ class LoomClient:
                         f"relance {length_continues}/{max_length_continues}",
                     )
                     continue
+                # RÉPONSE VIDE (EOS immédiat : 0 texte, 0 tool call — vécu en éval,
+                # cas context_squeeze) : le stop naturel serait un SILENCE total pour
+                # l'utilisateur. On relance, borné. Filet de FONCTIONNEMENT (pas une
+                # garde de comportement) -> actif aussi pour un modèle fort (strong).
+                if not text.strip():
+                    if empty_retries < max_empty_retries:
+                        empty_retries += 1
+                        nudge = (
+                            "Ta réponse est arrivée VIDE (aucun texte, aucun appel "
+                            "d'outil). Réponds MAINTENANT : donne le résultat demandé, "
+                            "ou émets l'appel d'outil nécessaire."
+                        )
+                        convo.append({"role": "user", "content": nudge})
+                        log_event(
+                            "guard",
+                            level="WARN",
+                            kind="empty_response",
+                            retry=empty_retries,
+                        )
+                        yield (
+                            "tool_result",
+                            {"name": "(réponse vide)", "ok": False, "preview": nudge},
+                        )
+                        continue
+                    yield (
+                        "content",
+                        "\n[génération interrompue : le modèle a rendu une réponse "
+                        "vide malgré les relances.]",
+                    )
+                    yield ("done", {"reason": "empty_response"})
+                    return
                 # Audit de claim au stop : le modèle prétend-il un résultat qu'il n'a pas
                 # produit ? (A) artefact fichier inventé, (B) résultat d'exécution sans
                 # run_shell/dispatch, ou intention/affirmation sans exécution réelle. On le
