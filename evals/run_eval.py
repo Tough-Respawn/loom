@@ -682,6 +682,14 @@ def main():
     perm = make_perm(cfg)
     only = set(args.cases.split(",")) if args.cases else None
 
+    # Garde-éveil : une éval complète dure des dizaines de minutes SANS input utilisateur ;
+    # la veille par inactivité suspend tout (vécu : runs nocturnes à 1693 s / 11919 s de
+    # timeouts fantômes). Même module que loom.web ; l'écran peut s'éteindre, pas le système.
+    from loom.runtime.stay_awake import StayAwake
+
+    _awake = StayAwake()
+    _awake.acquire()
+
     print(
         f"Modèle : {model} @ {base_url}  | runs={args.runs}  variante={args.variant}  "
         f"juge={'non' if args.no_judge else 'oui'}\n"
