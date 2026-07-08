@@ -522,6 +522,28 @@ _CLEARED_TOOL = (
     "que tu l'as encore.]"
 )
 
+# Sur-vérification compulsive (observée en éval : 14 check_interactive verts d'affilée
+# sur une page qui marchait -> 20 tours, 230k tokens, arrêt max_iters). Les checks sont
+# volontairement EXCLUS du détecteur de non-progrès (re-prouver est légitime, cf.
+# _VERIFY_TOOLS) : le remède n'est donc PAS une coupe, c'est un SIGNAL dans le résultat.
+_BROWSER_CHECKS = frozenset({"check_page", "check_interactive", "serve_and_check"})
+_STATE_CHANGERS = frozenset(
+    {"write_file", "append_file", "edit_file", "run_shell", "format_code"}
+)
+_VERIFY_STREAK_NOTE = 3  # nb de checks verts consécutifs avant d'annoter le résultat
+
+
+def _verify_streak_update(name: str, ok: bool, streak: int) -> int:
+    """Nouveau compteur de checks navigateur VERTS consécutifs : un outil qui change
+    l'état (écriture, shell) remet à zéro (la preuve précédente est périmée), un check
+    raté aussi (échec = information nouvelle) ; les lectures n'y touchent pas."""
+    if name in _STATE_CHANGERS:
+        return 0
+    if name in _BROWSER_CHECKS:
+        return streak + 1 if ok else 0
+    return streak
+
+
 # Note de RECENTRAGE après un force-fit : un historique tronqué mais encore répétitif
 # induit l'IMITATION (observé en éval : le modèle a « continué » la série de vieux tours
 # archivés au lieu d'exécuter la tâche). La note casse le motif et repointe la demande.
@@ -1416,6 +1438,7 @@ class LoomClient:
             False  # note de recentrage post-force-fit déjà émise ? (une seule)
         )
         empty_retries = 0  # nb de relances sur réponse VIDE (0 texte, 0 tool call)
+        verify_streak = 0  # checks navigateur verts consécutifs (anti sur-vérification)
 
         def _ctx_est() -> int:
             # Estimation ~3 car./token du contexte VIVANT (prompt + convo courant). Sert à
@@ -2200,6 +2223,24 @@ class LoomClient:
                     ok = True
                 else:
                     tool_content = result
+                # Anti SUR-VÉRIFICATION (informatif, jamais bloquant) : au-delà de
+                # _VERIFY_STREAK_NOTE checks navigateur VERTS d'affilée sans changement
+                # d'état entre-temps, le résultat le dit au modèle. On n'empêche RIEN
+                # (les checks restent exclus du non-progrès : re-prouver est légitime) ;
+                # on nomme la preuve déjà faite. Coupé pour un modèle fort (strong).
+                verify_streak = _verify_streak_update(name, ok, verify_streak)
+                if (
+                    not strong
+                    and ok
+                    and name in _BROWSER_CHECKS
+                    and verify_streak >= _VERIFY_STREAK_NOTE
+                ):
+                    tool_content += (
+                        f"\n[harnais : {verify_streak} vérifications vertes d'affilée "
+                        "sans changement d'état entre-temps — la preuve est faite. "
+                        "Conclus MAINTENANT ; ne re-vérifie que si tu modifies "
+                        "quelque chose.]"
+                    )
                 convo.append(
                     {"role": "tool", "tool_call_id": tc["id"], "content": tool_content}
                 )

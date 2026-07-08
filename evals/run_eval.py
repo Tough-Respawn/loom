@@ -482,6 +482,7 @@ def _injection_tests() -> bool:
         _safe_args,
         _salvage_tool_calls,
         _scan_repeat,
+        _verify_streak_update,
     )
 
     checks: dict[str, bool] = {}
@@ -609,6 +610,21 @@ def _injection_tests() -> bool:
     c4 = str(convo4[0]["content"])
     checks["force-fit garde tête ET queue"] = c4.startswith("DEBUT") and c4.endswith(
         "FIN"
+    )
+
+    # 6. Anti sur-vérification : le streak de checks verts monte, un changement d'état
+    #    ou un check raté le remet à zéro, une lecture n'y touche pas.
+    s = 0
+    for _ in range(4):
+        s = _verify_streak_update("check_interactive", True, s)
+    after_checks = s  # 4 checks verts d'affilée
+    s = _verify_streak_update("read_file", True, s)  # lire ne change rien
+    after_read = s
+    s = _verify_streak_update("edit_file", True, s)  # modifier périme la preuve
+    after_edit = s
+    s2 = _verify_streak_update("check_page", False, 5)  # check raté = info nouvelle
+    checks["streak sur-vérification : monte/reset correctement"] = (
+        after_checks == 4 and after_read == 4 and after_edit == 0 and s2 == 0
     )
 
     ok = all(checks.values())
