@@ -61,12 +61,24 @@ def resolve_mmproj_path(
 
 def ensure_all_models(models, models_dir: Path) -> None:
     """Télécharge le GGUF (et le mmproj) de chaque modèle s'il manque, DANS le dossier du
-    modèle (loom/models/<id>/) quand il est connu, sinon dans la racine partagée."""
-    for m in models:
-        dest = Path(m.dir) if m.dir else models_dir
-        ensure_model(m.repo, m.filename, dest)
-        if m.mmproj_filename:
-            ensure_model(m.repo, m.mmproj_filename, dest)
+    modèle (loom/models/<id>/) quand il est connu, sinon dans la racine partagée.
+
+    Garde-éveil le temps des téléchargements : un GGUF de 20+ Go prend des dizaines de
+    minutes sans aucune activité utilisateur — la veille par inactivité couperait le
+    transfert en plein vol (même garde que les générations de loom.web). Relâché dès la
+    fin : servir des requêtes ne doit PAS bloquer la veille en permanence."""
+    from loom.runtime.stay_awake import StayAwake
+
+    awake = StayAwake()
+    awake.acquire()
+    try:
+        for m in models:
+            dest = Path(m.dir) if m.dir else models_dir
+            ensure_model(m.repo, m.filename, dest)
+            if m.mmproj_filename:
+                ensure_model(m.repo, m.mmproj_filename, dest)
+    finally:
+        awake.release()
 
 
 def build_launch(
