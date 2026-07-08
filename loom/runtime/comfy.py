@@ -105,18 +105,67 @@ class ComfyEngine:
             body = resp.read().decode("utf-8", "replace")
         return json.loads(body) if body.strip() else {}
 
+    def upload_image(self, path: str) -> str:
+        """Envoie une image d'ENTRÉE à ComfyUI (POST /upload/image, multipart minimal
+        en urllib — toujours zéro dépendance) ; renvoie le nom sous lequel un nœud
+        LoadImage peut la charger."""
+        p = Path(path)
+        try:
+            data = p.read_bytes()
+        except OSError as exc:
+            raise ComfyError(f"photo d'entrée illisible ({path}) : {exc}") from exc
+        boundary = "----loom" + hex(random.getrandbits(64))[2:]
+        part = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="image"; filename="{p.name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8")
+        tail = (
+            f"\r\n--{boundary}\r\n"
+            'Content-Disposition: form-data; name="overwrite"\r\n\r\n'
+            f"true\r\n--{boundary}--\r\n"
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            self.base + "/upload/image",
+            data=part + data + tail,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                out = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        except (urllib.error.URLError, OSError) as exc:
+            raise ComfyError(f"upload de la photo vers ComfyUI échoué : {exc}") from exc
+        return str(out.get("name") or p.name)
+
     def generate(
-        self, workflow_template: str, prompt: str, timeout: float = 600.0
+        self,
+        workflow_template: str,
+        prompt: str,
+        timeout: float = 600.0,
+        image_path: str | None = None,
     ) -> bytes:
         """Injecte prompt+seed dans le template, soumet, attend, renvoie le PNG (bytes).
 
         Le prompt est injecté via json.dumps (jamais de collage brut : guillemets et
         retours à la ligne restent un JSON valide). {SEED} : entier aléatoire 63 bits
-        -> chaque message donne une image différente, comme le « randomize » de l'UI."""
+        -> chaque message donne une image différente, comme le « randomize » de l'UI.
+        {IMAGE} (workflows d'ÉDITION, ex. Kontext) : photo d'entrée uploadée puis
+        référencée par son nom — requise si le template la déclare."""
         wf = workflow_template.replace(
             '"{PROMPT}"', json.dumps(prompt, ensure_ascii=False)
         )
         wf = wf.replace('"{SEED}"', str(random.getrandbits(63)))
+        if '"{IMAGE}"' in wf:
+            if not image_path:
+                raise ComfyError(
+                    "ce modèle ÉDITE une photo existante : mets le chemin du fichier "
+                    "image (ex. C:/photos/moi.jpg) dans ton message, avec l'instruction."
+                )
+            wf = wf.replace(
+                '"{IMAGE}"',
+                json.dumps(self.upload_image(image_path), ensure_ascii=False),
+            )
         try:
             graph = json.loads(wf)
         except json.JSONDecodeError as exc:
