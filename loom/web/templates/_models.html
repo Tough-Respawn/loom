@@ -1,6 +1,6 @@
 <select id="model-select" name="model" hx-post="/model" hx-target="#model-select"
         hx-swap="outerHTML">
   {% for mid in models %}
-    <option value="{{ mid }}"{% if mid == current_model %} selected{% endif %}>{% if mid in remote_model_ids %}remote · {% else %}home · {% endif %}{{ mid }}</option>
+    <option value="{{ mid }}"{% if mid == current_model %} selected{% endif %}>{% if mid in remote_model_ids %}remote · {% elif image_model_ids and mid in image_model_ids %}image · {% else %}home · {% endif %}{{ mid }}</option>
   {% endfor %}
 </select>
