@@ -171,6 +171,12 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 4. **RAG** (skills volumineux) si le catalogue grossit ; **audio**.
 5. **Mémoire projet auto-injectée** (`LOOM.md` par workspace, rechargé dans le system prompt) —
    l'analyse est déjà faisable via les outils ; le manque = l'auto-injection.
+6. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
+   dossier `loom/models/<id>/` sans redémarrer. Repérage 2026-07-08 : la mécanique existe
+   déjà à moitié — `loom.web._regen_swap_yaml()` régénère le yaml et llama-swap
+   (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
+   restart). Manque : un déclencheur de re-scan de `models/` exposé à l'UI (bouton engrenage
+   ou watcher du dossier) + rafraîchissement du sélecteur sans recharger la page. Petit chantier.
 
 ## Conventions
 - Toolchain : **`uv`** (`uv run` / `uvx`) + **`ruff`** (hook PostToolUse lint+format PEP8).
