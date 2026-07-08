@@ -22,6 +22,12 @@ et `{SEED}`). Sélectionnable dans l'UI comme un LLM : un message = une image. L
 est ComfyUI (install séparée, venv privé) ; Loom le démarre et lui parle en HTTP.
 Ajouter un modèle image = copier un dossier, éditer deux fichiers — comme les GGUF.
 
+`refiner = "<id d'un modèle Loom>"` *(optionnel)* : avant la diffusion, ce modèle réécrit
+ta demande — quelle que soit la langue — en UN prompt de diffusion anglais propre (sujet,
+cadrage, lumière, style), affiché sous l'image. Recommandé : un petit modèle local
+décensuré (ex. `gemma4-e4b-heretic`) — il est servi PUIS déchargé avant la diffusion,
+jamais deux modèles résidents. Absent ou indisponible -> le prompt part brut.
+
 ## Ajouter ton modèle
 1. `cp -r loom/models/_TEMPLATE loom/models/<ton-id>` (ou copie le dossier à la main).
 2. Édite `loom/models/<ton-id>/model.toml` (`repo`/`filename`, `n_layers`, `size_mb`, et

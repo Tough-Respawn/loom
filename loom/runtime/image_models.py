@@ -25,6 +25,11 @@ class ImageModel:
     comfy_dir: str  # racine de l'install ComfyUI (pour la démarrer nous-mêmes)
     comfy_port: int
     workflow_path: str
+    # id d'un modèle Loom (petit local décensuré de préférence) qui RÉÉCRIT la demande
+    # utilisateur (toute langue) en prompt de diffusion anglais avant la génération.
+    # Vide = pas d'affinage, le prompt part brut. Séquence VRAM sûre : le refiner est
+    # servi par llama-swap PUIS déchargé avant la diffusion (jamais deux résidents).
+    refiner: str = ""
 
 
 def discover_image_models(models_dir: Path | None = None) -> list[ImageModel]:
@@ -54,6 +59,7 @@ def discover_image_models(models_dir: Path | None = None) -> list[ImageModel]:
                 comfy_dir=str(data.get("comfy_dir") or "C:/tools/ComfyUI"),
                 comfy_port=int(data.get("comfy_port") or 8188),
                 workflow_path=str(wf_p),
+                refiner=str(data.get("refiner") or ""),
             )
         )
     return out
