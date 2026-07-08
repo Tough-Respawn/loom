@@ -778,6 +778,28 @@ def _flatten_for_summary(old: list[dict], budget_chars: int) -> str:
     return head + "\n\n" + "\n\n".join(reversed(tail_parts))
 
 
+def _drop_orphan_tools(convo: list[dict]) -> None:
+    """Retire tout message role:tool ORPHELIN — dont le plus proche message non-tool qui
+    précède n'est pas un assistant porteur de tool_calls. Un tool orphelin (son appel a
+    été droppé par le force-fit) fait échouer le rendu du chat template (400 llama.cpp) ;
+    même règle que summarize_old_turns (« ne pas orpheliner un résultat d'outil »)."""
+    i = 0
+    while i < len(convo):
+        if convo[i].get("role") == "tool":
+            j = i - 1
+            while j >= 0 and convo[j].get("role") == "tool":
+                j -= 1
+            anchored = (
+                j >= 0
+                and convo[j].get("role") == "assistant"
+                and convo[j].get("tool_calls")
+            )
+            if not anchored:
+                convo.pop(i)
+                continue
+        i += 1
+
+
 def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool:
     """Réduction DÉTERMINISTE de dernier recours (AUCUN LLM) : clippe les contenus les plus
     gros — et, à défaut, drope les messages les plus anciens (garde toujours les 2 derniers)
@@ -852,9 +874,13 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
             else:
                 convo[idx] = {**convo[idx], "content": "…[tronqué]"}
         elif len(convo) > 2:
-            # Plus rien de clippable mais encore trop : on drope le plus ancien (on garde
-            # toujours au moins les 2 derniers messages -> décroissance stricte, terminaison).
-            convo.pop(0)
+            # Plus rien de clippable mais encore trop : on drope le plus ancien, SAUF la
+            # tâche courante (vécu en éval : le pop l'emportait -> conversation réduite à
+            # [assistant, tool] SANS message user -> 400 « Unable to generate parser for
+            # this template » côté llama.cpp, et un modèle sans but même sinon).
+            victim = 1 if task_idx == 0 else 0
+            convo.pop(victim)
+            _drop_orphan_tools(convo)
         else:
             break
     return _total() <= budget_chars
@@ -1427,7 +1453,17 @@ class LoomClient:
                     # l'appel -> plus jamais de 400. Local uniquement (le distant gère sa
                     # fenêtre lui-même).
                     if not self.is_remote(model) and _ctx_est() > compact_after_tokens:
-                        _force_fit(convo, system_prompt, compact_after_tokens * 3)
+                        # Budget PLANCHER = prompt système (incompressible) + un jeu de
+                        # travail minimal. Sans lui, un seuil plus petit que le prompt
+                        # système rend le budget INATTEIGNABLE : le force-fit détruit
+                        # alors tout le travail récent À CHAQUE tour (résultat du dernier
+                        # read compris) -> le modèle relit en boucle -> repeat_stop
+                        # (vécu en éval, cas context_squeeze).
+                        _force_fit(
+                            convo,
+                            system_prompt,
+                            max(compact_after_tokens * 3, len(system_prompt) + 4000),
+                        )
                         if not refocus_done:
                             refocus_done = True
                             convo.append({"role": "user", "content": _REFOCUS_NOTE})
@@ -1620,7 +1656,11 @@ class LoomClient:
                     force_fits += 1
                     shrink = max(0.12, 0.7**force_fits)
                     base = compact_after_tokens or _ctx_est() or 8000
-                    budget = max(1500, int(base * 3 * shrink))
+                    # Même plancher « système + minimal » qu'au préventif : la pression
+                    # géométrique s'applique au CONVO, pas à l'incompressible. Si le
+                    # prompt système seul dépasse la vraie fenêtre, on finit sur l'arrêt
+                    # context_irreducible (cas anormal), pas sur une destruction stérile.
+                    budget = max(len(system_prompt) + 1500, int(base * 3 * shrink))
                     _force_fit(convo, system_prompt, budget)
                     if not refocus_done:
                         refocus_done = True

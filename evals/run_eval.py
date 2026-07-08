@@ -571,6 +571,34 @@ def _injection_tests() -> bool:
         m.get("content") == task for m in convo3
     )
 
+    # 5d. Budget INATTEIGNABLE (prompt système seul > budget) : le pop ne doit NI
+    #     emporter la tâche NI laisser un tool orphelin — vécu en éval : convo réduite
+    #     à [assistant, tool] sans user -> 400 « Unable to generate parser » llama.cpp.
+    convo5 = [
+        {"role": "user", "content": "vieux tour " * 200},
+        {"role": "assistant", "content": "vieille réponse " * 200},
+        {"role": "user", "content": "la tâche courante"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "t1"}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "résultat d'outil " * 100},
+    ]
+    _force_fit(convo5, "S" * 9000, 4500)
+    task_alive = any(m.get("content") == "la tâche courante" for m in convo5)
+    orphan = False
+    for i, m in enumerate(convo5):
+        if m.get("role") == "tool":
+            j = i - 1
+            while j >= 0 and convo5[j].get("role") == "tool":
+                j -= 1
+            if not (
+                j >= 0
+                and convo5[j].get("role") == "assistant"
+                and convo5[j].get("tool_calls")
+            ):
+                orphan = True
+    checks["force-fit pop : tâche vivante, zéro tool orphelin"] = (
+        task_alive and not orphan
+    )
+
     # 5c. Force-fit clippe TÊTE+QUEUE : la fin d'un long contenu (conclusion, erreur)
     #     survit au clip, pas seulement son début.
     convo4 = [
