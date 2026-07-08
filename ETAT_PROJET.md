@@ -124,7 +124,9 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   force-fit exempte la tâche courante (clip ET pop), clip tête+queue, plancher de budget
   « système + jeu de travail », sweep des tool results orphelins, note de recentrage
   anti-imitation après force-fit. Chaque règle est née d'un échec observé en éval.
-- **Machine de dev** : 6 Go VRAM (RTX 2060) + **~32 Go RAM** (⚠️ pas 64 : upgrade non installé/détecté).
+- **Machine de dev** : 6 Go VRAM (RTX 2060) + **64 Go RAM** (upgrade installé et détecté le
+  2026-07-08) : marge d'offload MoE élargie (quants Q5/Q6 du 35B envisageables) et
+  cohabitation RAM confortable LLM + moteur image.
 - **Plus de tout-petit modèle** (4B abandonnés) → on peut se fier aux schémas d'outils (le
   modèle les lit), d'où la délégation prompt → schéma.
 
