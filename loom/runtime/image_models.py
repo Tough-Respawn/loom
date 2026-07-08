@@ -1,10 +1,11 @@
 # loom/runtime/image_models.py
-"""Découverte des modèles IMAGE : loom/models/_IMAGE/<id>/ (model.toml + workflow.json).
+"""Découverte des modèles IMAGE/VIDÉO : <models_root>/local/{image,video}/<id>/
+(model.toml + workflow.json).
 
-Troisième type de modèle (après local llama-swap et distant API) : un dossier par
-modèle, patron des LLM. Le préfixe '_' du parent exclut ces dossiers de la découverte
-llama-swap (convention _TEMPLATE/_REMOTE). Le workflow.json est un graphe ComfyUI au
-FORMAT API avec les placeholders {PROMPT} et {SEED} (remplacés à la soumission)."""
+Types de modèles ComfyUI (après local llama-swap et distant API) : un dossier par
+modèle, patron des LLM. Le workflow.json est un graphe ComfyUI au FORMAT API avec
+les placeholders {PROMPT}, {SEED} et, pour l'édition/i2v, {IMAGE} (remplacés à la
+soumission)."""
 
 from __future__ import annotations
 
@@ -35,14 +36,16 @@ class ImageModel:
     timeout: int = 600
 
 
-def discover_image_models(models_dir: Path | None = None) -> list[ImageModel]:
-    """Scanne loom/models/_IMAGE/*/ ; dossier sans model.toml OU sans workflow.json
-    -> ignoré (message console, pas d'exception : un dossier cassé ne bloque pas l'app)."""
-    base = (models_dir or MODELS_DIR) / "_IMAGE"
+def discover_image_models(models_root: Path | None = None) -> list[ImageModel]:
+    """Scanne les modèles ComfyUI de la racine : local/image/*/ et local/video/*/
+    (même format — la sortie vidéo est portée par le workflow). Dossier sans model.toml
+    OU sans workflow.json -> ignoré (message console, pas d'exception : un dossier
+    cassé ne bloque pas l'app)."""
+    root = Path(models_root or MODELS_DIR)
+    bases = [root / "local" / "image", root / "local" / "video"]
     out: list[ImageModel] = []
-    if not base.is_dir():
-        return out
-    for d in sorted(p for p in base.iterdir() if p.is_dir()):
+    dirs = [p for base in bases if base.is_dir() for p in base.iterdir() if p.is_dir()]
+    for d in sorted(dirs, key=lambda p: p.name):
         toml_p, wf_p = d / "model.toml", d / "workflow.json"
         if not (toml_p.is_file() and wf_p.is_file()):
             print(f"[loom] modèle image ignoré (fichier manquant) : {d.name}")
