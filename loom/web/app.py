@@ -1222,13 +1222,34 @@ def create_app(
                     yield _sse("status", label="préparation du moteur image…")
                     _local_gen_lock.acquire()
                     _img_held = True
+                    # Photo d'ENTRÉE (modèles d'édition, ex. Kontext) : un chemin de
+                    # fichier image dans le message est détecté, vérifié sur disque,
+                    # retiré du texte (le prompt ne doit porter que l'instruction) et
+                    # transmis au moteur ({IMAGE} du workflow). Chemins avec espaces :
+                    # entre guillemets.
+                    src_image, msg_text = None, message
+                    for cand in re.findall(
+                        r'"([^"]+\.(?:png|jpe?g|webp|bmp))"', message, re.IGNORECASE
+                    ) + re.findall(
+                        r"[A-Za-z]:[\\/][^\s\"']+\.(?:png|jpe?g|webp|bmp)",
+                        message,
+                        re.IGNORECASE,
+                    ):
+                        if Path(cand).is_file():
+                            src_image = cand
+                            msg_text = (
+                                message.replace(f'"{cand}"', " ")
+                                .replace(cand, " ")
+                                .strip()
+                            )
+                            break
                     # Affinage du prompt (best-effort, JAMAIS bloquant) : le refiner
                     # déclaré par le modèle image (model.toml, id d'un modèle Loom)
                     # réécrit la demande — quelle que soit la langue — en prompt de
                     # diffusion anglais. Séquence VRAM sûre : le refiner est servi par
                     # llama-swap D'ABORD, puis déchargé (unload_local ci-dessous) —
                     # LLM et diffusion ne co-résident jamais.
-                    prompt, refined = message, False
+                    prompt, refined = msg_text, False
                     if _im.refiner and _im.refiner in models:
                         yield _sse(
                             "status", label=f"affinage du prompt ({_im.refiner})…"
@@ -1237,9 +1258,19 @@ def create_app(
                             if _im.refiner in remote_model_ids or _ensure_local_server(
                                 wait=90.0
                             ):
+                                # Édition d'une photo : le refiner doit produire une
+                                # INSTRUCTION (quoi changer / quoi garder), pas une
+                                # description de scène — on le lui dit dans le message.
+                                _refine_in = (
+                                    "[An input photo is attached; write an EDIT "
+                                    "instruction: what to change, what must stay "
+                                    f"identical.] {msg_text}"
+                                    if src_image
+                                    else msg_text
+                                )
                                 out = ""
                                 for kind, chunk in client.stream_chat(
-                                    [{"role": "user", "content": message}],
+                                    [{"role": "user", "content": _refine_in}],
                                     IMAGE_REFINE_SYSTEM,
                                     # Verbeux assumé : l'encodeur (Qwen3-VL) digère les
                                     # prompts longs, et la fidélité prime sur la concision.
@@ -1264,7 +1295,9 @@ def create_app(
                     eng.ensure_up()
                     yield _sse("status", label="génération de l'image…")
                     png = eng.generate(
-                        Path(_im.workflow_path).read_text(encoding="utf-8"), prompt
+                        Path(_im.workflow_path).read_text(encoding="utf-8"),
+                        prompt,
+                        image_path=src_image,
                     )
                     name = f"loom_{int(time.time() * 1000)}.png"
                     _generated_dir.mkdir(parents=True, exist_ok=True)
