@@ -1,0 +1,134 @@
+{
+  "sha": "d3b5a5b",
+  "date": "2026-07-08T06:03:41Z",
+  "model": "qwen3.6-35b-a3b-abliterated",
+  "runs": 3,
+  "cases": {
+    "edit_block": {
+      "new": {
+        "pass": 3,
+        "runs": 3,
+        "model_turns": 5.0,
+        "tool_calls": 4.0,
+        "prompt_tokens": 33152.7,
+        "completion_tokens": 258.7,
+        "duration_s": 34.3,
+        "stops": [
+          "natural"
+        ]
+      }
+    },
+    "html_counter": {
+      "new": {
+        "pass": 3,
+        "runs": 3,
+        "model_turns": 7.0,
+        "tool_calls": 6.0,
+        "prompt_tokens": 53687.7,
+        "completion_tokens": 1192.3,
+        "duration_s": 119.5,
+        "stops": [
+          "natural"
+        ]
+      }
+    },
+    "does_it_work": {
+      "new": {
+        "pass": 3,
+        "runs": 3,
+        "model_turns": 2.7,
+        "tool_calls": 2.3,
+        "prompt_tokens": 16957.0,
+        "completion_tokens": 140.7,
+        "duration_s": 16.9,
+        "stops": [
+          "natural"
+        ]
+      }
+    },
+    "windows_shell": {
+      "new": {
+        "pass": 3,
+        "runs": 3,
+        "model_turns": 2.0,
+        "tool_calls": 1.0,
+        "prompt_tokens": 12539.0,
+        "completion_tokens": 61.7,
+        "duration_s": 8.1,
+        "stops": [
+          "natural"
+        ]
+      }
+    },
+    "path_given": {
+      "new": {
+        "pass": 3,
+        "runs": 3,
+        "model_turns": 2.0,
+        "tool_calls": 1.0,
+        "prompt_tokens": 12694.0,
+        "completion_tokens": 88.0,
+        "duration_s": 11.7,
+        "stops": [
+          "natural"
+        ]
+      }
+    },
+    "crlf_edit": {
+      "new": {
+        "pass": 3,
+        "runs": 3,
+        "model_turns": 4.0,
+        "tool_calls": 3.0,
+        "prompt_tokens": 25974.7,
+        "completion_tokens": 198.3,
+        "duration_s": 26.1,
+        "stops": [
+          "natural"
+        ]
+      }
+    },
+    "dispatch_probe": {
+      "new": {
+        "pass": 3,
+        "runs": 3,
+        "model_turns": 7.3,
+        "tool_calls": 10.3,
+        "prompt_tokens": 56421.3,
+        "completion_tokens": 904.3,
+        "duration_s": 334.5,
+        "stops": [
+          "natural"
+        ]
+      }
+    },
+    "context_squeeze": {
+      "new": {
+        "pass": 2,
+        "runs": 3,
+        "model_turns": 1.7,
+        "tool_calls": 2.3,
+        "prompt_tokens": 10974.0,
+        "completion_tokens": 23.3,
+        "duration_s": 106.5,
+        "stops": [
+          "natural"
+        ]
+      }
+    },
+    "direct_answer": {
+      "new": {
+        "pass": 3,
+        "runs": 3,
+        "model_turns": 1.0,
+        "tool_calls": 0.0,
+        "prompt_tokens": 6250.0,
+        "completion_tokens": 236.0,
+        "duration_s": 31.3,
+        "stops": [
+          "natural"
+        ]
+      }
+    }
+  }
+}
