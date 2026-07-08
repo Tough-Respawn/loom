@@ -171,7 +171,14 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 4. **RAG** (skills volumineux) si le catalogue grossit ; **audio**.
 5. **Mémoire projet auto-injectée** (`LOOM.md` par workspace, rechargé dans le system prompt) —
    l'analyse est déjà faisable via les outils ; le manque = l'auto-injection.
-6. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
+6. **Outil `generate_image`** (text-to-image local, pas urgent — repérage 2026-07-08) :
+   ToolSpec appelant **stable-diffusion.cpp** (même famille que llama.cpp : binaire + GGUF)
+   avec **Z-Image-Turbo Q4_K_M (5,0 Go)**, le modèle efficace de référence (Krea-2-Turbo =
+   candidat qualité, mais archi custom sans support sd.cpp, licence « other »). Contrainte
+   clé 6 Go VRAM : UN modèle à la fois → l'outil décharge le LLM (`unload_local()`, existe)
+   le temps de générer, rechargement auto à la requête suivante. v1 = appel CLI par image ;
+   l'UI affiche déjà les images inline (mécanique read_image).
+7. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
    dossier `loom/models/<id>/` sans redémarrer. Repérage 2026-07-08 : la mécanique existe
    déjà à moitié — `loom.web._regen_swap_yaml()` régénère le yaml et llama-swap
    (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
