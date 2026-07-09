@@ -356,6 +356,7 @@ def create_app(
     keepwarm_interval=150.0,
     identity_paths=None,
     identity_max_tokens=400,
+    project_memory_max_tokens=600,
     learned_skills_dir=None,
     reflect_stores=None,
     reflect_enabled=False,
@@ -445,6 +446,7 @@ def create_app(
         "context_budget": context_budget,
         "keep_recent": keep_recent,
         "identity_max_tokens": identity_max_tokens,
+        "project_memory_max_tokens": project_memory_max_tokens,
         "reflect_enabled": reflect_enabled,
         "reflect_min_actions": reflect_min_actions,
         "keepwarm_enabled": keepwarm_enabled,
@@ -476,6 +478,7 @@ def create_app(
             ),
             keep_recent=c.chat.keep_recent_messages,
             identity_max_tokens=c.chat.identity_max_tokens,
+            project_memory_max_tokens=c.chat.project_memory_max_tokens,
             reflect_enabled=c.chat.reflect_enabled,
             reflect_min_actions=c.chat.reflect_min_actions,
             keepwarm_enabled=c.chat.keepwarm_enabled,
@@ -1082,6 +1085,21 @@ def create_app(
             "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
             "même commande à l'identique."
         )
+
+        # Fiche projet auto-injectée : si `<workspace>/loom.md` existe (générée par /init),
+        # le modèle la reçoit d'office au lieu de re-sonder le projet à chaque session.
+        # Cache mtime (read_md) -> préfixe stable en session = prompt caching préservé ;
+        # suit le workspace courant (adoption/changement en cours de session). Les DEUX
+        # tiers la reçoivent (c'est de la mémoire, pas du scaffolding de comportement).
+        # L'en-tête la cadre en CONTEXTE (pas instructions, possiblement périmée) : une
+        # fiche est écrite en lisant le projet, un repo piégé ne doit pas pouvoir élever
+        # ses consignes au rang de system prompt.
+        from loom.memory.identity import project_block
+
+        _pm_blk = project_block(_ws, max_tokens=_settings["project_memory_max_tokens"])
+
+        if _pm_blk:
+            system_prompt += f"\n\n{_pm_blk}"
 
         # Objectif de session (/goal), en DIRECTIVE DOUCE : pas de juge externe qui te
         # contredit (retiré - il recalait des preuves correctes). Tu restes seul maître de
