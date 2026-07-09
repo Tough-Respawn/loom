@@ -226,7 +226,20 @@ class ComfyEngine:
                             f"{self.base}/view?{q}", timeout=120
                         ) as resp:
                             ext = Path(im["filename"]).suffix or ".png"
-                            return resp.read(), ext
+                            payload = resp.read()
+                        # ComfyUI a écrit SA copie dans <comfy>/output : doublon inutile
+                        # (l'unique copie vit dans le dossier de session Loom) -> purgée
+                        # aussitôt récupérée, best-effort.
+                        try:
+                            (
+                                self.dir
+                                / "output"
+                                / im.get("subfolder", "")
+                                / im["filename"]
+                            ).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        return payload, ext
         raise ComfyError(f"génération sans réponse après {int(timeout)} s (timeout).")
 
     def free(self, keep_ram: bool = False) -> None:
