@@ -2098,6 +2098,7 @@ function smRestorePos() {
           '<option value="' +
           m.id +
           '"' +
+          (m.desc ? ' title="' + m.desc.replace(/"/g, "&quot;") + '"' : "") +
           (m.id === cur ? " selected" : "") +
           ">" +
           (m.remote
