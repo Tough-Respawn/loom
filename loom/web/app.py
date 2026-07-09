@@ -567,6 +567,9 @@ def create_app(
     # pratique un seul. AUCUNE dépendance Python côté Loom : HTTP seulement.
     image_models = list(image_models or [])
     image_model_ids = {m.id for m in image_models}
+    # Sous-ensemble VIDÉO (découverts sous local/video) : même runtime, mais le
+    # sélecteur UI les préfixe `video ·` au lieu de `image ·`.
+    video_model_ids = {m.id for m in image_models if m.kind == "video"}
     _image_by_id = {m.id: m for m in image_models}
     models = list(models or []) + [m.id for m in image_models]
     _engines: dict[tuple, ComfyEngine] = {}
@@ -805,6 +808,7 @@ def create_app(
             "models": models,
             "remote_model_ids": remote_model_ids,
             "image_model_ids": image_model_ids,
+            "video_model_ids": video_model_ids,
             "current_model": conv.model,
             "thinking": conv.thinking,
             "available_tools": available_tools,
@@ -1303,13 +1307,18 @@ def create_app(
                     name = f"loom_{int(time.time() * 1000)}{ext}"
                     _generated_dir.mkdir(parents=True, exist_ok=True)
                     (_generated_dir / name).write_bytes(data)
-                    # Copie dans le workspace de la session : le média appartient au projet.
+                    # Copie dans le workspace de la session : le média appartient au
+                    # projet — SAUF si le workspace est le repo Loom lui-même (règle :
+                    # ne JAMAIS polluer le repo ; var/generated reste alors la seule copie).
                     loc = str(_generated_dir / name)
                     try:
-                        ws_dir = Path(_sess.workspace) / "images"
-                        ws_dir.mkdir(parents=True, exist_ok=True)
-                        (ws_dir / name).write_bytes(data)
-                        loc = str(ws_dir / name)
+                        _repo = Path(__file__).resolve().parents[2]
+                        _ws = Path(_sess.workspace).resolve()
+                        if _repo != _ws and _repo not in _ws.parents:
+                            ws_dir = _ws / "images"
+                            ws_dir.mkdir(parents=True, exist_ok=True)
+                            (ws_dir / name).write_bytes(data)
+                            loc = str(ws_dir / name)
                     except OSError:
                         pass
                     if ext in (".png", ".jpg", ".jpeg", ".webp"):
@@ -2187,6 +2196,7 @@ def create_app(
             current_model=conv.model,
             remote_model_ids=remote_model_ids,
             image_model_ids=image_model_ids,
+            video_model_ids=video_model_ids,
         )
 
     # ---- Gestionnaire de modèles (UI) : ajouter/tester/supprimer un modèle DISTANT à chaud,
@@ -2199,6 +2209,7 @@ def create_app(
                 "id": m,
                 "remote": m in remote_model_ids,
                 "image": m in image_model_ids,
+                "video": m in video_model_ids,
             }
             for m in models
         ]
