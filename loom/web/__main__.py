@@ -259,6 +259,13 @@ def build_app(cfg):
             rm.id: (rm.price_in, rm.price_out, rm.price_cached)
             for rm in cfg.remote_models
         },
+        # Rôle en une ligne par modèle (model.toml / remote_models `description`) ->
+        # infobulle du sélecteur. Vide = pas d'infobulle.
+        model_descriptions={
+            **{m.id: m.description for m in cfg.models if m.description},
+            **{rm.id: rm.description for rm in cfg.remote_models if rm.description},
+            **{im.id: im.description for im in image_models if im.description},
+        },
         remote_store_path=str(remote_store_path),
         config_defaults_path=str(CONFIG_PATH),
         config_local_path=str(PERSONAL_CONFIG_PATH),

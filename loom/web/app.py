@@ -366,6 +366,7 @@ def create_app(
     remote_model_ids=None,
     remote_model_names=None,
     model_prices=None,
+    model_descriptions=None,
     remote_store_path=None,
     config_defaults_path=None,
     config_local_path=None,
@@ -431,6 +432,8 @@ def create_app(
     model_max_tokens = dict(model_max_tokens or {})
     # Prix par modèle ($/M tokens) : id -> (input, output, cached). Local/absent -> (0,0,0).
     model_prices = dict(model_prices or {})
+    # Rôle en une ligne par modèle -> infobulle (title) des options du sélecteur.
+    model_descriptions = dict(model_descriptions or {})
 
     # Config VIVANTE de loom.web : au lieu de figer ces valeurs au démarrage, on les tient dans
     # un holder mutable que le runtime consulte À CHAQUE usage, et qu'on RECHARGE depuis le
@@ -809,6 +812,7 @@ def create_app(
             "remote_model_ids": remote_model_ids,
             "image_model_ids": image_model_ids,
             "video_model_ids": video_model_ids,
+            "model_descriptions": model_descriptions,
             "current_model": conv.model,
             "thinking": conv.thinking,
             "available_tools": available_tools,
@@ -2207,6 +2211,7 @@ def create_app(
             remote_model_ids=remote_model_ids,
             image_model_ids=image_model_ids,
             video_model_ids=video_model_ids,
+            model_descriptions=model_descriptions,
         )
 
     # ---- Gestionnaire de modèles (UI) : ajouter/tester/supprimer un modèle DISTANT à chaud,
@@ -2220,6 +2225,7 @@ def create_app(
                 "remote": m in remote_model_ids,
                 "image": m in image_model_ids,
                 "video": m in video_model_ids,
+                "desc": model_descriptions.get(m, ""),
             }
             for m in models
         ]

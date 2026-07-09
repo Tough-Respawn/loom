@@ -94,6 +94,9 @@ class ModelConfig:
     # Dossier du modèle (loom/models/<id>/) : porte le GGUF, le mmproj et profile.md.
     # Rempli par la découverte ; les chemins GGUF se résolvent contre lui.
     dir: str = ""
+    # RÔLE en une ligne (model.toml `description`) : infobulle du sélecteur UI —
+    # aide à choisir quand le parc grossit.
+    description: str = ""
 
 
 @dataclass
@@ -133,6 +136,8 @@ class RemoteModelConfig:
     # Prix $ / M des tokens d'INPUT servis par le CACHE (hit de préfixe) — bien moins cher
     # (ex. glm-5.2 : ~0.26 vs 1.40). 0 = pas de remise appliquée (coût = borne haute).
     price_cached: float = 0.0
+    # RÔLE en une ligne : infobulle du sélecteur UI.
+    description: str = ""
 
 
 @dataclass
@@ -188,6 +193,7 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         n_cpu_moe=d.get("n_cpu_moe"),
         context=d.get("context"),
         dir=d.get("dir", ""),
+        description=str(d.get("description", "") or ""),
     )
 
 
@@ -234,6 +240,7 @@ def _parse_remote_model(d: dict) -> RemoteModelConfig:
         price_in=float(d.get("price_in", 0.0) or 0.0),
         price_out=float(d.get("price_out", 0.0) or 0.0),
         price_cached=float(d.get("price_cached", 0.0) or 0.0),
+        description=str(d.get("description", "") or ""),
     )
 
 
