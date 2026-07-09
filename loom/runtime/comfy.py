@@ -144,6 +144,8 @@ class ComfyEngine:
         prompt: str,
         timeout: float = 600.0,
         image_path: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
     ) -> tuple[bytes, str]:
         """Injecte prompt+seed dans le template, soumet, attend, renvoie le média
         produit : (bytes, extension) — « .png » pour une image, « .webm »/« .mp4 »
@@ -169,6 +171,11 @@ class ComfyEngine:
             '"{PROMPT}"', json.dumps(prompt, ensure_ascii=False)
         )
         wf = wf.replace('"{SEED}"', str(random.getrandbits(63)))
+        # {WIDTH}/{HEIGHT} (optionnels dans le template) : résolution DYNAMIQUE —
+        # l'appelant la dérive de la demande (ex. tag [format: portrait] du refiner),
+        # repli sur les valeurs du model.toml.
+        wf = wf.replace('"{WIDTH}"', str(int(width or 1024)))
+        wf = wf.replace('"{HEIGHT}"', str(int(height or 1024)))
         if '"{IMAGE}"' in wf:
             if not image_path:
                 raise ComfyError(
