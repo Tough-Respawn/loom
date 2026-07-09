@@ -307,9 +307,29 @@ function UserMsg({ it, userIndex }) {
     if (userIndex == null) return;
     const fd = new FormData();
     fd.append("user_index", String(userIndex));
+    // Contenu du message : permet au serveur de le retrouver même si l'index a
+    // glissé (compaction), et d'expliquer sinon — plus d'échec muet.
+    const itText = Array.isArray(it.content)
+      ? it.content
+          .filter((p) => p.type === "text")
+          .map((p) => p.text)
+          .join(" ")
+          .trim()
+      : String(it.content || "").trim();
+    fd.append("text", itText);
     try {
       const r = await fetch("/fork", { method: "POST", body: fd });
-      if (!r.ok) return;
+      if (!r.ok) {
+        const at = activeTab();
+        if (at) {
+          at.timeline.push({
+            kind: "error",
+            message: (await r.text()) || "repartir impossible",
+          });
+          scheduleRender();
+        }
+        return;
+      }
       const j = await r.json();
       // Tronque la timeline de l'onglet actif : garde jusqu'a CET item user (inclus)
       const at = activeTab();
