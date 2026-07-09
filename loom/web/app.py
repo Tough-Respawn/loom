@@ -1288,12 +1288,19 @@ def create_app(
                                     if src_image
                                     else msg_text
                                 )
+                                # Prompt système = règles générales + grammaire propre
+                                # au générateur (refine_hints du model.toml) : chaque
+                                # modèle a son style de prompt optimal.
+                                _refine_sys = IMAGE_REFINE_SYSTEM
+                                if _im.refine_hints:
+                                    _refine_sys += (
+                                        "\n\nTARGET-MODEL RULES (override the above "
+                                        "when they conflict):\n" + _im.refine_hints
+                                    )
                                 out = ""
                                 for kind, chunk in client.stream_chat(
                                     [{"role": "user", "content": _refine_in}],
-                                    IMAGE_REFINE_SYSTEM,
-                                    # Verbeux assumé : l'encodeur (Qwen3-VL) digère les
-                                    # prompts longs, et la fidélité prime sur la concision.
+                                    _refine_sys,
                                     max_tokens=512,
                                     model=_im.refiner,
                                     thinking=False,
@@ -1310,6 +1317,26 @@ def create_app(
                                 "notice",
                                 text="affinage indisponible — prompt envoyé tel quel.",
                             )
+                    # FORMAT dynamique : le refiner termine par un tag
+                    # [format: portrait|landscape|square] dérivé de la demande —
+                    # extrait ici, retiré du prompt, converti en résolution. Absent
+                    # -> dimensions du model.toml (les workflows sans {WIDTH}/{HEIGHT}
+                    # ignorent simplement ces valeurs).
+                    gen_w, gen_h = _im.width, _im.height
+                    _fmt = re.search(
+                        r"\[\s*format\s*:\s*(portrait|landscape|paysage|square|carre|carré)\s*\]\s*$",
+                        prompt,
+                        re.IGNORECASE,
+                    )
+                    if _fmt:
+                        prompt = prompt[: _fmt.start()].strip()
+                        _f = _fmt.group(1).lower()
+                        if _f == "portrait":
+                            gen_w, gen_h = 832, 1216
+                        elif _f in ("landscape", "paysage"):
+                            gen_w, gen_h = 1216, 832
+                        else:  # carré
+                            gen_w, gen_h = 1024, 1024
                     # Titre de session : une session image/vidéo mérite un nom comme
                     # les autres. Inféré par le REFINER (encore résident — coût nul en
                     # rechargement) ; sans refiner, _infer_title retombe sur le début
@@ -1329,6 +1356,8 @@ def create_app(
                         prompt,
                         timeout=float(_im.timeout),
                         image_path=src_image,
+                        width=gen_w,
+                        height=gen_h,
                     )
                     # UNIQUE copie : dans le dossier de LA session (comme sa timeline).
                     # Le média suit le cycle de vie de la session — la supprimer emporte
