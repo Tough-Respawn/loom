@@ -174,6 +174,11 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   fermes, même si la doc frontière conseille l'inverse.
 - **Petits modèles denses (4B)** : abandonnés (2026-06-09). Cible = MoE 24B+ avec experts en
   RAM (`--cpu-moe`) ; les outils/prompts ne compensent pas un modèle sous la barre.
+- **Descripteur vision détourné (« VLM comme outil »)** : SUPPRIMÉ (2026-07-09). read_image
+  routait l'image d'un modèle texte-only vers glm-5v — un appel DISTANT PAYANT jamais
+  consenti par l'utilisateur (découvert quand le compte Z.ai à sec a renvoyé 1113). Règle
+  actée : read_image = le modèle EN COURS, jamais un autre ; pas de repli ; un modèle sans
+  vision le dit franchement. Les modèles locaux qui doivent voir portent leur mmproj.
 - **Outil `generate_image` (le LLM déclenche la diffusion)** : codé puis ABANDONNÉ le jour
   même (2026-07-08, jamais mergé). Sur 6 Go de VRAM, chaque image appelée par le LLM = le
   décharger, diffuser, puis RELIRE 20-35 Go de GGUF depuis le disque (`--no-mmap`) — un
