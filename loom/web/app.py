@@ -872,13 +872,21 @@ def create_app(
 
         return render_template("index.html", **_index_context())
 
-    @app.get("/genimg/<path:name>")
-    def genimg(name: str):
-        # Sert les PNG générés (var/generated) au markdown du chat. send_from_directory
-        # refuse les traversées de chemin.
+    @app.get("/genimg/<sid>/<name>")
+    def genimg_session(sid: str, name: str):
+        # Sert les médias générés depuis le dossier de LA session (unique copie).
+        # send_from_directory refuse les traversées de chemin ; mimetype déduit du nom
+        # (png/webm). Les vieux messages (/genimg/<name> plat) gardent leur route.
         from flask import send_from_directory
 
-        return send_from_directory(_generated_dir, name, mimetype="image/png")
+        return send_from_directory(session_store.root / sid / "generated", name)
+
+    @app.get("/genimg/<name>")
+    def genimg(name: str):
+        # LEGACY : messages d'avant 2026-07-09, servis depuis var/generated.
+        from flask import send_from_directory
+
+        return send_from_directory(_generated_dir, name)
 
     @app.get("/favicon.ico")
     def favicon():
@@ -1318,33 +1326,25 @@ def create_app(
                         timeout=float(_im.timeout),
                         image_path=src_image,
                     )
+                    # UNIQUE copie : dans le dossier de LA session (comme sa timeline).
+                    # Le média suit le cycle de vie de la session — la supprimer emporte
+                    # ses médias, aucun orphelin (décision user 2026-07-09 : fini les
+                    # duplications var/generated + workspace + output ComfyUI).
                     name = f"loom_{int(time.time() * 1000)}{ext}"
-                    _generated_dir.mkdir(parents=True, exist_ok=True)
-                    (_generated_dir / name).write_bytes(data)
-                    # Copie dans le workspace de la session : le média appartient au
-                    # projet — SAUF si le workspace est le repo Loom lui-même (règle :
-                    # ne JAMAIS polluer le repo ; var/generated reste alors la seule copie).
-                    loc = str(_generated_dir / name)
-                    try:
-                        _repo = Path(__file__).resolve().parents[2]
-                        _ws = Path(_sess.workspace).resolve()
-                        if _repo != _ws and _repo not in _ws.parents:
-                            ws_dir = _ws / "images"
-                            ws_dir.mkdir(parents=True, exist_ok=True)
-                            (ws_dir / name).write_bytes(data)
-                            loc = str(ws_dir / name)
-                    except OSError:
-                        pass
+                    media_dir = session_store.root / _sess.id / "generated"
+                    media_dir.mkdir(parents=True, exist_ok=True)
+                    (media_dir / name).write_bytes(data)
+                    loc = str(media_dir / name)
                     if ext in (".png", ".jpg", ".jpeg", ".webp"):
                         md = (
-                            f"![{(prompt or 'image')[:80]}](/genimg/{name})\n\n"
+                            f"![{(prompt or 'image')[:80]}](/genimg/{_sess.id}/{name})\n\n"
                             f"Image écrite : `{loc}`"
                         )
                     else:
                         # Vidéo (webm/mp4) : le markdown image ne la lit pas — lien
                         # cliquable, le navigateur la joue dans un onglet.
                         md = (
-                            f"[vidéo générée — cliquer pour lire](/genimg/{name})\n\n"
+                            f"[vidéo générée — cliquer pour lire](/genimg/{_sess.id}/{name})\n\n"
                             f"Vidéo écrite : `{loc}`"
                         )
                     if refined:
