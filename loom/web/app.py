@@ -1986,22 +1986,48 @@ def create_app(
     def fork():
         """Repart d'un message utilisateur : tronque l'historique APRES ce message (exclus),
 
-        renvoie son texte pour pre-remplir l'input. user_index = N-ieme message user (0-based)."""
+        renvoie son texte pour pre-remplir l'input. user_index = N-ieme message user (0-based)
+        COMPTÉ SUR L'AFFICHAGE — or la compaction fusionne les vieux tours côté serveur, donc
+        l'index peut avoir glissé : on retrouve alors le message par son CONTENU (`text`,
+        envoyé par l'UI), et sinon on répond une erreur EXPLICITE (plus d'échec muet)."""
 
         user_index = int(request.form.get("user_index", "-1"))
+        ui_text = (request.form.get("text") or "").strip()
 
         conv, save = _ctx()
 
         msgs = conv.messages
 
+        def _as_text(content) -> str:
+            if isinstance(content, list):
+                return " ".join(
+                    p.get("text", "") for p in content if p.get("type") == "text"
+                ).strip()
+            return str(content).strip()
+
         # Trouve le N-ieme message user dans l'historique persiste
 
         user_msgs = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
 
-        if user_index < 0 or user_index >= len(user_msgs):
-            return Response("index invalide", status=400)
-
-        target_idx = user_msgs[user_index]
+        target_idx = None
+        if 0 <= user_index < len(user_msgs):
+            cand = user_msgs[user_index]
+            # L'index ne vaut que si le contenu correspond encore (pas de glissement).
+            if not ui_text or _as_text(msgs[cand].get("content", "")) == ui_text:
+                target_idx = cand
+        if target_idx is None and ui_text:
+            # Index périmé (compaction) : dernier message user au MÊME contenu.
+            for i in reversed(user_msgs):
+                if _as_text(msgs[i].get("content", "")) == ui_text:
+                    target_idx = i
+                    break
+        if target_idx is None:
+            return Response(
+                "ce message a été résumé par la compaction : « repartir » n'est "
+                "possible que depuis un message encore présent dans le contexte "
+                "(les plus récents).",
+                status=400,
+            )
 
         content = msgs[target_idx].get("content", "")
 
