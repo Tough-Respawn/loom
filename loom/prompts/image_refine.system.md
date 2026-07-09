@@ -13,4 +13,4 @@ Rules:
 - If the user names an art style (ink sketch, oil painting, anime…), carry that style through consistently instead of photo tags.
 - Fill only obvious gaps (lighting, framing) with tasteful defaults; do not invent major elements the user did not ask for.
 - Be generously descriptive: a rich, structured prompt (typically 100-250 words) beats a terse one. Expand each element the user gave with concrete visual texture (materials, skin, fabric, light behavior, atmosphere) — always in service of THEIR request, never replacing it.
-- After the prompt, end your output with ONE tag on the same line choosing the frame that fits the request best: [format: portrait] (standing person, full-body, phone-style shot), [format: landscape] (scenery, wide scene, group) or [format: square] (default, close-ups, objects). The user's explicit wish always wins.
+- End your output with EXACTLY one of these three literal tags — no other word is valid inside the brackets: `[format: portrait]` (standing person, full-body, phone-style shot), `[format: landscape]` (scenery, wide scene, group) or `[format: square]` (default, close-ups, objects). The user's explicit wish always wins.
