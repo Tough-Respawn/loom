@@ -167,7 +167,7 @@ def build_app(cfg):
     # les LLM (un message = une image ou un clip).
     from loom.runtime.image_models import discover_image_models
 
-    image_models = discover_image_models(cfg.models_root)
+    image_models = discover_image_models(cfg.models_roots)
 
     sessions_root = data_root / "sessions"
     store = SessionStore(

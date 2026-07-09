@@ -12,16 +12,16 @@ from pathlib import Path
 # Ce module vit dans loom/runtime/ : remonter de DEUX niveaux jusqu'à la racine loom/
 # où se trouve models/ (sinon on chercherait loom/runtime/models/, inexistant -> profils muets).
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
-# Racine EFFECTIVE : surchargée au chargement de la config ([storage] models_root,
-# ex. E:/loom-models) via set_models_root — les appels à load_profile n'ont pas à la
-# faire circuler.
-_ROOT = MODELS_DIR
+# Racines EFFECTIVES : surchargées au chargement de la config ([storage] models_root,
+# chaîne ou liste, ex. ["C:/loom-models", "E:/loom-models"]) via set_models_root — les
+# appels à load_profile n'ont pas à les faire circuler. Première racine gagnante.
+_ROOTS: list[Path] = [MODELS_DIR]
 
 
-def set_models_root(root: Path) -> None:
-    """Pointe les profils sur la racine configurée (appelé par loom.config.load_config)."""
-    global _ROOT
-    _ROOT = Path(root)
+def set_models_root(root: Path | list[Path]) -> None:
+    """Pointe les profils sur la ou les racines configurées (appelé par load_config)."""
+    global _ROOTS
+    _ROOTS = [Path(r) for r in root] if isinstance(root, list) else [Path(root)]
 
 
 # Fichiers de PROSE : on n'y touche pas (les guillemets typographiques peuvent y être voulus).
@@ -140,19 +140,20 @@ def _parse_frontmatter_fixes(text: str) -> list[str]:
 
 
 def load_profile(model_id: str, models_dir: Path | None = None) -> Profile:
-    """Charge le profil d'un modèle depuis la racine configurée (ex. E:/loom-models) :
+    """Charge le profil d'un modèle depuis les racines configurées (dans l'ordre) :
     local/text/<id>/profile.md pour un LOCAL, remote/<id>/profile.md pour un DISTANT.
     Absent/illisible -> profil vide (aucun fix). Ne lève jamais."""
     if not model_id:
         return _EMPTY
-    base = models_dir or _ROOT
-    for path in (
-        base / "local" / "text" / model_id / "profile.md",
-        base / "remote" / model_id / "profile.md",
-    ):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        return Profile(model_id, tuple(_parse_frontmatter_fixes(text)))
+    bases = [models_dir] if models_dir else _ROOTS
+    for base in bases:
+        for path in (
+            base / "local" / "text" / model_id / "profile.md",
+            base / "remote" / model_id / "profile.md",
+        ):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            return Profile(model_id, tuple(_parse_frontmatter_fixes(text)))
     return Profile(model_id, ())
