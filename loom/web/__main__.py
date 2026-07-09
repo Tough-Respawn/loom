@@ -113,9 +113,11 @@ def build_app(cfg):
 
     # Modèles VISION (voient les images) : locaux avec mmproj + distants marqués vision.
     # DESCRIPTEUR d'image (approche « VLM comme outil ») : quand le modèle actif ne voit pas,
-    # read_image route vers ce VLM pour obtenir une description texte. On préfère un VLM
-    # DISTANT (pas besoin du serveur local allumé), sinon un local mmproj. Vide => read_image
-    # renverra une erreur claire à un modèle texte-only.
+    # read_image route vers ce VLM pour obtenir une description texte. CHAÎNE DE REPLI :
+    # distant d'abord (rapide, pas de swap du modèle chargé), puis les VLM LOCAUX (mmproj)
+    # si le distant échoue (solde/réseau — un compte API à sec ne doit pas priver une
+    # machine qui a des yeux en local ; le prix du repli local = un swap llama-swap).
+    # Vide => read_image renverra une erreur claire à un modèle texte-only.
     vision_model_ids = [m.id for m in cfg.models if m.mmproj_filename] + [
         rm.id for rm in cfg.remote_models if rm.vision
     ]
@@ -124,17 +126,23 @@ def build_app(cfg):
     ]
     describer_model = _describer_order[0] if _describer_order else ""
 
+    def _describe_with_fallback(uri: str, q: str) -> str:
+        last = "[description d'image indisponible : aucun modèle vision configuré]"
+        for mid in _describer_order:
+            out = client.describe_image(uri, q, mid)
+            # describe_image ne lève jamais : l'échec est un message préfixé.
+            if not out.startswith("[description d'image indisponible"):
+                return out
+            last = out
+        return last
+
     # Factory : le registre est (re)construit selon les outils cochés dans l'UI pour la
     # conversation courante. `workspace` optionnel : à défaut, celui de la config.
     # `client`/`model` arment dispatch_agent (sous-boucle tool-use) ; `conversation` arme
     # manage_todos, dont le plan vit dans `conversation.todos` (par session, persisté).
     def make_registry(active, workspace=None, conversation=None):
         _model = conversation.model if conversation else cfg.default_model
-        _describer = (
-            (lambda uri, q: client.describe_image(uri, q, describer_model))
-            if describer_model
-            else None
-        )
+        _describer = _describe_with_fallback if describer_model else None
         return build_registry(
             workspace_dir=workspace or cfg.chat.workspace_dir,
             max_bytes=cfg.chat.read_file_max_bytes,
