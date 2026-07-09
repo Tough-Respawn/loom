@@ -39,6 +39,11 @@ class ImageModel:
     kind: str = "image"
     # RÔLE en une ligne (model.toml `description`) : infobulle du sélecteur UI.
     description: str = ""
+    # Consignes de PROMPTING propres à CE modèle (model.toml `refine_hints`,
+    # multi-lignes) : ajoutées au prompt système du refiner. Chaque générateur a sa
+    # grammaire (Z-Image = gabarit caméra positif-only ; Chroma = prose détaillée ;
+    # Wan = mouvement) — la doc du modèle vit à côté de son workflow, pas dans le code.
+    refine_hints: str = ""
 
 
 def discover_image_models(models_root: Path | None = None) -> list[ImageModel]:
@@ -74,6 +79,7 @@ def discover_image_models(models_root: Path | None = None) -> list[ImageModel]:
                 timeout=int(data.get("timeout") or 600),
                 kind=d.parent.name if d.parent.name in ("image", "video") else "image",
                 description=str(data.get("description") or ""),
+                refine_hints=str(data.get("refine_hints") or ""),
             )
         )
     return out
