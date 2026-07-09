@@ -34,6 +34,9 @@ class ImageModel:
     # Budget d'attente de la génération (s). 600 suffit à une image ; un modèle VIDÉO
     # (Wan) sur petit GPU se compte en dizaines de minutes -> à monter dans model.toml.
     timeout: int = 600
+    # "image" ou "video" : dérivé du dossier parent (local/image vs local/video).
+    # Sert au préfixe du sélecteur UI ; le comportement runtime est identique.
+    kind: str = "image"
 
 
 def discover_image_models(models_root: Path | None = None) -> list[ImageModel]:
@@ -67,6 +70,7 @@ def discover_image_models(models_root: Path | None = None) -> list[ImageModel]:
                 workflow_path=str(wf_p),
                 refiner=str(data.get("refiner") or ""),
                 timeout=int(data.get("timeout") or 600),
+                kind=d.parent.name if d.parent.name in ("image", "video") else "image",
             )
         )
     return out
