@@ -37,6 +37,8 @@ class ImageModel:
     # "image" ou "video" : dérivé du dossier parent (local/image vs local/video).
     # Sert au préfixe du sélecteur UI ; le comportement runtime est identique.
     kind: str = "image"
+    # RÔLE en une ligne (model.toml `description`) : infobulle du sélecteur UI.
+    description: str = ""
 
 
 def discover_image_models(models_root: Path | None = None) -> list[ImageModel]:
@@ -71,6 +73,7 @@ def discover_image_models(models_root: Path | None = None) -> list[ImageModel]:
                 refiner=str(data.get("refiner") or ""),
                 timeout=int(data.get("timeout") or 600),
                 kind=d.parent.name if d.parent.name in ("image", "video") else "image",
+                description=str(data.get("description") or ""),
             )
         )
     return out
