@@ -1323,19 +1323,29 @@ def create_app(
                     # -> dimensions du model.toml (les workflows sans {WIDTH}/{HEIGHT}
                     # ignorent simplement ces valeurs).
                     gen_w, gen_h = _im.width, _im.height
+                    # Tag TOUJOURS retiré quelle que soit sa valeur (un petit modèle
+                    # invente parfois la sienne, ex. "full-body" : elle ne doit JAMAIS
+                    # fuir dans le prompt de diffusion) ; synonymes mappés, inconnu ->
+                    # dimensions par défaut.
                     _fmt = re.search(
-                        r"\[\s*format\s*:\s*(portrait|landscape|paysage|square|carre|carré)\s*\]\s*$",
+                        r"\[\s*format\s*:\s*([a-zà-ÿ -]+?)\s*\]\s*$",
                         prompt,
                         re.IGNORECASE,
                     )
                     if _fmt:
                         prompt = prompt[: _fmt.start()].strip()
                         _f = _fmt.group(1).lower()
-                        if _f == "portrait":
+                        if any(
+                            k in _f
+                            for k in ("portrait", "full-body", "full body", "vertical")
+                        ):
                             gen_w, gen_h = 832, 1216
-                        elif _f in ("landscape", "paysage"):
+                        elif any(
+                            k in _f
+                            for k in ("landscape", "paysage", "wide", "horizontal")
+                        ):
                             gen_w, gen_h = 1216, 832
-                        else:  # carré
+                        elif any(k in _f for k in ("square", "carr")):
                             gen_w, gen_h = 1024, 1024
                     # Titre de session : une session image/vidéo mérite un nom comme
                     # les autres. Inféré par le REFINER (encore résident — coût nul en
