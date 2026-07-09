@@ -235,6 +235,7 @@ def build_app(cfg):
         keepwarm_interval=cfg.chat.keepwarm_interval,
         identity_paths=mem_paths,
         identity_max_tokens=cfg.chat.identity_max_tokens,
+        project_memory_max_tokens=cfg.chat.project_memory_max_tokens,
         learned_skills_dir=cfg.chat.learned_skills_dir,
         reflect_stores=reflect_stores,
         reflect_enabled=cfg.chat.reflect_enabled,
