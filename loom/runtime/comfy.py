@@ -154,6 +154,17 @@ class ComfyEngine:
         -> chaque message donne une image différente, comme le « randomize » de l'UI.
         {IMAGE} (édition/i2v, ex. Kontext ou Wan i2v) : photo d'entrée uploadée puis
         référencée par son nom — requise si le template la déclare."""
+        # Sweep des doublons RÉSIDUELS d'anciennes générations (purge immédiate ratée :
+        # handle Windows tenu par ComfyUI au moment du unlink). Tout loom_* présent ici
+        # prédate ce job (générations sérialisées) -> suppression sûre, best-effort.
+        try:
+            for stale in (self.dir / "output").glob("loom_*"):
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
         wf = workflow_template.replace(
             '"{PROMPT}"', json.dumps(prompt, ensure_ascii=False)
         )
@@ -229,16 +240,23 @@ class ComfyEngine:
                             payload = resp.read()
                         # ComfyUI a écrit SA copie dans <comfy>/output : doublon inutile
                         # (l'unique copie vit dans le dossier de session Loom) -> purgée
-                        # aussitôt récupérée, best-effort.
-                        try:
-                            (
-                                self.dir
-                                / "output"
-                                / im.get("subfolder", "")
-                                / im["filename"]
-                            ).unlink(missing_ok=True)
-                        except OSError:
-                            pass
+                        # aussitôt récupérée. ComfyUI peut encore tenir un handle Windows
+                        # quelques instants -> retries ; en dernier recours le sweep du
+                        # prochain generate() (ci-dessus) rattrape le résidu.
+                        dup = (
+                            self.dir
+                            / "output"
+                            / im.get("subfolder", "")
+                            / im["filename"]
+                        )
+                        for _ in range(4):
+                            try:
+                                dup.unlink(missing_ok=True)
+                                break
+                            except OSError:
+                                time.sleep(0.7)
+                        else:
+                            print(f"[loom] doublon ComfyUI non purgé : {dup}")
                         return payload, ext
         raise ComfyError(f"génération sans réponse après {int(timeout)} s (timeout).")
 
