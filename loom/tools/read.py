@@ -361,13 +361,14 @@ def make_read_image(
             )
         b64 = base64.b64encode(data).decode("ascii")
         data_uri = f"data:{mime};base64,{b64}"
-        # Modèle qui ne voit pas : on route vers le VLM descripteur et on renvoie du TEXTE.
+        # Modèle qui ne voit pas : réponse FRANCHE (règle : read_image = le modèle en
+        # cours, jamais un détour vers un autre modèle — loom.web passe describer=None).
         if not active_is_vision:
             if describer is None:
                 raise ToolError(
-                    "ton modèle ne voit pas les images et aucun modèle vision n'est configuré "
-                    "pour les décrire. Ajoute un modèle vision (ex. glm-5v-turbo, vision=true) "
-                    "dans config/local.toml, ou bascule sur un modèle multimodal."
+                    "ce modèle N'A PAS la vision : il ne peut pas lire d'image. "
+                    "Dis-le franchement à l'utilisateur et propose-lui de basculer sur "
+                    "un modèle marqué VISION dans le sélecteur (infobulle au survol)."
                 )
             desc = describer(data_uri, (args.get("question") or "").strip())
             return untrusted(desc, f"image {rel} (décrite par le modèle vision)")
