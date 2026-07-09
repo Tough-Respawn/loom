@@ -46,16 +46,25 @@ class ImageModel:
     refine_hints: str = ""
 
 
-def discover_image_models(models_root: Path | None = None) -> list[ImageModel]:
-    """Scanne les modèles ComfyUI de la racine : local/image/*/ et local/video/*/
-    (même format — la sortie vidéo est portée par le workflow). Dossier sans model.toml
-    OU sans workflow.json -> ignoré (message console, pas d'exception : un dossier
-    cassé ne bloque pas l'app)."""
-    root = Path(models_root or MODELS_DIR)
-    bases = [root / "local" / "image", root / "local" / "video"]
+def discover_image_models(
+    models_root: Path | list[Path] | None = None,
+) -> list[ImageModel]:
+    """Scanne les modèles ComfyUI des racines (chaîne ou liste, première gagnante en
+    cas d'id en double) : local/image/*/ et local/video/*/ (même format — la sortie
+    vidéo est portée par le workflow). Dossier sans model.toml OU sans workflow.json
+    -> ignoré (message console, pas d'exception : un dossier cassé ne bloque pas l'app)."""
+    roots = (
+        [Path(r) for r in models_root]
+        if isinstance(models_root, list)
+        else [Path(models_root or MODELS_DIR)]
+    )
+    bases = [root / "local" / kind for root in roots for kind in ("image", "video")]
     out: list[ImageModel] = []
+    seen: set[str] = set()
     dirs = [p for base in bases if base.is_dir() for p in base.iterdir() if p.is_dir()]
     for d in sorted(dirs, key=lambda p: p.name):
+        if d.name in seen:
+            continue
         toml_p, wf_p = d / "model.toml", d / "workflow.json"
         if not (toml_p.is_file() and wf_p.is_file()):
             print(f"[loom] modèle image ignoré (fichier manquant) : {d.name}")
@@ -65,6 +74,7 @@ def discover_image_models(models_root: Path | None = None) -> list[ImageModel]:
         except (OSError, tomllib.TOMLDecodeError) as exc:
             print(f"[loom] modèle image illisible ({d.name}) : {exc}")
             continue
+        seen.add(d.name)
         out.append(
             ImageModel(
                 id=d.name,

@@ -28,10 +28,12 @@ swap_bin = "llama-swap"
 
 # ================================ Stockage ==================================
 [storage]
-# Racine des modèles — arbo : local/{text,image,video} + remote + _TEMPLATE.
+# Racine(s) des modèles — arbo : local/{text,image,video} + remote + _TEMPLATE.
 # Par défaut dans le package (loom/models) ; pointe-la vers un gros disque dans
-# config/local.toml, ex. :
+# config/local.toml. Chaîne ou LISTE (plusieurs disques, première racine gagnante
+# en cas d'id en double), ex. :
 # models_root = "E:/loom-models"
+# models_root = ["C:/loom-models", "E:/loom-models"]
 
 # ============================== Chat / runtime ==============================
 [chat]
