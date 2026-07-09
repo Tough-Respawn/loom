@@ -875,10 +875,14 @@ def create_app(
     @app.get("/genimg/<sid>/<name>")
     def genimg_session(sid: str, name: str):
         # Sert les médias générés depuis le dossier de LA session (unique copie).
-        # send_from_directory refuse les traversées de chemin ; mimetype déduit du nom
-        # (png/webm). Les vieux messages (/genimg/<name> plat) gardent leur route.
+        # `sid` compose le CHEMIN de base : validé strictement (12 hex, format
+        # uuid4.hex[:12] de SessionStore.create) sinon 404 — un sid forgé (`..`,
+        # antislash Windows) ferait pointer la base hors de var/sessions.
+        # send_from_directory protège `name` ; mimetype déduit du nom (png/webm).
         from flask import send_from_directory
 
+        if not re.fullmatch(r"[0-9a-f]{12}", sid):
+            return Response("session invalide", status=404)
         return send_from_directory(session_store.root / sid / "generated", name)
 
     @app.get("/genimg/<name>")
