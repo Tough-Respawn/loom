@@ -164,6 +164,21 @@
     }
     .session-item:hover .sess-del { opacity: 1; }
     .session-item .sess-del:hover { color: var(--err); }
+    /* Multi-sélection (Ctrl+clic) : sessions marquées pour suppression groupée. */
+    .session-item.sel { background: var(--accent-bg); outline: 1px dashed var(--accent-dim); }
+    .sess-multi {
+      display: flex; align-items: center; gap: 4px; margin: 2px 0 4px;
+      padding: 3px 4px 3px 9px; font-size: 11.5px; color: var(--text-dim);
+      background: var(--bg-elev); border: 1px solid var(--accent-dim); border-radius: 6px;
+    }
+    .sess-multi button {
+      border: none; background: none; border-radius: 4px; padding: 3px 8px;
+      font: inherit; font-size: 11.5px; cursor: pointer; line-height: 1;
+    }
+    .sess-multi .sm-del { color: var(--err); }
+    .sess-multi .sm-del:hover { background: var(--err); color: #fff; }
+    .sess-multi .sm-no { color: var(--text-faint); }
+    .sess-multi .sm-no:hover { background: var(--bg-hover); color: var(--text); }
     /* Confirmation de suppression : prolonge la ligne de session vers la DROITE — même
        hauteur, même police (fine, alignée), comme une box liée à la session. */
     .sess-del-pop {

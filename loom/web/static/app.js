@@ -1270,7 +1270,72 @@ document.querySelector(".session-list")?.addEventListener("click", (e) => {
     return;
   }
   const pick = e.target.closest(".sess-pick");
-  if (pick) openTab(pick.dataset.id);
+  if (!pick) return;
+  // Ctrl+clic (ou Cmd) : multi-sélection pour suppression groupée, sans ouvrir l'onglet.
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    toggleMultiSel(pick.dataset.id, pick.closest(".session-item"));
+    return;
+  }
+  clearMultiSel();
+  openTab(pick.dataset.id);
+});
+
+// --- multi-sélection de sessions (Ctrl+clic) : barre « supprimer (N) » sous le label. ---
+const _multiSel = new Set();
+function clearMultiSel() {
+  _multiSel.clear();
+  document
+    .querySelectorAll(".session-item.sel")
+    .forEach((el) => el.classList.remove("sel"));
+  document.getElementById("sess-multi")?.remove();
+}
+function toggleMultiSel(sid, row) {
+  if (!sid || !row) return;
+  if (_multiSel.has(sid)) {
+    _multiSel.delete(sid);
+    row.classList.remove("sel");
+  } else {
+    _multiSel.add(sid);
+    row.classList.add("sel");
+  }
+  renderMultiBar();
+}
+function renderMultiBar() {
+  document.getElementById("sess-multi")?.remove();
+  if (!_multiSel.size) return;
+  const list = document.querySelector(".session-list");
+  if (!list) return;
+  const bar = document.createElement("div");
+  bar.id = "sess-multi";
+  bar.className = "sess-multi";
+  const label = document.createElement("span");
+  label.textContent = _multiSel.size + " sélectionnée" + (_multiSel.size > 1 ? "s" : "");
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "sm-del";
+  del.textContent = "supprimer";
+  del.addEventListener("click", async () => {
+    for (const sid of [..._multiSel]) {
+      await postForm("/session/delete", { id: sid });
+      if (state.tabs[sid]) closeTab(sid);
+      document
+        .querySelector('.sess-pick[data-id="' + sid + '"]')
+        ?.closest(".session-item")
+        ?.remove();
+    }
+    clearMultiSel();
+  });
+  const no = document.createElement("button");
+  no.type = "button";
+  no.className = "sm-no";
+  no.textContent = "annuler";
+  no.addEventListener("click", clearMultiSel);
+  bar.append(label, del, no);
+  list.before(bar);
+}
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && _multiSel.size) clearMultiSel();
 });
 
 // Popover de confirmation de suppression, ancré à DROITE de la ligne de session.

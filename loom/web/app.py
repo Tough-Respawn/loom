@@ -1294,6 +1294,16 @@ def create_app(
                                 "notice",
                                 text="affinage indisponible — prompt envoyé tel quel.",
                             )
+                    # Titre de session : une session image/vidéo mérite un nom comme
+                    # les autres. Inféré par le REFINER (encore résident — coût nul en
+                    # rechargement) ; sans refiner, _infer_title retombe sur le début
+                    # du message. Fait AVANT unload_local.
+                    if _sess.title == "Nouvelle session":
+                        _title = _infer_title(client, _im.refiner or None, msg_text)
+                        if _title:
+                            _sess.title = _title
+                            session_store.save(_sess)
+                            yield _sse("session_title", id=_sess.id, title=_title)
                     client.unload_local()  # VRAM libre pour la diffusion
                     eng = _engine_for(_im)
                     eng.ensure_up()
@@ -2640,6 +2650,24 @@ def create_app(
         ws = (request.form.get("workspace") or "").strip() or workspace_dir
 
         title = (request.form.get("title") or "").strip()
+
+        # Sessions FANTÔMES : créées puis jamais utilisées (« Nouvelle session » et
+        # zéro message) — balayées quand on en crée une nouvelle : elles ne font que
+        # polluer la sidebar. On épargne toute session dont le verrou de génération
+        # est tenu (un tour vient peut-être de démarrer).
+        for meta in session_store.list():
+            if meta.title != "Nouvelle session":
+                continue
+            _lk = _sess_locks.get(meta.id)
+            if _lk is not None and _lk.locked():
+                continue
+            ghost = _get_session(meta.id)
+            if ghost is not None and not ghost.conversation.messages:
+                session_store.delete(meta.id)
+                with _gen_guard:
+                    _sessions_cache.pop(meta.id, None)
+                if _cur["session"] is not None and _cur["session"].id == meta.id:
+                    _cur["session"] = None
 
         sess = session_store.create(workspace=ws, title=title)
 
