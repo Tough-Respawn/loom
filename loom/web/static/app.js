@@ -2035,7 +2035,13 @@ function smRestorePos() {
           '"' +
           (m.id === cur ? " selected" : "") +
           ">" +
-          (m.remote ? "remote · " : "home · ") +
+          (m.remote
+            ? "remote · "
+            : m.video
+              ? "video · "
+              : m.image
+                ? "image · "
+                : "home · ") +
           m.id +
           "</option>",
       )
