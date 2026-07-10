@@ -278,12 +278,13 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
      calibré > défaut heuristique. Le `common_fit_params` de llama.cpp ne sait PAS
      choisir n_cpu_moe (il ne gère que ngl, et abandonne si ngl est forcé) — c'est
      bien à Loom de le faire.
-8. **STORY — Gestion des skills dans l'UI** (demande user 2026-07-10, enrichie le même
-   jour) : bouton supprimer dans la liste (comme les sessions) + dans la vue d'édition
-   existante ; l'AJOUT et la suppression vivent dans le panneau skills (à côté du bouton
-   « Cette session »). Et DISTINGUER visuellement les 3 familles de skills :
-   `learned` (auto-appris), `loom` (défaut du package), `user` (ajoutés par
-   l'utilisateur) — nommage à trancher au moment du chantier.
+8. ~~Gestion des skills dans l'UI~~ : LIVRÉ le 2026-07-10 (reste la validation runtime
+   après restart). Champ `Skill.origin` (`loom`/`user`/`learned`/`plugin`) + badge discret
+   par row ; **suppression** (✕ dans la liste + bouton « Supprimer » du drawer) UNIQUEMENT
+   pour `learned`/`user` (garde de confinement dans les dossiers gérés ; package/plugins :
+   décocher) ; **création** (« + nouveau ») dans `var/skills_user/` (nouveau dossier
+   config `chat.user_skills_dir`, hors package) — un skill user au même nom qu'un skill
+   package le REMPLACE (l'utilisateur a la main). Endpoints `/skill/create` + `/skill/delete`.
 9. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
    `model.toml` édité n'est pris en compte qu'après `regenerate_swap_yaml()` manuel
    ou une édition via la console config (gotcha mesuré le 2026-07-10).

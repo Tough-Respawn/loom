@@ -1850,7 +1850,13 @@ async function openSkillEditor(name) {
     }
     skCurrent = d.name;
     if (skName) skName.textContent = d.name;
-    if (skDesc) skDesc.textContent = d.description || "";
+    if (skDesc)
+      skDesc.textContent =
+        (d.origin ? "[" + d.origin + "] " : "") + (d.description || "");
+    // Bouton Supprimer : seulement pour les skills gérés par l'utilisateur
+    // (appris / ajoutés) — jamais le package ni les plugins.
+    const dbtn = document.getElementById("skdr-delete");
+    if (dbtn) dbtn.hidden = !d.deletable;
     if (skBody) skBody.value = d.source || "";
     if (skStatus)
       skStatus.textContent = d.has_override
@@ -1894,6 +1900,67 @@ async function saveSkill(scope) {
 document.addEventListener("click", (e) => {
   const b = e.target.closest && e.target.closest(".skill-name");
   if (b) openSkillEditor(b.dataset.name);
+});
+// Suppression d'un skill (appris / ajouté user) : même geste que les sessions.
+// Délégation sur document : le panneau skills est REMPLACÉ à chaque toggle.
+async function deleteSkill(name, fromDrawer) {
+  if (
+    !confirm(
+      "Supprimer le skill « " + name + " » ? Le fichier sera retiré du disque.",
+    )
+  )
+    return;
+  const fd = new FormData();
+  fd.append("name", name);
+  try {
+    const r = await fetch("/skill/delete", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      if (fromDrawer && skStatus)
+        skStatus.textContent = d.error || "suppression impossible";
+      else console.warn("skill/delete:", d.error);
+      return;
+    }
+    if (fromDrawer) closeSkillDrawer();
+    postSkillsToggle();
+  } catch (err) {
+    if (fromDrawer && skStatus) skStatus.textContent = "erreur : " + err;
+  }
+}
+// Création d'un skill UTILISATEUR (var/skills_user, hors package) puis ouverture
+// de l'éditeur dessus. Deux prompts natifs suffisent pour un squelette : le corps
+// s'écrit dans le drawer.
+async function createSkill() {
+  const name = prompt("Nom du nouveau skill (lettres/chiffres/tirets) :");
+  if (!name) return;
+  const description =
+    prompt("Description (une ligne : quand ce skill se déclenche) :") || "";
+  const fd = new FormData();
+  fd.append("name", name);
+  fd.append("description", description);
+  try {
+    const r = await fetch("/skill/create", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      alert(d.error || "création impossible");
+      return;
+    }
+    await postSkillsToggle();
+    openSkillEditor(d.name);
+  } catch (err) {
+    console.warn("skill/create:", err);
+  }
+}
+document.addEventListener("click", (e) => {
+  const del = e.target.closest && e.target.closest(".skill-del");
+  if (del) {
+    deleteSkill(del.dataset.name, false);
+    return;
+  }
+  if (e.target.closest && e.target.closest("#skill-new")) createSkill();
+});
+document.getElementById("skdr-delete")?.addEventListener("click", () => {
+  if (skCurrent) deleteSkill(skCurrent, true);
 });
 document
   .getElementById("skdr-close")

@@ -59,6 +59,9 @@ class ChatConfig:
     project_memory_max_tokens: int = 600
     # Apprentissage (boucle fermée) : skills auto-appris + étape reflect post-tour.
     learned_skills_dir: str = "var/skills_learned"
+    # Skills AJOUTÉS PAR L'UTILISATEUR depuis l'UI (« + nouveau ») : hors du package
+    # (loom/skills reste versionné/officiel), machine-locale comme les appris.
+    user_skills_dir: str = "var/skills_user"
     reflect_enabled: bool = True
     reflect_min_actions: int = 1
 
@@ -312,6 +315,7 @@ def load_config(
         identity_max_tokens=int(ch.get("identity_max_tokens", 600)),
         project_memory_max_tokens=int(ch.get("project_memory_max_tokens", 600)),
         learned_skills_dir=ch.get("learned_skills_dir", "var/skills_learned"),
+        user_skills_dir=ch.get("user_skills_dir", "var/skills_user"),
         reflect_enabled=bool(ch.get("reflect_enabled", True)),
         reflect_min_actions=int(ch.get("reflect_min_actions", 1)),
     )

@@ -51,6 +51,7 @@ def build_registry(
     plugins_root: str | None = None,
     memory=None,
     learned_skills_dir: str | None = None,
+    user_skills_dir: str | None = None,
     shell_timeout: int = 180,
     vision_describer=None,
     active_is_vision: bool = True,
@@ -190,7 +191,10 @@ def build_registry(
             # skills désactivés retirés -> use_skill ne charge que ce que voit le catalogue.
             # Sous-agent (pas de conversation) -> tous les skills du disque.
             all_skills = collect_skills(
-                skills_dir, plugins_root, learned_dir=learned_skills_dir
+                skills_dir,
+                plugins_root,
+                learned_dir=learned_skills_dir,
+                user_dir=user_skills_dir,
             )
             if conversation is None:
                 return all_skills
