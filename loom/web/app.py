@@ -1899,7 +1899,13 @@ def create_app(
 
                 _persist(final=True)  # fin de tour : écriture finale garantie
 
-                # Apprentissage post-tour + ré-amorçage du cache : DÉPORTÉS dans un
+                # Cache souverain : le slot local contient LA conversation à cet
+                # instant précis -> on le sauve MAINTENANT (~ms), avant que le titre
+                # (inline ci-dessous) et le reflect (maintenance) ne l'écrasent ; la
+                # maintenance le RESTAURERA (~ms) au lieu de re-préfiller des minutes.
+                _kv_saved = client.save_slot(conv.model, "turnend.kv")
+
+                # Apprentissage post-tour + restauration du cache : DÉPORTÉS dans un
                 # thread (cf. _post_turn_maintenance). Avant, reflect tournait ICI,
                 # avant le `done` -> l'UI restait sur « le modèle travaille » pendant
                 # un appel modèle entier, ET le cache KV de la conversation était
@@ -1921,6 +1927,7 @@ def create_app(
                         answer,
                         conv.model,
                         _do_reflect,
+                        _kv_saved,
                     ),
                     daemon=True,
                     name="loom-post-turn",
@@ -2835,11 +2842,14 @@ def create_app(
             print(f"[prime] erreur ignorée : {e}", flush=True)
             return False
 
-    def _post_turn_maintenance(sess, msgs, actions, answer, model, do_reflect):
+    def _post_turn_maintenance(
+        sess, msgs, actions, answer, model, do_reflect, kv_saved=False
+    ):
         """Fin de tour déportée hors du flux SSE : reflect (apprentissage) PUIS
-        ré-amorçage du cache de la conversation. Local : sérialisé derrière le verrou
-        (attend la fermeture du flux ; si l'utilisateur a déjà relancé, on passe
-        après son tour). Distant : reflect seul (pas de slot local à ré-amorcer)."""
+        restauration du cache de la conversation (save fait en fin de génération ;
+        repli = ré-amorçage par re-prefill si le save a échoué). Local : sérialisé
+        derrière le verrou (attend la fermeture du flux ; si l'utilisateur a déjà
+        relancé, on passe après son tour). Distant : reflect seul."""
         is_local = bool(model) and model not in remote_model_ids
 
         if is_local and not _local_gen_lock.acquire(timeout=600):
@@ -2882,12 +2892,19 @@ def create_app(
                     print(f"[reflect] erreur ignorée : {_e}", flush=True)
 
             if is_local:
-                _ok = _prime_slot(sess)
-                print(
-                    f"[prime] cache de la conversation ré-amorcé après fin de tour : "
-                    f"{'ok' if _ok else 'échec/sans objet'}",
-                    flush=True,
-                )
+                if kv_saved and client.restore_slot(model, "turnend.kv"):
+                    print(
+                        "[slot] cache de la conversation RESTAURÉ après fin de tour "
+                        "(~ms, save/restore du slot KV)",
+                        flush=True,
+                    )
+                else:
+                    _ok = _prime_slot(sess)
+                    print(
+                        f"[prime] repli ré-amorçage par re-prefill : "
+                        f"{'ok' if _ok else 'échec/sans objet'}",
+                        flush=True,
+                    )
                 _last_activity[0] = time.time()
 
         finally:

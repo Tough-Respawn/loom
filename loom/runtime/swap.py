@@ -20,6 +20,7 @@ def _model_cmd(
     models_dir: str,
     context: int,
     override_n_gpu_layers: int | None = None,
+    slot_save_dir: str | None = None,
 ) -> str:
     base = (
         model.dir or models_dir
@@ -50,6 +51,7 @@ def _model_cmd(
         gpu_tuning=profile.has_gpu,
         cpu_moe=model.cpu_moe,
         n_cpu_moe=model.n_cpu_moe,
+        slot_save_dir=slot_save_dir,
     )
     return " ".join(str(a) for a in args).replace("\\", "/")
 
@@ -61,12 +63,19 @@ def build_swap_config(
     models_dir: str,
     context: int,
     override_n_gpu_layers: int | None = None,
+    slot_save_dir: str | None = None,
 ) -> dict:
     return {
         "models": {
             m.id: {
                 "cmd": _model_cmd(
-                    m, profile, llama_bin, models_dir, context, override_n_gpu_layers
+                    m,
+                    profile,
+                    llama_bin,
+                    models_dir,
+                    context,
+                    override_n_gpu_layers,
+                    slot_save_dir=slot_save_dir,
                 )
             }
             for m in models
