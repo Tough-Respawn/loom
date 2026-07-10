@@ -300,15 +300,28 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
    décocher) ; **création** (« + nouveau ») dans `var/skills_user/` (nouveau dossier
    config `chat.user_skills_dir`, hors package) — un skill user au même nom qu'un skill
    package le REMPLACE (l'utilisateur a la main). Endpoints `/skill/create` + `/skill/delete`.
-9. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
+9. **STORY — Notes en vol (« btw » natif)** (actée user 2026-07-10) : taper un message
+   pendant une génération ne l'interrompt plus — il part dans une FILE par session que
+   `stream_chat_tools` consulte entre deux itérations d'outils et injecte comme message
+   utilisateur (« remarque reçue en cours de tour : … »), comme le fait Claude Code.
+   NATIF (nouveau comportement par défaut d'Entrée pendant une génération), pas de
+   commande /btw ; l'interruption-relance devient un geste explicite. Limite assumée :
+   la note ne prend effet qu'au prochain point d'arrêt (fin de l'itération en cours).
+10. **STORY — Stop vraiment propre** (actée user 2026-07-10) : aujourd'hui Stop coupe au
+   token près (partiel persisté ✓, outil en cours va au bout ✓) mais ne laisse AUCUNE
+   trace -> au tour suivant le modèle voit une réponse tronquée inexpliquée. À faire :
+   marqueur d'interruption PERSISTÉ dans l'historique (« [interrompu par l'utilisateur
+   à ce point] ») pour que le modèle le sache ; état UI « arrêt en cours… » si un outil
+   doit finir.
+11. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
    `model.toml` édité n'est pris en compte qu'après `regenerate_swap_yaml()` manuel
    ou une édition via la console config (gotcha mesuré le 2026-07-10).
-10. **Observabilité des sous-agents** (note user 2026-07-10) : les logs de session
+12. **Observabilité des sous-agents** (note user 2026-07-10) : les logs de session
     (debug.log/timeline) ne montrent RIEN de l'activité d'un `dispatch_agent` — le
     sous-agent est une boîte noire (on voit l'appel et le résultat final, pas ses
     tours/outils intermédiaires). Tracer sa conversation (fichier dédié par dispatch
     ou événements préfixés dans le debug.log de la session parente).
-11. **Erreurs-info vs vraies erreurs** (note user 2026-07-10) : `run_shell` préfixe
+13. **Erreurs-info vs vraies erreurs** (note user 2026-07-10) : `run_shell` préfixe
     `erreur: exit 1` des résultats qui sont des INFORMATIONS exploitables (« not a git
     repository », fichier absent, grep sans match = exit 1) → le modèle les traite en
     échec (constaté : même sonde git relancée 3× dans un tour) et le trigger du skill
@@ -317,7 +330,7 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
     neutre « info : ... ») + nuance dans la description du skill debugging (« pas pour
     les résultats informatifs d'une commande — lis-les comme une réponse et continue »).
     ⚠ Changement de prompt/schéma → passage par l'A/B `evals/` obligatoire (convention).
-12. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
+14. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
    dossier `loom/models/<id>/` sans redémarrer. Repérage 2026-07-08 : la mécanique existe
    déjà à moitié — `loom.web._regen_swap_yaml()` régénère le yaml et llama-swap
    (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
