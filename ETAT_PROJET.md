@@ -267,7 +267,16 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
     sous-agent est une boîte noire (on voit l'appel et le résultat final, pas ses
     tours/outils intermédiaires). Tracer sa conversation (fichier dédié par dispatch
     ou événements préfixés dans le debug.log de la session parente).
-11. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
+11. **Erreurs-info vs vraies erreurs** (note user 2026-07-10) : `run_shell` préfixe
+    `erreur: exit 1` des résultats qui sont des INFORMATIONS exploitables (« not a git
+    repository », fichier absent, grep sans match = exit 1) → le modèle les traite en
+    échec (constaté : même sonde git relancée 3× dans un tour) et le trigger du skill
+    `debugging` (« dès qu'un bug apparaît ») pousse au surcoût méthodologique sur des
+    non-bugs. Design : taxonomie légère dans le retour d'outil (motifs connus → cadrage
+    neutre « info : ... ») + nuance dans la description du skill debugging (« pas pour
+    les résultats informatifs d'une commande — lis-les comme une réponse et continue »).
+    ⚠ Changement de prompt/schéma → passage par l'A/B `evals/` obligatoire (convention).
+12. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
    dossier `loom/models/<id>/` sans redémarrer. Repérage 2026-07-08 : la mécanique existe
    déjà à moitié — `loom.web._regen_swap_yaml()` régénère le yaml et llama-swap
    (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
