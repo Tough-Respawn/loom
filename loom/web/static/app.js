@@ -545,6 +545,12 @@ async function sendChat(sid, text, images) {
 
   if (sid === state.active) setMetrics(0, 0, null); // liveness immédiate si onglet affiché
 
+  // Le serveur modèle peut être DÉMARRÉ PAR CE MESSAGE (auto-start côté back) : on
+  // relance le suivi du chip machine, sinon il reste figé sur « serveur local éteint »
+  // pendant que le modèle tourne (contradiction constatée le 2026-07-10 — le poller
+  // s'arrête quand l'état n'est pas transitoire et rien ne le relançait ici).
+  scheduleMachineRefresh();
+
   // Suivi des SILENCES du flux : au-delà de 2,5 s sans événement alors que ça génère,
   // on affiche la ligne d'activité (label selon la phase : avant le 1er token = le
   // contexte s'ingère ; après = le modèle mouline sans streamer).
@@ -722,6 +728,9 @@ async function sendChat(sid, text, images) {
     }
   } finally {
     clearInterval(gaTimer);
+    // État machine re-sondé en fin de flux : capture l'état final réel (chargé /
+    // libéré) quel que soit ce que le chip racontait pendant la génération.
+    scheduleMachineRefresh();
     if (sid === state.active) setGenActivity(null);
     if (thinkId) patch(thinkId, { active: false });
     // Fin de CE flux : si c'est encore le flux courant de l'onglet (pas remplacé par une
@@ -2038,6 +2047,8 @@ document.getElementById("skdr-generate")?.addEventListener("click", async (e) =>
   }
   if (skStatus) skStatus.textContent = "";
   skGenBusy = true;
+  // La génération peut DÉMARRER le serveur modèle (auto-start) : suivre le chip machine.
+  scheduleMachineRefresh();
   // Le drawer peut être FERMÉ pendant la rédaction (elle continue en fond) : à la
   // fin on range le brouillon et on prévient par un toast — jamais de résultat perdu
   // ni d'attente muette.
