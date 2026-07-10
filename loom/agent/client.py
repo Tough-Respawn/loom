@@ -938,6 +938,9 @@ class LoomClient:
         # table part vers l'endpoint LOCAL (_client). Un client openai par endpoint, monté
         # une fois ici. Le reste du code appelle toujours `model=<id>` : le routage est interne.
         self._routes: dict[str, dict] = {}
+        # Disjoncteur slot KV : modèles dont le save/restore a PENDU (hang serveur,
+        # cf. _slot_action) -> on n'essaie plus jusqu'au restart du process.
+        self._slot_broken: set[str] = set()
         for rid, spec in (routes or {}).items():
             self._routes[rid] = {
                 "client": OpenAI(
@@ -1231,11 +1234,20 @@ class LoomClient:
     def _slot_action(self, model: str | None, action: str, name: str) -> bool:
         """POST /slots/0?action=save|restore sur le serveur LOCAL (via la route
         llama-swap /upstream/<modèle>/, repli /slots direct pour un llama-server
-        sans swap). Nécessite --slot-save-path côté serveur. Best-effort."""
+        sans swap). Nécessite --slot-save-path côté serveur. Best-effort.
+
+        DISJONCTEUR : constaté le 2026-07-10 sur ornith q8 (CUDA + mmproj), le save
+        PEND côté llama-server (502 après ~60 s) alors qu'il marche en CPU pur ->
+        timeout court (20 s) et, au premier échec, on ARRÊTE d'essayer pour ce
+        modèle (jusqu'au restart) : l'appelant retombe sur le ré-amorçage par
+        re-prefill. Sans ça, chaque fin de tour perdait ~1 min à attendre le hang."""
         import urllib.request
 
         if self.is_remote(model):
             return False  # distant : cache géré par le provider, pas de slot local
+        key = model or "(local)"
+        if key in self._slot_broken:
+            return False
         root = self.local_server_root()
         payload = json.dumps({"filename": name}).encode()
         paths = [f"/upstream/{model}/slots/0?action={action}"] if model else []
@@ -1248,11 +1260,25 @@ class LoomClient:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=20) as resp:
                     body = json.loads(resp.read().decode() or "{}")
                 _debug(f"SLOT_{action.upper()}", {"name": name, **body})
                 return True
             except Exception as e:  # noqa: BLE001 - slot KV best-effort, jamais bloquant
+                # Un TIMEOUT est un hang serveur (pas un simple refus) : ce backend ne
+                # sait pas faire -> on coupe les tentatives suivantes pour ce modèle.
+                if isinstance(e, TimeoutError) or "timed out" in str(e).lower():
+                    self._slot_broken.add(key)
+                    _debug(
+                        f"SLOT_{action.upper()}_ERR",
+                        f"{path} : timeout -> save/restore DÉSACTIVÉ pour {key}",
+                    )
+                    print(
+                        f"[slot] save/restore KV désactivé pour {key} (hang serveur) "
+                        "— repli sur le ré-amorçage par re-prefill",
+                        flush=True,
+                    )
+                    return False
                 _debug(f"SLOT_{action.upper()}_ERR", f"{path} : {e}")
         return False
 
