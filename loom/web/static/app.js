@@ -1551,9 +1551,13 @@ function stopChat() {
 }
 chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
-  // Si l'onglet actif génère, le bouton « Stop » arrête au lieu de soumettre.
+  // Si l'onglet actif génère, SEUL un appui explicite sur le bouton « Stop »
+  // arrête (focus sur le bouton = clic ou activation clavier DU bouton). Un
+  // Entrée depuis le champ de saisie — surtout vide — ne doit JAMAIS couper une
+  // réflexion en cours (vécu 2026-07-10 : minutes de travail perdues). Pour
+  // interrompre-et-relancer, on soumet un NOUVEAU message (comportement inchangé).
   if (activeTab()?.streaming) {
-    stopChat();
+    if (document.activeElement === sendBtn) stopChat();
     return;
   }
   submitChat();
