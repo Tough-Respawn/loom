@@ -211,6 +211,26 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   réutilisation) ; **keep-warm v2** : ré-amorce la conversation active au lieu du « ping »
   destructeur (repli ping si fil vide). Règle : la conversation doit être la DERNIÈRE
   occupante du slot quand le message suivant arrive.
+  **LIMITES CONNUES (validé live 2026-07-10, séquence titre 14 s → prime 3,3 s OK)** —
+  deux évictions restent NON couvertes :
+  (1) **changement de workspace en cours de session** (message citant un autre dossier,
+  bouton choisir) : le workspace + la fiche loom.md vivent en TÊTE du system prompt →
+  préfixe divergent dès le token ~0, re-prefill intégral STRUCTUREL ;
+  (2) **dispatch_agent local** : le sous-agent a son propre system prompt → il écrase le
+  slot EN PLEIN TOUR (constaté : itérations à 1 min 40 pour 1 Ko de sortie).
+  → Story « cache souverain », le VRAI fix (2 volets) :
+  **Volet 1 — save/restore du slot KV** : `--slot-save-path` (supporté par le build b9442)
+  + `POST /upstream/<modèle>/slots/0?action=save|restore` (route llama-swap vérifiée OK).
+  Sauver le slot avant tout appel non-conversationnel (dispatch_agent dans agent.py,
+  reflect/titre en maintenance), restaurer après (KV ~1-3 Go depuis NVMe ≈ 1-2 s au lieu
+  de minutes de re-prefill). Bonus : save par SESSION -> bascule d'onglet quasi
+  instantanée. Pas de changement de prompt -> pas d'A/B requis, tests runtime seulement.
+  Gestion des fichiers KV (gros) : un par session + purge.
+  **Volet 2 — préfixe stable** : sortir le VOLATIL (workspace, fiche loom.md, goal) de la
+  tête du system prompt vers une injection en QUEUE de conversation (pattern Claude Code :
+  system stable + reminders dans le fil) -> un changement de workspace n'invalide que la
+  queue. Chantier prompt -> **A/B evals/ OBLIGATOIRE**. Résout aussi le multi-projets
+  dans une même session.
 - **Workspace par onglet** : `/session/workspace` cible désormais la session de l'onglet
   (`session_id`, comme /chat et /cancel) — le « choisir » écrivait dans la session focus
   globale (régression du multi-onglets `5016361`, 2026-07-05). Et la puce dossier ne se
