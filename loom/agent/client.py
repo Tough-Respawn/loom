@@ -1265,17 +1265,28 @@ class LoomClient:
                 _debug(f"SLOT_{action.upper()}", {"name": name, **body})
                 return True
             except Exception as e:  # noqa: BLE001 - slot KV best-effort, jamais bloquant
-                # Un TIMEOUT est un hang serveur (pas un simple refus) : ce backend ne
-                # sait pas faire -> on coupe les tentatives suivantes pour ce modèle.
-                if isinstance(e, TimeoutError) or "timed out" in str(e).lower():
+                # DISJONCTE (plus d'essais pour ce modèle) sur les échecs DURABLES :
+                # - timeout = hang serveur (vécu : ~60 s perdus par tour) ;
+                # - HTTP 501 = llama-server refuse (constaté 2026-07-10 : slot save NON
+                #   SUPPORTÉ quand un projecteur multimodal --mmproj est chargé — les
+                #   modèles vision retombent définitivement sur le ré-amorçage).
+                code = getattr(e, "code", None)
+                if (
+                    isinstance(e, TimeoutError)
+                    or "timed out" in str(e).lower()
+                    or code == 501
+                ):
                     self._slot_broken.add(key)
+                    cause = (
+                        "hang serveur" if code != 501 else "501 non supporté (mmproj ?)"
+                    )
                     _debug(
                         f"SLOT_{action.upper()}_ERR",
-                        f"{path} : timeout -> save/restore DÉSACTIVÉ pour {key}",
+                        f"{path} : {cause} -> save/restore DÉSACTIVÉ pour {key}",
                     )
                     print(
-                        f"[slot] save/restore KV désactivé pour {key} (hang serveur) "
-                        "— repli sur le ré-amorçage par re-prefill",
+                        f"[slot] save/restore KV désactivé pour {key} ({cause}) — "
+                        "repli sur le ré-amorçage par re-prefill",
                         flush=True,
                     )
                     return False

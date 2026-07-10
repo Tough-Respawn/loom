@@ -228,12 +228,15 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   MESURÉ (serveur éphémère, KV q8_0) : save 42 ms, restore 22 ms, reprise de conversation
   = 10-11 tokens préfillés au lieu de ~930. Tranche 2 possible : save par SESSION ->
   bascule d'onglet quasi instantanée.
-  ⚠ CONSTATÉ LIVE (2026-07-10) : sur ornith q8 RÉEL (CUDA -ngl 999 + mmproj), le save
-  PEND côté llama-server (502 après ~60 s, dossier slots vide) alors que le banc CPU pur
-  sans mmproj marchait -> DISJONCTEUR livré : timeout 20 s, un hang = save/restore
-  désactivé pour ce modèle jusqu'au restart, repli automatique sur le ré-amorçage par
-  re-prefill (validé le matin : 3-10 s). À INVESTIGUER au banc éphémère (RAM libre
-  requise) : isoler la cause — mmproj ? KV CUDA ? -fa ? — avant de réactiver.
+  ⚠ CAUSE IDENTIFIÉE (2026-07-10, en deux temps) : le slot save est **NON SUPPORTÉ par
+  llama-server (b9442) quand un projecteur multimodal --mmproj est chargé** — HTTP 501
+  Not Implemented, vérifié flag présent sur le process en cours ; le « hang 60 s » de la
+  première observation était le proxy llama-swap pendant le chargement. Donc : les
+  modèles VISION (ornith Q4/Q8, qwen — tous avec mmproj) retombent sur le ré-amorçage
+  par re-prefill (3-10 s, validé) ; les modèles TEXT-ONLY (gemma e4b) profitent du
+  save/restore. DISJONCTEUR livré : timeout 20 s + coupure au premier échec durable
+  (timeout OU 501) par modèle. À re-tester quand llama.cpp supportera le slot save
+  multimodal (suivre les releases).
   **Volet 2 — préfixe stable** : sortir le VOLATIL (workspace, fiche loom.md, goal) de la
   tête du system prompt vers une injection en QUEUE de conversation (pattern Claude Code :
   system stable + reminders dans le fil) -> un changement de workspace n'invalide que la
