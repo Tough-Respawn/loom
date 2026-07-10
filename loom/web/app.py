@@ -681,6 +681,24 @@ def create_app(
         with _gen_guard:
             return _sess_cancel.setdefault(sid, threading.Event())
 
+    # Notes en vol (« btw » natif) : remarques utilisateur arrivées PENDANT une
+    # génération, par session. Poussées par /note, drainées par la boucle tool-use
+    # juste avant chaque appel modèle (cf. notes_provider de stream_chat_tools) —
+    # elles infléchissent le tour SANS l'interrompre.
+    _sess_notes: dict[str, list[str]] = {}
+
+    def _push_note(sid: str, text: str) -> int:
+        with _gen_guard:
+            q = _sess_notes.setdefault(sid, [])
+            q.append(text)
+            return len(q)
+
+    def _drain_notes(sid: str) -> list[str]:
+        with _gen_guard:
+            q = _sess_notes.get(sid) or []
+            _sess_notes[sid] = []
+            return q
+
     # Décisions de confirmation en attente : tool_call_id -> {event, approved}.
 
     # Renseignées par la route /tool_decision (autre thread), consommées par _confirm.
@@ -1518,6 +1536,7 @@ def create_app(
                 "phase",
                 "notice",
                 "parallel",
+                "user",  # note en vol injectée : à sa vraie position au rechargement
             }
 
             def _tl(event, **data):
@@ -1631,6 +1650,9 @@ def create_app(
                     confirm=_confirm,
                     compact_after_tokens=eff_compact,
                     strong=strong,
+                    # Notes en vol : remarques poussées par /note PENDANT ce tour,
+                    # injectées au prochain point d'arrêt sans interrompre.
+                    notes_provider=lambda: _drain_notes(sess.id),
                 )
 
             else:
@@ -1739,6 +1761,16 @@ def create_app(
                         interrupted = True
 
                         break
+
+                    if kind == "note":
+                        # Note en vol INJECTÉE par la boucle : on la PERSISTE telle
+                        # quelle (même contenu que ce que le modèle a vu) et on
+                        # l'affiche dans le fil à sa vraie position.
+                        conv.add("user", payload)
+                        save()
+                        yield _tl("user", content=payload)
+                        yield _sse("note", text=payload)
+                        continue
 
                     if kind == "status":
                         # Signal d'activité (ex. compaction en cours) : piloté vers le label
@@ -1896,6 +1928,16 @@ def create_app(
                         final=True
                     )  # interrompu : on force la sauvegarde du travail fait
 
+                    # Stop PROPRE : marqueur PERSISTÉ -> au tour suivant le modèle
+                    # SAIT que sa réponse est tronquée volontairement (sans ça il
+                    # reprenait une réponse incomplète comme si de rien n'était).
+                    conv.add(
+                        "user",
+                        "[Interrupted by the user here — the answer above is "
+                        "incomplete. Wait for the next instruction.]",
+                    )
+                    save()
+
                     return
 
                 if not answer.strip():
@@ -1966,6 +2008,17 @@ def create_app(
                 yield _sse("done")
 
             except GeneratorExit:
+                # Marqueur d'interruption AVANT la persistance finale : le tour
+                # suivant (celui qui a remplacé ce flux) saura que cette réponse
+                # est volontairement tronquée.
+                try:
+                    conv.add(
+                        "user",
+                        "[Interrupted by a new user submission — the answer above "
+                        "is incomplete.]",
+                    )
+                except Exception:  # noqa: BLE001 - marqueur best-effort
+                    pass
                 # L'utilisateur a soumis un nouveau message : le client a fermé le
 
                 # flux. On persiste la réponse PARTIELLE déjà reçue, puis on relaie
@@ -2106,6 +2159,22 @@ def create_app(
             _cancel_for(sess.id).set()
 
         return Response("", status=204)
+
+    @app.post("/note")
+    def note():
+        # Note en vol (« btw » natif) : remarque envoyée PENDANT une génération.
+        # Mise en file par session ; la boucle tool-use l'injecte au prochain point
+        # d'arrêt (avant l'appel modèle suivant) SANS interrompre le tour. Si le
+        # tour se termine avant l'injection, la note reste en file et part au début
+        # du tour suivant — jamais perdue.
+        text = (request.form.get("text") or "").strip()
+        if not text:
+            return {"error": "note vide"}, 400
+        req_sid = (request.form.get("session_id") or "").strip()
+        sess = _get_session(req_sid) if req_sid else _cur["session"]
+        if sess is None:
+            return {"error": "session inconnue"}, 404
+        return {"ok": True, "queued": _push_note(sess.id, text)}
 
     @app.post("/tool_decision")
     def tool_decision():

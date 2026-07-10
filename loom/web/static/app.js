@@ -571,6 +571,13 @@ async function sendChat(sid, text, images) {
     )
       t.forcedActivity = null;
     switch (evt.type) {
+      case "note":
+        // Note en vol INJECTÉE (le modèle vient de la recevoir) : bulle utilisateur
+        // à sa vraie position dans le fil, les bulles en cours sont clôturées.
+        if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
+        if (asstId) { patch(asstId, { done: true }); asstId = null; }
+        push({ kind: "user", content: evt.text });
+        break;
       case "parallel":
         // Groupe d'outils lancés EN PARALLÈLE (distant) : on clôt les bulles en cours et on
         // pose un marqueur « arène ». Les tool_call/tool_result suivants, dont l'id est dans
@@ -1531,6 +1538,25 @@ function submitChat() {
     (t.history || (t.history = [])).push(text); // historique ↑/↓ de CET onglet
     t.histIdx = -1;
     t.draft = ""; // message parti -> brouillon vidé
+  }
+  // NOTE EN VOL (« btw » natif) : pendant une génération, un message avec du texte
+  // NE l'interrompt plus — il part en file (/note) et la boucle l'injecte au prochain
+  // point d'arrêt (la bulle apparaît à ce moment-là, à sa vraie position). Pour
+  // interrompre : bouton Stop, puis envoyer.
+  if (t?.streaming) {
+    input.value = "";
+    autosize();
+    postForm("/note", { session_id: state.active, text })
+      .then((r) => {
+        if (r.ok)
+          showToast(
+            "note transmise — prise en compte au prochain point d'arrêt du modèle",
+          );
+        else showToast("note refusée (session ?)");
+      })
+      .catch(() => showToast("note perdue : loom.web injoignable"));
+    input.focus();
+    return;
   }
   const imgs = pendingImages.slice();
   input.value = "";
