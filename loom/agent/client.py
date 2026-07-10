@@ -1507,6 +1507,7 @@ class LoomClient:
         max_empty_retries: int = 2,
         strong: bool = False,
         notes_provider=None,
+        refocus_note: bool = True,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
 
@@ -1619,7 +1620,7 @@ class LoomClient:
                             system_prompt,
                             max(compact_after_tokens * 3, len(system_prompt) + 4000),
                         )
-                        if not refocus_done:
+                        if refocus_note and not refocus_done:
                             refocus_done = True
                             convo.append({"role": "user", "content": _REFOCUS_NOTE})
                         _debug(
@@ -1832,7 +1833,7 @@ class LoomClient:
                     # context_irreducible (cas anormal), pas sur une destruction stérile.
                     budget = max(len(system_prompt) + 1500, int(base * 3 * shrink))
                     _force_fit(convo, system_prompt, budget)
-                    if not refocus_done:
+                    if refocus_note and not refocus_done:
                         refocus_done = True
                         convo.append({"role": "user", "content": _REFOCUS_NOTE})
                     log_event(

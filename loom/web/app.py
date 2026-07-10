@@ -699,6 +699,14 @@ def create_app(
             _sess_notes[sid] = []
             return q
 
+    # Boucle de feedback de la note de recentrage (retour user 2026-07-10 : « une
+    # consigne corrective = un ÉPISODE, pas une rengaine ») : True = un épisode de
+    # troncature a déjà été GÉRÉ proprement par le modèle (stop naturel) -> le harnais
+    # arrête de ré-injecter la note à chaque tour d'une session saturée. Ré-armée si
+    # le modèle dérape (non-progrès/boucle) ou quand la pression retombe (prochain
+    # épisode = nouvelle note).
+    _refocus_handled: dict[str, bool] = {}
+
     # Décisions de confirmation en attente : tool_call_id -> {event, approved}.
 
     # Renseignées par la route /tool_decision (autre thread), consommées par _confirm.
@@ -1653,6 +1661,9 @@ def create_app(
                     # Notes en vol : remarques poussées par /note PENDANT ce tour,
                     # injectées au prochain point d'arrêt sans interrompre.
                     notes_provider=lambda: _drain_notes(sess.id),
+                    # Note de recentrage : seulement si l'épisode de troncature
+                    # précédent n'a pas déjà été géré proprement (cf. _refocus_handled).
+                    refocus_note=not _refocus_handled.get(sess.id, False),
                 )
 
             else:
@@ -1665,6 +1676,11 @@ def create_app(
                 )
 
             interrupted = False
+
+            saw_compaction = (
+                False  # une troncature (force-fit/compaction) a eu lieu ce tour
+            )
+            stop_reason = ""  # raison du done de la boucle (natural, repeat_stop, …)
 
             recv_confirmed = 0  # reçus confirmés par l'usage (tool-calls inclus)
 
@@ -1816,6 +1832,9 @@ def create_app(
                         yield _sse("tool_stream", **payload)
 
                     elif kind == "tool_result":
+                        if str(payload.get("name", "")).startswith("(compaction"):
+                            saw_compaction = True
+
                         line = _action_trace_line(payload)
 
                         if line and line not in actions:
@@ -1884,6 +1903,12 @@ def create_app(
                     elif kind == "phase":
                         yield _tl("phase", **payload)
 
+                    elif kind == "done":
+                        # Raison d'arrêt de la boucle (natural, repeat_stop,
+                        # loop_degenerate…) : nourrit la boucle de feedback de la
+                        # note de recentrage ci-dessous.
+                        stop_reason = str(payload.get("reason", "") or "")
+
                     # Compteur live : chaque delta (texte OU arguments d'un tool_call) =
 
                     # 1 vrai token streamé par llama-server. On compte aussi tool_args
@@ -1939,6 +1964,18 @@ def create_app(
                     save()
 
                     return
+
+                # Feedback de la note de recentrage : troncature + tour fini PROPREMENT
+                # (stop naturel) = épisode GÉRÉ, on cesse de ré-injecter la note ;
+                # dérapage (non-progrès/boucle) = ré-armée ; tour sans troncature =
+                # remise à zéro (le prochain épisode aura sa note).
+                if saw_compaction:
+                    if stop_reason == "natural":
+                        _refocus_handled[sess.id] = True
+                    elif stop_reason in ("repeat_stop", "loop_degenerate"):
+                        _refocus_handled[sess.id] = False
+                else:
+                    _refocus_handled[sess.id] = False
 
                 if not answer.strip():
                     answer = "(le modèle a seulement réfléchi — augmente max_tokens)"
