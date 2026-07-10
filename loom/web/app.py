@@ -2265,6 +2265,13 @@ def create_app(
                 "error": "modèle local occupé — réessaie après la génération en cours"
             }, 409
         try:
+            # Serveur modèle éteint (bouton non cliqué, session neuve…) : on le démarre
+            # comme le fait le chat, au lieu de planter en Connection refused (vécu).
+            if is_local and not _ensure_local_server(wait=45.0):
+                return {
+                    "error": "serveur modèle indisponible (démarrage trop long) — "
+                    "réessaie dans quelques secondes"
+                }, 503
             saved = client.save_slot(model, "uigen.kv") if is_local else False
             prompt = (
                 "Write a Loom SKILL.md file for the skill idea below. Output ONLY the "
@@ -2275,17 +2282,21 @@ def create_app(
                 f"Skill idea: {desc}"
             )
             chunks: list[str] = []
-            for kind, chunk in client.stream_chat(
-                [{"role": "user", "content": prompt}],
-                "",
-                900,
-                model=model or None,
-                thinking=False,
-            ):
-                if kind == "content":
-                    chunks.append(chunk)
-            if saved:
-                client.restore_slot(model, "uigen.kv")
+            try:
+                for kind, chunk in client.stream_chat(
+                    [{"role": "user", "content": prompt}],
+                    "",
+                    900,
+                    model=model or None,
+                    thinking=False,
+                ):
+                    if kind == "content":
+                        chunks.append(chunk)
+            except Exception as exc:  # noqa: BLE001 - erreur PROPRE côté UI, pas un 500
+                return {"error": f"modèle injoignable : {str(exc)[:140]}"}, 502
+            finally:
+                if saved:
+                    client.restore_slot(model, "uigen.kv")
             text = "".join(chunks).strip()
             # Dé-clôture un éventuel bloc ```...``` autour du fichier.
             if text.startswith("```"):
