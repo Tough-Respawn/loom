@@ -141,6 +141,9 @@
       transition: transform .12s ease;
     }
     details.sb-fold[open] > summary.sb-label::before { content: "▾"; }
+    /* Les actions d'entête (+ new) n'apparaissent que section DÉPLIÉE : repliée,
+       le bouton n'a pas de sens (on ne voit pas la liste sur laquelle il agit). */
+    details.sb-fold:not([open]) > summary.sb-label button { display: none; }
     details.sb-fold > summary.sb-label:hover { color: var(--text-dim); }
     details.sb-fold > *:not(summary) { margin-top: 4px; }
     .session-list { list-style: none; display: flex; flex-direction: column; gap: 1px; }
