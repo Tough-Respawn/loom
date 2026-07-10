@@ -230,7 +230,19 @@ def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
     backend = _pick_backend(cfg)
     try:
         if backend == "searxng":
-            return _search_searxng(query, cfg)
+            try:
+                return _search_searxng(query, cfg)
+            except (httpx.ConnectError, httpx.TimeoutException):
+                # Instance gérée arrêtée ? On la RELANCE (docker start, jamais de
+                # pull) et on retente UNE fois ; sinon repli ddgs en mode auto —
+                # SearXNG absent ne doit jamais priver l'utilisateur de recherche.
+                from loom.runtime.searxng import ensure_running
+
+                if ensure_running(cfg.searxng_url):
+                    return _search_searxng(query, cfg)
+                if cfg.backend == "auto":
+                    return _search_ddgs(query, cfg)
+                raise
         if backend == "tavily":
             return _search_tavily(query, cfg)
         return _search_ddgs(query, cfg)

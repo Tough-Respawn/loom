@@ -257,7 +257,14 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
    **PostToolUse seul** (feedback sans pouvoir de blocage) + porte de confiance à
    l'installation — le store ne scanne aujourd'hui QUE les skills) ; puis **agents**
    des plugins → personas dispatchables.
-3. **SearXNG** self-host pour un `web_search` fiable (`ddgs` rate-limite).
+3. ~~SearXNG self-host~~ : LIVRÉ le 2026-07-10, validé E2E. Service GÉRÉ façon ComfyUI
+   (`loom/runtime/searxng.py`) : install en UNE commande (`uv run python -m
+   loom.runtime.searxng install` — conteneur Docker officiel, settings.yml généré avec
+   le format JSON activé (refusé par défaut par l'image !), `searxng_url` écrit en
+   config locale), port 8890, `--restart unless-stopped`. `web_search` : backend auto
+   → SearXNG prioritaire ; conteneur arrêté → **docker start automatique + retry**
+   (validé live), sinon repli ddgs (désormais dans l'extra `web-search`, avec erreur
+   actionnable s'il manque). Aucune maintenance utilisateur.
 4. **RAG** (skills volumineux) si le catalogue grossit ; **audio**.
 5. ~~Mémoire projet auto-injectée~~ : LIVRÉ le 2026-07-09 — si `<workspace>/loom.md` existe
    (fiche `/init`), elle est injectée au system prompt (les deux tiers), bornée par
