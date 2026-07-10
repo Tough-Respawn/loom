@@ -1990,27 +1990,47 @@ document.getElementById("skill-new")?.addEventListener("click", (e) => {
   e.stopPropagation();
   openSkillCreator();
 });
-document.getElementById("skdr-generate")?.addEventListener("click", async () => {
+document.getElementById("skdr-generate")?.addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const genStatus = document.getElementById("skdr-gen-status");
   const description = skGenDesc ? skGenDesc.value.trim() : "";
   if (!description) {
-    if (skStatus) skStatus.textContent = "décris d'abord le skill";
+    if (genStatus) {
+      genStatus.hidden = false;
+      genStatus.textContent = "décris d'abord le skill dans le champ ci-dessus";
+      setTimeout(() => (genStatus.hidden = true), 2500);
+    }
     return;
   }
   const fd = new FormData();
   fd.append("name", skNameInput ? skNameInput.value.trim() : "");
   fd.append("description", description);
-  if (skStatus) skStatus.textContent = "génération par le modèle…";
+  // Feedback VISIBLE dans la zone de génération (pas relégué au pied du drawer) :
+  // point pulsant + texte, bouton neutralisé le temps de l'appel.
+  btn.disabled = true;
+  const oldLabel = btn.textContent;
+  btn.textContent = "génération…";
+  if (genStatus) {
+    genStatus.hidden = false;
+    genStatus.textContent =
+      "le modèle rédige le SKILL.md… (peut prendre ~1 min si le serveur vient de démarrer)";
+  }
+  if (skStatus) skStatus.textContent = "";
   try {
     const r = await fetch("/skill/generate", { method: "POST", body: fd });
     const d = await r.json();
     if (!r.ok || d.error) {
-      if (skStatus) skStatus.textContent = d.error || "génération impossible";
+      if (genStatus) genStatus.textContent = d.error || "génération impossible";
       return;
     }
     if (skBody) skBody.value = d.source || "";
-    if (skStatus) skStatus.textContent = "brouillon généré — relis puis Créer";
+    if (genStatus) genStatus.hidden = true;
+    if (skStatus) skStatus.textContent = "brouillon généré — relis, ajuste, puis Créer";
   } catch (err) {
-    if (skStatus) skStatus.textContent = "erreur : " + err;
+    if (genStatus) genStatus.textContent = "erreur : " + err;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldLabel;
   }
 });
 document.getElementById("skdr-create")?.addEventListener("click", async () => {

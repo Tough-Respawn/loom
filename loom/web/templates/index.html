@@ -295,6 +295,19 @@
       border-radius: 5px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
     }
     .skdr-genrow button:hover { color: var(--text); border-color: var(--accent-dim); }
+    .skdr-genrow button:disabled { opacity: .55; cursor: default; }
+    /* Statut de génération : point pulsant + texte, sur sa propre ligne (visible,
+       pas relégué au pied du drawer). Réutilise la pulsation du moniteur machine. */
+    .skdr-genrow { flex-wrap: wrap; }
+    .skdr-gen-status {
+      display: flex; align-items: center; gap: 7px; width: 100%;
+      font-size: 11px; color: var(--text-dim); padding: 2px 2px 0;
+    }
+    .skdr-gen-status::before {
+      content: ''; width: 6px; height: 6px; border-radius: 50%; flex: none;
+      background: var(--warn); animation: mc-pulse 1s ease-in-out infinite;
+    }
+    .skdr-gen-status[hidden] { display: none; }
     .skdr-head {
       display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px;
       border-bottom: 1px solid var(--border);
@@ -1209,6 +1222,7 @@
              placeholder="Décris le skill : quand il se déclenche, ce qu'il doit faire…">
       <button type="button" id="skdr-generate"
               title="Le modèle rédige le SKILL.md complet depuis ta description">Générer</button>
+      <span id="skdr-gen-status" class="skdr-gen-status" hidden></span>
     </div>
     <textarea id="skdr-body" spellcheck="false"
               placeholder="Contenu du SKILL.md…"></textarea>
