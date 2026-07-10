@@ -1899,54 +1899,32 @@ def create_app(
 
                 _persist(final=True)  # fin de tour : écriture finale garantie
 
-                # Apprentissage post-tour (HORS de la loop d'action) : ne s'exécute que si le
-
-                # tour a fait du vrai travail (>= reflect_min_actions). Toute défaillance est
-
-                # avalée — la réponse utilisateur est déjà rendue (design §6, §11).
-
-                if (
+                # Apprentissage post-tour + ré-amorçage du cache : DÉPORTÉS dans un
+                # thread (cf. _post_turn_maintenance). Avant, reflect tournait ICI,
+                # avant le `done` -> l'UI restait sur « le modèle travaille » pendant
+                # un appel modèle entier, ET le cache KV de la conversation était
+                # écrasé -> re-prefill INTÉGRAL au message suivant (bug 2026-07-10).
+                # Le thread attend le verrou local (libéré à la fermeture du flux).
+                _do_reflect = (
                     _settings["reflect_enabled"]
                     and reflect_stores is not None
                     and saved
                     and len(actions) >= _settings["reflect_min_actions"]
-                ):
-                    try:
-                        from loom.agent.reflect import reflect as _reflect
+                )
 
-                        _res = _reflect(
-                            conv.to_messages(),
-                            actions,
-                            answer,
-                            client=client,
-                            model=conv.model or reflect_model,
-                            provider=reflect_stores.provider,
-                            paths=reflect_stores.paths,
-                            learned_dir=reflect_stores.learned_dir,
-                        )
-
-                        # Trace VISIBLE (console/serve.log) : sinon l'apprentissage est une
-
-                        # boîte noire — on ne sait pas s'il a tourné ni ce qu'il a retenu.
-
-                        if _res is None:
-                            print(
-                                "[reflect] rien retenu (tour peu généralisable)",
-                                flush=True,
-                            )
-
-                        else:
-                            print(
-                                f"[reflect] retenu : {len(_res.new_skills)} skill(s), "
-                                f"{len(_res.improved_skills)} amélioré(s), "
-                                f"{len(_res.episodes)} épisode(s), "
-                                f"{len(_res.memory_updates) + len(_res.user_updates) + len(_res.soul_updates)} "
-                                "note(s) identité",
-                                flush=True,
-                            )
-
-                    except Exception as _e:  # noqa: BLE001 - best-effort, jamais bloquant
-                        print(f"[reflect] erreur ignorée : {_e}", flush=True)
+                threading.Thread(
+                    target=_post_turn_maintenance,
+                    args=(
+                        sess,
+                        conv.to_messages(),
+                        list(actions),
+                        answer,
+                        conv.model,
+                        _do_reflect,
+                    ),
+                    daemon=True,
+                    name="loom-post-turn",
+                ).start()
 
                 # Auto-titre : à la 1re vraie réponse, nommer la session (le modèle infère le
                 # sujet). On titre LA session de CETTE génération (`sess`), pas la session
@@ -2801,7 +2779,12 @@ def create_app(
         if not ws:
             return Response("workspace manquant", status=400)
 
-        sess = _session()
+        # Cible la session de l'ONGLET appelant (session_id), pas la session focus
+        # globale : avec le multi-onglets, _session() peut désigner un autre fil ->
+        # le dossier choisi s'écrivait ailleurs et le tour partait sur l'ancien
+        # workspace (bug constaté le 2026-07-10).
+        req_sid = (request.form.get("session_id") or "").strip()
+        sess = (_get_session(req_sid) if req_sid else None) or _session()
 
         sess.workspace = ws
 
@@ -2824,6 +2807,92 @@ def create_app(
             _session()
 
         return {"ok": True}
+
+    def _prime_slot(sess) -> bool:
+        """Ré-amorce le cache KV du slot local avec le fil de `sess` : re-prefill
+        silencieux du MÊME préfixe que le prochain tour (system prompt + messages +
+        schémas d'outils — mêmes ingrédients que /chat, sinon zéro réutilisation).
+        Le message suivant ne préfille alors que son delta. False si rien à amorcer
+        (modèle distant : cache provider + appel payant ; fil vide)."""
+        try:
+            conv = sess.conversation
+            model = conv.model
+            if not model or model in remote_model_ids:
+                return False
+            msgs = conv.to_messages()
+            if not msgs:
+                return False
+            system_prompt, _strong = _build_system_prompt(conv)
+            registry = tool_factory(conv.active_tools, sess.workspace, conv)
+            return client.warm_context(
+                msgs,
+                system_prompt,
+                model=model,
+                registry=registry if (registry is not None and len(registry)) else None,
+                thinking=conv.thinking,
+            )
+        except Exception as e:  # noqa: BLE001 - amorçage best-effort, jamais bloquant
+            print(f"[prime] erreur ignorée : {e}", flush=True)
+            return False
+
+    def _post_turn_maintenance(sess, msgs, actions, answer, model, do_reflect):
+        """Fin de tour déportée hors du flux SSE : reflect (apprentissage) PUIS
+        ré-amorçage du cache de la conversation. Local : sérialisé derrière le verrou
+        (attend la fermeture du flux ; si l'utilisateur a déjà relancé, on passe
+        après son tour). Distant : reflect seul (pas de slot local à ré-amorcer)."""
+        is_local = bool(model) and model not in remote_model_ids
+
+        if is_local and not _local_gen_lock.acquire(timeout=600):
+            return
+
+        try:
+            if do_reflect:
+                try:
+                    from loom.agent.reflect import reflect as _reflect
+
+                    _res = _reflect(
+                        msgs,
+                        actions,
+                        answer,
+                        client=client,
+                        model=model or reflect_model,
+                        provider=reflect_stores.provider,
+                        paths=reflect_stores.paths,
+                        learned_dir=reflect_stores.learned_dir,
+                    )
+
+                    # Trace VISIBLE (console/serve.log) : sinon l'apprentissage est
+                    # une boîte noire — on ne sait pas s'il a tourné ni retenu quoi.
+                    if _res is None:
+                        print(
+                            "[reflect] rien retenu (tour peu généralisable)",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[reflect] retenu : {len(_res.new_skills)} skill(s), "
+                            f"{len(_res.improved_skills)} amélioré(s), "
+                            f"{len(_res.episodes)} épisode(s), "
+                            f"{len(_res.memory_updates) + len(_res.user_updates) + len(_res.soul_updates)} "
+                            "note(s) identité",
+                            flush=True,
+                        )
+
+                except Exception as _e:  # noqa: BLE001 - best-effort, jamais bloquant
+                    print(f"[reflect] erreur ignorée : {_e}", flush=True)
+
+            if is_local:
+                _ok = _prime_slot(sess)
+                print(
+                    f"[prime] cache de la conversation ré-amorcé après fin de tour : "
+                    f"{'ok' if _ok else 'échec/sans objet'}",
+                    flush=True,
+                )
+                _last_activity[0] = time.time()
+
+        finally:
+            if is_local:
+                _local_gen_lock.release()
 
     # --- Keep-warm : empêche l'OS d'évincer le modèle inactif (cold start après pause). --
 
@@ -2867,14 +2936,21 @@ def create_app(
                 if model in remote_model_ids:
                     continue
 
-                for _kind, _chunk in client.stream_chat(
-                    [{"role": "user", "content": "ping"}],
-                    "",
-                    1,
-                    model=model,
-                    thinking=False,
-                ):
-                    pass
+                # Keep-warm v2 : on ré-amorce le PRÉFIXE DE LA CONVERSATION au lieu
+                # d'un « ping » — l'ancien ping gardait le modèle chaud mais ÉCRASAIT
+                # le cache KV du fil (slot unique) : chaque reprise re-préfillait
+                # TOUT (bug 2026-07-10). Ici : modèle chaud ET cache chaud ; si le
+                # cache est déjà bon, le prefill est ~nul -> quasi gratuit. Repli
+                # ping pour une session encore vide (rien à amorcer, juste chauffer).
+                if not _prime_slot(sess):
+                    for _kind, _chunk in client.stream_chat(
+                        [{"role": "user", "content": "ping"}],
+                        "",
+                        1,
+                        model=model,
+                        thinking=False,
+                    ):
+                        pass
 
                 _last_activity[0] = time.time()  # gardé chaud => relance un intervalle
 
