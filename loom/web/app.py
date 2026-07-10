@@ -358,6 +358,7 @@ def create_app(
     identity_max_tokens=400,
     project_memory_max_tokens=600,
     learned_skills_dir=None,
+    user_skills_dir="var/skills_user",
     reflect_stores=None,
     reflect_enabled=False,
     reflect_min_actions=1,
@@ -777,7 +778,12 @@ def create_app(
             pending.pop(tool_id, None)
 
     def _all_skills() -> list:
-        return collect_skills(skills_dir, plugins_dir, learned_dir=learned_skills_dir)
+        return collect_skills(
+            skills_dir,
+            plugins_dir,
+            learned_dir=learned_skills_dir,
+            user_dir=user_skills_dir,
+        )
 
     def _skills_ctx(conv) -> dict:
         """Contexte du panneau Skills : la liste COMPLÈTE (pour les cases), l'ensemble des
@@ -2157,6 +2163,8 @@ def create_app(
             "has_override": override is not None,
             "learned": bool(getattr(skill, "learned", False)),
             "editable_on_disk": skill.base_dir != "",
+            "origin": getattr(skill, "origin", "loom"),
+            "deletable": _skill_deletable(skill),
         }
 
     @app.post("/skill/save")
@@ -2182,6 +2190,75 @@ def create_app(
         conv.set_skill_override(name, body)
         save()
         return {"ok": True, "scope": "session"}
+
+    def _skill_deletable(skill) -> bool:
+        """Un skill n'est supprimable depuis l'UI que s'il vient d'un dossier GÉRÉ par
+        l'utilisateur (appris ou ajouté) ET que son dossier est bien confiné dedans —
+        jamais un skill du package (versionné) ni d'un plugin (géré par le store)."""
+        if getattr(skill, "origin", "") not in ("learned", "user"):
+            return False
+        if not skill.base_dir:
+            return False
+        roots = [
+            d for d in (learned_skills_dir, user_skills_dir) if d
+        ]  # dossiers gérés
+        base = Path(skill.base_dir).resolve()
+        for root in roots:
+            r = Path(root).resolve()
+            if base != r and r in base.parents:
+                return True
+        return False
+
+    @app.post("/skill/create")
+    def skill_create():
+        # « + nouveau » : crée un squelette SKILL.md dans le dossier des skills USER
+        # (hors package : loom/skills reste l'officiel versionné) puis l'éditeur s'ouvre
+        # dessus. Le nom sert de slug de dossier -> alphanumérique/tirets uniquement.
+        raw = (request.form.get("name") or "").strip().lower()
+        slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+        if not slug or len(slug) < 3:
+            return {
+                "error": "nom invalide (3+ caractères, lettres/chiffres/tirets)"
+            }, 400
+        if any(s.name == slug for s in _all_skills()):
+            return {"error": f"un skill « {slug} » existe déjà"}, 409
+        desc = (request.form.get("description") or "").strip()
+        target = Path(user_skills_dir) / slug
+        try:
+            target.mkdir(parents=True, exist_ok=False)
+            (target / "SKILL.md").write_text(
+                f"---\nname: {slug}\ndescription: {desc}\n---\n\n"
+                "Décris ici la méthode : quand ce skill s'applique, les étapes à "
+                "suivre, les pièges à éviter.\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            return {"error": f"création impossible : {exc}"}, 400
+        return {"ok": True, "name": slug}
+
+    @app.post("/skill/delete")
+    def skill_delete():
+        # Suppression (skills appris + ajoutés user UNIQUEMENT) : retire le dossier du
+        # skill, l'override et l'entrée disabled de la session courante. Les skills du
+        # package/plugins ne passent jamais ici (_skill_deletable) — pour eux : décocher.
+        conv, save = _ctx()
+        name = request.form.get("name", "")
+        skill = next((s for s in _all_skills() if s.name == name), None)
+        if skill is None:
+            return {"error": f"skill inconnu : {name}"}, 404
+        if not _skill_deletable(skill):
+            return {
+                "error": "seuls les skills appris ou ajoutés par l'utilisateur sont "
+                "supprimables (pour un skill du package ou d'un plugin : décoche-le)"
+            }, 403
+        try:
+            shutil.rmtree(skill.base_dir)
+        except OSError as exc:
+            return {"error": f"suppression impossible : {exc}"}, 400
+        conv.set_skill_override(name, None)
+        conv.set_disabled_skills([n for n in conv.disabled_skills if n != name])
+        save()
+        return {"ok": True}
 
     @app.post("/thinking")
     def thinking_update():

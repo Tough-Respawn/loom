@@ -24,6 +24,10 @@ class Skill:
     uses: int = 0
     created_at: str = ""
     updated_at: str = ""
+    # FAMILLE du skill (badge UI + droits) : "loom" = défaut du package (non supprimable
+    # depuis l'UI), "user" = ajouté par l'utilisateur, "learned" = auto-appris,
+    # "plugin" = installé via le store. Posée par collect_skills selon la source.
+    origin: str = "loom"
 
 
 def _parse_skill_md(text: str, fallback_name: str) -> tuple[str, str, str, dict]:
@@ -85,12 +89,28 @@ def collect_skills(
     local_dir: str | Path,
     plugins_root_path: str | Path | None = None,
     learned_dir: str | Path | None = None,
+    user_dir: str | Path | None = None,
 ) -> list[Skill]:
-    """Agrège les skills locaux (non namespacés) + AUTO-APPRIS (namespace `learned`) + ceux
-    des plugins installés (namespacés `plugin:nom`)."""
+    """Agrège les skills du package (non namespacés, origin=loom) + AJOUTÉS PAR
+    L'UTILISATEUR (non namespacés, origin=user, prioritaires en cas de nom en double) +
+    AUTO-APPRIS (namespace `learned`) + ceux des plugins installés (namespacés
+    `plugin:nom`)."""
     skills = _scan_dir(local_dir, namespace=None)
+    for s in skills:
+        s.origin = "loom"
+    if user_dir is not None:
+        seen = {s.name for s in skills}
+        for s in _scan_dir(user_dir, namespace=None):
+            s.origin = "user"
+            # Un skill user au même nom qu'un skill package REMPLACE ce dernier
+            # (l'utilisateur a la main), sans doublon au catalogue.
+            if s.name in seen:
+                skills = [k for k in skills if k.name != s.name]
+            skills.append(s)
     if learned_dir is not None:
-        skills += _scan_dir(learned_dir, namespace="learned")
+        for s in _scan_dir(learned_dir, namespace="learned"):
+            s.origin = "learned"
+            skills.append(s)
     if plugins_root_path is not None:
         from loom.extend.plugins import discover_plugins
 
@@ -98,6 +118,7 @@ def collect_skills(
             for md in plugin.skills:
                 sk = _load_skill_file(md, namespace=plugin.name)
                 if sk:
+                    sk.origin = "plugin"
                     skills.append(sk)
     return skills
 
