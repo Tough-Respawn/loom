@@ -226,9 +226,14 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   SOUS-AGENT (agent.py, fichier `dispatch.kv`) et de la fin de tour (save `turnend.kv`
   avant le titre, restore en maintenance après reflect ; repli = ré-amorçage re-prefill).
   MESURÉ (serveur éphémère, KV q8_0) : save 42 ms, restore 22 ms, reprise de conversation
-  = 10-11 tokens préfillés au lieu de ~930. Reste à VALIDER dans loom.web réel (restart
-  complet requis : le yaml doit embarquer --slot-save-path). Tranche 2 possible : save
-  par SESSION -> bascule d'onglet quasi instantanée.
+  = 10-11 tokens préfillés au lieu de ~930. Tranche 2 possible : save par SESSION ->
+  bascule d'onglet quasi instantanée.
+  ⚠ CONSTATÉ LIVE (2026-07-10) : sur ornith q8 RÉEL (CUDA -ngl 999 + mmproj), le save
+  PEND côté llama-server (502 après ~60 s, dossier slots vide) alors que le banc CPU pur
+  sans mmproj marchait -> DISJONCTEUR livré : timeout 20 s, un hang = save/restore
+  désactivé pour ce modèle jusqu'au restart, repli automatique sur le ré-amorçage par
+  re-prefill (validé le matin : 3-10 s). À INVESTIGUER au banc éphémère (RAM libre
+  requise) : isoler la cause — mmproj ? KV CUDA ? -fa ? — avant de réactiver.
   **Volet 2 — préfixe stable** : sortir le VOLATIL (workspace, fiche loom.md, goal) de la
   tête du system prompt vers une injection en QUEUE de conversation (pattern Claude Code :
   system stable + reminders dans le fil) -> un changement de workspace n'invalide que la
