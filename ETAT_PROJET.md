@@ -224,13 +224,32 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 6. ~~Outil `generate_image`~~ : REJETÉ le 2026-07-08 (voir « Déjà essayé, rejeté ») —
    la sélection du modèle image dans l'UI couvre le besoin. Le patch complet (ToolSpec +
    câblage app) existe dans l'historique de session si un futur GPU le rejustifie.
-7. **Skills appris : édition/suppression depuis l'UI** (demande user 2026-07-10) — comme
-   pour les sessions ; aujourd'hui il faut supprimer à la main dans `var/skills_learned/`
-   (plusieurs skills parasites y traînent : cuisine, esters, descriptions vides).
-8. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
+7. **STORY — Auto-calibration des configs modèles** (demande user 2026-07-10, née du banc
+   q8 : sans les mesures, le spill `n_cpu_moe=35` serait passé inaperçu). Modèle « jeu
+   vidéo » : une **conf par défaut CALIBRÉE automatiquement** + des **overrides user
+   intouchables** (on ne modifie JAMAIS une valeur posée par le user ; il reste maître).
+   - *Déclenchement* : au premier lancement d'un modèle non calibré (marqueur absent),
+     avec message UI « configuration optimale en cours… quelques minutes », puis la conf
+     est enregistrée et TOUS les démarrages suivants partent dessus. Bouton
+     « recalibrer » (changement de matériel).
+   - *Protocole (celui validé au banc du 2026-07-10)* : serveur éphémère par candidat
+     `n_cpu_moe` (départ sûr = n_layers, puis on redescend tant que VRAM libre > seuil
+     ET perfs en hausse ; arrêt à la première régression) ; mesure = prompt fixe ~4-5k
+     tokens → `timings` (prefill/décode t/s) + `nvidia-smi` (détection spill). Chaque
+     essai ≈ 1-2 min (le chargement domine) → « quelques minutes » au total.
+   - *Persistance* : la calibration écrit SES valeurs à part (ex. section/fichier
+     `calibrated` à côté du model.toml) ; priorité de résolution : override user >
+     calibré > défaut heuristique. Le `common_fit_params` de llama.cpp ne sait PAS
+     choisir n_cpu_moe (il ne gère que ngl, et abandonne si ngl est forcé) — c'est
+     bien à Loom de le faire.
+8. **STORY — Skills appris : bouton supprimer** (demande user 2026-07-10, périmètre
+   VOLONTAIREMENT minimal) : un bouton supprimer dans la liste (comme les sessions)
+   + un bouton supprimer dans la vue d'édition existante. Pas d'autre chantier UI.
+   En attendant : suppression à la main dans `var/skills_learned/`.
+9. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
    `model.toml` édité n'est pris en compte qu'après `regenerate_swap_yaml()` manuel
    ou une édition via la console config (gotcha mesuré le 2026-07-10).
-9. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
+10. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
    dossier `loom/models/<id>/` sans redémarrer. Repérage 2026-07-08 : la mécanique existe
    déjà à moitié — `loom.web._regen_swap_yaml()` régénère le yaml et llama-swap
    (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
