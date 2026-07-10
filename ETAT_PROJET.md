@@ -49,6 +49,10 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
 - **~23 outils** (`loom/tools/`, armés par défaut) :
   - localiser : `find_files`, `search_text`, `list_dir` ;
   - lire : `read_file`, `read_document` (PDF/xlsx/docx), `read_image` (vision sur fichier) ;
+  - calculer : `calculate` (2026-07-10, né d'une somme fausse vécue — AST strict, zéro
+    exécution arbitraire ; les LLM calculent faux de tête) : arithmétique exacte ET
+    agrégats tabulaires (`file` CSV/TSV/XLSX → chaînes = colonnes, sum/avg/count/min/max,
+    filtre `where`, nombres FR « 1 234,56 € » tolérés) ;
   - planifier/déléguer : `manage_todos`, `dispatch_agent` (sous-agent isolé, anti-récursion) ;
   - modifier/créer : `write_file`, `append_file`, `edit_file`
     (remplacement exact-unique), `format_code` (ruff/prettier) ;
@@ -328,7 +332,14 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
     neutre « info : ... ») + nuance dans la description du skill debugging (« pas pour
     les résultats informatifs d'une commande — lis-les comme une réponse et continue »).
     ⚠ Changement de prompt/schéma → passage par l'A/B `evals/` obligatoire (convention).
-14. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
+14. **Trous d'outillage identifiés** (cartographie « travers LLM → outil », 2026-07-10) :
+    la **date du jour** n'est injectée NULLE PART dans le prompt (vérifié) — le modèle ne
+    sait ni quel jour on est ni calculer « d'ici fin juillet » ; fix = 1 ligne de prompt
+    mais **A/B obligatoire** (convention). Ensuite, au fil des observations : OCR précis
+    (chiffres dans images scannées — read_image « voit » mais lit mal les petits
+    chiffres). Règle de fond actée : tout ce qui est déterministe se CALCULE (outil),
+    jamais ne se prédit.
+15. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
    dossier `loom/models/<id>/` sans redémarrer. Repérage 2026-07-08 : la mécanique existe
    déjà à moitié — `loom.web._regen_swap_yaml()` régénère le yaml et llama-swap
    (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
