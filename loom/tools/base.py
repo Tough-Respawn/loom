@@ -144,6 +144,7 @@ AVAILABLE_TOOLS = [
     {"name": "read_document", "label": "read_document", "danger": False},
     {"name": "read_image", "label": "read_image", "danger": False},
     {"name": "calculate", "label": "calculate", "danger": False},
+    {"name": "current_date", "label": "current_date", "danger": False},
     {"name": "web_search", "label": "web_search", "danger": False},
     {"name": "fetch_url", "label": "fetch_url", "danger": False},
     {"name": "check_page", "label": "check_page", "danger": False},

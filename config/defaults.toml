@@ -68,7 +68,7 @@ keep_recent_messages = 6
 # texte. PRÉREQUIS live : llama-server --jinja (serve.py l'inclut) pour les tool_calls.
 enabled = [
     "find_files", "search_text", "list_dir",
-    "read_file", "read_document", "read_image", "calculate",
+    "read_file", "read_document", "read_image", "calculate", "current_date",
     "web_search", "fetch_url",
     "dispatch_agent", "manage_todos", "write_note", "read_note",
     "recall", "remember",

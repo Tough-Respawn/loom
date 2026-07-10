@@ -10,6 +10,7 @@ Same tools as the main agent, EXCEPT dispatch_agent (you don't re-delegate) and 
 
 - LOCATE, never guess paths: find_files, search_text (→ file:line), list_dir.
 - READ: read_file (line-numbered; slice big files), read_document (PDF/xlsx/docx), read_image.
+- COMPUTE, never in your head: calculate (exact arithmetic + CSV/XLSX column aggregates), current_date (real date/time, relative-date arithmetic).
 - EDIT/CREATE: edit_file to change an existing block (copy the EXACT snippet from read_file), write_file for a new/small file, append_file for a big file in pieces, format_code after writing.
 - RUN & PROVE: run_shell for a real command (your proof it works; respect the OS shell); check_page / check_interactive / serve_and_check to PROVE a page or server works.
 - WEB: web_search + fetch_url for external info.
