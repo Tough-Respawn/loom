@@ -245,6 +245,30 @@
     #skills-panel .skill-row.has-override .skill-name::after {
       content: ' •'; color: var(--warn);
     }
+    /* En-tête du panneau : case « tous » + bouton de création côte à côte. */
+    #skills-panel .skills-head { justify-content: space-between; border-style: dashed; }
+    #skills-panel .skills-head .skills-all {
+      display: flex; align-items: center; gap: 6px; cursor: pointer;
+    }
+    #skills-panel .skill-new {
+      background: none; border: none; color: var(--text-dim); font: inherit;
+      cursor: pointer; padding: 0;
+    }
+    #skills-panel .skill-new:hover { color: var(--accent); }
+    /* Badge de FAMILLE (loom / user / learned / plugin) : discret, informatif. */
+    #skills-panel .skill-origin {
+      flex: none; font-size: 9px; line-height: 1; padding: 2px 4px;
+      border: 1px solid var(--border); border-radius: 3px; color: var(--text-dim);
+      opacity: .75; text-transform: lowercase;
+    }
+    #skills-panel .skill-origin.o-user { border-color: var(--accent-dim); }
+    #skills-panel .skill-origin.o-learned { border-style: dashed; }
+    /* Suppression (skills learned/user seulement) : même geste que les sessions. */
+    #skills-panel .skill-del {
+      flex: none; background: none; border: none; color: var(--text-dim);
+      font: inherit; font-size: 11px; cursor: pointer; padding: 0 2px; opacity: .6;
+    }
+    #skills-panel .skill-del:hover { color: var(--warn); opacity: 1; }
     /* --- éditeur de skill (drawer latéral) --- */
     #skill-scrim {
       position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 40;
@@ -257,6 +281,9 @@
     /* L'attribut `hidden` doit l'emporter sur le `display:flex` ci-dessus (sinon le
        drawer reste affiché en permanence). Sélecteur [hidden] = spécificité supérieure. */
     #skill-drawer[hidden], #skill-scrim[hidden] { display: none; }
+    /* Supprimer (drawer) : à gauche des boutons d'enregistrement, ton discret. */
+    .skdr-actions .skdr-delete { margin-right: auto; color: var(--warn); opacity: .85; }
+    .skdr-actions .skdr-delete:hover { opacity: 1; }
     .skdr-head {
       display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px;
       border-bottom: 1px solid var(--border);
@@ -1165,6 +1192,8 @@
     <div class="skdr-foot">
       <span id="skdr-status" class="skdr-status"></span>
       <div class="skdr-actions">
+        <button type="button" id="skdr-delete" class="skdr-delete" hidden
+                title="Supprime ce skill du disque (appris / ajouté utilisateur)">Supprimer</button>
         <button type="button" id="skdr-save-session"
                 title="Applique à cette session uniquement (n'écrit pas le fichier)">Cette session</button>
         <button type="button" id="skdr-save-global" class="primary"
