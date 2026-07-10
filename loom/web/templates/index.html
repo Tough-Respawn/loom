@@ -245,16 +245,6 @@
     #skills-panel .skill-row.has-override .skill-name::after {
       content: ' •'; color: var(--warn);
     }
-    /* En-tête du panneau : case « tous » + bouton de création côte à côte. */
-    #skills-panel .skills-head { justify-content: space-between; border-style: dashed; }
-    #skills-panel .skills-head .skills-all {
-      display: flex; align-items: center; gap: 6px; cursor: pointer;
-    }
-    #skills-panel .skill-new {
-      background: none; border: none; color: var(--text-dim); font: inherit;
-      cursor: pointer; padding: 0;
-    }
-    #skills-panel .skill-new:hover { color: var(--accent); }
     /* Badge de FAMILLE (loom / user / learned / plugin) : discret, informatif. */
     #skills-panel .skill-origin {
       flex: none; font-size: 9px; line-height: 1; padding: 2px 4px;
@@ -284,6 +274,24 @@
     /* Supprimer (drawer) : à gauche des boutons d'enregistrement, ton discret. */
     .skdr-actions .skdr-delete { margin-right: auto; color: var(--warn); opacity: .85; }
     .skdr-actions .skdr-delete:hover { opacity: 1; }
+    /* Mode création : nom éditable + rangée description -> génération par le modèle. */
+    .skdr-name-input {
+      width: 100%; background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px;
+      font: inherit; font-size: 13px; font-weight: 600;
+    }
+    .skdr-genrow { display: flex; gap: 6px; padding: 8px 14px 0; }
+    .skdr-genrow[hidden] { display: none; }
+    .skdr-genrow input {
+      flex: 1; background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px;
+      font: inherit; font-size: 12px;
+    }
+    .skdr-genrow button {
+      background: var(--bg-elev); color: var(--text-dim); border: 1px solid var(--border);
+      border-radius: 5px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+    }
+    .skdr-genrow button:hover { color: var(--text); border-color: var(--accent-dim); }
     .skdr-head {
       display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px;
       border-bottom: 1px solid var(--border);
@@ -996,7 +1004,10 @@
           <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> Réflexion</label>
       </div>
       <details class="sb-section sb-fold">
-        <summary class="sb-label">Skills</summary>
+        <summary class="sb-label">Skills
+          <button type="button" id="skill-new"
+                  title="Créer un skill (dossier utilisateur, hors package)">+ new</button>
+        </summary>
         {% include "_skills.html" %}
       </details>
       <details class="sb-section sb-fold">
@@ -1183,9 +1194,18 @@
     <div class="skdr-head">
       <div class="skdr-titles">
         <div id="skdr-name" class="skdr-name"></div>
+        <input id="skdr-name-input" class="skdr-name-input" hidden
+               spellcheck="false" placeholder="nom-du-skill (lettres/chiffres/tirets)">
         <div id="skdr-desc" class="skdr-desc"></div>
       </div>
       <button type="button" id="skdr-close" title="Fermer">✕</button>
+    </div>
+    <!-- Mode CRÉATION : décrire le skill, le modèle prérémplit le SKILL.md complet. -->
+    <div id="skdr-genrow" class="skdr-genrow" hidden>
+      <input id="skdr-gen-desc" spellcheck="false"
+             placeholder="Décris le skill : quand il se déclenche, ce qu'il doit faire…">
+      <button type="button" id="skdr-generate"
+              title="Le modèle rédige le SKILL.md complet depuis ta description">Générer</button>
     </div>
     <textarea id="skdr-body" spellcheck="false"
               placeholder="Contenu du SKILL.md…"></textarea>
@@ -1194,6 +1214,8 @@
       <div class="skdr-actions">
         <button type="button" id="skdr-delete" class="skdr-delete" hidden
                 title="Supprime ce skill du disque (appris / ajouté utilisateur)">Supprimer</button>
+        <button type="button" id="skdr-create" class="primary" hidden
+                title="Écrit le skill dans var/skills_user et l'ajoute au catalogue">Créer</button>
         <button type="button" id="skdr-save-session"
                 title="Applique à cette session uniquement (n'écrit pas le fichier)">Cette session</button>
         <button type="button" id="skdr-save-global" class="primary"
