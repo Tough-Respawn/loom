@@ -548,10 +548,18 @@ def _verify_streak_update(name: str, ok: bool, streak: int) -> int:
 # induit l'IMITATION (observé en éval : le modèle a « continué » la série de vieux tours
 # archivés au lieu d'exécuter la tâche). La note casse le motif et repointe la demande.
 # Préfixe '[harnais' = reconnue par _force_fit (jamais prise pour la tâche courante).
+# Reformulée le 2026-07-10 : l'ancienne version ordonnait « reprends la DERNIÈRE
+# demande telle quelle et exécute-la » — injectée EN PLEIN TOUR (le force-fit
+# préventif tourne avant chaque appel), elle pouvait faire repartir de zéro un
+# modèle qui avançait bien, et insinuait une dérive là où la troncature n'est
+# qu'une opération de routine. On garde UNIQUEMENT l'anti-imitation (le cœur
+# validé en éval, cas context_squeeze) : informatif, jamais directif.
 _REFOCUS_NOTE = (
-    "[harnais : les tours ci-dessus ont été TRONQUÉS pour tenir dans la fenêtre. "
-    "L'historique tronqué est du contexte ARCHIVÉ : ne l'imite pas, ne le continue pas. "
-    "Reprends la DERNIÈRE demande utilisateur telle quelle et exécute-la avec tes outils.]"
+    "[harnais : des tours anciens ci-dessus ont été TRONQUÉS pour tenir dans la "
+    "fenêtre — opération de routine, rien d'anormal. Ce contenu tronqué est du "
+    "contexte ARCHIVÉ : ne l'imite pas, ne le continue pas. Ta tâche en cours et "
+    "la dernière demande utilisateur restent INCHANGÉES : poursuis ton travail "
+    "normalement, sans repartir de zéro.]"
 )
 
 
