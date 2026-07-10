@@ -1228,6 +1228,43 @@ class LoomClient:
             _debug("WARMUP_ERR", str(e))
             pass
 
+    def warm_context(
+        self,
+        messages: list[dict],
+        system_prompt: str,
+        model: str | None = None,
+        registry=None,
+        thinking: bool = True,
+    ) -> bool:
+        """Ré-amorce le cache KV du slot LOCAL : re-prefill silencieux (1 token) du
+        MÊME préfixe que le prochain tour — system prompt + messages + schémas
+        d'outils, car le chat template rend le tout : un écart dans N'IMPORTE quel
+        élément = zéro réutilisation. Le slot llama-server est UNIQUE : tout appel
+        intermédiaire (titre, reflect, ping) écrase le cache de la conversation ->
+        sans ré-amorçage le message suivant re-préfillerait TOUT (des minutes en
+        local). Best-effort (avale toute erreur), False si échec."""
+        try:
+            oai, api_model, native = self._resolve(model)
+            kwargs = build_create_kwargs(
+                api_model,
+                messages,
+                system_prompt,
+                1,
+                thinking,
+                tools=registry.openai_tools() if registry else None,
+                native_extras=native,
+            )
+            stream = oai.chat.completions.create(**kwargs)
+            try:
+                for _ in _iter_events(stream):
+                    pass
+            finally:
+                _close(stream)
+            return True
+        except Exception as e:  # noqa: BLE001 - amorçage best-effort, jamais bloquant
+            _debug("WARM_CTX_ERR", str(e))
+            return False
+
     def infer_title(self, model: str | None, message: str) -> str:
         """Titre COURT (3-5 mots) d'une conversation, inféré par le modèle. NON streamé, tout
         petit budget.

@@ -1413,12 +1413,19 @@ if (pickFolderBtn) {
       const r = await fetch("/pick-folder", { method: "POST" });
       const j = await r.json();
       if (j.path) {
+        // Applique le dossier à la session de CET onglet — session_id ciblé, comme
+        // /chat et /cancel : sans lui le back écrit dans la session focus globale,
+        // pas forcément celle de l'onglet (bug du 2026-07-10). Et la puce ne se met
+        // à jour qu'APRÈS confirmation serveur : avant, elle affichait le nouveau
+        // dossier même si le POST échouait -> le tour partait sur l'ancien dossier
+        // pendant que l'UI en montrait un autre.
+        const wsData = { workspace: j.path };
+        if (state.active) wsData.session_id = state.active;
+        const resp = await postForm("/session/workspace", wsData);
+        if (!resp.ok) throw new Error("session/workspace HTTP " + resp.status);
         loomWorkdir = j.path;
         localStorage.loomWorkdir = loomWorkdir;
         reflectWorkdir();
-        // Applique le dossier à la SESSION ACTIVE tout de suite (sinon il ne
-        // s'appliquerait qu'à la prochaine « Nouvelle session »).
-        await postForm("/session/workspace", { workspace: j.path });
       } else if (j.error) {
         console.warn("pick-folder:", j.error);
         if (workdirChip) {
@@ -1427,7 +1434,13 @@ if (pickFolderBtn) {
         }
       }
     } catch (err) {
+      // Échec du POST : la puce N'A PAS changé (source de vérité = serveur) ;
+      // on la fait clignoter pour que l'échec soit VISIBLE, plus de console muette.
       console.warn("pick-folder:", err);
+      if (workdirChip) {
+        workdirChip.classList.add("err");
+        setTimeout(() => workdirChip.classList.remove("err"), 1500);
+      }
     }
   });
 }

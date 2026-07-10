@@ -202,6 +202,19 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   prefill ~65 s, le reste = réflexion/génération.
 - **GOTCHA** : loom.web ne régénère PAS `var/cache/llama-swap.yaml` au démarrage — après
   édition d'un `model.toml`, forcer `regenerate_swap_yaml()` (ou passer par la console).
+- **Cache KV local = ressource UNIQUE, protégée depuis le 2026-07-10** : reflect/titre/ping
+  écrasaient le cache de la conversation -> re-prefill INTÉGRAL à chaque message (des
+  minutes) + animation « le modèle travaille » longtemps après la réponse (reflect
+  tournait avant le `done`). Fixes : reflect DÉPORTÉ post-`done` (thread, verrou local,
+  timeout 600 s) ; **ré-amorçage du slot** après reflect/titre (`client.warm_context` :
+  re-prefill silencieux du même préfixe system+messages+outils — le moindre écart = zéro
+  réutilisation) ; **keep-warm v2** : ré-amorce la conversation active au lieu du « ping »
+  destructeur (repli ping si fil vide). Règle : la conversation doit être la DERNIÈRE
+  occupante du slot quand le message suivant arrive.
+- **Workspace par onglet** : `/session/workspace` cible désormais la session de l'onglet
+  (`session_id`, comme /chat et /cancel) — le « choisir » écrivait dans la session focus
+  globale (régression du multi-onglets `5016361`, 2026-07-05). Et la puce dossier ne se
+  met à jour qu'APRÈS confirmation serveur (elle pouvait mentir sur échec silencieux).
 
 ## Reste / pistes
 1. **Banc d'éval** : LIVRÉ le 2026-07-08, retry réponse vide et min/max par cas compris.
