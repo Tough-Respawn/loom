@@ -1498,8 +1498,16 @@ class LoomClient:
         max_loop_breaks: int = 2,
         max_empty_retries: int = 2,
         strong: bool = False,
+        notes_provider=None,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
+
+        `notes_provider` (optionnel) : callable sans argument renvoyant les REMARQUES
+        de l'utilisateur arrivées PENDANT le tour (« notes en vol », façon Claude
+        Code). Drainées avant CHAQUE appel modèle : chacune est injectée dans la
+        conversation (role user, préfixe explicite) et ré-émise en event ('note',
+        texte injecté) pour que l'appelant la persiste/affiche. Une note ne stoppe
+        jamais le tour — elle l'infléchit au prochain point d'arrêt.
 
         Yield les mêmes tuples que stream_chat — ('reasoning'|'content', str) —
         plus ('tool_call', {id,name,arguments}) et ('tool_result', {id,name,ok,
@@ -1623,6 +1631,21 @@ class LoomClient:
                             },
                         )
                         yield ("context_estimate", {"tokens": _ctx_est()})
+            # Notes en vol : les remarques utilisateur arrivées pendant le tour sont
+            # injectées MAINTENANT (juste avant l'appel modèle = le point d'arrêt),
+            # sans interrompre quoi que ce soit. L'appelant reçoit l'event 'note'
+            # pour persister/afficher exactement ce qui a été injecté.
+            if notes_provider is not None:
+                try:
+                    for _raw_note in notes_provider() or []:
+                        _wrapped = (
+                            "[User note received mid-turn — take it into account "
+                            f"and continue the task] {_raw_note}"
+                        )
+                        convo.append({"role": "user", "content": _wrapped})
+                        yield ("note", _wrapped)
+                except Exception as _e:  # noqa: BLE001 - notes best-effort
+                    _debug("NOTES_ERR", str(_e))
             kwargs = build_create_kwargs(
                 api_model,
                 convo,

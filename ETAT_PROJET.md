@@ -300,19 +300,17 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
    décocher) ; **création** (« + nouveau ») dans `var/skills_user/` (nouveau dossier
    config `chat.user_skills_dir`, hors package) — un skill user au même nom qu'un skill
    package le REMPLACE (l'utilisateur a la main). Endpoints `/skill/create` + `/skill/delete`.
-9. **STORY — Notes en vol (« btw » natif)** (actée user 2026-07-10) : taper un message
-   pendant une génération ne l'interrompt plus — il part dans une FILE par session que
-   `stream_chat_tools` consulte entre deux itérations d'outils et injecte comme message
-   utilisateur (« remarque reçue en cours de tour : … »), comme le fait Claude Code.
-   NATIF (nouveau comportement par défaut d'Entrée pendant une génération), pas de
-   commande /btw ; l'interruption-relance devient un geste explicite. Limite assumée :
-   la note ne prend effet qu'au prochain point d'arrêt (fin de l'itération en cours).
-10. **STORY — Stop vraiment propre** (actée user 2026-07-10) : aujourd'hui Stop coupe au
-   token près (partiel persisté ✓, outil en cours va au bout ✓) mais ne laisse AUCUNE
-   trace -> au tour suivant le modèle voit une réponse tronquée inexpliquée. À faire :
-   marqueur d'interruption PERSISTÉ dans l'historique (« [interrompu par l'utilisateur
-   à ce point] ») pour que le modèle le sache ; état UI « arrêt en cours… » si un outil
-   doit finir.
+9. ~~Notes en vol (« btw » natif)~~ : LIVRÉ le 2026-07-10 (à valider au prochain
+   restart). Entrée avec du texte pendant une génération = NOTE en file (/note, par
+   session), injectée par la boucle au prochain point d'arrêt (event 'note' -> persistée
+   telle que vue par le modèle + bulle à sa vraie position + timeline). Toast immédiat
+   « note transmise ». Jamais perdue : si le tour finit avant, elle part au tour suivant.
+   Interrompre = bouton Stop explicite. Limite : notes injectées seulement sur le chemin
+   AVEC outils (sans outils, la note part au tour suivant).
+10. ~~Stop vraiment propre~~ : LIVRÉ le 2026-07-10 (à valider au prochain restart) —
+   marqueur PERSISTÉ dans l'historique aux deux chemins d'interruption (bouton Stop /
+   flux remplacé) : le modèle sait au tour suivant que sa réponse est tronquée
+   volontairement. Reste (mineur) : état UI « arrêt en cours… » si un outil doit finir.
 11. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
    `model.toml` édité n'est pris en compte qu'après `regenerate_swap_yaml()` manuel
    ou une édition via la console config (gotcha mesuré le 2026-07-10).
