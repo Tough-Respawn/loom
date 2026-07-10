@@ -219,13 +219,16 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   (2) **dispatch_agent local** : le sous-agent a son propre system prompt → il écrase le
   slot EN PLEIN TOUR (constaté : itérations à 1 min 40 pour 1 Ko de sortie).
   → Story « cache souverain », le VRAI fix (2 volets) :
-  **Volet 1 — save/restore du slot KV** : `--slot-save-path` (supporté par le build b9442)
-  + `POST /upstream/<modèle>/slots/0?action=save|restore` (route llama-swap vérifiée OK).
-  Sauver le slot avant tout appel non-conversationnel (dispatch_agent dans agent.py,
-  reflect/titre en maintenance), restaurer après (KV ~1-3 Go depuis NVMe ≈ 1-2 s au lieu
-  de minutes de re-prefill). Bonus : save par SESSION -> bascule d'onglet quasi
-  instantanée. Pas de changement de prompt -> pas d'A/B requis, tests runtime seulement.
-  Gestion des fichiers KV (gros) : un par session + purge.
+  **Volet 1 — save/restore du slot KV : LIVRÉ le 2026-07-10.** `--slot-save-path` câblé
+  dans server_args/swap/serve (dossier `var/cache/slots/`, yaml régénéré au prochain
+  démarrage du serveur modèle) ; `client.save_slot/restore_slot` (route llama-swap
+  `/upstream/<modèle>/slots/0`, repli `/slots` direct) ; sauve/restaure autour du
+  SOUS-AGENT (agent.py, fichier `dispatch.kv`) et de la fin de tour (save `turnend.kv`
+  avant le titre, restore en maintenance après reflect ; repli = ré-amorçage re-prefill).
+  MESURÉ (serveur éphémère, KV q8_0) : save 42 ms, restore 22 ms, reprise de conversation
+  = 10-11 tokens préfillés au lieu de ~930. Reste à VALIDER dans loom.web réel (restart
+  complet requis : le yaml doit embarquer --slot-save-path). Tranche 2 possible : save
+  par SESSION -> bascule d'onglet quasi instantanée.
   **Volet 2 — préfixe stable** : sortir le VOLATIL (workspace, fiche loom.md, goal) de la
   tête du system prompt vers une injection en QUEUE de conversation (pattern Claude Code :
   system stable + reminders dans le fil) -> un changement de workspace n'invalide que la
@@ -275,10 +278,12 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
      calibré > défaut heuristique. Le `common_fit_params` de llama.cpp ne sait PAS
      choisir n_cpu_moe (il ne gère que ngl, et abandonne si ngl est forcé) — c'est
      bien à Loom de le faire.
-8. **STORY — Skills appris : bouton supprimer** (demande user 2026-07-10, périmètre
-   VOLONTAIREMENT minimal) : un bouton supprimer dans la liste (comme les sessions)
-   + un bouton supprimer dans la vue d'édition existante. Pas d'autre chantier UI.
-   En attendant : suppression à la main dans `var/skills_learned/`.
+8. **STORY — Gestion des skills dans l'UI** (demande user 2026-07-10, enrichie le même
+   jour) : bouton supprimer dans la liste (comme les sessions) + dans la vue d'édition
+   existante ; l'AJOUT et la suppression vivent dans le panneau skills (à côté du bouton
+   « Cette session »). Et DISTINGUER visuellement les 3 familles de skills :
+   `learned` (auto-appris), `loom` (défaut du package), `user` (ajoutés par
+   l'utilisateur) — nommage à trancher au moment du chantier.
 9. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
    `model.toml` édité n'est pris en compte qu'après `regenerate_swap_yaml()` manuel
    ou une édition via la console config (gotcha mesuré le 2026-07-10).

@@ -1228,6 +1228,45 @@ class LoomClient:
             _debug("WARMUP_ERR", str(e))
             pass
 
+    def _slot_action(self, model: str | None, action: str, name: str) -> bool:
+        """POST /slots/0?action=save|restore sur le serveur LOCAL (via la route
+        llama-swap /upstream/<modèle>/, repli /slots direct pour un llama-server
+        sans swap). Nécessite --slot-save-path côté serveur. Best-effort."""
+        import urllib.request
+
+        if self.is_remote(model):
+            return False  # distant : cache géré par le provider, pas de slot local
+        root = self.local_server_root()
+        payload = json.dumps({"filename": name}).encode()
+        paths = [f"/upstream/{model}/slots/0?action={action}"] if model else []
+        paths.append(f"/slots/0?action={action}")
+        for path in paths:
+            req = urllib.request.Request(
+                root + path,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    body = json.loads(resp.read().decode() or "{}")
+                _debug(f"SLOT_{action.upper()}", {"name": name, **body})
+                return True
+            except Exception as e:  # noqa: BLE001 - slot KV best-effort, jamais bloquant
+                _debug(f"SLOT_{action.upper()}_ERR", f"{path} : {e}")
+        return False
+
+    def save_slot(self, model: str | None, name: str) -> bool:
+        """Sauve le cache KV du slot local dans <slot-save-path>/<name> (~ms). À faire
+        PENDANT que le slot contient la conversation, AVANT tout appel qui l'écrase
+        (titre, reflect, sous-agent). Cf. restore_slot."""
+        return self._slot_action(model, "save", name)
+
+    def restore_slot(self, model: str | None, name: str) -> bool:
+        """Restaure un cache KV sauvé par save_slot (~ms au lieu de re-préfiller des
+        minutes) : le prochain tour de la conversation ne préfille que son delta."""
+        return self._slot_action(model, "restore", name)
+
     def warm_context(
         self,
         messages: list[dict],
