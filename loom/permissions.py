@@ -19,6 +19,10 @@ READ_TOOLS = frozenset(
         "read_file",
         "read_document",
         "read_image",
+        # Calcul pur (évaluateur AST strict / horloge) : aucune écriture, aucune
+        # exécution arbitraire possible -> autorisés d'office comme les lectures.
+        "calculate",
+        "current_date",
         "find_files",
         "search_text",
         "list_dir",
