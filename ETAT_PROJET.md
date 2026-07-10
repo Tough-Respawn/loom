@@ -2,7 +2,7 @@
 
 <!-- RÔLE : suivi interne (livré, état technique, reste/pistes, conventions). Pitch public : README.md. Carte technique : loom.md. Historique versions : CHANGELOG.md. -->
 
-> Dernière mise à jour : 2026-07-09
+> Dernière mise à jour : 2026-07-10
 
 Agent IA **local, multimodal et offline** : un modèle open-source rendu réellement utile par
 un **harness tool-use** — la boucle qui lui donne des outils et la logique de les enchaîner.
@@ -133,7 +133,10 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   une-passe (demande toute-langue → prompt de diffusion anglais lossless, ou instruction
   d'édition si photo jointe), servi puis déchargé avant la diffusion.
 - **Parc multimédia (2026-07-08)** : racine des modèles CONFIGURABLE (`[storage]
-  models_root`, ici `E:/loom-models`) avec l'arbo unique `local/{text,image,video}` +
+  models_root` — depuis 2026-07-09 chaîne OU **liste de racines**, première gagnante
+  si id en double ; ici `["C:/loom-models", "E:/loom-models"]` : NVMe pour les gros
+  modèles rechargés souvent — ornith q8 ~15 s au lieu de 50 depuis le T7 USB à
+  0,71 Go/s — T7 pour le reste) avec l'arbo unique `local/{text,image,video}` +
   `remote` + `_TEMPLATE` (replis legacy supprimés). ComfyUI garde ses poids à part
   (`E:/comfyui-models` via `extra_model_paths.yaml`). Modèles servis : image =
   krea2-turbo, **chroma1-hd** (8.9B décensuré par conception), **z-image-turbo** (6B
@@ -186,6 +189,20 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   l'UI** (mergée, validée E2E) couvre le besoin : quand on veut de l'image, on sélectionne
   de l'image. Patron à ne réévaluer que si le GPU tient LLM + diffusion ensemble.
 
+### Perf locale — leçons mesurées (2026-07-10, banc ornith q8)
+- **RÈGLE Q8 sur 6 Go : `n_cpu_moe = n_layers`** (aucune couche d'experts Q8 sur GPU).
+  L'héritage du réglage Q4 (`n_cpu_moe = 35`, 5 couches sur GPU) faisait déborder la VRAM
+  en mémoire partagée : prefill 26 t/s, décode 4 t/s. À 40/40 : **prefill 142 t/s (×5,5),
+  décode 14,4 t/s (×3,6)**, VRAM 3,3/6 Go. Références Q4 (moe=35) : 234-244 t/s / 20 t/s —
+  le Q8 coûte ×1,6 en prefill, structurel (experts 2× plus lourds à streamer depuis la RAM).
+- **Le chargement GGUF (`--no-mmap`) est CPU-bound, pas disque** : Q8 34 Go = 58 s depuis
+  NVMe, 51 s depuis cache RAM ; Q4 20 Go = 46 s depuis T7 USB. Déménager un GGUF sur NVMe
+  ne gagne que ~5-10 s. E2E réel (loom.web + Playwright, serveur froid, réflexion active,
+  prompt 9,3k tokens) : première réponse en 2 min 43 — démarrage+chargement ~55 s,
+  prefill ~65 s, le reste = réflexion/génération.
+- **GOTCHA** : loom.web ne régénère PAS `var/cache/llama-swap.yaml` au démarrage — après
+  édition d'un `model.toml`, forcer `regenerate_swap_yaml()` (ou passer par la console).
+
 ## Reste / pistes
 1. **Banc d'éval** : LIVRÉ le 2026-07-08, retry réponse vide et min/max par cas compris.
    Reste : laisser les baselines s'accumuler au fil des commits ; surveiller la queue
@@ -207,7 +224,13 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 6. ~~Outil `generate_image`~~ : REJETÉ le 2026-07-08 (voir « Déjà essayé, rejeté ») —
    la sélection du modèle image dans l'UI couvre le besoin. Le patch complet (ToolSpec +
    câblage app) existe dans l'historique de session si un futur GPU le rejustifie.
-7. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
+7. **Skills appris : édition/suppression depuis l'UI** (demande user 2026-07-10) — comme
+   pour les sessions ; aujourd'hui il faut supprimer à la main dans `var/skills_learned/`
+   (plusieurs skills parasites y traînent : cuisine, esters, descriptions vides).
+8. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
+   `model.toml` édité n'est pris en compte qu'après `regenerate_swap_yaml()` manuel
+   ou une édition via la console config (gotcha mesuré le 2026-07-10).
+9. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
    dossier `loom/models/<id>/` sans redémarrer. Repérage 2026-07-08 : la mécanique existe
    déjà à moitié — `loom.web._regen_swap_yaml()` régénère le yaml et llama-swap
    (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
