@@ -105,7 +105,7 @@ def build_registry(
     if "calculate" in enabled:
         from loom.tools.calc import make_calculate
 
-        specs.append(make_calculate())
+        specs.append(make_calculate(workspace_dir))
     if "format_code" in enabled:
         from loom.tools.format import make_format_code
 
