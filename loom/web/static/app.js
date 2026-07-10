@@ -1358,7 +1358,9 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && _multiSel.size) clearMultiSel();
 });
 
-// Popover de confirmation de suppression, ancré à DROITE de la ligne de session.
+// Popover de confirmation de suppression : le MÊME geste pour les sessions et les
+// skills (harmonie UI). Ancré à droite de la ligne (align="right") ou déplié vers la
+// gauche quand l'ancre touche le bord droit (align="left", ex. drawer de skill).
 function _outsideDelClose(e) {
   if (!e.target.closest("#sess-del-pop")) closeDeleteConfirm();
 }
@@ -1366,20 +1368,18 @@ function closeDeleteConfirm() {
   document.getElementById("sess-del-pop")?.remove();
   document.removeEventListener("click", _outsideDelClose, true);
 }
-function openDeleteConfirm(sid, row) {
+function openConfirmPop(row, labelText, onYes, align = "right") {
   closeDeleteConfirm();
   if (!row) return;
   const r = row.getBoundingClientRect();
   const pop = document.createElement("div");
   pop.id = "sess-del-pop";
   pop.className = "sess-del-pop";
-  // Aligné sur la ligne : même hauteur, collé juste à sa droite (prolongement visuel).
   pop.style.top = r.top + "px";
-  pop.style.height = r.height + "px";
-  pop.style.left = r.right + 3 + "px";
+  pop.style.height = Math.max(r.height, 26) + "px";
   const label = document.createElement("span");
   label.className = "sdp-label";
-  label.textContent = "Supprimer cette session ?";
+  label.textContent = labelText;
   const yes = document.createElement("button");
   yes.type = "button";
   yes.className = "sdp-yes";
@@ -1390,9 +1390,7 @@ function openDeleteConfirm(sid, row) {
   no.textContent = "Annuler";
   yes.addEventListener("click", async (ev) => {
     ev.stopPropagation();
-    await postForm("/session/delete", { id: sid });
-    if (state.tabs[sid]) closeTab(sid); // ferme l'onglet si ouvert
-    row.remove();
+    await onYes();
     closeDeleteConfirm();
   });
   no.addEventListener("click", (ev) => {
@@ -1401,8 +1399,22 @@ function openDeleteConfirm(sid, row) {
   });
   pop.append(label, yes, no);
   document.body.appendChild(pop);
+  if (align === "left") {
+    // Déplié vers la gauche de l'ancre (le drawer colle au bord droit de l'écran).
+    pop.style.left = Math.max(6, r.left - pop.offsetWidth - 6) + "px";
+  } else {
+    // Aligné sur la ligne : collé juste à sa droite (prolongement visuel).
+    pop.style.left = r.right + 3 + "px";
+  }
   // Ferme au clic ailleurs (en phase capture pour ne pas rater les clics dans la sidebar).
   setTimeout(() => document.addEventListener("click", _outsideDelClose, true), 0);
+}
+function openDeleteConfirm(sid, row) {
+  openConfirmPop(row, "Supprimer cette session ?", async () => {
+    await postForm("/session/delete", { id: sid });
+    if (state.tabs[sid]) closeTab(sid); // ferme l'onglet si ouvert
+    row.remove();
+  });
 }
 
 // --- sélecteur de dossier natif ---
@@ -1842,6 +1854,7 @@ function closeSkillDrawer() {
 }
 async function openSkillEditor(name) {
   try {
+    setSkillDrawerMode("edit");
     const r = await fetch("/skill?name=" + encodeURIComponent(name));
     const d = await r.json();
     if (!r.ok || d.error) {
@@ -1901,15 +1914,9 @@ document.addEventListener("click", (e) => {
   const b = e.target.closest && e.target.closest(".skill-name");
   if (b) openSkillEditor(b.dataset.name);
 });
-// Suppression d'un skill (appris / ajouté user) : même geste que les sessions.
+// Suppression d'un skill (appris / ajouté user) : MÊME popover que les sessions.
 // Délégation sur document : le panneau skills est REMPLACÉ à chaque toggle.
-async function deleteSkill(name, fromDrawer) {
-  if (
-    !confirm(
-      "Supprimer le skill « " + name + " » ? Le fichier sera retiré du disque.",
-    )
-  )
-    return;
+async function doDeleteSkill(name, fromDrawer) {
   const fd = new FormData();
   fd.append("name", name);
   try {
@@ -1927,40 +1934,109 @@ async function deleteSkill(name, fromDrawer) {
     if (fromDrawer && skStatus) skStatus.textContent = "erreur : " + err;
   }
 }
-// Création d'un skill UTILISATEUR (var/skills_user, hors package) puis ouverture
-// de l'éditeur dessus. Deux prompts natifs suffisent pour un squelette : le corps
-// s'écrit dans le drawer.
-async function createSkill() {
-  const name = prompt("Nom du nouveau skill (lettres/chiffres/tirets) :");
-  if (!name) return;
-  const description =
-    prompt("Description (une ligne : quand ce skill se déclenche) :") || "";
+document.addEventListener("click", (e) => {
+  const del = e.target.closest && e.target.closest(".skill-del");
+  if (!del) return;
+  openConfirmPop(del.closest(".skill-row") || del, "Supprimer ce skill ?", () =>
+    doDeleteSkill(del.dataset.name, false),
+  );
+});
+document.getElementById("skdr-delete")?.addEventListener("click", (e) => {
+  if (!skCurrent) return;
+  openConfirmPop(
+    e.currentTarget,
+    "Supprimer ce skill ?",
+    () => doDeleteSkill(skCurrent, true),
+    "left",
+  );
+});
+
+// --- création d'un skill (mode « create » du drawer) ---
+// « + new » (entête Skills, comme les sessions) ouvre le drawer VIDE : nom éditable +
+// description ; « Générer » fait rédiger le SKILL.md complet par le modèle ; « Créer »
+// écrit dans var/skills_user et bascule le drawer en mode édition normal.
+const skNameInput = document.getElementById("skdr-name-input");
+const skGenRow = document.getElementById("skdr-genrow");
+const skGenDesc = document.getElementById("skdr-gen-desc");
+let skMode = "edit";
+
+function setSkillDrawerMode(mode) {
+  skMode = mode;
+  const create = mode === "create";
+  if (skName) skName.hidden = create;
+  if (skNameInput) skNameInput.hidden = !create;
+  if (skGenRow) skGenRow.hidden = !create;
+  const el = (id) => document.getElementById(id);
+  if (el("skdr-create")) el("skdr-create").hidden = !create;
+  if (el("skdr-save-session")) el("skdr-save-session").hidden = create;
+  if (el("skdr-save-global")) el("skdr-save-global").hidden = create;
+  if (el("skdr-delete") && create) el("skdr-delete").hidden = true;
+}
+function openSkillCreator() {
+  skCurrent = null;
+  setSkillDrawerMode("create");
+  if (skName) skName.textContent = "";
+  if (skDesc) skDesc.textContent = "[user] nouveau skill — décris-le puis Générer, ou écris le SKILL.md";
+  if (skNameInput) skNameInput.value = "";
+  if (skGenDesc) skGenDesc.value = "";
+  if (skBody) skBody.value = "";
+  if (skStatus) skStatus.textContent = "";
+  openSkillDrawer();
+  if (skNameInput) skNameInput.focus();
+}
+document.getElementById("skill-new")?.addEventListener("click", (e) => {
+  // Dans le <summary> repliable : ne pas déclencher le pli/dépli de la section.
+  e.preventDefault();
+  e.stopPropagation();
+  openSkillCreator();
+});
+document.getElementById("skdr-generate")?.addEventListener("click", async () => {
+  const description = skGenDesc ? skGenDesc.value.trim() : "";
+  if (!description) {
+    if (skStatus) skStatus.textContent = "décris d'abord le skill";
+    return;
+  }
+  const fd = new FormData();
+  fd.append("name", skNameInput ? skNameInput.value.trim() : "");
+  fd.append("description", description);
+  if (skStatus) skStatus.textContent = "génération par le modèle…";
+  try {
+    const r = await fetch("/skill/generate", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      if (skStatus) skStatus.textContent = d.error || "génération impossible";
+      return;
+    }
+    if (skBody) skBody.value = d.source || "";
+    if (skStatus) skStatus.textContent = "brouillon généré — relis puis Créer";
+  } catch (err) {
+    if (skStatus) skStatus.textContent = "erreur : " + err;
+  }
+});
+document.getElementById("skdr-create")?.addEventListener("click", async () => {
+  const name = skNameInput ? skNameInput.value.trim() : "";
+  if (!name) {
+    if (skStatus) skStatus.textContent = "donne un nom au skill";
+    return;
+  }
   const fd = new FormData();
   fd.append("name", name);
-  fd.append("description", description);
+  fd.append("description", skGenDesc ? skGenDesc.value.trim() : "");
+  fd.append("body", skBody ? skBody.value : "");
+  if (skStatus) skStatus.textContent = "création…";
   try {
     const r = await fetch("/skill/create", { method: "POST", body: fd });
     const d = await r.json();
     if (!r.ok || d.error) {
-      alert(d.error || "création impossible");
+      if (skStatus) skStatus.textContent = d.error || "création impossible";
       return;
     }
     await postSkillsToggle();
+    setSkillDrawerMode("edit");
     openSkillEditor(d.name);
   } catch (err) {
-    console.warn("skill/create:", err);
+    if (skStatus) skStatus.textContent = "erreur : " + err;
   }
-}
-document.addEventListener("click", (e) => {
-  const del = e.target.closest && e.target.closest(".skill-del");
-  if (del) {
-    deleteSkill(del.dataset.name, false);
-    return;
-  }
-  if (e.target.closest && e.target.closest("#skill-new")) createSkill();
-});
-document.getElementById("skdr-delete")?.addEventListener("click", () => {
-  if (skCurrent) deleteSkill(skCurrent, true);
 });
 document
   .getElementById("skdr-close")
