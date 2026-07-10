@@ -2223,18 +2223,81 @@ def create_app(
         if any(s.name == slug for s in _all_skills()):
             return {"error": f"un skill « {slug} » existe déjà"}, 409
         desc = (request.form.get("description") or "").strip()
+        body = (request.form.get("body") or "").strip()
+        # Corps fourni par le drawer (écrit à la main ou généré par le modèle) : on le
+        # prend tel quel s'il porte déjà son frontmatter, sinon on l'enveloppe. Le nom
+        # du frontmatter est FORCÉ au slug (identité = dossier, cf. effective_skills).
+        if body.startswith("---"):
+            content = body if body.endswith("\n") else body + "\n"
+        else:
+            content = (
+                f"---\nname: {slug}\ndescription: {desc}\n---\n\n"
+                + (
+                    body
+                    or "Décris ici la méthode : quand ce skill s'applique, les "
+                    "étapes à suivre, les pièges à éviter."
+                )
+                + "\n"
+            )
         target = Path(user_skills_dir) / slug
         try:
             target.mkdir(parents=True, exist_ok=False)
-            (target / "SKILL.md").write_text(
-                f"---\nname: {slug}\ndescription: {desc}\n---\n\n"
-                "Décris ici la méthode : quand ce skill s'applique, les étapes à "
-                "suivre, les pièges à éviter.\n",
-                encoding="utf-8",
-            )
+            (target / "SKILL.md").write_text(content, encoding="utf-8")
         except OSError as exc:
             return {"error": f"création impossible : {exc}"}, 400
         return {"ok": True, "name": slug}
+
+    @app.post("/skill/generate")
+    def skill_generate():
+        # « Générer » du drawer de création : le modèle de la session rédige le
+        # SKILL.md complet depuis la description. Modèle LOCAL : verrou non bloquant
+        # (une génération en cours a priorité) + save/restore du slot KV pour ne PAS
+        # sacrifier le cache de la conversation (cache souverain, cf. 2026-07-10).
+        conv, _ = _ctx()
+        desc = (request.form.get("description") or "").strip()
+        if not desc:
+            return {"error": "décris d'abord le skill"}, 400
+        name = (request.form.get("name") or "nouveau-skill").strip()
+        model = conv.model
+        is_local = bool(model) and model not in remote_model_ids
+        if is_local and not _local_gen_lock.acquire(blocking=False):
+            return {
+                "error": "modèle local occupé — réessaie après la génération en cours"
+            }, 409
+        try:
+            saved = client.save_slot(model, "uigen.kv") if is_local else False
+            prompt = (
+                "Write a Loom SKILL.md file for the skill idea below. Output ONLY the "
+                "file content, nothing else: a YAML frontmatter (---\\nname: "
+                f"{name}\\ndescription: <one factual trigger line>\\n---) followed by "
+                "a concise, actionable markdown body (when it applies, the steps, the "
+                "pitfalls). Write the body in the SAME language as the idea.\n\n"
+                f"Skill idea: {desc}"
+            )
+            chunks: list[str] = []
+            for kind, chunk in client.stream_chat(
+                [{"role": "user", "content": prompt}],
+                "",
+                900,
+                model=model or None,
+                thinking=False,
+            ):
+                if kind == "content":
+                    chunks.append(chunk)
+            if saved:
+                client.restore_slot(model, "uigen.kv")
+            text = "".join(chunks).strip()
+            # Dé-clôture un éventuel bloc ```...``` autour du fichier.
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1]
+                if text.rstrip().endswith("```"):
+                    text = text.rstrip()[:-3].rstrip() + "\n"
+            if not text.strip():
+                return {"error": "le modèle n'a rien produit — réessaie"}, 502
+            return {"ok": True, "source": text}
+        finally:
+            if is_local:
+                _local_gen_lock.release()
 
     @app.post("/skill/delete")
     def skill_delete():

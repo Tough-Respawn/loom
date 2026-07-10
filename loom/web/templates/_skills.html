@@ -1,14 +1,8 @@
 <div id="skills-panel">
-  <div class="skill skills-head">
-    {% if skills %}
-    <label class="skills-all" title="Activer / désactiver tous les skills">
+  {% if skills %}
+    <label class="skill skills-all" title="Activer / désactiver tous les skills">
       <input type="checkbox" id="skills-all"> <span class="muted">tous</span>
     </label>
-    {% endif %}
-    <button type="button" id="skill-new" class="skill-new"
-            title="Créer un skill (dossier utilisateur, hors package)">+ nouveau</button>
-  </div>
-  {% if skills %}
     {% for s in skills %}
       <div class="skill skill-row{% if s.name in overridden_skills %} has-override{% endif %}"
            title="{{ s.description }}">
@@ -26,6 +20,6 @@
     {% endfor %}
   {% else %}
     <span class="muted">Aucun skill. Installe un plugin (install_plugin), crée-en un
-      (+ nouveau) ou ajoute loom/skills/&lt;nom&gt;/SKILL.md</span>
+      (+ new) ou ajoute loom/skills/&lt;nom&gt;/SKILL.md</span>
   {% endif %}
 </div>
