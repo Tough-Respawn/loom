@@ -1959,6 +1959,20 @@ const skNameInput = document.getElementById("skdr-name-input");
 const skGenRow = document.getElementById("skdr-genrow");
 const skGenDesc = document.getElementById("skdr-gen-desc");
 let skMode = "edit";
+// BROUILLON de création persistant : rouvrir + new (ou fermer/rouvrir le drawer)
+// REPREND où on en était — saisie conservée, génération en fond retrouvée — au lieu
+// de repartir d'une page blanche (vécu : perte de la demande + état illisible).
+const skDraft = { name: "", desc: "", body: "" };
+let skGenBusy = false;
+skNameInput?.addEventListener("input", () => {
+  if (skMode === "create") skDraft.name = skNameInput.value;
+});
+skGenDesc?.addEventListener("input", () => {
+  skDraft.desc = skGenDesc.value;
+});
+document.getElementById("skdr-body")?.addEventListener("input", () => {
+  if (skMode === "create" && skBody) skDraft.body = skBody.value;
+});
 
 function setSkillDrawerMode(mode) {
   skMode = mode;
@@ -1976,13 +1990,20 @@ function openSkillCreator() {
   skCurrent = null;
   setSkillDrawerMode("create");
   if (skName) skName.textContent = "";
-  if (skDesc) skDesc.textContent = "[user] nouveau skill — décris-le puis Générer, ou écris le SKILL.md";
-  if (skNameInput) skNameInput.value = "";
-  if (skGenDesc) skGenDesc.value = "";
-  if (skBody) skBody.value = "";
+  if (skDesc)
+    skDesc.textContent =
+      "[user] nouveau skill — décris-le puis Générer, ou écris le SKILL.md";
+  // Reprise du brouillon (jamais de page blanche imposée) + état de génération.
+  if (skNameInput) skNameInput.value = skDraft.name;
+  if (skGenDesc) skGenDesc.value = skDraft.desc;
+  if (skBody) skBody.value = skDraft.body;
   if (skStatus) skStatus.textContent = "";
+  const genStatus = document.getElementById("skdr-gen-status");
+  if (genStatus) genStatus.hidden = !skGenBusy;
+  const gbtn = document.getElementById("skdr-generate");
+  if (gbtn) gbtn.disabled = skGenBusy;
   openSkillDrawer();
-  if (skNameInput) skNameInput.focus();
+  if (skNameInput && !skGenBusy) skNameInput.focus();
 }
 document.getElementById("skill-new")?.addEventListener("click", (e) => {
   // Dans le <summary> repliable : ne pas déclencher le pli/dépli de la section.
@@ -2016,21 +2037,41 @@ document.getElementById("skdr-generate")?.addEventListener("click", async (e) =>
       "le modèle rédige le SKILL.md… (peut prendre ~1 min si le serveur vient de démarrer)";
   }
   if (skStatus) skStatus.textContent = "";
+  skGenBusy = true;
+  // Le drawer peut être FERMÉ pendant la rédaction (elle continue en fond) : à la
+  // fin on range le brouillon et on prévient par un toast — jamais de résultat perdu
+  // ni d'attente muette.
+  const drawerVisible = () =>
+    skDrawer && !skDrawer.hidden && skMode === "create";
   try {
     const r = await fetch("/skill/generate", { method: "POST", body: fd });
     const d = await r.json();
     if (!r.ok || d.error) {
-      if (genStatus) genStatus.textContent = d.error || "génération impossible";
+      const msg = d.error || "génération impossible";
+      if (drawerVisible() && genStatus) genStatus.textContent = msg;
+      else showToast("skill : " + msg);
       return;
     }
-    if (skBody) skBody.value = d.source || "";
-    if (genStatus) genStatus.hidden = true;
-    if (skStatus) skStatus.textContent = "brouillon généré — relis, ajuste, puis Créer";
+    skDraft.body = d.source || "";
+    if (drawerVisible()) {
+      if (skBody) skBody.value = skDraft.body;
+      if (genStatus) genStatus.hidden = true;
+      if (skStatus)
+        skStatus.textContent = "brouillon généré — relis, ajuste, puis Créer";
+    } else {
+      showToast("skill : brouillon prêt", [
+        { label: "ouvrir", onClick: () => openSkillCreator() },
+      ]);
+    }
   } catch (err) {
-    if (genStatus) genStatus.textContent = "erreur : " + err;
+    if (drawerVisible() && genStatus) genStatus.textContent = "erreur : " + err;
+    else showToast("skill : erreur de génération — " + err);
   } finally {
+    skGenBusy = false;
     btn.disabled = false;
     btn.textContent = oldLabel;
+    const gs = document.getElementById("skdr-gen-status");
+    if (gs && !drawerVisible()) gs.hidden = true;
   }
 });
 document.getElementById("skdr-create")?.addEventListener("click", async () => {
@@ -2051,6 +2092,8 @@ document.getElementById("skdr-create")?.addEventListener("click", async () => {
       if (skStatus) skStatus.textContent = d.error || "création impossible";
       return;
     }
+    // Créé : le brouillon a rempli son office, on repart propre au prochain + new.
+    skDraft.name = skDraft.desc = skDraft.body = "";
     await postSkillsToggle();
     setSkillDrawerMode("edit");
     openSkillEditor(d.name);
