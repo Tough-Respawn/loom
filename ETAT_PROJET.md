@@ -262,7 +262,12 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 9. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
    `model.toml` édité n'est pris en compte qu'après `regenerate_swap_yaml()` manuel
    ou une édition via la console config (gotcha mesuré le 2026-07-10).
-10. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
+10. **Observabilité des sous-agents** (note user 2026-07-10) : les logs de session
+    (debug.log/timeline) ne montrent RIEN de l'activité d'un `dispatch_agent` — le
+    sous-agent est une boîte noire (on voit l'appel et le résultat final, pas ses
+    tours/outils intermédiaires). Tracer sa conversation (fichier dédié par dispatch
+    ou événements préfixés dans le debug.log de la session parente).
+11. **Auto-découverte des modèles locaux** (gestionnaire de modèles v2, pas urgent) : ajouter un
    dossier `loom/models/<id>/` sans redémarrer. Repérage 2026-07-08 : la mécanique existe
    déjà à moitié — `loom.web._regen_swap_yaml()` régénère le yaml et llama-swap
    (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
