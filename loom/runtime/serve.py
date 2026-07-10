@@ -36,6 +36,16 @@ SWAP_YAML = REPO_ROOT / "var" / "cache" / "llama-swap.yaml"
 # Log PERSISTANT du serveur modèle (le terminal est éphémère / illisible à distance).
 # La web app en recopie une vue dans chaque session active. Repart à neuf à chaque lancement.
 SERVE_LOG = REPO_ROOT / "var" / "logs" / "serve.log"
+# Dossier des sauvegardes de cache KV (--slot-save-path) : fichiers .kv transitoires,
+# noms réutilisés (turnend/dispatch) -> taille bornée. Gitignored avec le reste de var/.
+SLOTS_DIR = REPO_ROOT / "var" / "cache" / "slots"
+
+
+def slots_dir() -> str:
+    """Chemin (créé) du dossier des sauvegardes de slot KV, en séparateurs POSIX
+    (le yaml des cmd llama-server est normalisé ainsi)."""
+    SLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    return str(SLOTS_DIR).replace("\\", "/")
 
 
 def _log(msg: str) -> None:
@@ -114,6 +124,7 @@ def build_launch(
         n_parallel=cfg.n_parallel,
         cpu_moe=cfg.model.cpu_moe,
         n_cpu_moe=cfg.model.n_cpu_moe,
+        slot_save_dir=slots_dir(),
     )
 
 
@@ -200,6 +211,7 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         models_dir=str(cfg.models_dir),
         context=cfg.context,
         override_n_gpu_layers=cfg.override_n_gpu_layers,
+        slot_save_dir=slots_dir(),
     )
     write_swap_yaml(swap, SWAP_YAML)
     args = [
@@ -240,6 +252,7 @@ def regenerate_swap_yaml(
             models_dir=str(cfg.models_dir),
             context=cfg.context,
             override_n_gpu_layers=cfg.override_n_gpu_layers,
+            slot_save_dir=slots_dir(),
         )
         write_swap_yaml(swap, out_path)
         return Path(out_path)

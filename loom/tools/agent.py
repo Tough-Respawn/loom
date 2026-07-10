@@ -66,16 +66,30 @@ def make_dispatch_agent(
         if not task:
             raise ToolError("argument 'task' manquant (décris la tâche à déléguer)")
         sub_registry = build_sub_registry()
-        return client.stream_chat_tools(
-            [{"role": "user", "content": task}],
-            system_prompt,
-            max_tokens,
-            model=model,
-            registry=sub_registry,
-            thinking=False,
-            max_iters=max_iters,
-            permission=permission,
-        )
+        # Cache souverain : le sous-agent a SON system prompt -> sa sous-boucle va
+        # ÉCRASER le slot KV local du fil parent. On sauve le cache parent avant,
+        # on le restaure après (~ms chacun) : l'itération suivante du parent ne
+        # re-préfille que son delta au lieu de TOUT le contexte (minutes, constaté
+        # le 2026-07-10). No-op en distant (cache géré par le provider).
+        saved = client.save_slot(model, "dispatch.kv")
+
+        def _stream():
+            try:
+                yield from client.stream_chat_tools(
+                    [{"role": "user", "content": task}],
+                    system_prompt,
+                    max_tokens,
+                    model=model,
+                    registry=sub_registry,
+                    thinking=False,
+                    max_iters=max_iters,
+                    permission=permission,
+                )
+            finally:
+                if saved:
+                    client.restore_slot(model, "dispatch.kv")
+
+        return _stream()
 
     def run(args: dict) -> str:
         # Repli non-streamant : on draine run_stream et on garde la synthèse (content).

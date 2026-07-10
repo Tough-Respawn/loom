@@ -16,6 +16,7 @@ def build_server_args(
     n_parallel: int = 1,
     cpu_moe: bool = False,
     n_cpu_moe: int | None = None,
+    slot_save_dir: str | None = None,
 ) -> list[str]:
     """Liste d'arguments pour lancer llama-server en API OpenAI-compatible local.
 
@@ -83,4 +84,12 @@ def build_server_args(
         ]
     if mmproj_path:
         args += ["--mmproj", str(mmproj_path), "--no-mmproj-offload"]
+    # Sauvegarde/restauration du cache KV du slot (API POST /slots/0?action=save|restore,
+    # fichiers sous ce dossier). Pilier du « cache souverain » : le slot est UNIQUE, tout
+    # appel non-conversationnel (sous-agent, reflect, titre) écrase le cache du fil ->
+    # on le sauve avant, on le restaure après (~ms au lieu de minutes de re-prefill ;
+    # mesuré 2026-07-10 : save 42 ms / restore 22 ms / reprise 11 tokens au lieu de 925,
+    # KV q8_0 supporté).
+    if slot_save_dir:
+        args += ["--slot-save-path", str(slot_save_dir)]
     return args
