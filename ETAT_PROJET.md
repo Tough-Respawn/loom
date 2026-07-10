@@ -131,6 +131,10 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   force-fit exempte la tâche courante (clip ET pop), clip tête+queue, plancher de budget
   « système + jeu de travail », sweep des tool results orphelins, note de recentrage
   anti-imitation après force-fit. Chaque règle est née d'un échec observé en éval.
+  Note REFORMULÉE le 2026-07-10 (retour user) : plus d'injonction « reprends la dernière
+  demande et exécute-la » — injectée en plein tour, elle pouvait faire repartir de zéro
+  un modèle sur les rails ; on garde l'anti-imitation seule, informative. ⚠ Re-passer
+  le cas context_squeeze en éval à la prochaine fenêtre machine libre.
 - **Machine de dev** : 6 Go VRAM (RTX 2060) + **64 Go RAM** (upgrade installé et détecté le
   2026-07-08) : marge d'offload MoE élargie (quants Q5/Q6 du 35B envisageables) et
   cohabitation RAM confortable LLM + moteur image.
