@@ -183,7 +183,17 @@ def _search_tavily(query: str, cfg: WebSearchConfig) -> list[dict]:
 
 def _search_ddgs(query: str, cfg: WebSearchConfig) -> list[dict]:
     """Interroge DuckDuckGo via la lib `ddgs` (fallback best-effort)."""
-    from ddgs import DDGS
+    try:
+        from ddgs import DDGS
+    except ImportError as exc:
+        # `ddgs` est un EXTRA (pyproject [web-search]) : un venv synchronisé sans lui
+        # cassait web_search avec un « No module named 'ddgs' » cryptique en pleine
+        # session (vécu 2026-07-10). Message ACTIONNABLE pour l'humain ET le modèle.
+        raise RuntimeError(
+            "web_search indisponible : la lib `ddgs` n'est pas installée. "
+            "Installe l'extra (`uv sync --extra web-search`) ou configure un backend "
+            "searxng_url / tavily_api_key dans [web_search]."
+        ) from exc
 
     out = []
     with DDGS() as ddgs:
