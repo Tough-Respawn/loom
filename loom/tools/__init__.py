@@ -9,7 +9,7 @@ sous-modules : base, read, fs, shell, web.
 from __future__ import annotations
 
 from loom.tools.base import AVAILABLE_TOOLS, ToolError, ToolRegistry, ToolSpec
-from loom.tools.read import make_read_document, make_read_file, make_read_image
+from loom.tools.read import make_read_file, make_read_image
 
 __all__ = [
     "AVAILABLE_TOOLS",
@@ -17,7 +17,6 @@ __all__ = [
     "ToolRegistry",
     "ToolSpec",
     "build_registry",
-    "make_read_document",
     "make_read_file",
     "make_read_image",
 ]
@@ -80,10 +79,11 @@ def build_registry(
         specs.append(make_search_text(workspace_dir))
     if "list_dir" in enabled:
         specs.append(make_list_dir(workspace_dir))
-    if "read_file" in enabled:
+    # "read_document" accepté comme alias legacy : read_file extrait aussi PDF/xlsx/docx
+    # depuis la fusion — une config/session qui n'avait coché que read_document garde la
+    # lecture au lieu de la perdre en silence.
+    if "read_file" in enabled or "read_document" in enabled:
         specs.append(make_read_file(workspace_dir, max_bytes))
-    if "read_document" in enabled:
-        specs.append(make_read_document(workspace_dir))
     if "read_image" in enabled:
         specs.append(
             make_read_image(

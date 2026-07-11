@@ -141,7 +141,6 @@ AVAILABLE_TOOLS = [
     {"name": "search_text", "label": "search_text", "danger": False},
     {"name": "list_dir", "label": "list_dir", "danger": False},
     {"name": "read_file", "label": "read_file", "danger": False},
-    {"name": "read_document", "label": "read_document", "danger": False},
     {"name": "read_image", "label": "read_image", "danger": False},
     {"name": "calculate", "label": "calculate", "danger": False},
     {"name": "current_date", "label": "current_date", "danger": False},

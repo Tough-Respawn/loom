@@ -19,7 +19,7 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
 - 💬 **Chat web** local (Flask + Preact/htm, zéro build) avec **streaming SSE** et markdown.
 - 🧰 **~23 outils** exposés au modèle, regroupés par usage :
   - **Localiser** : `find_files` (glob), `search_text` (grep), `list_dir`.
-  - **Lire** : `read_file` (texte), `read_document` (PDF / Excel / Word → texte),
+  - **Lire** : `read_file` (texte, et PDF / Excel / Word → texte extrait automatiquement),
     `read_image` (voir une image du disque : capture, schéma).
   - **Planifier / déléguer** : `manage_todos` (bloc-notes de plan), `dispatch_agent`
     (sous-agent à contexte isolé qui fait un gros chantier et ne renvoie qu'une synthèse).

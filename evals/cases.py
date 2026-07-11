@@ -283,7 +283,7 @@ def _check_windows_shell(traj, ws: Path) -> dict:
 
 
 def _check_path_given(traj, ws: Path) -> dict:
-    read_calls = calls_to(traj, "read_file") + calls_to(traj, "read_document")
+    read_calls = calls_to(traj, "read_file")
     read_target = any("notes.md" in str(a.get("path", "")) for a in read_calls)
     no_search = not (
         used(traj, "find_files") or used(traj, "search_text") or used(traj, "list_dir")
