@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 READ_TOOLS = frozenset(
     {
         "read_file",
-        "read_document",
         "read_image",
         # Calcul pur (évaluateur AST strict / horloge) : aucune écriture, aucune
         # exécution arbitraire possible -> autorisés d'office comme les lectures.

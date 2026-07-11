@@ -283,7 +283,6 @@ def _init_message(target_display: str) -> str:
 
 _TRACE_VERB = {
     "read_file": "lu",
-    "read_document": "lu",
     "read_image": "vu",
     "write_file": "créé",
     "append_file": "complété",

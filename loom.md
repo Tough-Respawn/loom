@@ -37,7 +37,7 @@ from-claude-to-local-haranessed-llm/
 │   │   ├── inline_image.py    #   vision (screenshot collé)
 │   │   └── reflect.py         #   capitalisation post-tour (mémoire)
 │   ├── tools/                 # ~23 outils appelés par le modèle
-│   │   ├── search.py fs.py read.py      # localiser/lire (find_files, search_text, list_dir, read_file, read_document, read_image)
+│   │   ├── search.py fs.py read.py      # localiser/lire (find_files, search_text, list_dir, read_file [texte+PDF/xlsx/docx], read_image)
 │   │   ├── shell.py format.py           # exécuter (run_shell), formater (ruff/prettier)
 │   │   ├── web.py                       # web_search, fetch_url (anti-SSRF)
 │   │   ├── browser.py                   # check_page, check_interactive (Playwright)

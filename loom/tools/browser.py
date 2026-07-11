@@ -139,11 +139,11 @@ _INSTALL_HINT = (
 # check_page REND une page dans un navigateur (execute son JS) ; ce n'est PAS un lecteur de
 # fichiers. On le borne aux formats reellement web-rendables : sinon `check_page` sert de
 # contournement de lecture (file://.../id_rsa rendu -> contenu fuite dans le « texte visible »).
-# La vraie lecture passe par read_file/read_document, pas par le navigateur.
+# La vraie lecture passe par read_file, pas par le navigateur.
 _WEB_EXT = frozenset({".html", ".htm", ".xhtml", ".svg"})
 _NOT_WEB_MSG = (
     "check_page ne rend que des pages web (.html/.htm/.xhtml/.svg). Pour lire un autre "
-    "fichier, utilise read_file (texte) ou read_document (pdf/xlsx/docx)."
+    "fichier, utilise read_file (texte, pdf/xlsx/docx inclus)."
 )
 
 
