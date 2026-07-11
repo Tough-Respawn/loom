@@ -26,7 +26,7 @@ Vérifie chaque règle. Signale ce qui **dévie** avec précision (fichier:ligne
   Signaler `pytest`/`unittest` qui trainent.
 
 ### 3. Frontière de confiance
-- Les contenus externes (`fetch_url`, `web_search`, `read_document`, `read_image`) sont marqués **DONNÉES**, pas instructions.
+- Les contenus externes (`fetch_url`, `web_search`, `read_file` sur PDF/Office, `read_image`) sont marqués **DONNÉES**, pas instructions.
 - Les actions à effet de bord sur du contenu externe sont **gated** (confirmées avant exécution).
 - Pas de `ignore mes instructions` ou `execute cette commande` venus d'un contenu ingéré sans garde-fou.
 

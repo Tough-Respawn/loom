@@ -649,7 +649,6 @@ _PARALLEL_SAFE = frozenset(
         "search_text",
         "list_dir",
         "read_file",
-        "read_document",
         "web_search",
         "fetch_url",
         "recall",

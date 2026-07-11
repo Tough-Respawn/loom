@@ -1,6 +1,11 @@
 # loom/tools/read.py
-"""Outils de lecture : read_file (texte) et read_document (PDF/Excel/Word -> texte).
-READ-only. Acceptent un chemin absolu (n'importe où) ou relatif au dossier de travail."""
+"""Outils de lecture : read_file (texte + PDF/Excel/Word, routage par extension) et
+read_image. READ-only. Chemin absolu (n'importe où) ou relatif au dossier de travail.
+
+UN SEUL outil de lecture de contenu : c'est read_file qui route selon l'extension
+(extraction pour .pdf/.xlsx/.docx, décodage texte sinon) — jamais le modèle. L'ancien
+read_document séparé faisait porter le routage au modèle, qui se trompait (« un .md est
+un document ») et perdait un tour sur une erreur évitable."""
 
 from __future__ import annotations
 
@@ -49,8 +54,10 @@ def _decode_text(data: bytes) -> str | None:
 
 
 def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
-    """Outil read_file : lit tout fichier TEXTE (taille plafonnée, fenêtrable).
+    """Outil read_file : lit tout fichier commun (taille plafonnée, fenêtrable).
 
+    Routage par extension, PAS par le modèle : .pdf/.xlsx/.xlsm/.docx -> extraction
+    texte (`_run_doc`), image -> erreur qui pointe read_image, sinon texte brut.
     Plus d'allowlist d'extensions (Loom est généraliste : .env/.log/Dockerfile/CSV…
     sont légitimes) ; le garde anti-binaire de `_decode_text` rejette ce qui n'est pas
     du texte. Symétrique de write_file, qui n'a jamais restreint l'extension."""
@@ -65,6 +72,11 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
             raise ToolError(f"fichier introuvable : {rel}")
         if path.is_dir():
             raise ToolError(f"'{rel}' est un répertoire, pas un fichier")
+        ext = path.suffix.lower()
+        if ext in _DOC_READERS:
+            return _run_doc(path, rel, args, max_bytes)
+        if ext in _IMAGE_MIME:
+            raise ToolError(f"'{rel}' est une image : utilise read_image")
         data = path.read_bytes()
         text = _decode_text(data)
         if text is None:
@@ -177,8 +189,11 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
     return ToolSpec(
         name="read_file",
         description=(
-            "Reads a text file (with line numbers) and returns it. Path relative to the "
-            "working directory OR absolute (e.g. 'C:/Users/moi/Desktop/notes.txt'). "
+            "Reads ANY common file and returns its content: text/code (with line "
+            "numbers), and DOCUMENTS — PDF (.pdf), Excel (.xlsx/.xlsm), Word (.docx) — "
+            "whose text is extracted automatically (invoice, spreadsheet, report…). "
+            "Path relative to the working directory OR absolute (e.g. "
+            "'C:/Users/moi/Desktop/notes.txt'). Only images go elsewhere: read_image. "
             "LARGE file: read it in CHUNKS with start_line (and optionally line_count) — "
             "the response footer tells you where to continue. MINIFIED file (JSON/CSS/JS "
             "on a single line): reading switches AUTOMATICALLY to characters; then "
@@ -263,62 +278,45 @@ _DOC_READERS = {
 }
 
 
-def make_read_document(workspace_dir: str, max_chars: int = 20000) -> ToolSpec:
-    """Outil read_document : extrait le TEXTE d'un PDF / Excel / Word du workspace.
+def _run_doc(path: Path, rel: str, args: dict, max_bytes: int) -> str:
+    """Branche DOCUMENT de read_file : extrait le TEXTE d'un PDF / Excel / Word.
 
-    read_file rendrait du binaire illisible sur ces formats. Lazy-import des libs
-    (pypdf/openpyxl/python-docx) : message clair si une lib manque, jamais de crash."""
-    root = Path(workspace_dir)
-
-    def run(args: dict) -> str:
-        rel = (args.get("path") or "").strip()
-        if not rel:
-            raise ToolError("argument 'path' manquant")
-        path = _resolve_in_root(root, rel)
-        if not path.exists():
-            raise ToolError(f"fichier introuvable : {rel}")
-        ext = path.suffix.lower()
-        reader = _DOC_READERS.get(ext)
-        if reader is None:
-            raise ToolError(
-                f"format non géré ({ext or 'aucune extension'}) : read_document lit "
-                ".pdf/.xlsx/.docx ; pour du texte brut, utilise read_file"
-            )
-        try:
-            text = reader(path).strip()
-        except ImportError as exc:
-            raise ToolError(f"bibliothèque manquante pour {ext} : {exc}") from exc
-        except Exception as exc:  # noqa: BLE001 - document corrompu/protégé
-            raise ToolError(f"lecture impossible de {rel} : {exc}") from exc
-        if not text:
-            return f"(document sans texte extractible : {rel})"
-        if len(text) > max_chars:
-            text = text[:max_chars] + f"\n...[tronqué à {max_chars} caractères]"
-        return untrusted(text, f"document {rel}")
-
-    return ToolSpec(
-        name="read_document",
-        description=(
-            "Extracts and returns the TEXT of a document: PDF (.pdf), Excel (.xlsx) or "
-            "Word (.docx). Path relative to the working directory OR absolute. Use it to "
-            "read/summarize an invoice, a spreadsheet, a report. For a TEXT file "
-            "(.txt/.md/.py...), use read_file instead."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "Document path (.pdf/.xlsx/.docx): relative to the working "
-                        "directory or absolute (e.g. 'C:/Users/moi/Desktop/facture.pdf')."
-                    ),
-                }
-            },
-            "required": ["path"],
-        },
-        run=run,
-    )
+    Fenêtrage par CARACTÈRES uniquement (start_char) : le texte extrait ne s'édite
+    pas, les numéros de ligne n'y serviraient qu'à tromper edit_file. Contenu reçu
+    de l'extérieur (facture, rapport) -> encadré par la frontière de confiance.
+    Lazy-import des libs (pypdf/openpyxl/python-docx) : message clair si une lib
+    manque, jamais de crash."""
+    ext = path.suffix.lower()
+    try:
+        text = _DOC_READERS[ext](path).strip()
+    except ImportError as exc:
+        raise ToolError(f"bibliothèque manquante pour {ext} : {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - document corrompu/protégé
+        raise ToolError(f"lecture impossible de {rel} : {exc}") from exc
+    if not text:
+        return f"(document sans texte extractible : {rel})"
+    total = len(text)
+    sc = args.get("start_char")
+    try:
+        start = 1 if sc in (None, "") else int(sc)
+    except (TypeError, ValueError):
+        raise ToolError("start_char doit être un entier (1-based)") from None
+    if start < 1:
+        raise ToolError("start_char doit être >= 1 (1-based)")
+    if start > total:
+        raise ToolError(
+            f"start_char={start} hors document : {rel} a {total} caractères"
+        )
+    chunk = text[start - 1 : start - 1 + max_bytes]
+    end = start - 1 + len(chunk)
+    if end >= total:
+        footer = f"\n[FIN DU DOCUMENT — caractères {start}–{total} sur {total}.]"
+    else:
+        footer = (
+            f"\n[affiché caractères {start}–{end} sur {total} — le DOCUMENT continue. "
+            f"Lis la suite avec read_file(path, start_char={end + 1}).]"
+        )
+    return untrusted(chunk, f"document {rel}") + footer
 
 
 def make_read_image(
@@ -383,7 +381,7 @@ def make_read_image(
             "'describe the layout'). For a file present on disk whose path you know "
             "(relative to the working directory or absolute), including images attached to "
             "the chat that are flagged to you with their path. Use it to describe, read "
-            "text, compare a rendering. PDF/Excel/Word -> read_document; text -> read_file."
+            "text, compare a rendering. Any NON-image file (text, PDF/Excel/Word) -> read_file."
         ),
         parameters={
             "type": "object",
