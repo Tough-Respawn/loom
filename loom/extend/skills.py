@@ -66,8 +66,10 @@ def _load_skill_file(md: Path, namespace: str | None) -> Skill | None:
     name, desc, body, meta = _parse_skill_md(text, md.parent.name)
     if namespace:
         name = f"{namespace}:{name}"
+    # base_dir ABSOLU : le workspace d'une session peut être n'importe où, un chemin
+    # relatif rendrait les references/ introuvables depuis read_file.
     return Skill(
-        name=name, description=desc, body=body, base_dir=str(md.parent), **meta
+        name=name, description=desc, body=body, base_dir=str(md.parent.resolve()), **meta
     )
 
 
