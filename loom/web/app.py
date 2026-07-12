@@ -1016,7 +1016,7 @@ def create_app(
         objectif de session. Retourne (system_prompt, strong)."""
 
         skills = effective_skills(
-            collect_skills(skills_dir, plugins_dir, learned_dir=learned_skills_dir),
+            _all_skills(),
             overrides=conv.skill_overrides,
             disabled=conv.disabled_skills,
         )
@@ -1165,12 +1165,17 @@ def create_app(
         cancel_event = _cancel_for(sid)
 
         if not chat_lock.acquire(blocking=False):
-            # Une génération de CETTE session tourne déjà : on l'annule et on attend le verrou.
-
-            cancel_event.set()
-
-            if not chat_lock.acquire(timeout=interrupt_wait):
-                return Response("occupé : cette session génère déjà", status=429)
+            # Une génération de CETTE session tourne déjà : on ne l'interrompt PAS.
+            # Le message part en FILE D'ATTENTE (même mécanique que les notes en vol) :
+            # injecté role=user au prochain point d'arrêt de la boucle tool-use, ou au
+            # début du tour suivant s'il arrive trop tard — jamais perdu. L'annulation,
+            # c'est UNIQUEMENT le bouton stop (/cancel).
+            _push_note(sid, message)
+            return Response(
+                "message mis en file d'attente (génération en cours) — il sera pris "
+                "en compte au prochain point d'arrêt",
+                status=202,
+            )
 
         # On tient le verrou : repartir d'un signal d'annulation propre.
 
