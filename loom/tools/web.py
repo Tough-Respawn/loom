@@ -258,7 +258,14 @@ def fetch_page(url: str, cfg: WebSearchConfig, snippet: str = "") -> str:
     try:
         resp = _http_get(url, timeout=cfg.http_timeout, pin_ip=pin_ip)
         resp.raise_for_status()
-        text = _extract(resp.text)
+        # Réponse JSON (API) : trafilatura n'extrait que de l'HTML et renverrait
+        # vide -> on renvoie le corps BRUT (tronqué). Détection par content-type
+        # ET par le premier caractère (des API servent du JSON en text/plain).
+        ctype = (resp.headers.get("content-type") or "").lower()
+        body = resp.text or ""
+        if "json" in ctype or body.lstrip()[:1] in ("{", "["):
+            return _truncate(body, cfg.max_chars_per_page)
+        text = _extract(body)
     except (httpx.ConnectError, httpx.TimeoutException):
         return snippet
     if not text:
