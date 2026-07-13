@@ -1889,9 +1889,25 @@ class LoomClient:
                     or code == 501
                 ):
                     self._slot_broken.add(key)
-                    cause = (
-                        "hang serveur" if code != 501 else "501 non supporté (mmproj ?)"
-                    )
+                    if code == 501:
+                        # Cause racine CONFIRMÉE (2026-07-13, A/B même binaire b9442 :
+                        # qwen avec --mmproj -> 501, sans -> 200) : llama-server refuse
+                        # le save/restore de slot quand un projecteur MULTIMODAL est
+                        # chargé (« This feature is not supported by multimodal »).
+                        # Limitation upstream — pas un flag manquant (--slot-save-path
+                        # est bien passé). Le corps du 501 est joint pour distinguer
+                        # les causes si le serveur change.
+                        detail = ""
+                        try:
+                            detail = (e.read() or b"").decode("utf-8", "replace")[:120]
+                        except Exception:  # noqa: BLE001 - diagnostic best-effort
+                            pass
+                        cause = (
+                            "501 : mmproj (multimodal) chargé — limitation llama.cpp"
+                            + (f" [{detail}]" if detail else "")
+                        )
+                    else:
+                        cause = "hang serveur"
                     _debug(
                         f"SLOT_{action.upper()}_ERR",
                         f"{path} : {cause} -> save/restore DÉSACTIVÉ pour {key}",
