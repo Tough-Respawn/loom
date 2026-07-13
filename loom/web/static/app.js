@@ -1534,6 +1534,15 @@ function submitChat() {
   const text = input.value.trim();
   if (!text || !state.active) return;
   const t = activeTab();
+  // Pièces jointes pendant une génération : la file /note est TEXTE-ONLY. On bloque
+  // net (rien n'est consommé) plutôt que de laisser l'image en attente partir avec
+  // le PROCHAIN message, auquel elle ne correspondrait plus.
+  if (t?.streaming && pendingImages.length) {
+    showToast(
+      "images impossibles pendant une génération — retire-les pour envoyer une note texte, ou Stop d'abord",
+    );
+    return;
+  }
   if (t) {
     (t.history || (t.history = [])).push(text); // historique ↑/↓ de CET onglet
     t.histIdx = -1;
@@ -1547,12 +1556,15 @@ function submitChat() {
     input.value = "";
     autosize();
     postForm("/note", { session_id: state.active, text })
-      .then((r) => {
+      .then(async (r) => {
         if (r.ok)
           showToast(
             "note transmise — prise en compte au prochain point d'arrêt du modèle",
           );
-        else showToast("note refusée (session ?)");
+        else {
+          const err = await r.json().catch(() => null);
+          showToast(err?.error || "note refusée (session ?)");
+        }
       })
       .catch(() => showToast("note perdue : loom.web injoignable"));
     input.focus();

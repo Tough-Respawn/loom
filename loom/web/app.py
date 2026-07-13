@@ -685,10 +685,18 @@ def create_app(
     # juste avant chaque appel modèle (cf. notes_provider de stream_chat_tools) —
     # elles infléchissent le tour SANS l'interrompre.
     _sess_notes: dict[str, list[str]] = {}
+    # Bornes anti-abus (la file part TELLE QUELLE dans le contexte du modèle) :
+    # même plafond de longueur que /chat, et une file courte — elle est drainée
+    # avant CHAQUE appel modèle, 10 notes en attente = déjà anormal.
+    _NOTE_MAX_CHARS = 5000
+    _NOTES_CAP = 10
 
     def _push_note(sid: str, text: str) -> int:
+        """Empile une note ; renvoie la taille de la file, ou -1 si elle est pleine."""
         with _gen_guard:
             q = _sess_notes.setdefault(sid, [])
+            if len(q) >= _NOTES_CAP:
+                return -1
             q.append(text)
             return len(q)
 
@@ -1170,12 +1178,19 @@ def create_app(
             # injecté role=user au prochain point d'arrêt de la boucle tool-use, ou au
             # début du tour suivant s'il arrive trop tard — jamais perdu. L'annulation,
             # c'est UNIQUEMENT le bouton stop (/cancel).
-            _push_note(sid, message)
-            return Response(
+            if _push_note(sid, message) < 0:
+                return Response(
+                    "file d'attente pleine — attendre le prochain point d'arrêt ou Stop",
+                    status=429,
+                )
+            # La file est TEXTE-ONLY : d'éventuelles images jointes ne peuvent pas suivre.
+            queued_msg = (
                 "message mis en file d'attente (génération en cours) — il sera pris "
-                "en compte au prochain point d'arrêt",
-                status=202,
+                "en compte au prochain point d'arrêt"
             )
+            if request.files.getlist("image"):
+                queued_msg += " (images ignorées : la file ne transporte que du texte)"
+            return Response(queued_msg, status=202)
 
         # On tient le verrou : repartir d'un signal d'annulation propre.
 
@@ -2211,11 +2226,20 @@ def create_app(
         text = (request.form.get("text") or "").strip()
         if not text:
             return {"error": "note vide"}, 400
+        if len(text) > _NOTE_MAX_CHARS:
+            return {
+                "error": f"note trop longue (max {_NOTE_MAX_CHARS} caractères)"
+            }, 413
         req_sid = (request.form.get("session_id") or "").strip()
         sess = _get_session(req_sid) if req_sid else _cur["session"]
         if sess is None:
             return {"error": "session inconnue"}, 404
-        return {"ok": True, "queued": _push_note(sess.id, text)}
+        queued = _push_note(sess.id, text)
+        if queued < 0:
+            return {
+                "error": "file de notes pleine — attendre le prochain point d'arrêt"
+            }, 429
+        return {"ok": True, "queued": queued}
 
     @app.post("/tool_decision")
     def tool_decision():
@@ -2335,9 +2359,24 @@ def create_app(
         desc = (request.form.get("description") or "").strip()
         body = (request.form.get("body") or "").strip()
         # Corps fourni par le drawer (écrit à la main ou généré par le modèle) : on le
-        # prend tel quel s'il porte déjà son frontmatter, sinon on l'enveloppe. Le nom
-        # du frontmatter est FORCÉ au slug (identité = dossier, cf. effective_skills).
-        if body.startswith("---"):
+        # prend s'il porte déjà son frontmatter, sinon on l'enveloppe. Le nom du
+        # frontmatter est FORCÉ au slug (identité = dossier, cf. effective_skills) —
+        # sinon un skill créé dans `mon-skill/` pourrait se déclarer autrement et
+        # entrer en collision avec un skill existant.
+        fm_end = body.find("\n---", 3) if body.startswith("---") else -1
+        if fm_end != -1:
+            front_lines = [
+                ln
+                for ln in body[3:fm_end].splitlines()
+                if ln.strip() and not ln.strip().lower().startswith("name:")
+            ]
+            content = (
+                "---\nname: " + slug + "\n" + "\n".join(front_lines) + body[fm_end:]
+            )
+            if not content.endswith("\n"):
+                content += "\n"
+        elif body.startswith("---"):
+            # Frontmatter jamais fermé : le chargeur retombera sur le nom du dossier.
             content = body if body.endswith("\n") else body + "\n"
         else:
             content = (
