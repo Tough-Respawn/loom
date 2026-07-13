@@ -69,7 +69,11 @@ def _load_skill_file(md: Path, namespace: str | None) -> Skill | None:
     # base_dir ABSOLU : le workspace d'une session peut être n'importe où, un chemin
     # relatif rendrait les references/ introuvables depuis read_file.
     return Skill(
-        name=name, description=desc, body=body, base_dir=str(md.parent.resolve()), **meta
+        name=name,
+        description=desc,
+        body=body,
+        base_dir=str(md.parent.resolve()),
+        **meta,
     )
 
 

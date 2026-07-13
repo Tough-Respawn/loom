@@ -81,6 +81,9 @@ def ensure_model(repo: str, filename: str, models_dir: str | Path) -> Path:
     # où un futur appelant lèverait une exception maison dans un wrapper.
     except ModelUnavailable:
         raise
-    except (HfHubHTTPError, OSError) as exc:  # 401/404/réseau/HF : tout devient actionnable
+    except (
+        HfHubHTTPError,
+        OSError,
+    ) as exc:  # 401/404/réseau/HF : tout devient actionnable
         raise ModelUnavailable(_missing_msg(filename, target, repo, cause=exc)) from exc
     return target
