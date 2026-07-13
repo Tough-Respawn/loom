@@ -29,3 +29,4 @@ evals/out/*
 evals/out_review/
 # Claude Code config
 .claude/
+.coverage
