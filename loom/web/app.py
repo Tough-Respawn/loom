@@ -613,6 +613,7 @@ def create_app(
     # Routes : enregistrées par groupes depuis loom/web/routes.py (import ici et pas en
     # tête de module : routes.py importe les helpers purs de CE module).
     from loom.web.routes import (
+        _boot_prime,
         _keepwarm_loop,
         _register_chat_routes,
         _register_config_routes,
@@ -634,5 +635,9 @@ def create_app(
     threading.Thread(
         target=_keepwarm_loop, args=(S,), daemon=True, name="loom-keepwarm"
     ).start()
+
+    # Amorce au boot : si le serveur modèle tourne déjà (restart de loom.web), le
+    # préfixe de la session active est pré-préfillé sans attendre le premier message.
+    _boot_prime(S)
 
     return app
