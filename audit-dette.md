@@ -12,7 +12,7 @@ Méthode : lecture statique du code réel, recoupement des symboles par recherch
 |---|---|---|---|---|---|
 | P0 | Bugs fonctionnels | 3 | 2 (P0-1, P0-2) | 1 (P0-3) | 0 |
 | P1 | Code mort / legacy | 9 | 9 (P1-1 à P1-9) | 0 | 0 |
-| P2 | Dette structurelle (complexité, duplication) | 11 | 8 (P2-2\*, P2-5, P2-6\*, P2-7, P2-8, P2-9, P2-10, P2-11) | 0 | 3 (P2-1, P2-3, P2-4) |
+| P2 | Dette structurelle (complexité, duplication) | 11 | 11 (P2-1 à P2-11 ; P2-6\* partiel) | 0 | 0 |
 | P3 | Robustesse / gestion d'erreurs | 8 | 8 (P3-1 à P3-8) | 0 | 0 |
 | P4 | Typage manquant | 6 | 6 (P4-1 à P4-6) | 0 | 0 |
 | P5 | Documentation / cohérence | 11 | 11 (P5-1 à P5-11) | 0 | 0 |
@@ -21,7 +21,7 @@ Méthode : lecture statique du code réel, recoupement des symboles par recherch
 
 > \* = partiellement corrigé (P2-2 : 3 closures extraites sur 4 ; P2-6 : dérivation auto de `_SUBAGENT_TOOLS`, dataclass non créé).
 >
-> **Dernière mise à jour** : 46 constats corrigés (dont 2 partiels), 1 infirmé, 3 reportés. Vérification multi-agents + ruff `All checks passed!` + smoke tests globaux + self-test évals VERT. 3 constats restants (P2-1, P2-3, P2-4) : refactorings structurels du cœur de l'agent (`stream_chat_tools` 708 lignes, `create_app` 1945 lignes) — reportés car trop risqués sans tests live.
+> **Dernière mise à jour (2026-07-13)** : 49 constats corrigés (dont 2 partiels), 1 infirmé, 0 restant. P2-1/P2-3/P2-4 débloqués par un filet de 68 tests de caractérisation (`tests/`, décision « pas de tests » révisée) puis livrés et validés : pytest + banc E2E Playwright (stub OpenAI, `tests/e2e/`) + run réel qwen local + évals 26/27 (baseline `evals/out/history/12b1d8d.json`, bande historique 26-27).
 
 ---
 
@@ -89,22 +89,22 @@ Méthode : lecture statique du code réel, recoupement des symboles par recherch
 
 ## P2 — Dette structurelle
 
-### P2-1. `create_app` monolithique (1945 lignes) — ⏸ REPORTÉ
+### P2-1. `create_app` monolithique (1945 lignes) — ✅ CORRIGÉ (2026-07-13)
 - `loom/web/app.py:331-2276` — une seule fonction, ~20 sous-fonctions, ~30 routes Flask en closure. Principal point de dette structurelle : impossible à tester unitairement.
-- **Statut** : reporté. La conversion en Blueprints Flask est trop risquée sans tests live (trop de closures partagées). P2-2 (extraction de sous-fonctions) traite une partie du problème.
+- **Fix appliqué** : `create_app` réduit à ~303 lignes (construction de l'état partagé `S` + hooks + enregistrements) ; les 43 routes déplacées dans `loom/web/routes.py` en fonctions `_register_*_routes(app, S)` + helpers module-level `_xxx(S, ...)` ; file de notes extraite en classe testable `NotesQueue`. Signature `create_app` inchangée, chemins/méthodes des 43 routes vérifiés identiques. Filet : 68 tests de caractérisation + E2E stub + run réel.
 
 ### P2-2. Route `chat()` 756 lignes — ✅ PARTIELLEMENT CORRIGÉ
 - `loom/web/app.py:797-1553` — 7+ responsabilités (commande `/goal`, `/init`, auto-adoption workspace, construction prompt, boucle d'outils, titrage asynchrone, persistance, reflect post-tour, keep-warm).
 - **Fix appliqué** : 3 closures extraites de `chat()` et appelées à la place des blocs inline : `_handle_goal_command`, `_handle_init_command`, `_build_system_prompt`. `_run_generation_loop` non extraite (trop de variables `nonlocal` capturées). Ruff OK, smoke test (construction app + count routes) OK.
 
-### P2-3. `stream_chat_tools` monolithique (708 lignes) — ⏸ REPORTÉ
+### P2-3. `stream_chat_tools` monolithique (708 lignes) — ✅ CORRIGÉ (2026-07-13)
 - `loom/agent/client.py:1045-1753` — une méthode, ~10 garde-fous imbriqués (overflow, context_overflow, loop, length-continuation, act-nudge, claim-audit artefact/exécution, non-progrès, parallélisme, debug-force).
-- **Statut** : reporté. Cœur de l'agent — l'extraction en sous-méthodes est trop risquée sans tests live pour valider le comportement exact.
+- **Fix appliqué** : méthode réduite de 916 à 239 lignes ; 9 sous-générateurs extraits (`_preventive_compaction`, `_inject_notes`, `_stream_model_turn`, `_handle_stream_api_error`, `_dispatch_no_tool_calls`, `_check_no_progress`, `_run_tools_parallel`, `_run_tools_sequential`, `_ctx_estimate`) communiquant par dict d'état `st`. No-drift vérifié par AST (zéro chaîne/commentaire perdu) + 68 tests + évals 26/27 (gardes act-nudge/claim-audit/compaction couvertes AVANT le refactor).
 
-### P2-4. Duplication du bloc outil streaming (client.py) — ⏸ REPORTÉ
+### P2-4. Duplication du bloc outil streaming (client.py) — ✅ CORRIGÉ (2026-07-13)
 - `loom/agent/client.py:1499-1515` (parallèle) vs `1643-1652` (séquentiel) — pattern `parts: list[str] = []; for sub_kind, sub_payload in registry.run_stream(...): ...; result = "".join(parts).strip()` répété quasi à l'identique.
 - `loom/agent/client.py:1554-1568` vs `1705-1720` — payload `tool_result` construit deux fois avec une structure quasi-identique.
-- **Statut** : reporté. Même raison que P2-3 : factorisation dans le cœur de la boucle tool-use, trop risquée sans tests live.
+- **Fix appliqué (2026-07-13)** : helpers partagés `_stream_tool_events` (relais d'outil streamant) et `_tool_result_payload` (payload unique). Le payload parallèle est ALIGNÉ sur le séquentiel (clé `cmd` ajoutée, toujours None en parallèle ; `detail`/`in_full` spécialisés ne concernent que des outils jamais parallel-safe — divergence historique accidentelle, actée dans les tests).
 
 ### P2-5. Duplication anti-SSRF entre web.py et browser.py — ✅ CORRIGÉ
 - `loom/tools/web.py:32-63` (`_resolve_validated`) vs `loom/tools/browser.py:149-170` (`_browser_http_blocked`). Deux implémentations parallèles de validation `ipaddress`, avec politiques différentes (intentionnel).
