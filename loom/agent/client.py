@@ -251,6 +251,65 @@ def _sub_activity_line(kind: str, payload) -> str:
     return ""
 
 
+def _stream_tool_events(registry, tc_id: str, name: str, args: dict):
+    """Exécute un outil STREAMANT (dispatch_agent) en relayant son activité live.
+
+    Générateur partagé par les chemins parallèle et séquentiel : yield les events
+    à relayer (tool_stream, sub_usage) puis, en dernier, ("__result__", synthèse).
+    L'appelant route les events vers son canal (yield direct ou queue de thread)."""
+    parts: list[str] = []
+    for sub_kind, sub_payload in registry.run_stream(name, args):
+        line = _sub_activity_line(sub_kind, sub_payload)
+        if line:
+            yield ("tool_stream", {"id": tc_id, "text": line})
+        if sub_kind == "content" and isinstance(sub_payload, str):
+            parts.append(sub_payload)
+        elif sub_kind == "usage":  # conso du sous-agent -> totaux de session
+            yield ("sub_usage", sub_payload)
+    yield ("__result__", "".join(parts).strip() or "(le sous-agent n'a rien renvoyé)")
+
+
+def _tool_result_payload(
+    tc_id: str, name: str, ok: bool, tool_content, args: dict
+) -> dict:
+    """Payload de l'event tool_result (pastille UI), UNIQUE pour les chemins parallèle
+    et séquentiel. detail/in_full sont SPÉCIALISÉS pour les outils d'écriture/shell —
+    jamais parallel-safe, donc le chemin parallèle retombe toujours sur le cas générique.
+    - preview (1 ligne) : état replié ; detail conservé pour rétro-compat ;
+    - in_full = ce que l'outil a REÇU (commande, contenu écrit, diff, chemin/args) ;
+    - out_full = ce qu'il a RENVOYÉ. Le tout borné."""
+    if name == "write_file":
+        detail = args.get("content") or ""
+    elif name == "edit_file":
+        detail = f"- {args.get('old_string', '')}\n+ {args.get('new_string', '')}"
+    else:
+        detail = tool_content
+    if name == "run_shell":
+        in_full = args.get("command") or ""
+    elif name in ("write_file", "append_file"):
+        in_full = f"{args.get('path', '')}\n{args.get('content', '')}"
+    elif name == "edit_file":
+        in_full = (
+            f"{args.get('path', '')}\n- {args.get('old_string', '')}"
+            f"\n+ {args.get('new_string', '')}"
+        )
+    else:
+        in_full = args.get("path") or json.dumps(args, ensure_ascii=False)
+    return {
+        "id": tc_id,
+        "name": name,
+        "ok": ok,
+        "preview": str(tool_content)[:300],
+        "path": args.get("path"),
+        # Commande réellement lancée par run_shell : pour la VOIR dans la pastille
+        # (sinon on ne voit que le résultat, pas ce qui a tourné).
+        "cmd": args.get("command"),
+        "detail": detail[:4000] if detail else None,
+        "in_full": str(in_full)[:8000],
+        "out_full": str(tool_content)[:8000],
+    }
+
+
 def _usage_dict(usage: Any) -> dict:
     """Normalise l'usage (tokens réels) renvoyé par le serveur en fin de stream.
 
@@ -2187,28 +2246,15 @@ class LoomClient:
                     try:
                         if registry.is_streaming(
                             name
-                        ):  # dispatch_agent : activité relayée live
-                            parts: list[str] = []
-                            for sk, sp in registry.run_stream(name, pargs):
-                                ln = _sub_activity_line(sk, sp)
-                                if ln:
-                                    _q.put(
-                                        (
-                                            tc["id"],
-                                            "tool_stream",
-                                            {"id": tc["id"], "text": ln},
-                                        )
-                                    )
-                                if sk == "content" and isinstance(sp, str):
-                                    parts.append(sp)
-                                elif (
-                                    sk == "usage"
-                                ):  # conso du sous-agent -> totaux de session
-                                    _q.put((tc["id"], "sub_usage", sp))
-                            r = (
-                                "".join(parts).strip()
-                                or "(le sous-agent n'a rien renvoyé)"
-                            )
+                        ):  # dispatch_agent : activité relayée live (helper partagé)
+                            r = "(le sous-agent n'a rien renvoyé)"
+                            for ek, ep in _stream_tool_events(
+                                registry, tc["id"], name, pargs
+                            ):
+                                if ek == "__result__":
+                                    r = ep
+                                else:
+                                    _q.put((tc["id"], ek, ep))
                         else:  # lecture/recherche : exécution directe
                             r = registry.run(name, pargs)
                         okp = not r.startswith("erreur")
@@ -2246,21 +2292,9 @@ class LoomClient:
                         executed = True
                     if not okp and name in _BUG_SIGNAL_TOOLS:
                         fail_count += 1
-                    _pin = pargs.get("path")
                     yield (
                         "tool_result",
-                        {
-                            "id": tc["id"],
-                            "name": name,
-                            "ok": okp,
-                            "preview": r[:300],
-                            "path": _pin,
-                            "detail": str(r)[:4000],
-                            "in_full": str(
-                                _pin or json.dumps(pargs, ensure_ascii=False)
-                            )[:8000],
-                            "out_full": str(r)[:8000],
-                        },
+                        _tool_result_payload(tc["id"], name, okp, r, pargs),
                     )
 
             for tc in _seq_tool_calls:
@@ -2334,22 +2368,14 @@ class LoomClient:
                         result = "refusé par l'utilisateur"
                         ok = False
                 elif registry and registry.is_streaming(name):  # allow + streamant
-                    # Outil streamant (dispatch_agent) : on relaie son activité EN DIRECT
-                    # dans sa pastille (tool_stream) et on reconstruit la synthèse finale.
-                    parts: list[str] = []
-                    for sub_kind, sub_payload in registry.run_stream(name, args):
-                        line = _sub_activity_line(sub_kind, sub_payload)
-                        if line:
-                            yield ("tool_stream", {"id": tc["id"], "text": line})
-                        if sub_kind == "content" and isinstance(sub_payload, str):
-                            parts.append(sub_payload)
-                        elif (
-                            sub_kind == "usage"
-                        ):  # conso du sous-agent -> totaux de session
-                            yield ("sub_usage", sub_payload)
-                    result = (
-                        "".join(parts).strip() or "(le sous-agent n'a rien renvoyé)"
-                    )
+                    # Outil streamant (dispatch_agent) : activité relayée EN DIRECT dans
+                    # sa pastille, synthèse reconstruite (helper partagé avec le parallèle).
+                    result = "(le sous-agent n'a rien renvoyé)"
+                    for ek, ep in _stream_tool_events(registry, tc["id"], name, args):
+                        if ek == "__result__":
+                            result = ep
+                        else:
+                            yield (ek, ep)
                     ok = not result.startswith("erreur")
                 else:  # allow
                     result = (
@@ -2388,31 +2414,6 @@ class LoomClient:
                 convo.append(
                     {"role": "tool", "tool_call_id": tc["id"], "content": tool_content}
                 )
-                # Détail dépliable côté UI : pour les écritures, le contenu RÉELLEMENT
-                # écrit (et non le message de retour) ; pour edit, le diff old/new ;
-                # sinon le résultat (l'accusé pour une image, pas son base64). Borné.
-                if name == "write_file":
-                    detail = args.get("content") or ""
-                elif name == "edit_file":
-                    detail = f"- {args.get('old_string', '')}\n+ {args.get('new_string', '')}"
-                else:
-                    detail = tool_content
-                # Vue IN/OUT de la pastille : in_full = ce que l'outil a REÇU (commande shell,
-                # contenu écrit, diff, ou chemin/args), out_full = ce qu'il a RENVOYÉ. La preview
-                # (1 ligne) reste pour l'état replié ; detail conservé pour rétro-compat.
-                if name == "run_shell":
-                    in_full = args.get("command") or ""
-                elif name in ("write_file", "append_file"):
-                    in_full = f"{args.get('path', '')}\n{args.get('content', '')}"
-                elif name == "edit_file":
-                    in_full = (
-                        f"{args.get('path', '')}\n- {args.get('old_string', '')}"
-                        f"\n+ {args.get('new_string', '')}"
-                    )
-                else:
-                    import json as _json
-
-                    in_full = args.get("path") or _json.dumps(args, ensure_ascii=False)
                 log_event(
                     "tool.result",
                     name=name,
@@ -2422,19 +2423,7 @@ class LoomClient:
                 )
                 yield (
                     "tool_result",
-                    {
-                        "id": tc["id"],
-                        "name": name,
-                        "ok": ok,
-                        "preview": tool_content[:300],
-                        "path": args.get("path"),
-                        # Commande réellement lancée par run_shell : pour la VOIR dans la
-                        # pastille (sinon on ne voit que le résultat, pas ce qui a tourné).
-                        "cmd": args.get("command"),
-                        "detail": detail[:4000] if detail else None,
-                        "in_full": str(in_full)[:8000],
-                        "out_full": str(tool_content)[:8000],
-                    },
+                    _tool_result_payload(tc["id"], name, ok, tool_content, args),
                 )
                 if name in _SERIAL_WRITE:
                     wrote_this_turn = True
