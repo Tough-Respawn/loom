@@ -215,10 +215,13 @@ def test_parallele_distant():
     ks = kinds(events)
     assert ks.index("tool_result") > len(ks) - 1 - ks[::-1].index("tool_call")
 
-    # résultats dans l'ordre des tool_calls, payload SANS clé cmd (divergence P2-4)
+    # résultats dans l'ordre des tool_calls ; payload UNIFIÉ avec le séquentiel
+    # (refactor P2-4 2026-07-13) : cmd présent mais None (aucun outil parallel-safe
+    # n'a de `command` ; la divergence historique était accidentelle)
     trs = only(events, "tool_result")
     assert [t["id"] for t in trs] == ["call_1", "call_2"]
-    assert all("cmd" not in t for t in trs)
+    assert all(t["cmd"] is None for t in trs)
+    assert all(t["detail"] for t in trs)  # detail générique = résultat de l'outil
     assert trs[0]["ok"] is True and trs[0]["preview"] == "contenu a.txt"
 
     # conversation au 2e appel : deux messages tool, dans l'ordre
