@@ -974,6 +974,552 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
     return _total() <= budget_chars
 
 
+def _ctx_estimate(system_prompt: str, convo: list[dict]) -> int:
+    # Estimation ~3 car./token du contexte VIVANT (prompt + convo courant). Sert à
+    # rafraîchir la jauge IMMÉDIATEMENT après une compaction, sans attendre l'usage
+    # réel du prochain appel (sinon la jauge reste au pic pendant tout l'appel suivant).
+    return (len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)) // 3
+
+
+def _inject_notes(notes_provider, convo: list[dict]) -> Iterator[tuple[str, object]]:
+    """Draine les notes en vol : chacune est injectée dans `convo` (role user,
+    préfixe explicite) et ré-émise en event ('note', texte injecté)."""
+    # Notes en vol : les remarques utilisateur arrivées pendant le tour sont
+    # injectées MAINTENANT (juste avant l'appel modèle = le point d'arrêt),
+    # sans interrompre quoi que ce soit. L'appelant reçoit l'event 'note'
+    # pour persister/afficher exactement ce qui a été injecté.
+    if notes_provider is None:
+        return
+    try:
+        for _raw_note in notes_provider() or []:
+            _wrapped = (
+                "[User note received mid-turn — take it into account "
+                f"and continue the task] {_raw_note}"
+            )
+            convo.append({"role": "user", "content": _wrapped})
+            yield ("note", _wrapped)
+    except Exception as _e:  # noqa: BLE001 - notes best-effort
+        _debug("NOTES_ERR", str(_e))
+
+
+def _stream_model_turn(
+    oai,
+    api_model: str,
+    kwargs: dict,
+    system_prompt: str,
+    convo: list[dict],
+    collector: dict,
+    tools,
+    thinking: bool,
+    st: dict,
+) -> Iterator[tuple[str, object]]:
+    """Un appel modèle streamé : relaie les events tels quels, remplit `collector`
+    (tool_calls, finish_reason, looped) et pose le texte/raisonnement accumulés
+    dans st["text"] / st["reasoning"]. Les APIError/httpx.HTTPError remontent à
+    l'appelant (traitées par _handle_stream_api_error)."""
+    text = ""
+    reasoning = ""
+    saw_usage = False
+    _first_byte = True
+    log_event(
+        "turn.request",
+        model=api_model,
+        msgs=len(convo),
+        tools=bool(tools),
+        thinking=thinking,
+    )
+    _t_req = time.monotonic()
+    stream = oai.chat.completions.create(**kwargs)
+    try:
+        for kind, chunk in _iter_turn(stream, collector):
+            if _first_byte:
+                _first_byte = False
+                log_event(
+                    "stream.first_byte",
+                    ms=round((time.monotonic() - _t_req) * 1000),
+                )
+            if kind == "content":
+                text += chunk
+            elif kind == "reasoning":
+                reasoning += chunk
+            elif kind == "usage":
+                saw_usage = True
+                log_event(
+                    "usage",
+                    prompt=chunk.get("prompt_tokens"),
+                    completion=chunk.get("completion_tokens"),
+                    total=chunk.get("total_tokens"),
+                )
+            yield (kind, chunk)
+    finally:
+        _close(stream)
+    if not saw_usage:
+        # Provider sans include_usage : estimation pour garder ↑/↓ vivants.
+        yield (
+            "usage",
+            _estimate_usage(
+                system_prompt,
+                convo,
+                text,
+                reasoning,
+                collector["tool_calls"],
+            ),
+        )
+    _debug(
+        "REPONSE <- modele",
+        {
+            "reasoning": reasoning,
+            "content": text,
+            "tool_calls": collector["tool_calls"],
+            "finish_reason": collector["finish_reason"],
+        },
+    )
+    st["text"] = text
+    st["reasoning"] = reasoning
+
+
+def _dispatch_no_tool_calls(
+    collector: dict,
+    text: str,
+    convo: list[dict],
+    strong: bool,
+    max_loop_breaks: int,
+    max_length_continues: int,
+    max_empty_retries: int,
+    max_act_nudges: int,
+    st: dict,
+) -> Iterator[tuple[str, object]]:
+    """Fin de tour SANS appel d'outil : boucle dégénérée -> continuation 'length' ->
+    réponse vide -> audit de claim / act-nudge -> stop naturel. Issue via
+    st["action"] : "continue" (relancer le tour) ou "done" (l'event terminal
+    ('done', …) a déjà été yieldé)."""
+    # BOUCLE DE DÉGÉNÉRESCENCE (détectée au streaming) : le modèle a répété la
+    # même phrase sans agir. À traiter AVANT la continuation 'length' : lui dire
+    # « continue où tu t'es arrêté » ne ferait qu'alimenter le cycle. On coupe et
+    # on relance avec un ordre FERME d'émettre un appel d'outil, borné.
+    if collector.get("looped"):
+        if st["loop_breaks"] >= max_loop_breaks:
+            yield (
+                "content",
+                "\n[génération interrompue : le modèle tournait en boucle (même "
+                "phrase répétée) sans agir. Reformule ou découpe la demande.]",
+            )
+            yield ("done", {"reason": "loop_degenerate"})
+            st["action"] = "done"
+            return
+        st["loop_breaks"] += 1
+        nudge = (
+            "Tu répètes la même phrase en boucle sans rien faire. ARRÊTE de "
+            "planifier en prose. Émets MAINTENANT un seul appel d'outil — "
+            "manage_todos pour poser le plan, OU directement le premier write_file "
+            "— sans aucun texte avant. Un seul outil, tout de suite."
+        )
+        convo.append({"role": "user", "content": nudge})
+        _debug(
+            "LOOP_BREAK",
+            f"boucle détectée ({collector.get('looped')!r}), "
+            f"relance {st['loop_breaks']}/{max_loop_breaks}",
+        )
+        yield (
+            "tool_result",
+            {"name": "(boucle)", "ok": False, "preview": nudge},
+        )
+        st["action"] = "continue"
+        return
+    # CONTINUATION sur troncature : la réponse texte/raisonnement a été coupée
+    # par la limite de tokens (finish_reason == "length") sans appel d'outil.
+    # Plutôt que de rendre une réponse tronquée, on relance le modèle pour qu'il
+    # POURSUIVE là où il s'est arrêté. Autant de fois que nécessaire (cap dur
+    # max_length_continues, anti-runaway). Le texte continue d'être streamé à
+    # l'UI tour après tour (le web app concatène). Cas des tool_calls tronqués
+    # NON concerné (géré par 'arguments tronqués' / overflow).
+    if (
+        collector["finish_reason"] == "length"
+        and st["length_continues"] < max_length_continues
+    ):
+        st["length_continues"] += 1
+        if text:
+            convo.append({"role": "assistant", "content": text})
+            nudge = (
+                "Ta réponse a été coupée par la limite de tokens. CONTINUE "
+                "exactement là où tu t'es arrêté, sans répéter ce qui précède."
+            )
+        else:
+            nudge = (
+                "Ta réflexion a été coupée par la limite de tokens. Termine et "
+                "DONNE ta réponse (ou émets l'appel d'outil) MAINTENANT, plus "
+                "direct."
+            )
+        convo.append({"role": "user", "content": nudge})
+        _debug(
+            "CONTINUATION(length)",
+            f"relance {st['length_continues']}/{max_length_continues}",
+        )
+        st["action"] = "continue"
+        return
+    # RÉPONSE VIDE (EOS immédiat : 0 texte, 0 tool call — vécu en éval,
+    # cas context_squeeze) : le stop naturel serait un SILENCE total pour
+    # l'utilisateur. On relance, borné. Filet de FONCTIONNEMENT (pas une
+    # garde de comportement) -> actif aussi pour un modèle fort (strong).
+    if not text.strip():
+        if st["empty_retries"] < max_empty_retries:
+            st["empty_retries"] += 1
+            nudge = (
+                "Ta réponse est arrivée VIDE (aucun texte, aucun appel "
+                "d'outil). Réponds MAINTENANT : donne le résultat demandé, "
+                "ou émets l'appel d'outil nécessaire."
+            )
+            convo.append({"role": "user", "content": nudge})
+            log_event(
+                "guard",
+                level="WARN",
+                kind="empty_response",
+                retry=st["empty_retries"],
+            )
+            yield (
+                "tool_result",
+                {"name": "(réponse vide)", "ok": False, "preview": nudge},
+            )
+            st["action"] = "continue"
+            return
+        yield (
+            "content",
+            "\n[génération interrompue : le modèle a rendu une réponse "
+            "vide malgré les relances.]",
+        )
+        yield ("done", {"reason": "empty_response"})
+        st["action"] = "done"
+        return
+    # Audit de claim au stop : le modèle prétend-il un résultat qu'il n'a pas
+    # produit ? (A) artefact fichier inventé, (B) résultat d'exécution sans
+    # run_shell/dispatch, ou intention/affirmation sans exécution réelle. On le
+    # relance pour qu'il FASSE vraiment (borné). Garde de vérité, pas orchestrateur.
+    # COUPÉ pour un modèle FORT (distant) : ces relances de comportement, utiles à
+    # un petit modèle qui confabule, ne font que sur-piloter un modèle qui se vérifie
+    # déjà seul (cf. GLM qui doutait de sa propre preuve correcte).
+    missing = _claims_missing_artifact(text, st["files_written"])
+    exec_confab = not st["executed"] and _claims_execution(text)
+    if (
+        not strong
+        and st["act_nudges"] < max_act_nudges
+        and (missing or exec_confab or _intends_to_act(text, st["executed"]))
+    ):
+        st["act_nudges"] += 1
+        convo.append({"role": "assistant", "content": text or "..."})
+        if missing:
+            nudge = (
+                f"Tu affirmes avoir produit « {missing} » mais ce fichier "
+                "n'existe pas (ou est vide). Crée-le RÉELLEMENT avec un outil "
+                "puis vérifie-le — n'invente pas d'artefact ni de preuve."
+            )
+            label = "CLAIM_AUDIT(artefact)"
+        elif exec_confab:
+            nudge = (
+                "Tu rapportes un résultat d'exécution (sortie, « ça marche », "
+                "preuve) mais tu n'as lancé AUCUNE commande ce tour (ni run_shell "
+                "ni dispatch_agent). Lance-la RÉELLEMENT et rapporte la VRAIE "
+                "sortie — n'invente pas de résultat."
+            )
+            label = "CLAIM_AUDIT(exécution)"
+        else:
+            nudge = (
+                "Tu as annoncé/affirmé une action mais tu n'as rien exécuté : "
+                "rien n'a été réellement fait. Émets MAINTENANT l'appel d'outil "
+                "directement (aucune phrase avant). Si la tâche est vraiment "
+                "terminée ET vérifiée, dis seulement le résultat constaté."
+            )
+            label = "ACT_NUDGE"
+        convo.append({"role": "user", "content": nudge})
+        _debug(label, nudge)
+        log_event("guard", kind=label)
+        st["action"] = "continue"
+        return
+    yield ("done", {"reason": "natural"})
+    st["action"] = "done"  # réponse finale déjà streamée (stop naturel du modèle)
+
+
+def _check_no_progress(
+    tool_calls: list[dict], strong: bool, repeat_limit: int, st: dict
+) -> Iterator[tuple[str, object]]:
+    """Détecteur de non-progrès (mêmes appels que le tour précédent). Issue via
+    st["action"] : "proceed" (on exécute les outils) ou "done" (repeat_stop,
+    l'event terminal a déjà été yieldé). Met à jour st["repeat_streak"] /
+    st["prev_sig_set"]."""
+    st["action"] = "proceed"
+    # Non-progrès : même jeu d'appels (outils+args) que le tour précédent ? On EXCLUT
+    # les outils d'exécution/vérification (_VERIFY_TOOLS) : re-lancer la même preuve est
+    # légitime. Un tour PUREMENT de vérif -> signature vide -> compté comme progrès (on
+    # ne coupe pas, on remet le compteur à zéro). Backstop ultime contre le vrai runaway :
+    # max_iters. Les boucles dégénérées (re-edit/re-write/re-read identiques) restent prises.
+    sig_set = frozenset(
+        f"{tc['name']}\x00{tc['arguments']}"
+        for tc in tool_calls
+        if tc["name"] not in _VERIFY_TOOLS
+    )
+    if not sig_set:
+        # Tour purement exécution/vérif : progrès légitime, on ne coupe pas et on
+        # laisse passer vers l'exécution des outils (surtout PAS de continue ici).
+        st["repeat_streak"] = 0
+        st["prev_sig_set"] = None
+        return
+    st["repeat_streak"] = (
+        st["repeat_streak"] + 1 if sig_set == st["prev_sig_set"] else 0
+    )
+    st["prev_sig_set"] = sig_set
+    # COUPÉ pour un modèle FORT (distant) : le seul backstop reste max_iters. Sur un
+    # petit modèle, la répétition = dégénérescence ; sur un fort, c'est presque
+    # toujours du légitime (le juger « bloqué » l'interrompt à tort).
+    if not strong and st["repeat_streak"] >= repeat_limit - 1:
+        log_event("guard", level="WARN", kind="repeat_stop")
+        yield (
+            "content",
+            "\n(arrêt : le modèle réémet les mêmes appels sans progresser).",
+        )
+        yield ("done", {"reason": "repeat_stop"})
+        st["action"] = "done"
+
+
+def _run_tools_parallel(
+    registry, tool_calls: list[dict], convo: list[dict], st: dict
+) -> Iterator[tuple[str, object]]:
+    """Exécute un tour d'outils PARALLEL-SAFE concurremment (1 thread par outil),
+    relaie l'activité live au fil de l'eau et recolle les résultats DANS L'ORDRE
+    dans `convo`. Met à jour st["executed"] / st["fail_count"]."""
+    import queue as _queue
+
+    _q: _queue.Queue = _queue.Queue()
+    _res: dict = {}  # id -> (result, ok, args)
+    # Signale à l'UI un GROUPE parallèle -> rendu en « arène » côté à côté (animation
+    # des agents qui tournent en même temps), pas des pastilles empilées.
+    yield (
+        "parallel",
+        {
+            "ids": [tc["id"] for tc in tool_calls],
+            "names": [tc["name"] for tc in tool_calls],
+        },
+    )
+    for _tc in tool_calls:  # pastilles d'abord : elles se rempliront en parallèle
+        yield ("tool_call", {"id": _tc["id"], "name": _tc["name"]})
+        log_event(
+            "tool.call",
+            name=_tc["name"],
+            args_len=len(_tc["arguments"] or ""),
+        )
+
+    def _pworker(tc):
+        name = tc["name"]
+        try:
+            pargs = json.loads(tc["arguments"] or "{}")
+        except json.JSONDecodeError:
+            _res[tc["id"]] = (
+                "erreur: arguments tronqués (réponse coupée).",
+                False,
+                {},
+            )
+            _q.put((tc["id"], "__done__", None))
+            return
+        try:
+            if registry.is_streaming(
+                name
+            ):  # dispatch_agent : activité relayée live (helper partagé)
+                r = "(le sous-agent n'a rien renvoyé)"
+                for ek, ep in _stream_tool_events(registry, tc["id"], name, pargs):
+                    if ek == "__result__":
+                        r = ep
+                    else:
+                        _q.put((tc["id"], ek, ep))
+            else:  # lecture/recherche : exécution directe
+                r = registry.run(name, pargs)
+            okp = not r.startswith("erreur")
+        except Exception as e:  # noqa: BLE001 - un outil qui casse n'arrête pas les autres
+            r, okp = f"erreur: {e}", False
+        _res[tc["id"]] = (r, okp, pargs)
+        _q.put((tc["id"], "__done__", None))
+
+    _threads = [
+        threading.Thread(target=_pworker, args=(tc,), daemon=True, name="loom-parallel")
+        for tc in tool_calls
+    ]
+    for _t in _threads:
+        _t.start()
+    _left = len(_threads)
+    while _left > 0:  # relaie l'activité live des N outils au fil de l'eau
+        _tid, _kind, _payload = _q.get()
+        if _kind == "__done__":
+            _left -= 1
+        else:
+            yield (_kind, _payload)
+    for _t in _threads:
+        _t.join()
+    for (
+        tc
+    ) in tool_calls:  # résultats DANS L'ORDRE (messages `tool` cohérents pour l'API)
+        name = tc["name"]
+        r, okp, pargs = _res.get(tc["id"], ("(vide)", False, {}))
+        convo.append({"role": "tool", "tool_call_id": tc["id"], "content": r})
+        if name == "dispatch_agent" and not str(r).startswith("refusé"):
+            st["executed"] = True
+        if not okp and name in _BUG_SIGNAL_TOOLS:
+            st["fail_count"] += 1
+        yield (
+            "tool_result",
+            _tool_result_payload(tc["id"], name, okp, r, pargs),
+        )
+
+
+def _run_tools_sequential(
+    tool_calls: list[dict],
+    registry,
+    permission,
+    confirm,
+    convo: list[dict],
+    strong: bool,
+    st: dict,
+) -> Iterator[tuple[str, object]]:
+    """Exécute les appels d'outils d'un tour, SÉQUENTIELLEMENT : permission/confirm,
+    garde-fou P1.1 (1 write par tour), images inline différées, anti sur-vérification.
+    Met à jour convo et st (executed, files_written, fail_count, verify_streak)."""
+    wrote_this_turn = False  # P1.1 : un seul write_file/append_file par tour
+    # Images inline (read_image) à faire VOIR au modèle : différées après TOUS
+    # les résultats d'outils (les messages `tool` doivent rester contigus).
+    image_followups: list[dict] = []
+    for tc in tool_calls:
+        name = tc["name"]
+        yield ("tool_call", {"id": tc["id"], "name": name})
+        log_event("tool.call", name=name, args_len=len(tc["arguments"] or ""))
+        _t_tool = time.monotonic()
+        try:
+            args = json.loads(tc["arguments"] or "{}")
+        except json.JSONDecodeError:
+            # Arguments tronqués (réponse coupée par max_tokens). NE PAS exécuter
+            # avec des args vides (erreur trompeuse 'path manquant') : signaler la
+            # troncature pour que le modèle réémette l'appel en plus court.
+            result = (
+                "erreur: arguments tronqués (réponse coupée). "
+                "Réémets cet appel d'outil, en plus court."
+            )
+            convo.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+            yield (
+                "tool_result",
+                {"id": tc["id"], "name": name, "ok": False, "preview": result},
+            )
+            continue
+        # P1.1 : sérialiser les écritures à gros contenu (1 par tour) -> évite le
+        # batch de N gros write_file/append_file qui sature max_tokens et tronque.
+        # Les éditions par bloc (edit/replace/insert) ne passent PAS par ici.
+        if name in _SERIAL_WRITE and wrote_this_turn:
+            result = (
+                "différé : un seul write_file/append_file par tour. Réémets "
+                "cet appel (seul) au prochain tour."
+            )
+            convo.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+            yield (
+                "tool_result",
+                {
+                    "id": tc["id"],
+                    "name": name,
+                    "ok": False,
+                    "preview": result,
+                    "path": args.get("path"),
+                },
+            )
+            continue
+        decision = permission(name, args) if permission else None
+        action = decision.action if decision else "allow"
+
+        if action == "deny":
+            # Garde-fou non contournable : jamais exécuté.
+            result = f"refusé par la politique de sécurité: {decision.reason}"
+            ok = False
+        elif action == "ask":
+            # Confirmation interactive : on signale l'UI puis on ATTEND la
+            # décision via `confirm` (bloquant). Refus par défaut sans confirm.
+            summary = str(args.get("command") or args.get("path") or "")
+            yield (
+                "tool_request",
+                {"id": tc["id"], "name": name, "summary": summary},
+            )
+            if confirm and confirm(tc["id"], name, args):
+                result = (
+                    registry.run(name, args) if registry else "erreur: pas d'outils"
+                )
+                ok = not result.startswith("erreur")
+            else:
+                result = "refusé par l'utilisateur"
+                ok = False
+        elif registry and registry.is_streaming(name):  # allow + streamant
+            # Outil streamant (dispatch_agent) : activité relayée EN DIRECT dans
+            # sa pastille, synthèse reconstruite (helper partagé avec le parallèle).
+            result = "(le sous-agent n'a rien renvoyé)"
+            for ek, ep in _stream_tool_events(registry, tc["id"], name, args):
+                if ek == "__result__":
+                    result = ep
+                else:
+                    yield (ek, ep)
+            ok = not result.startswith("erreur")
+        else:  # allow
+            result = registry.run(name, args) if registry else "erreur: pas d'outils"
+            ok = not result.startswith("erreur")
+
+        # read_image renvoie une image inline encodée : on ne met qu'un accusé
+        # TEXTE dans le message `tool` (pas de base64 géant), et on diffère le
+        # message `user` multimodal qui fera réellement VOIR l'image au modèle.
+        if is_inline_image(result):
+            caption, data_url = parse_inline_image(result)
+            tool_content = f"[image « {caption} » chargée — fournie ci-dessous]"
+            image_followups.append(image_user_message(caption, data_url))
+            ok = True
+        else:
+            tool_content = result
+        # Anti SUR-VÉRIFICATION (informatif, jamais bloquant) : au-delà de
+        # _VERIFY_STREAK_NOTE checks navigateur VERTS d'affilée sans changement
+        # d'état entre-temps, le résultat le dit au modèle. On n'empêche RIEN
+        # (les checks restent exclus du non-progrès : re-prouver est légitime) ;
+        # on nomme la preuve déjà faite. Coupé pour un modèle fort (strong).
+        st["verify_streak"] = _verify_streak_update(name, ok, st["verify_streak"])
+        if (
+            not strong
+            and ok
+            and name in _BROWSER_CHECKS
+            and st["verify_streak"] >= _VERIFY_STREAK_NOTE
+        ):
+            tool_content += (
+                f"\n[harnais : {st['verify_streak']} vérifications vertes d'affilée "
+                "sans changement d'état entre-temps — la preuve est faite. "
+                "Conclus MAINTENANT ; ne re-vérifie que si tu modifies "
+                "quelque chose.]"
+            )
+        convo.append(
+            {"role": "tool", "tool_call_id": tc["id"], "content": tool_content}
+        )
+        log_event(
+            "tool.result",
+            name=name,
+            ok=ok,
+            ms=round((time.monotonic() - _t_tool) * 1000),
+            preview=str(tool_content)[:90],
+        )
+        yield (
+            "tool_result",
+            _tool_result_payload(tc["id"], name, ok, tool_content, args),
+        )
+        if name in _SERIAL_WRITE:
+            wrote_this_turn = True
+        # Suivi pour l'audit de claim : une EXÉCUTION réelle (run_shell/dispatch,
+        # même en échec mais hors refus de permission) et les FICHIERS écrits.
+        if name in ("run_shell", "dispatch_agent") and not str(result).startswith(
+            "refusé"
+        ):
+            st["executed"] = True
+        if ok and name in _WRITE_TOOLS and args.get("path"):
+            st["files_written"].add(args["path"])
+        # Cascade de bugs : on compte les échecs des outils d'EXÉCUTION/VÉRIF (pas les
+        # erreurs d'usage type ligne hors limite). Au 2e échec, on IMPOSE la méthode debug.
+        if not ok and name in _BUG_SIGNAL_TOOLS:
+            st["fail_count"] += 1
+    convo.extend(image_followups)  # images vues au tour suivant
+
+
 class LoomClient:
     def __init__(
         self,
@@ -1543,6 +2089,320 @@ class LoomClient:
             _close(stream)
             _debug("REPONSE <- modele", {"reasoning": reasoning, "content": content})
 
+    def _preventive_compaction(
+        self,
+        convo: list[dict],
+        system_prompt: str,
+        model: str | None,
+        compact_after_tokens: int | None,
+        keep_recent_tools: int,
+        refocus_note: bool,
+        st: dict,
+    ) -> Iterator[tuple[str, object]]:
+        """Compaction PRÉVENTIVE avant l'appel modèle : microcompact des vieux
+        résultats d'outils, puis force-fit si un résultat RÉCENT est géant (local).
+        Ne stoppe jamais le tour ; met à jour st["refocus_done"]."""
+        # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
+        # résultats d'outils AVANT d'appeler le modèle (évite l'overflow sur une
+        # chaîne longue). Estimation grossière ~4 car./token, comme loom.context.
+        if not compact_after_tokens:
+            return
+        # ~3 car./token (et non 4) : code/TSX/JSON tokenise plus dense que de la prose.
+        # Surestimer fait déclencher la compaction PLUS TÔT — biais voulu (on ne vide
+        # que les vieux résultats), pour ne pas heurter la fenêtre par sous-comptage.
+        approx = (
+            len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
+        ) // 3
+        if approx <= compact_after_tokens:
+            return
+        cleared = _microcompact_tools(convo, keep_recent_tools)
+        if cleared:
+            _debug(
+                "MICROCOMPACT",
+                f"{cleared} résultat(s) d'outil allégé(s) (~{approx} tokens "
+                f"> seuil {compact_after_tokens}).",
+            )
+            # Jauge à jour TOUT DE SUITE (sinon elle reste au pic tant que
+            # l'appel suivant n'a pas rendu son usage réel).
+            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
+        # ESCALADE PRÉVENTIVE : vider les vieux résultats ne suffit pas quand UN
+        # résultat RÉCENT est géant (ex. read_file d'un gros JSON minifié -> 74k
+        # car.) — le microcompact le GARDE (il fait partie des récents). Résultat :
+        # avant, on touchait quand même l'overflow (400 / pic à 100 %) et on ne
+        # rattrapait qu'en réactif. Ici, si ça déborde ENCORE, on FORCE-FIT AVANT
+        # l'appel -> plus jamais de 400. Local uniquement (le distant gère sa
+        # fenêtre lui-même).
+        if (
+            not self.is_remote(model)
+            and _ctx_estimate(system_prompt, convo) > compact_after_tokens
+        ):
+            # Budget PLANCHER = prompt système (incompressible) + un jeu de
+            # travail minimal. Sans lui, un seuil plus petit que le prompt
+            # système rend le budget INATTEIGNABLE : le force-fit détruit
+            # alors tout le travail récent À CHAQUE tour (résultat du dernier
+            # read compris) -> le modèle relit en boucle -> repeat_stop
+            # (vécu en éval, cas context_squeeze).
+            _force_fit(
+                convo,
+                system_prompt,
+                max(compact_after_tokens * 3, len(system_prompt) + 4000),
+            )
+            if refocus_note and not st["refocus_done"]:
+                st["refocus_done"] = True
+                convo.append({"role": "user", "content": _REFOCUS_NOTE})
+            _debug(
+                "FORCE_FIT_PREVENTIF",
+                f"un résultat récent trop gros -> clip avant l'appel "
+                f"(~{_ctx_estimate(system_prompt, convo)} tokens <= seuil "
+                f"{compact_after_tokens}).",
+            )
+            yield (
+                "tool_result",
+                {
+                    "name": "(compaction préventive)",
+                    "ok": True,
+                    "preview": (
+                        "Contexte réduit AVANT saturation (un résultat récent "
+                        "trop gros pour la fenêtre). Je continue."
+                    ),
+                },
+            )
+            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
+
+    def _handle_stream_api_error(
+        self,
+        exc: Exception,
+        convo: list[dict],
+        system_prompt: str,
+        model: str | None,
+        compact_after_tokens: int | None,
+        max_overflow_retries: int,
+        max_summaries: int,
+        refocus_note: bool,
+        st: dict,
+    ) -> Iterator[tuple[str, object]]:
+        """Erreur pendant l'appel modèle : échelle context_overflow (étages 1-4),
+        output_overflow, puis erreurs non récupérables. Issue via st["action"] :
+        "continue" (relancer le même tour) ou "done" (l'event terminal ('done', …)
+        a déjà été yieldé). Met à jour overflow_retries / summary_retries /
+        force_fits / refocus_done dans st."""
+        kind = _classify_stream_error(exc)
+        log_event("api.error", level="WARN", kind=kind, msg=str(exc)[:140])
+        # DÉBORDEMENT D'ENTRÉE : la requête (prompt + historique + résultats d'outils
+        # accumulés) dépasse la fenêtre de contexte. On NE crashe PAS et on ne demande
+        # PAS « écris plus court » (ça vise la sortie) : on COMPACTE DUR — on vide TOUS
+        # les vieux résultats d'outils (pas seulement au-delà des 4 derniers), de plus
+        # en plus agressivement à chaque retry — puis on RELANCE le même tour. Le modèle
+        # reprend avec SES messages (ce qu'il a déjà fait) intacts ; les gros résultats
+        # d'outils deviennent le placeholder _CLEARED_TOOL (qui dit de ne pas refaire).
+        if kind == "context_overflow":
+            # Jauge HONNÊTE : la requête qui vient d'échouer a dépassé la fenêtre,
+            # mais un 400 ne rend pas d'usage -> la jauge serait restée au dernier
+            # appel réussi (ex. 66 %), donnant l'impression qu'on compacte trop tôt.
+            # On pousse l'estimation du contexte VIVANT (qui a débordé) : la jauge
+            # monte au pic (~100 %) AVANT la compaction, puis redescend après.
+            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
+            # ÉTAGE 1-2 : vider les vieux résultats d'outils (sans LLM, sûr, gratuit).
+            if st["overflow_retries"] < max_overflow_retries:
+                st["overflow_retries"] += 1
+                keep = (
+                    1 if st["overflow_retries"] == 1 else 0
+                )  # 2e retry : on vide tout
+                cleared = _microcompact_tools(convo, keep)
+                log_event(
+                    "guard",
+                    level="WARN",
+                    kind="context_overflow",
+                    retry=st["overflow_retries"],
+                    cleared=cleared,
+                )
+                _debug(
+                    "CONTEXT_OVERFLOW",
+                    f"compaction dure (keep={keep}) : {cleared} résultat(s) d'outil "
+                    f"vidé(s), retry {st['overflow_retries']}/{max_overflow_retries}.",
+                )
+                yield (
+                    "tool_result",
+                    {
+                        "name": "(compaction)",
+                        "ok": True,
+                        "preview": (
+                            f"Contexte saturé : {cleared} ancien(s) résultat(s) "
+                            "d'outil allégé(s) pour libérer de la place. Je reprends "
+                            "où j'en étais."
+                        ),
+                    },
+                )
+                yield (
+                    "context_estimate",
+                    {"tokens": _ctx_estimate(system_prompt, convo)},
+                )
+                st["action"] = "continue"
+                return
+            # ÉTAGE 3 : les tool results sont tous vidés et ça déborde encore -> ce
+            # sont les TOURS du modèle qui saturent. On RÉSUME les vieux tours en un
+            # bloc dense (anglais) et on poursuit, au lieu d'abandonner. Une seule
+            # fois (max_summaries) ; borné pour ne pas boucler.
+            # LOCAL UNIQUEMENT : un distant a une grande fenêtre + gère son propre
+            # contexte/cache ; on ne réécrit pas son historique (cache-bust). S'il
+            # déborde vraiment (rare), on tombe sur l'arrêt propre ci-dessous.
+            if not self.is_remote(model) and st["summary_retries"] < max_summaries:
+                st["summary_retries"] += 1
+                # VISIBLE pendant le résumé (appel modèle bloquant, muet) : label
+                # d'activité « compaction… » comme « le modèle tourne », sinon
+                # l'UI paraît figée. Effacé dès que le tool_result/texte reprend.
+                yield ("status", {"label": "compaction du contexte (résumé)…"})
+                collapsed = self.summarize_old_turns(
+                    convo, model, keep_recent=6, budget_chars=30000
+                )
+                if collapsed:
+                    st["overflow_retries"] = (
+                        0  # convo réduit : le microcompact peut resservir
+                    )
+                    log_event(
+                        "guard",
+                        level="WARN",
+                        kind="context_summarized",
+                        collapsed=collapsed,
+                    )
+                    _debug(
+                        "CONTEXT_SUMMARY",
+                        f"{collapsed} ancien(s) tour(s) résumé(s) en un bloc, "
+                        "reprise à partir du résumé.",
+                    )
+                    yield (
+                        "tool_result",
+                        {
+                            "name": "(résumé de session)",
+                            "ok": True,
+                            "preview": (
+                                f"Contexte saturé : {collapsed} anciens tours "
+                                "résumés en un bloc dense pour libérer de la place. "
+                                "Je reprends à partir du résumé."
+                            ),
+                        },
+                    )
+                    yield (
+                        "context_estimate",
+                        {"tokens": _ctx_estimate(system_prompt, convo)},
+                    )
+                    st["action"] = "continue"
+                    return
+            # ÉTAGE 4 : FORCE-FIT déterministe (AUCUN LLM) — on ne s'arrête JAMAIS
+            # pour saturation. Le résumé a gardé des messages récents encore trop
+            # gros ? On CLIPPE le contexte vivant sous un budget qui RÉTRÉCIT à chaque
+            # passe (géométrique : contre l'erreur d'estimation chars/token et le cas
+            # où même clippé ça re-déborde), puis on relance. Converge toujours.
+            st["force_fits"] += 1
+            shrink = max(0.12, 0.7 ** st["force_fits"])
+            base = compact_after_tokens or _ctx_estimate(system_prompt, convo) or 8000
+            # Même plancher « système + minimal » qu'au préventif : la pression
+            # géométrique s'applique au CONVO, pas à l'incompressible. Si le
+            # prompt système seul dépasse la vraie fenêtre, on finit sur l'arrêt
+            # context_irreducible (cas anormal), pas sur une destruction stérile.
+            budget = max(len(system_prompt) + 1500, int(base * 3 * shrink))
+            _force_fit(convo, system_prompt, budget)
+            if refocus_note and not st["refocus_done"]:
+                st["refocus_done"] = True
+                convo.append({"role": "user", "content": _REFOCUS_NOTE})
+            log_event(
+                "guard",
+                level="WARN",
+                kind="context_force_fit",
+                force_fit=st["force_fits"],
+                est_tokens=_ctx_estimate(system_prompt, convo),
+            )
+            _debug(
+                "FORCE_FIT",
+                f"passe {st['force_fits']} : contexte clippé sous ~{budget} car. "
+                f"(~{_ctx_estimate(system_prompt, convo)} tokens), reprise.",
+            )
+            yield (
+                "tool_result",
+                {
+                    "name": "(compaction forcée)",
+                    "ok": True,
+                    "preview": (
+                        f"Contexte réduit de force (passe {st['force_fits']}) pour tenir "
+                        "dans la fenêtre. Je continue."
+                    ),
+                },
+            )
+            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
+            if st["force_fits"] < 8:
+                st["action"] = "continue"
+                return
+            # Garde-fou ANTI-RUNAWAY : après 8 réductions géométriques (budget ~12 %
+            # du seuil), si ça déborde ENCORE, c'est dégénéré (prompt système ~ la
+            # fenêtre entière) — là seulement, on s'arrête pour ne pas boucler.
+            yield (
+                "content",
+                "\n[génération interrompue : contexte irréductible même après "
+                "compaction forcée — cas anormal (prompt système trop grand pour la "
+                "fenêtre ?). Le travail déjà écrit est conservé.]",
+            )
+            yield ("done", {"reason": "context_irreducible"})
+            st["action"] = "done"
+            return
+        # OVERFLOW : tool_call vraisemblablement tronqué par max_tokens (5xx ou
+        # erreur sans statut). On NE crashe PAS : on demande de découper et on
+        # relance (reprise bornée par max_overflow_retries), sinon stop propre.
+        if kind == "overflow":
+            if st["overflow_retries"] >= max_overflow_retries:
+                yield (
+                    "content",
+                    f"\n[génération interrompue : {str(exc)[:160]}. "
+                    "Fichiers déjà écrits conservés.]",
+                )
+                yield ("done", {"reason": "output_overflow"})
+                st["action"] = "done"
+                return
+            st["overflow_retries"] += 1
+            log_event(
+                "guard",
+                level="WARN",
+                kind="output_overflow",
+                retry=st["overflow_retries"],
+            )
+            note = (
+                "Ta réponse précédente était trop longue et a été tronquée par "
+                "la limite de tokens. Écris des fichiers PLUS PETITS : un seul "
+                "fichier par appel write_file, et découpe tout contenu volumineux "
+                "en plusieurs fichiers/appels successifs. Reprends, en plus court."
+            )
+            convo.append({"role": "user", "content": note})
+            yield (
+                "tool_result",
+                {"name": "(génération)", "ok": False, "preview": note},
+            )
+            st["action"] = "continue"
+            return
+        # Erreurs NON récupérables : pas un overflow -> message clair et stop net,
+        # PAS de « écris plus court » trompeur ni de retry voué à re-échouer.
+        reason = {
+            "timeout": (
+                "le serveur a mis trop de temps à répondre (timeout) — souvent "
+                "un long recalcul de contexte (après compaction) ; relance, le "
+                "cache rend la reprise plus rapide."
+            ),
+            # « injoignable » : dire QUOI lancer — loom.web tourne forcément (il
+            # affiche ce message), c'est le serveur MODÈLE qui manque (ou l'API).
+            "connection": (
+                "API distante injoignable (réseau ou base_url à vérifier)."
+                if self.is_remote(model or self.model)
+                else "serveur de modèle local injoignable — lance la stack "
+                "modèle (llama-swap / serve) ou choisis un modèle distant."
+            ),
+            "model_not_found": (
+                f"modèle « {model or self.model} » introuvable ou non chargé "
+                "(vérifie le modèle sélectionné)."
+            ),
+            "other": f"erreur du serveur de modèle : {str(exc)[:160]}",
+        }[kind]
+        yield ("content", f"\n[génération interrompue : {reason}]")
+        yield ("done", {"reason": "api_error", "kind": kind})
+        st["action"] = "done"
+
     def stream_chat_tools(
         self,
         messages: list[dict],
@@ -1606,113 +2466,44 @@ class LoomClient:
         # local ou distant selon l'id, et coupe les extra_body llama.cpp si distant.
         oai, api_model, native = self._resolve(model)
         tools = registry.openai_tools() if registry else None
-        overflow_retries = 0
-        summary_retries = 0  # nb de compactions PAR RÉSUMÉ déjà tentées
-        force_fits = 0  # nb de réductions DÉTERMINISTES forcées (dernier recours, jamais d'arrêt)
-        prev_sig_set = None  # jeu d'appels du tour précédent (détecteur de non-progrès)
-        repeat_streak = 0
-        executed = (
-            False  # un run_shell / dispatch_agent a-t-il réellement tourné ce tour ?
-        )
-        files_written: set[str] = set()  # chemins écrits avec succès ce tour (couche A)
-        act_nudges = 0  # nb de relances « passe de la parole à l'acte » déjà émises
-        length_continues = 0  # nb de relances « continue » sur troncature max_tokens
-        loop_breaks = 0  # nb de coupes « tu répètes la même phrase, agis » déjà émises
-        fail_count = (
-            0  # échecs cumulés d'outils d'exécution/vérif ce tour (cascade de bugs)
-        )
-        debug_forced = False  # méthode debug déjà imposée ce tour ? (anti-nag)
-        refocus_done = (
-            False  # note de recentrage post-force-fit déjà émise ? (une seule)
-        )
-        empty_retries = 0  # nb de relances sur réponse VIDE (0 texte, 0 tool call)
-        verify_streak = 0  # checks navigateur verts consécutifs (anti sur-vérification)
-
-        def _ctx_est() -> int:
-            # Estimation ~3 car./token du contexte VIVANT (prompt + convo courant). Sert à
-            # rafraîchir la jauge IMMÉDIATEMENT après une compaction, sans attendre l'usage
-            # réel du prochain appel (sinon la jauge reste au pic pendant tout l'appel suivant).
-            return (
-                len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
-            ) // 3
+        # État PARTAGÉ de la boucle : compteurs/garde-fous mutés par les sous-
+        # générateurs privés. "action" porte l'issue posée par chaque helper :
+        # "continue" (relancer le tour), "done" (sortie — l'event terminal
+        # ('done', …) a déjà été yieldé) ou "proceed" (on poursuit le tour).
+        st: dict = {
+            "overflow_retries": 0,
+            "summary_retries": 0,  # nb de compactions PAR RÉSUMÉ déjà tentées
+            "force_fits": 0,  # nb de réductions DÉTERMINISTES forcées (dernier recours, jamais d'arrêt)
+            "prev_sig_set": None,  # jeu d'appels du tour précédent (détecteur de non-progrès)
+            "repeat_streak": 0,
+            "executed": False,  # un run_shell / dispatch_agent a-t-il réellement tourné ce tour ?
+            "files_written": set(),  # chemins écrits avec succès ce tour (couche A)
+            "act_nudges": 0,  # nb de relances « passe de la parole à l'acte » déjà émises
+            "length_continues": 0,  # nb de relances « continue » sur troncature max_tokens
+            "loop_breaks": 0,  # nb de coupes « tu répètes la même phrase, agis » déjà émises
+            "fail_count": 0,  # échecs cumulés d'outils d'exécution/vérif ce tour (cascade de bugs)
+            "debug_forced": False,  # méthode debug déjà imposée ce tour ? (anti-nag)
+            "refocus_done": False,  # note de recentrage post-force-fit déjà émise ? (une seule)
+            "empty_retries": 0,  # nb de relances sur réponse VIDE (0 texte, 0 tool call)
+            "verify_streak": 0,  # checks navigateur verts consécutifs (anti sur-vérification)
+            "text": "",  # texte accumulé du dernier appel modèle
+            "reasoning": "",  # raisonnement accumulé du dernier appel modèle
+            "action": "",  # issue posée par le dernier sous-générateur
+        }
 
         for _ in range(max_iters):
-            # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
-            # résultats d'outils AVANT d'appeler le modèle (évite l'overflow sur une
-            # chaîne longue). Estimation grossière ~4 car./token, comme loom.context.
-            if compact_after_tokens:
-                # ~3 car./token (et non 4) : code/TSX/JSON tokenise plus dense que de la prose.
-                # Surestimer fait déclencher la compaction PLUS TÔT — biais voulu (on ne vide
-                # que les vieux résultats), pour ne pas heurter la fenêtre par sous-comptage.
-                approx = (
-                    len(system_prompt)
-                    + sum(_msg_chars(m.get("content")) for m in convo)
-                ) // 3
-                if approx > compact_after_tokens:
-                    cleared = _microcompact_tools(convo, keep_recent_tools)
-                    if cleared:
-                        _debug(
-                            "MICROCOMPACT",
-                            f"{cleared} résultat(s) d'outil allégé(s) (~{approx} tokens "
-                            f"> seuil {compact_after_tokens}).",
-                        )
-                        # Jauge à jour TOUT DE SUITE (sinon elle reste au pic tant que
-                        # l'appel suivant n'a pas rendu son usage réel).
-                        yield ("context_estimate", {"tokens": _ctx_est()})
-                    # ESCALADE PRÉVENTIVE : vider les vieux résultats ne suffit pas quand UN
-                    # résultat RÉCENT est géant (ex. read_file d'un gros JSON minifié -> 74k
-                    # car.) — le microcompact le GARDE (il fait partie des récents). Résultat :
-                    # avant, on touchait quand même l'overflow (400 / pic à 100 %) et on ne
-                    # rattrapait qu'en réactif. Ici, si ça déborde ENCORE, on FORCE-FIT AVANT
-                    # l'appel -> plus jamais de 400. Local uniquement (le distant gère sa
-                    # fenêtre lui-même).
-                    if not self.is_remote(model) and _ctx_est() > compact_after_tokens:
-                        # Budget PLANCHER = prompt système (incompressible) + un jeu de
-                        # travail minimal. Sans lui, un seuil plus petit que le prompt
-                        # système rend le budget INATTEIGNABLE : le force-fit détruit
-                        # alors tout le travail récent À CHAQUE tour (résultat du dernier
-                        # read compris) -> le modèle relit en boucle -> repeat_stop
-                        # (vécu en éval, cas context_squeeze).
-                        _force_fit(
-                            convo,
-                            system_prompt,
-                            max(compact_after_tokens * 3, len(system_prompt) + 4000),
-                        )
-                        if refocus_note and not refocus_done:
-                            refocus_done = True
-                            convo.append({"role": "user", "content": _REFOCUS_NOTE})
-                        _debug(
-                            "FORCE_FIT_PREVENTIF",
-                            f"un résultat récent trop gros -> clip avant l'appel "
-                            f"(~{_ctx_est()} tokens <= seuil {compact_after_tokens}).",
-                        )
-                        yield (
-                            "tool_result",
-                            {
-                                "name": "(compaction préventive)",
-                                "ok": True,
-                                "preview": (
-                                    "Contexte réduit AVANT saturation (un résultat récent "
-                                    "trop gros pour la fenêtre). Je continue."
-                                ),
-                            },
-                        )
-                        yield ("context_estimate", {"tokens": _ctx_est()})
-            # Notes en vol : les remarques utilisateur arrivées pendant le tour sont
-            # injectées MAINTENANT (juste avant l'appel modèle = le point d'arrêt),
-            # sans interrompre quoi que ce soit. L'appelant reçoit l'event 'note'
-            # pour persister/afficher exactement ce qui a été injecté.
-            if notes_provider is not None:
-                try:
-                    for _raw_note in notes_provider() or []:
-                        _wrapped = (
-                            "[User note received mid-turn — take it into account "
-                            f"and continue the task] {_raw_note}"
-                        )
-                        convo.append({"role": "user", "content": _wrapped})
-                        yield ("note", _wrapped)
-                except Exception as _e:  # noqa: BLE001 - notes best-effort
-                    _debug("NOTES_ERR", str(_e))
+            # Compaction préventive (microcompact + force-fit) AVANT l'appel modèle.
+            yield from self._preventive_compaction(
+                convo,
+                system_prompt,
+                model,
+                compact_after_tokens,
+                keep_recent_tools,
+                refocus_note,
+                st,
+            )
+            # Notes en vol injectées au point d'arrêt (juste avant l'appel modèle).
+            yield from _inject_notes(notes_provider, convo)
             kwargs = build_create_kwargs(
                 api_model,
                 convo,
@@ -1724,269 +2515,34 @@ class LoomClient:
             )
             _debug_messages(kwargs["model"], kwargs["messages"])
             collector: dict = {"tool_calls": [], "finish_reason": None}
-            text = ""
-            reasoning = ""
-            saw_usage = False
-            _first_byte = True
-            log_event(
-                "turn.request",
-                model=api_model,
-                msgs=len(convo),
-                tools=bool(tools),
-                thinking=thinking,
-            )
-            _t_req = time.monotonic()
             try:
-                stream = oai.chat.completions.create(**kwargs)
-                try:
-                    for kind, chunk in _iter_turn(stream, collector):
-                        if _first_byte:
-                            _first_byte = False
-                            log_event(
-                                "stream.first_byte",
-                                ms=round((time.monotonic() - _t_req) * 1000),
-                            )
-                        if kind == "content":
-                            text += chunk
-                        elif kind == "reasoning":
-                            reasoning += chunk
-                        elif kind == "usage":
-                            saw_usage = True
-                            log_event(
-                                "usage",
-                                prompt=chunk.get("prompt_tokens"),
-                                completion=chunk.get("completion_tokens"),
-                                total=chunk.get("total_tokens"),
-                            )
-                        yield (kind, chunk)
-                finally:
-                    _close(stream)
-                if not saw_usage:
-                    # Provider sans include_usage : estimation pour garder ↑/↓ vivants.
-                    yield (
-                        "usage",
-                        _estimate_usage(
-                            system_prompt,
-                            convo,
-                            text,
-                            reasoning,
-                            collector["tool_calls"],
-                        ),
-                    )
-                _debug(
-                    "REPONSE <- modele",
-                    {
-                        "reasoning": reasoning,
-                        "content": text,
-                        "tool_calls": collector["tool_calls"],
-                        "finish_reason": collector["finish_reason"],
-                    },
+                yield from _stream_model_turn(
+                    oai,
+                    api_model,
+                    kwargs,
+                    system_prompt,
+                    convo,
+                    collector,
+                    tools,
+                    thinking,
+                    st,
                 )
             except (APIError, httpx.HTTPError) as exc:
-                kind = _classify_stream_error(exc)
-                log_event("api.error", level="WARN", kind=kind, msg=str(exc)[:140])
-                # DÉBORDEMENT D'ENTRÉE : la requête (prompt + historique + résultats d'outils
-                # accumulés) dépasse la fenêtre de contexte. On NE crashe PAS et on ne demande
-                # PAS « écris plus court » (ça vise la sortie) : on COMPACTE DUR — on vide TOUS
-                # les vieux résultats d'outils (pas seulement au-delà des 4 derniers), de plus
-                # en plus agressivement à chaque retry — puis on RELANCE le même tour. Le modèle
-                # reprend avec SES messages (ce qu'il a déjà fait) intacts ; les gros résultats
-                # d'outils deviennent le placeholder _CLEARED_TOOL (qui dit de ne pas refaire).
-                if kind == "context_overflow":
-                    # Jauge HONNÊTE : la requête qui vient d'échouer a dépassé la fenêtre,
-                    # mais un 400 ne rend pas d'usage -> la jauge serait restée au dernier
-                    # appel réussi (ex. 66 %), donnant l'impression qu'on compacte trop tôt.
-                    # On pousse l'estimation du contexte VIVANT (qui a débordé) : la jauge
-                    # monte au pic (~100 %) AVANT la compaction, puis redescend après.
-                    yield ("context_estimate", {"tokens": _ctx_est()})
-                    # ÉTAGE 1-2 : vider les vieux résultats d'outils (sans LLM, sûr, gratuit).
-                    if overflow_retries < max_overflow_retries:
-                        overflow_retries += 1
-                        keep = (
-                            1 if overflow_retries == 1 else 0
-                        )  # 2e retry : on vide tout
-                        cleared = _microcompact_tools(convo, keep)
-                        log_event(
-                            "guard",
-                            level="WARN",
-                            kind="context_overflow",
-                            retry=overflow_retries,
-                            cleared=cleared,
-                        )
-                        _debug(
-                            "CONTEXT_OVERFLOW",
-                            f"compaction dure (keep={keep}) : {cleared} résultat(s) d'outil "
-                            f"vidé(s), retry {overflow_retries}/{max_overflow_retries}.",
-                        )
-                        yield (
-                            "tool_result",
-                            {
-                                "name": "(compaction)",
-                                "ok": True,
-                                "preview": (
-                                    f"Contexte saturé : {cleared} ancien(s) résultat(s) "
-                                    "d'outil allégé(s) pour libérer de la place. Je reprends "
-                                    "où j'en étais."
-                                ),
-                            },
-                        )
-                        yield ("context_estimate", {"tokens": _ctx_est()})
-                        continue
-                    # ÉTAGE 3 : les tool results sont tous vidés et ça déborde encore -> ce
-                    # sont les TOURS du modèle qui saturent. On RÉSUME les vieux tours en un
-                    # bloc dense (anglais) et on poursuit, au lieu d'abandonner. Une seule
-                    # fois (max_summaries) ; borné pour ne pas boucler.
-                    # LOCAL UNIQUEMENT : un distant a une grande fenêtre + gère son propre
-                    # contexte/cache ; on ne réécrit pas son historique (cache-bust). S'il
-                    # déborde vraiment (rare), on tombe sur l'arrêt propre ci-dessous.
-                    if not self.is_remote(model) and summary_retries < max_summaries:
-                        summary_retries += 1
-                        # VISIBLE pendant le résumé (appel modèle bloquant, muet) : label
-                        # d'activité « compaction… » comme « le modèle tourne », sinon
-                        # l'UI paraît figée. Effacé dès que le tool_result/texte reprend.
-                        yield ("status", {"label": "compaction du contexte (résumé)…"})
-                        collapsed = self.summarize_old_turns(
-                            convo, model, keep_recent=6, budget_chars=30000
-                        )
-                        if collapsed:
-                            overflow_retries = (
-                                0  # convo réduit : le microcompact peut resservir
-                            )
-                            log_event(
-                                "guard",
-                                level="WARN",
-                                kind="context_summarized",
-                                collapsed=collapsed,
-                            )
-                            _debug(
-                                "CONTEXT_SUMMARY",
-                                f"{collapsed} ancien(s) tour(s) résumé(s) en un bloc, "
-                                "reprise à partir du résumé.",
-                            )
-                            yield (
-                                "tool_result",
-                                {
-                                    "name": "(résumé de session)",
-                                    "ok": True,
-                                    "preview": (
-                                        f"Contexte saturé : {collapsed} anciens tours "
-                                        "résumés en un bloc dense pour libérer de la place. "
-                                        "Je reprends à partir du résumé."
-                                    ),
-                                },
-                            )
-                            yield ("context_estimate", {"tokens": _ctx_est()})
-                            continue
-                    # ÉTAGE 4 : FORCE-FIT déterministe (AUCUN LLM) — on ne s'arrête JAMAIS
-                    # pour saturation. Le résumé a gardé des messages récents encore trop
-                    # gros ? On CLIPPE le contexte vivant sous un budget qui RÉTRÉCIT à chaque
-                    # passe (géométrique : contre l'erreur d'estimation chars/token et le cas
-                    # où même clippé ça re-déborde), puis on relance. Converge toujours.
-                    force_fits += 1
-                    shrink = max(0.12, 0.7**force_fits)
-                    base = compact_after_tokens or _ctx_est() or 8000
-                    # Même plancher « système + minimal » qu'au préventif : la pression
-                    # géométrique s'applique au CONVO, pas à l'incompressible. Si le
-                    # prompt système seul dépasse la vraie fenêtre, on finit sur l'arrêt
-                    # context_irreducible (cas anormal), pas sur une destruction stérile.
-                    budget = max(len(system_prompt) + 1500, int(base * 3 * shrink))
-                    _force_fit(convo, system_prompt, budget)
-                    if refocus_note and not refocus_done:
-                        refocus_done = True
-                        convo.append({"role": "user", "content": _REFOCUS_NOTE})
-                    log_event(
-                        "guard",
-                        level="WARN",
-                        kind="context_force_fit",
-                        force_fit=force_fits,
-                        est_tokens=_ctx_est(),
-                    )
-                    _debug(
-                        "FORCE_FIT",
-                        f"passe {force_fits} : contexte clippé sous ~{budget} car. "
-                        f"(~{_ctx_est()} tokens), reprise.",
-                    )
-                    yield (
-                        "tool_result",
-                        {
-                            "name": "(compaction forcée)",
-                            "ok": True,
-                            "preview": (
-                                f"Contexte réduit de force (passe {force_fits}) pour tenir "
-                                "dans la fenêtre. Je continue."
-                            ),
-                        },
-                    )
-                    yield ("context_estimate", {"tokens": _ctx_est()})
-                    if force_fits < 8:
-                        continue
-                    # Garde-fou ANTI-RUNAWAY : après 8 réductions géométriques (budget ~12 %
-                    # du seuil), si ça déborde ENCORE, c'est dégénéré (prompt système ~ la
-                    # fenêtre entière) — là seulement, on s'arrête pour ne pas boucler.
-                    yield (
-                        "content",
-                        "\n[génération interrompue : contexte irréductible même après "
-                        "compaction forcée — cas anormal (prompt système trop grand pour la "
-                        "fenêtre ?). Le travail déjà écrit est conservé.]",
-                    )
-                    yield ("done", {"reason": "context_irreducible"})
+                yield from self._handle_stream_api_error(
+                    exc,
+                    convo,
+                    system_prompt,
+                    model,
+                    compact_after_tokens,
+                    max_overflow_retries,
+                    max_summaries,
+                    refocus_note,
+                    st,
+                )
+                if st["action"] == "done":
                     return
-                # OVERFLOW : tool_call vraisemblablement tronqué par max_tokens (5xx ou
-                # erreur sans statut). On NE crashe PAS : on demande de découper et on
-                # relance (reprise bornée par max_overflow_retries), sinon stop propre.
-                if kind == "overflow":
-                    if overflow_retries >= max_overflow_retries:
-                        yield (
-                            "content",
-                            f"\n[génération interrompue : {str(exc)[:160]}. "
-                            "Fichiers déjà écrits conservés.]",
-                        )
-                        yield ("done", {"reason": "output_overflow"})
-                        return
-                    overflow_retries += 1
-                    log_event(
-                        "guard",
-                        level="WARN",
-                        kind="output_overflow",
-                        retry=overflow_retries,
-                    )
-                    note = (
-                        "Ta réponse précédente était trop longue et a été tronquée par "
-                        "la limite de tokens. Écris des fichiers PLUS PETITS : un seul "
-                        "fichier par appel write_file, et découpe tout contenu volumineux "
-                        "en plusieurs fichiers/appels successifs. Reprends, en plus court."
-                    )
-                    convo.append({"role": "user", "content": note})
-                    yield (
-                        "tool_result",
-                        {"name": "(génération)", "ok": False, "preview": note},
-                    )
-                    continue
-                # Erreurs NON récupérables : pas un overflow -> message clair et stop net,
-                # PAS de « écris plus court » trompeur ni de retry voué à re-échouer.
-                reason = {
-                    "timeout": (
-                        "le serveur a mis trop de temps à répondre (timeout) — souvent "
-                        "un long recalcul de contexte (après compaction) ; relance, le "
-                        "cache rend la reprise plus rapide."
-                    ),
-                    # « injoignable » : dire QUOI lancer — loom.web tourne forcément (il
-                    # affiche ce message), c'est le serveur MODÈLE qui manque (ou l'API).
-                    "connection": (
-                        "API distante injoignable (réseau ou base_url à vérifier)."
-                        if self.is_remote(model or self.model)
-                        else "serveur de modèle local injoignable — lance la stack "
-                        "modèle (llama-swap / serve) ou choisis un modèle distant."
-                    ),
-                    "model_not_found": (
-                        f"modèle « {model or self.model} » introuvable ou non chargé "
-                        "(vérifie le modèle sélectionné)."
-                    ),
-                    "other": f"erreur du serveur de modèle : {str(exc)[:160]}",
-                }[kind]
-                yield ("content", f"\n[génération interrompue : {reason}]")
-                yield ("done", {"reason": "api_error", "kind": kind})
-                return
+                continue
+            text, reasoning = st["text"], st["reasoning"]
 
             tool_calls = collector["tool_calls"]
             # FILET : appel d'outil émis en TEXTE (channel structuré vide) ? On le récupère
@@ -2000,173 +2556,26 @@ class LoomClient:
                         f"{len(salvaged)} appel(s) d'outil récupéré(s) du texte.",
                     )
             if not tool_calls:
-                # BOUCLE DE DÉGÉNÉRESCENCE (détectée au streaming) : le modèle a répété la
-                # même phrase sans agir. À traiter AVANT la continuation 'length' : lui dire
-                # « continue où tu t'es arrêté » ne ferait qu'alimenter le cycle. On coupe et
-                # on relance avec un ordre FERME d'émettre un appel d'outil, borné.
-                if collector.get("looped"):
-                    if loop_breaks >= max_loop_breaks:
-                        yield (
-                            "content",
-                            "\n[génération interrompue : le modèle tournait en boucle (même "
-                            "phrase répétée) sans agir. Reformule ou découpe la demande.]",
-                        )
-                        yield ("done", {"reason": "loop_degenerate"})
-                        return
-                    loop_breaks += 1
-                    nudge = (
-                        "Tu répètes la même phrase en boucle sans rien faire. ARRÊTE de "
-                        "planifier en prose. Émets MAINTENANT un seul appel d'outil — "
-                        "manage_todos pour poser le plan, OU directement le premier write_file "
-                        "— sans aucun texte avant. Un seul outil, tout de suite."
-                    )
-                    convo.append({"role": "user", "content": nudge})
-                    _debug(
-                        "LOOP_BREAK",
-                        f"boucle détectée ({collector.get('looped')!r}), "
-                        f"relance {loop_breaks}/{max_loop_breaks}",
-                    )
-                    yield (
-                        "tool_result",
-                        {"name": "(boucle)", "ok": False, "preview": nudge},
-                    )
-                    continue
-                # CONTINUATION sur troncature : la réponse texte/raisonnement a été coupée
-                # par la limite de tokens (finish_reason == "length") sans appel d'outil.
-                # Plutôt que de rendre une réponse tronquée, on relance le modèle pour qu'il
-                # POURSUIVE là où il s'est arrêté. Autant de fois que nécessaire (cap dur
-                # max_length_continues, anti-runaway). Le texte continue d'être streamé à
-                # l'UI tour après tour (le web app concatène). Cas des tool_calls tronqués
-                # NON concerné (géré par 'arguments tronqués' / overflow).
-                if (
-                    collector["finish_reason"] == "length"
-                    and length_continues < max_length_continues
-                ):
-                    length_continues += 1
-                    if text:
-                        convo.append({"role": "assistant", "content": text})
-                        nudge = (
-                            "Ta réponse a été coupée par la limite de tokens. CONTINUE "
-                            "exactement là où tu t'es arrêté, sans répéter ce qui précède."
-                        )
-                    else:
-                        nudge = (
-                            "Ta réflexion a été coupée par la limite de tokens. Termine et "
-                            "DONNE ta réponse (ou émets l'appel d'outil) MAINTENANT, plus "
-                            "direct."
-                        )
-                    convo.append({"role": "user", "content": nudge})
-                    _debug(
-                        "CONTINUATION(length)",
-                        f"relance {length_continues}/{max_length_continues}",
-                    )
-                    continue
-                # RÉPONSE VIDE (EOS immédiat : 0 texte, 0 tool call — vécu en éval,
-                # cas context_squeeze) : le stop naturel serait un SILENCE total pour
-                # l'utilisateur. On relance, borné. Filet de FONCTIONNEMENT (pas une
-                # garde de comportement) -> actif aussi pour un modèle fort (strong).
-                if not text.strip():
-                    if empty_retries < max_empty_retries:
-                        empty_retries += 1
-                        nudge = (
-                            "Ta réponse est arrivée VIDE (aucun texte, aucun appel "
-                            "d'outil). Réponds MAINTENANT : donne le résultat demandé, "
-                            "ou émets l'appel d'outil nécessaire."
-                        )
-                        convo.append({"role": "user", "content": nudge})
-                        log_event(
-                            "guard",
-                            level="WARN",
-                            kind="empty_response",
-                            retry=empty_retries,
-                        )
-                        yield (
-                            "tool_result",
-                            {"name": "(réponse vide)", "ok": False, "preview": nudge},
-                        )
-                        continue
-                    yield (
-                        "content",
-                        "\n[génération interrompue : le modèle a rendu une réponse "
-                        "vide malgré les relances.]",
-                    )
-                    yield ("done", {"reason": "empty_response"})
+                # Fin de tour SANS outil : boucle dégénérée / continuation length /
+                # réponse vide / audit de claim, sinon stop naturel du modèle.
+                yield from _dispatch_no_tool_calls(
+                    collector,
+                    text,
+                    convo,
+                    strong,
+                    max_loop_breaks,
+                    max_length_continues,
+                    max_empty_retries,
+                    max_act_nudges,
+                    st,
+                )
+                if st["action"] == "done":
                     return
-                # Audit de claim au stop : le modèle prétend-il un résultat qu'il n'a pas
-                # produit ? (A) artefact fichier inventé, (B) résultat d'exécution sans
-                # run_shell/dispatch, ou intention/affirmation sans exécution réelle. On le
-                # relance pour qu'il FASSE vraiment (borné). Garde de vérité, pas orchestrateur.
-                # COUPÉ pour un modèle FORT (distant) : ces relances de comportement, utiles à
-                # un petit modèle qui confabule, ne font que sur-piloter un modèle qui se vérifie
-                # déjà seul (cf. GLM qui doutait de sa propre preuve correcte).
-                missing = _claims_missing_artifact(text, files_written)
-                exec_confab = not executed and _claims_execution(text)
-                if (
-                    not strong
-                    and act_nudges < max_act_nudges
-                    and (missing or exec_confab or _intends_to_act(text, executed))
-                ):
-                    act_nudges += 1
-                    convo.append({"role": "assistant", "content": text or "..."})
-                    if missing:
-                        nudge = (
-                            f"Tu affirmes avoir produit « {missing} » mais ce fichier "
-                            "n'existe pas (ou est vide). Crée-le RÉELLEMENT avec un outil "
-                            "puis vérifie-le — n'invente pas d'artefact ni de preuve."
-                        )
-                        label = "CLAIM_AUDIT(artefact)"
-                    elif exec_confab:
-                        nudge = (
-                            "Tu rapportes un résultat d'exécution (sortie, « ça marche », "
-                            "preuve) mais tu n'as lancé AUCUNE commande ce tour (ni run_shell "
-                            "ni dispatch_agent). Lance-la RÉELLEMENT et rapporte la VRAIE "
-                            "sortie — n'invente pas de résultat."
-                        )
-                        label = "CLAIM_AUDIT(exécution)"
-                    else:
-                        nudge = (
-                            "Tu as annoncé/affirmé une action mais tu n'as rien exécuté : "
-                            "rien n'a été réellement fait. Émets MAINTENANT l'appel d'outil "
-                            "directement (aucune phrase avant). Si la tâche est vraiment "
-                            "terminée ET vérifiée, dis seulement le résultat constaté."
-                        )
-                        label = "ACT_NUDGE"
-                    convo.append({"role": "user", "content": nudge})
-                    _debug(label, nudge)
-                    log_event("guard", kind=label)
-                    continue
-                yield ("done", {"reason": "natural"})
-                return  # réponse finale déjà streamée (stop naturel du modèle)
+                continue
 
-            # Non-progrès : même jeu d'appels (outils+args) que le tour précédent ? On EXCLUT
-            # les outils d'exécution/vérification (_VERIFY_TOOLS) : re-lancer la même preuve est
-            # légitime. Un tour PUREMENT de vérif -> signature vide -> compté comme progrès (on
-            # ne coupe pas, on remet le compteur à zéro). Backstop ultime contre le vrai runaway :
-            # max_iters. Les boucles dégénérées (re-edit/re-write/re-read identiques) restent prises.
-            sig_set = frozenset(
-                f"{tc['name']}\x00{tc['arguments']}"
-                for tc in tool_calls
-                if tc["name"] not in _VERIFY_TOOLS
-            )
-            if not sig_set:
-                # Tour purement exécution/vérif : progrès légitime, on ne coupe pas et on
-                # laisse passer vers l'exécution des outils (surtout PAS de continue ici).
-                repeat_streak = 0
-                prev_sig_set = None
-            else:
-                repeat_streak = repeat_streak + 1 if sig_set == prev_sig_set else 0
-                prev_sig_set = sig_set
-                # COUPÉ pour un modèle FORT (distant) : le seul backstop reste max_iters. Sur un
-                # petit modèle, la répétition = dégénérescence ; sur un fort, c'est presque
-                # toujours du légitime (le juger « bloqué » l'interrompt à tort).
-                if not strong and repeat_streak >= repeat_limit - 1:
-                    log_event("guard", level="WARN", kind="repeat_stop")
-                    yield (
-                        "content",
-                        "\n(arrêt : le modèle réémet les mêmes appels sans progresser).",
-                    )
-                    yield ("done", {"reason": "repeat_stop"})
-                    return
+            yield from _check_no_progress(tool_calls, strong, repeat_limit, st)
+            if st["action"] == "done":
+                return
 
             convo.append(
                 {
@@ -2188,10 +2597,6 @@ class LoomClient:
                     ],
                 }
             )
-            wrote_this_turn = False  # P1.1 : un seul write_file/append_file par tour
-            # Images inline (read_image) à faire VOIR au modèle : différées après TOUS
-            # les résultats d'outils (les messages `tool` doivent rester contigus).
-            image_followups: list[dict] = []
             # PARALLÉLISME (distant uniquement). Règle Loom : local = inline / 1 slot llama-swap
             # -> on sérialise (un sous-agent local = même slot = zéro gain) ; distant = machine du
             # provider -> on EXPLOITE la concurrence. Cas sûr : un tour n'appelant QUE des outils
@@ -2207,243 +2612,21 @@ class LoomClient:
                 and all(tc.get("name") in _PARALLEL_SAFE for tc in tool_calls)
             )
             if _parallel:
-                import queue as _queue
-
                 _seq_tool_calls = []  # la boucle séquentielle ne fait rien ce tour
-                _q: _queue.Queue = _queue.Queue()
-                _res: dict = {}  # id -> (result, ok, args)
-                # Signale à l'UI un GROUPE parallèle -> rendu en « arène » côté à côté (animation
-                # des agents qui tournent en même temps), pas des pastilles empilées.
-                yield (
-                    "parallel",
-                    {
-                        "ids": [tc["id"] for tc in tool_calls],
-                        "names": [tc["name"] for tc in tool_calls],
-                    },
-                )
-                for (
-                    _tc
-                ) in tool_calls:  # pastilles d'abord : elles se rempliront en parallèle
-                    yield ("tool_call", {"id": _tc["id"], "name": _tc["name"]})
-                    log_event(
-                        "tool.call",
-                        name=_tc["name"],
-                        args_len=len(_tc["arguments"] or ""),
-                    )
-
-                def _pworker(tc):
-                    name = tc["name"]
-                    try:
-                        pargs = json.loads(tc["arguments"] or "{}")
-                    except json.JSONDecodeError:
-                        _res[tc["id"]] = (
-                            "erreur: arguments tronqués (réponse coupée).",
-                            False,
-                            {},
-                        )
-                        _q.put((tc["id"], "__done__", None))
-                        return
-                    try:
-                        if registry.is_streaming(
-                            name
-                        ):  # dispatch_agent : activité relayée live (helper partagé)
-                            r = "(le sous-agent n'a rien renvoyé)"
-                            for ek, ep in _stream_tool_events(
-                                registry, tc["id"], name, pargs
-                            ):
-                                if ek == "__result__":
-                                    r = ep
-                                else:
-                                    _q.put((tc["id"], ek, ep))
-                        else:  # lecture/recherche : exécution directe
-                            r = registry.run(name, pargs)
-                        okp = not r.startswith("erreur")
-                    except Exception as e:  # noqa: BLE001 - un outil qui casse n'arrête pas les autres
-                        r, okp = f"erreur: {e}", False
-                    _res[tc["id"]] = (r, okp, pargs)
-                    _q.put((tc["id"], "__done__", None))
-
-                _threads = [
-                    threading.Thread(
-                        target=_pworker, args=(tc,), daemon=True, name="loom-parallel"
-                    )
-                    for tc in tool_calls
-                ]
-                for _t in _threads:
-                    _t.start()
-                _left = len(_threads)
-                while _left > 0:  # relaie l'activité live des N outils au fil de l'eau
-                    _tid, _kind, _payload = _q.get()
-                    if _kind == "__done__":
-                        _left -= 1
-                    else:
-                        yield (_kind, _payload)
-                for _t in _threads:
-                    _t.join()
-                for tc in (
-                    tool_calls
-                ):  # résultats DANS L'ORDRE (messages `tool` cohérents pour l'API)
-                    name = tc["name"]
-                    r, okp, pargs = _res.get(tc["id"], ("(vide)", False, {}))
-                    convo.append(
-                        {"role": "tool", "tool_call_id": tc["id"], "content": r}
-                    )
-                    if name == "dispatch_agent" and not str(r).startswith("refusé"):
-                        executed = True
-                    if not okp and name in _BUG_SIGNAL_TOOLS:
-                        fail_count += 1
-                    yield (
-                        "tool_result",
-                        _tool_result_payload(tc["id"], name, okp, r, pargs),
-                    )
-
-            for tc in _seq_tool_calls:
-                name = tc["name"]
-                yield ("tool_call", {"id": tc["id"], "name": name})
-                log_event("tool.call", name=name, args_len=len(tc["arguments"] or ""))
-                _t_tool = time.monotonic()
-                try:
-                    args = json.loads(tc["arguments"] or "{}")
-                except json.JSONDecodeError:
-                    # Arguments tronqués (réponse coupée par max_tokens). NE PAS exécuter
-                    # avec des args vides (erreur trompeuse 'path manquant') : signaler la
-                    # troncature pour que le modèle réémette l'appel en plus court.
-                    result = (
-                        "erreur: arguments tronqués (réponse coupée). "
-                        "Réémets cet appel d'outil, en plus court."
-                    )
-                    convo.append(
-                        {"role": "tool", "tool_call_id": tc["id"], "content": result}
-                    )
-                    yield (
-                        "tool_result",
-                        {"id": tc["id"], "name": name, "ok": False, "preview": result},
-                    )
-                    continue
-                # P1.1 : sérialiser les écritures à gros contenu (1 par tour) -> évite le
-                # batch de N gros write_file/append_file qui sature max_tokens et tronque.
-                # Les éditions par bloc (edit/replace/insert) ne passent PAS par ici.
-                if name in _SERIAL_WRITE and wrote_this_turn:
-                    result = (
-                        "différé : un seul write_file/append_file par tour. Réémets "
-                        "cet appel (seul) au prochain tour."
-                    )
-                    convo.append(
-                        {"role": "tool", "tool_call_id": tc["id"], "content": result}
-                    )
-                    yield (
-                        "tool_result",
-                        {
-                            "id": tc["id"],
-                            "name": name,
-                            "ok": False,
-                            "preview": result,
-                            "path": args.get("path"),
-                        },
-                    )
-                    continue
-                decision = permission(name, args) if permission else None
-                action = decision.action if decision else "allow"
-
-                if action == "deny":
-                    # Garde-fou non contournable : jamais exécuté.
-                    result = f"refusé par la politique de sécurité: {decision.reason}"
-                    ok = False
-                elif action == "ask":
-                    # Confirmation interactive : on signale l'UI puis on ATTEND la
-                    # décision via `confirm` (bloquant). Refus par défaut sans confirm.
-                    summary = str(args.get("command") or args.get("path") or "")
-                    yield (
-                        "tool_request",
-                        {"id": tc["id"], "name": name, "summary": summary},
-                    )
-                    if confirm and confirm(tc["id"], name, args):
-                        result = (
-                            registry.run(name, args)
-                            if registry
-                            else "erreur: pas d'outils"
-                        )
-                        ok = not result.startswith("erreur")
-                    else:
-                        result = "refusé par l'utilisateur"
-                        ok = False
-                elif registry and registry.is_streaming(name):  # allow + streamant
-                    # Outil streamant (dispatch_agent) : activité relayée EN DIRECT dans
-                    # sa pastille, synthèse reconstruite (helper partagé avec le parallèle).
-                    result = "(le sous-agent n'a rien renvoyé)"
-                    for ek, ep in _stream_tool_events(registry, tc["id"], name, args):
-                        if ek == "__result__":
-                            result = ep
-                        else:
-                            yield (ek, ep)
-                    ok = not result.startswith("erreur")
-                else:  # allow
-                    result = (
-                        registry.run(name, args) if registry else "erreur: pas d'outils"
-                    )
-                    ok = not result.startswith("erreur")
-
-                # read_image renvoie une image inline encodée : on ne met qu'un accusé
-                # TEXTE dans le message `tool` (pas de base64 géant), et on diffère le
-                # message `user` multimodal qui fera réellement VOIR l'image au modèle.
-                if is_inline_image(result):
-                    caption, data_url = parse_inline_image(result)
-                    tool_content = f"[image « {caption} » chargée — fournie ci-dessous]"
-                    image_followups.append(image_user_message(caption, data_url))
-                    ok = True
-                else:
-                    tool_content = result
-                # Anti SUR-VÉRIFICATION (informatif, jamais bloquant) : au-delà de
-                # _VERIFY_STREAK_NOTE checks navigateur VERTS d'affilée sans changement
-                # d'état entre-temps, le résultat le dit au modèle. On n'empêche RIEN
-                # (les checks restent exclus du non-progrès : re-prouver est légitime) ;
-                # on nomme la preuve déjà faite. Coupé pour un modèle fort (strong).
-                verify_streak = _verify_streak_update(name, ok, verify_streak)
-                if (
-                    not strong
-                    and ok
-                    and name in _BROWSER_CHECKS
-                    and verify_streak >= _VERIFY_STREAK_NOTE
-                ):
-                    tool_content += (
-                        f"\n[harnais : {verify_streak} vérifications vertes d'affilée "
-                        "sans changement d'état entre-temps — la preuve est faite. "
-                        "Conclus MAINTENANT ; ne re-vérifie que si tu modifies "
-                        "quelque chose.]"
-                    )
-                convo.append(
-                    {"role": "tool", "tool_call_id": tc["id"], "content": tool_content}
-                )
-                log_event(
-                    "tool.result",
-                    name=name,
-                    ok=ok,
-                    ms=round((time.monotonic() - _t_tool) * 1000),
-                    preview=str(tool_content)[:90],
-                )
-                yield (
-                    "tool_result",
-                    _tool_result_payload(tc["id"], name, ok, tool_content, args),
-                )
-                if name in _SERIAL_WRITE:
-                    wrote_this_turn = True
-                # Suivi pour l'audit de claim : une EXÉCUTION réelle (run_shell/dispatch,
-                # même en échec mais hors refus de permission) et les FICHIERS écrits.
-                if name in ("run_shell", "dispatch_agent") and not str(
-                    result
-                ).startswith("refusé"):
-                    executed = True
-                if ok and name in _WRITE_TOOLS and args.get("path"):
-                    files_written.add(args["path"])
-                # Cascade de bugs : on compte les échecs des outils d'EXÉCUTION/VÉRIF (pas les
-                # erreurs d'usage type ligne hors limite). Au 2e échec, on IMPOSE la méthode debug.
-                if not ok and name in _BUG_SIGNAL_TOOLS:
-                    fail_count += 1
-            convo.extend(image_followups)  # images vues au tour suivant
+                yield from _run_tools_parallel(registry, tool_calls, convo, st)
+            yield from _run_tools_sequential(
+                _seq_tool_calls,
+                registry,
+                permission,
+                confirm,
+                convo,
+                strong,
+                st,
+            )
             # Forçage debugging (déterministe) : le modèle n'appelle jamais use_skill seul ; à
             # la 2e erreur d'exécution on injecte la méthode systématique, une seule fois par tour.
-            if fail_count >= 2 and not debug_forced:
-                debug_forced = True
+            if st["fail_count"] >= 2 and not st["debug_forced"]:
+                st["debug_forced"] = True
                 convo.append({"role": "user", "content": _DEBUG_FORCE})
                 yield (
                     "tool_result",
