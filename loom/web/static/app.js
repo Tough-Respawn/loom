@@ -22,7 +22,10 @@ marked.setOptions({ breaks: true });
 function _protectMath(raw) {
   const maths = [];
   const stash = (delim, tex) => {
-    maths.push(delim + tex + delim);
+    // € n'existe pas dans les polices TeX du bundle SVG : le glyphe manquant fait
+    // crasher MathJax (« Math input error », vécu sur les montants). En \text{},
+    // il retombe sur la police système et affiche un vrai €.
+    maths.push(delim + tex.replace(/€/g, "\\text{€}") + delim);
     return `@@MATH${maths.length - 1}@@`;
   };
   let s = raw;
