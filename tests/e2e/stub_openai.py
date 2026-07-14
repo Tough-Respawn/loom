@@ -60,16 +60,67 @@ def models():
     return {"object": "list", "data": [{"id": "stub", "object": "model"}]}
 
 
+def _tool_call_chunk(call_id, name, arguments):
+    """Chunk streamé portant UN tool_call complet (le client regroupe par index)."""
+    delta = {
+        "tool_calls": [
+            {
+                "index": 0,
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments)},
+            }
+        ]
+    }
+    return _chunk(delta)
+
+
 @app.post("/v1/chat/completions")
 def completions():
     body = request.get_json(force=True)
-    users = [m for m in body.get("messages", []) if m.get("role") == "user"]
+    messages = body.get("messages", [])
+    users = [m for m in messages if m.get("role") == "user"]
     last = ""
     if users:
         c = users[-1].get("content", "")
         last = c if isinstance(c, str) else json.dumps(c)
     slow = "lentement" in last
     notes = [m for m in body.get("messages", []) if "note received mid-turn" in str(m)]
+
+    # Scénario E2E-RUFF (palier 1 LSP) : 1er appel -> le stub ÉMET un vrai tool_call
+    # write_file avec du Python cassé ; 2e appel (le résultat d'outil est revenu) -> il
+    # annonce s'il a VU le bloc « ruff (auto) » dans ce résultat. Même principe de
+    # preuve observable que la note en vol : la réponse finale atteste que le hint a
+    # traversé TOUTE la boucle réelle (exécution outil -> contexte -> appel modèle).
+    if "E2E-RUFF" in last:
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        if not tool_msgs:
+
+            def gen_call():
+                yield _tool_call_chunk(
+                    "call_e2e_ruff",
+                    "write_file",
+                    {"path": "e2e_ruff.py", "content": "def f(:\n    return 1\n"},
+                )
+                yield _chunk(finish="tool_calls")
+                yield _usage_chunk()
+                yield "data: [DONE]\n\n"
+
+            return Response(gen_call(), mimetype="text/event-stream")
+        seen = any("ruff (auto)" in str(m.get("content")) for m in tool_msgs)
+        verdict = (
+            "E2E-RUFF: hint « ruff (auto) » BIEN VISIBLE dans le résultat d'outil."
+            if seen
+            else "E2E-RUFF: hint « ruff (auto) » ABSENT du résultat d'outil."
+        )
+
+        def gen_verdict():
+            yield _chunk({"content": verdict})
+            yield _chunk(finish="stop")
+            yield _usage_chunk()
+            yield "data: [DONE]\n\n"
+
+        return Response(gen_verdict(), mimetype="text/event-stream")
 
     if slow:
         words = ("je réfléchis posément, morceau par morceau, " * 8).split(" ")
