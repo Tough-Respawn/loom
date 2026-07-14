@@ -130,20 +130,115 @@ def _apply_where(headers, rows, where: dict) -> list[list]:
     return out
 
 
+# --- normalisation des écritures « modèle » -------------------------------
+# Un LLM écrit la puissance de dix façons (^ , exposants Unicode e²², ×, ÷, moins
+# Unicode −). Python ne connaît que ** , * , / , - -> on TRADUIT ces conventions en
+# syntaxe Python AVANT le parse, HORS des chaînes entre guillemets (un nom de colonne
+# « a^b » en mode fichier ne doit pas être réécrit). Objectif : que toute écriture
+# usuelle « juste marche », sans que le modèle ait à connaître notre grammaire.
+
+# Exposants Unicode -> chiffre/signe ASCII (⁰¹²³… ⁺ ⁻). Un run devient **(…).
+_SUPERSCRIPT = {
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5", "⁶": "6",
+    "⁷": "7", "⁸": "8", "⁹": "9", "⁺": "+", "⁻": "-", "⁽": "(", "⁾": ")",
+}  # fmt: skip
+
+# Opérateurs/symboles Unicode -> équivalent ASCII Python.
+_UNICODE_OPS = {
+    "×": "*", "·": "*", "⋅": "*", "∗": "*", "∙": "*",
+    "÷": "/", "∕": "/", "⁄": "/",
+    "−": "-", "‑": "-", "–": "-", "—": "-",  # moins/tirets Unicode
+    "π": "pi", "τ": "tau", "√": "sqrt",  # symboles maths courants
+    "^": "**",
+}  # fmt: skip
+
+
+def _normalize_expr(expr: str) -> str:
+    """Traduit les conventions d'écriture d'un modèle en syntaxe Python, hors chaînes
+    entre guillemets. `^` et les exposants Unicode -> `**` (priorité correcte, car un
+    remplacement textuel adopte la priorité forte de `**`, contrairement à un remappage
+    du nœud XOR). `×·÷−` -> `*/-`, `π√` -> `pi sqrt`."""
+    out: list[str] = []
+    quote: str | None = None
+    i, n = 0, len(expr)
+    while i < n:
+        ch = expr[i]
+        if quote is not None:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch in _SUPERSCRIPT:
+            # Un run d'exposants Unicode (ex. « ²² » de e²²) -> **(22).
+            j = i
+            run = []
+            while j < n and expr[j] in _SUPERSCRIPT:
+                run.append(_SUPERSCRIPT[expr[j]])
+                j += 1
+            out.append("**(" + "".join(run) + ")")
+            i = j
+            continue
+        out.append(_UNICODE_OPS.get(ch, ch))
+        i += 1
+    return "".join(out)
+
+
 # --- évaluateur AST -------------------------------------------------------
 
 _FUNCS = {
+    # arithmétique de base
     "abs": abs,
+    "fabs": math.fabs,
     "round": round,
     "min": min,
     "max": max,
+    "pow": pow,
+    "sign": lambda x: (x > 0) - (x < 0),
+    "copysign": math.copysign,
+    "fmod": math.fmod,
+    # racines / arrondis
     "sqrt": math.sqrt,
+    "cbrt": math.cbrt,
     "floor": math.floor,
     "ceil": math.ceil,
-    "log": math.log,
+    "trunc": math.trunc,
+    # logs / exponentielles
+    "log": math.log,  # log(x) naturel, ou log(x, base)
+    "ln": math.log,
     "log10": math.log10,
     "log2": math.log2,
+    "log1p": math.log1p,
     "exp": math.exp,
+    "expm1": math.expm1,
+    # combinatoire / entiers
+    "factorial": math.factorial,
+    "gcd": math.gcd,
+    "lcm": math.lcm,
+    "comb": math.comb,
+    "perm": math.perm,
+    "hypot": math.hypot,
+    # trigonométrie
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "asin": math.asin,
+    "acos": math.acos,
+    "atan": math.atan,
+    "atan2": math.atan2,
+    "sinh": math.sinh,
+    "cosh": math.cosh,
+    "tanh": math.tanh,
+    "asinh": math.asinh,
+    "acosh": math.acosh,
+    "atanh": math.atanh,
+    "degrees": math.degrees,
+    "radians": math.radians,
 }
 
 # Agrégats : n'acceptent QUE des colonnes (mode fichier). `values` filtrés du non-num.
@@ -156,7 +251,7 @@ _AGGS = {
     "max": max,
 }
 
-_CONSTS = {"pi": math.pi, "e": math.e}
+_CONSTS = {"pi": math.pi, "e": math.e, "tau": math.tau, "inf": math.inf}
 
 _BINOPS = {
     ast.Add: lambda a, b: a + b,
@@ -272,8 +367,11 @@ def calculate(
             rows = _apply_where(headers, rows, where)
         table = (headers, rows)
         info = f"  [{Path(file).name} : {len(rows)} ligne(s) considérée(s)]"
+    # Traduit ^, exposants Unicode, ×÷− etc. en syntaxe Python (l'affichage garde
+    # l'écriture ORIGINALE du modèle, plus lisible et sans ** qui grasseraient en markdown).
+    normalized = _normalize_expr(expression)
     try:
-        tree = ast.parse(expression, mode="eval")
+        tree = ast.parse(normalized, mode="eval")
     except SyntaxError as exc:
         raise ToolError(f"expression invalide : {exc.msg}") from exc
     try:
@@ -300,8 +398,12 @@ def make_calculate(workspace_dir: str = ".") -> ToolSpec:
             'strings become COLUMN references and aggregates activate: sum("Debit") - '
             'sum("Credit"), avg("Montant"), count("Compte") — NEVER sum table rows '
             "mentally, use this instead. Optional `where` filters rows by equality "
-            "before aggregating. Also: + - * / // % ** parentheses, abs, round, min, "
-            "max, sqrt, floor, ceil, log, log10, log2, exp, pi, e."
+            "before aggregating. Power works as ^ or ** or Unicode exponents (2^10, "
+            "e²², 10⁻³); ×·÷− and π√ are also accepted. Operators + - * / // % ; "
+            "functions abs, round, min, max, pow, sign, sqrt, cbrt, floor, ceil, "
+            "trunc, log (log(x) or log(x,base)), ln, log10, log2, exp, factorial, "
+            "gcd, lcm, comb, perm, hypot, sin/cos/tan (+ a/h variants), degrees, "
+            "radians; constants pi, e, tau."
         ),
         parameters={
             "type": "object",
