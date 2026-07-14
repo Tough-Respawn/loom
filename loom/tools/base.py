@@ -14,6 +14,7 @@ dispatch_agent (agent.py) s'enregistrent dessus sans toucher au transport.
 from __future__ import annotations
 
 import difflib
+import json
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,15 +81,70 @@ def _coerce_scalar(value: object, jtype: str) -> object:
         return value
     if jtype == "string":
         # Un scalaire isolé (nombre/booléen) là où une string est attendue : on
-        # stringifie (ex. path renvoyé comme nombre). On NE touche pas aux objets/listes.
+        # stringifie (ex. path renvoyé comme nombre).
         if isinstance(value, (int, float, bool)):
             return str(value)
+        # Liste de scalaires là où une string est attendue (ex. command=["git","status"]
+        # au lieu de "git status") : on joint par espace, la faute argv->ligne de commande.
+        if isinstance(value, list) and all(
+            isinstance(x, (str, int, float, bool)) for x in value
+        ):
+            return " ".join(str(x) for x in value)
         return value
     if jtype == "array":
-        # Valeur seule là où une liste est attendue : on enveloppe (faute fréquente).
+        # Liste sérialisée en JSON-string ("[1,2,3]") : un petit modèle le fait souvent.
+        # On PARSE avant d'envelopper — sinon "[1,2,3]" devenait ['[1,2,3]'] (corruption
+        # silencieuse). On n'enveloppe qu'un vrai scalaire seul.
+        if isinstance(value, str):
+            s = value.strip()
+            if s.startswith("["):
+                try:
+                    parsed = json.loads(s)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, list):
+                    return parsed
         if value is not None and not isinstance(value, list):
             return [value]
         return value
+    if jtype == "object":
+        # Objet sérialisé en JSON-string ('{"a":1}') là où un dict est attendu (ex.
+        # calculate `where`) : on parse, sinon l'outil recevait une str et plantait sur
+        # `.get` avec un message opaque.
+        if isinstance(value, str):
+            s = value.strip()
+            if s.startswith("{"):
+                try:
+                    parsed = json.loads(s)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    return parsed
+        return value
+    return value
+
+
+def coerce_enum(value: object, allowed: list, aliases: dict | None = None) -> object:
+    """Rapproche une valeur d'enum du jeu autorisé SANS jamais deviner une intention :
+    on ne renvoie QUE `value` inchangé ou une valeur RÉELLEMENT présente dans `allowed`.
+    Normalisation mécanique (sûre) : casse, tiret/espace -> underscore. Puis table
+    d'alias explicite (synonymes métier : 'completed'->'done'). Si rien ne matche, on
+    laisse `value` : la vérif sémantique de l'outil rendra son erreur actionnable.
+    C'est la généralisation de la leçon `^`->`**` : accepter les écritures équivalentes."""
+    if not isinstance(value, str) or value in allowed:
+        return value
+    norm = value.strip().lower().replace("-", "_").replace(" ", "_")
+    for a in allowed:
+        if isinstance(a, str) and a.lower() == norm:
+            return a
+    if aliases:
+        cand = (
+            aliases.get(value)
+            or aliases.get(value.strip().lower())
+            or aliases.get(norm)
+        )
+        if cand in allowed:
+            return cand
     return value
 
 
@@ -105,7 +161,13 @@ def validate_and_coerce(name: str, schema: dict, args: dict) -> dict:
     for key, value in args.items():
         spec = props.get(key)
         jtype = spec.get("type") if isinstance(spec, dict) else None
-        coerced[key] = _coerce_scalar(value, jtype) if jtype else value
+        v = _coerce_scalar(value, jtype) if jtype else value
+        # Enum top-level : normalise casse/tiret + alias déclarés dans le schéma
+        # (`x_aliases`). Un enum imbriqué (items d'un array, ex. todo.status) est
+        # traité par l'outil via coerce_enum — le schéma top-level ne le voit pas.
+        if isinstance(spec, dict) and spec.get("enum"):
+            v = coerce_enum(v, spec["enum"], spec.get("x_aliases"))
+        coerced[key] = v
     # Requis ABSENT (clé manquante ou null) : on nomme le champ, on suggère un renommage
     # si une clé inconnue PROCHE a été fournie (typo), et on liste les champs non reconnus
     # restants (cas fréquent du 4B : 'file' au lieu de 'path', clés inventées).

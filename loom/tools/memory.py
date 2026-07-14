@@ -60,6 +60,21 @@ def make_remember(provider, paths: dict) -> ToolSpec:
                 "kind": {
                     "type": "string",
                     "enum": ["episodic", "memory", "profile", "soul"],
+                    # Synonymes fréquents -> valeur canonique (coerce_enum, via base.py).
+                    "x_aliases": {
+                        "fact": "memory",
+                        "note": "memory",
+                        "general": "memory",
+                        "info": "memory",
+                        "user": "profile",
+                        "persona": "soul",
+                        "identity": "soul",
+                        "self": "soul",
+                        "lesson": "episodic",
+                        "observation": "episodic",
+                        "event": "episodic",
+                        "episode": "episodic",
+                    },
                     "description": "Where to file it: episodic (store) | memory | profile | soul.",
                 },
             },

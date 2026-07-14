@@ -27,30 +27,36 @@ _IMAGE_MIME = {
 }
 
 
-def _decode_text(data: bytes) -> str | None:
-    """Décode des octets en texte en gérant les encodages courants sous Windows.
-    Renvoie None si ça ressemble vraiment à du binaire (échec de tout décodage)."""
+def _decode_text_enc(data: bytes) -> tuple[str, str] | tuple[None, None]:
+    """Décode des octets en (texte, encodage) en gérant les encodages courants sous
+    Windows. L'encodage renvoyé permet de RÉ-ÉCRIRE à l'identique (edit_file). Renvoie
+    (None, None) si ça ressemble vraiment à du binaire (échec de tout décodage)."""
     if data[:3] == b"\xef\xbb\xbf":  # UTF-8 avec BOM
-        return data[3:].decode("utf-8", errors="replace")
+        return data[3:].decode("utf-8", errors="replace"), "utf-8-sig"
     if data[:2] == b"\xff\xfe":  # UTF-16 LE (BOM) — défaut PowerShell
-        return data[2:].decode("utf-16-le", errors="replace")
+        return data[2:].decode("utf-16-le", errors="replace"), "utf-16"
     if data[:2] == b"\xfe\xff":  # UTF-16 BE (BOM)
-        return data[2:].decode("utf-16-be", errors="replace")
+        return data[2:].decode("utf-16-be", errors="replace"), "utf-16"
     try:
-        return data.decode("utf-8")  # cas le plus courant
+        return data.decode("utf-8"), "utf-8"  # cas le plus courant
     except UnicodeDecodeError:
         pass
     # UTF-16 sans BOM : beaucoup d'octets nuls (1 octet sur 2 pour de l'ASCII).
     if data and data.count(b"\x00") > len(data) // 4:
         for enc in ("utf-16-le", "utf-16-be"):
             try:
-                return data.decode(enc)
+                return data.decode(enc), enc
             except UnicodeDecodeError:
                 continue
     try:
-        return data.decode("cp1252")  # Windows-1252 (legacy), strict : binaire -> lève
+        return data.decode("cp1252"), "cp1252"  # Windows-1252 (legacy), strict
     except UnicodeDecodeError:
-        return None
+        return None, None
+
+
+def _decode_text(data: bytes) -> str | None:
+    """Texte seul (compat) ; None si binaire. Cf. `_decode_text_enc` pour l'encodage."""
+    return _decode_text_enc(data)[0]
 
 
 def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
@@ -87,17 +93,32 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
 
         # Fenêtre de lecture (1-based, optionnelle) : lire un GROS fichier par TRANCHES
         # plutôt que tout d'un coup -> on ne dépasse jamais le contexte.
+        # ALIAS tolérés : les modèles entraînés sur d'autres API écrivent souvent
+        # `offset`/`limit`/`n`/`end_line`. Avant, ces clés étaient IGNORÉES en silence
+        # (lecture depuis la ligne 1 en prétendant lire ailleurs). On les mappe.
+        def _first(*keys):
+            for k in keys:
+                v = args.get(k)
+                if v not in (None, ""):
+                    return v
+            return None
+
+        sl = _first("start_line", "offset", "start", "from_line", "line")
         try:
-            start = int(args.get("start_line") or 1)
+            start = int(sl or 1)
         except (TypeError, ValueError):
             raise ToolError("start_line doit être un entier (1-based)") from None
         if start < 1:
             raise ToolError("start_line doit être >= 1 (1-based)")
-        lc = args.get("line_count")
+        lc = _first("line_count", "limit", "n", "count", "num_lines")
+        el = _first("end_line", "to_line")
         try:
             count = None if lc in (None, "") else int(lc)
+            # `end_line` (borne haute inclusive) -> nombre de lignes, si line_count absent.
+            if count is None and el not in (None, ""):
+                count = max(0, int(el) - start + 1)
         except (TypeError, ValueError):
-            raise ToolError("line_count doit être un entier") from None
+            raise ToolError("line_count/end_line doit être un entier") from None
         sc = args.get("start_char")
         try:
             start_char = None if sc in (None, "") else int(sc)

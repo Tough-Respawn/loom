@@ -15,11 +15,22 @@ dans session.json -> survit au redémarrage et ne déborde pas d'une session à 
 
 from __future__ import annotations
 
-from loom.tools.base import ToolError, ToolSpec
+from loom.tools.base import ToolError, ToolSpec, coerce_enum
 
 # Marqueurs ASCII (pas d'emoji) : à faire / en cours / fait.
 _MARK = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]"}
 _MAX_TODOS = 30
+
+# Synonymes qu'un modèle produit naturellement pour les statuts (au-delà de la
+# normalisation casse/tiret/espace faite par coerce_enum : "in-progress" y passe déjà).
+_STATUS_ALIASES = {
+    "completed": "done", "complete": "done", "finished": "done", "finish": "done",
+    "fini": "done", "termine": "done", "terminé": "done", "ok": "done", "closed": "done",
+    "todo": "pending", "to_do": "pending", "not_started": "pending", "new": "pending",
+    "a_faire": "pending", "à_faire": "pending", "open": "pending", "backlog": "pending",
+    "doing": "in_progress", "wip": "in_progress", "active": "in_progress",
+    "started": "in_progress", "en_cours": "in_progress", "progress": "in_progress",
+}  # fmt: skip
 
 
 def _render(items: list[dict]) -> str:
@@ -55,7 +66,9 @@ def make_manage_todos(conversation) -> ToolSpec:
             content = (raw.get("content") or "").strip()
             if not content:
                 raise ToolError("chaque tâche doit avoir un 'content' non vide")
-            status = (raw.get("status") or "pending").strip()
+            status = coerce_enum(
+                (raw.get("status") or "pending").strip(), list(_MARK), _STATUS_ALIASES
+            )
             if status not in _MARK:
                 raise ToolError(
                     f"statut invalide '{status}' : pending | in_progress | done"
