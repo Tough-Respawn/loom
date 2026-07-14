@@ -43,6 +43,7 @@ def make_dispatch_agent(
     max_tokens: int = 2048,
     max_iters: int | None = None,
     permission=None,
+    compact_after_tokens: int | None = None,
 ) -> ToolSpec:
     """Outil dispatch_agent : lance une boucle tool-use isolée et renvoie sa synthèse.
 
@@ -84,6 +85,10 @@ def make_dispatch_agent(
                     thinking=False,
                     max_iters=max_iters,
                     permission=permission,
+                    # Sans seuil, la sous-boucle saturait sa fenêtre (session
+                    # 2026-07-14 : completion étranglée à ~129 tokens, tool calls
+                    # tronqués en boucle) — le sous-agent compacte comme le principal.
+                    compact_after_tokens=compact_after_tokens,
                 )
             finally:
                 if saved:
