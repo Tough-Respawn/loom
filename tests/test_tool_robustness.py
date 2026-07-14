@@ -227,7 +227,9 @@ def test_fetch_url_domaine_nu_et_schema(monkeypatch):
     monkeypatch.setattr(
         web,
         "fetch_page",
-        lambda url, cfg, snippet="": seen.setdefault("url", url) or "OK",
+        lambda url, cfg, snippet="", raise_status=False: (
+            seen.setdefault("url", url) or "OK"
+        ),
     )
     fu = web.make_fetch_url(web.WebSearchConfig())
     fu.run({"url": "example.com"})
@@ -266,3 +268,85 @@ def test_edit_file_prefixe_numero_ligne_detecte():
     with pytest.raises(ToolError) as e:
         ef.run({"path": "e.py", "old_string": "  2→    return 1", "new_string": "x"})
     assert "N→" in str(e.value) or "préfixe" in str(e.value)  # pointe le piège N→
+
+
+# ---------- Vague 4 (session chasse-invest 14/07) : erreurs web/shell/skill actionnables ----------
+
+
+def test_fetch_url_remonte_statut_http_et_url_origine(monkeypatch):
+    # Un 403 anti-bot doit remonter le STATUT et l'URL D'ORIGINE — pas « page
+    # indisponible (hors-ligne) », et jamais l'URL à IP épinglée (session 14/07 :
+    # 100+ 403 SeLoger/Leboncoin illisibles, affichés https://52.222.201.14/...).
+    import httpx
+
+    import loom.tools.web as web
+
+    def fake_get(url, params=None, headers=None, timeout=None, pin_ip=None):
+        req = httpx.Request("GET", "https://52.222.201.14/liste.htm")  # épinglée
+        return httpx.Response(403, request=req)
+
+    monkeypatch.setattr(web, "_resolve_validated", lambda url: (None, "52.222.201.14"))
+    monkeypatch.setattr(web, "_http_get", fake_get)
+    fu = web.make_fetch_url(web.WebSearchConfig())
+    with pytest.raises(ToolError) as e:
+        fu.run({"url": "https://www.seloger.com/liste.htm"})
+    msg = str(e.value)
+    assert "403" in msg
+    assert "www.seloger.com" in msg
+    assert "52.222.201.14" not in msg
+
+
+def test_fetch_page_web_search_garde_le_repli_snippet(monkeypatch):
+    # Le chemin web_search (raise_status par défaut) garde le repli silencieux
+    # sur snippet : un résultat de recherche qui 403 ne casse pas la recherche.
+    import httpx
+
+    import loom.tools.web as web
+
+    def fake_get(url, params=None, headers=None, timeout=None, pin_ip=None):
+        req = httpx.Request("GET", url)
+        return httpx.Response(403, request=req)
+
+    monkeypatch.setattr(web, "_resolve_validated", lambda url: (None, "1.2.3.4"))
+    monkeypatch.setattr(web, "_http_get", fake_get)
+    out = web.fetch_page("https://x.example/a", web.WebSearchConfig(), snippet="RÉSUMÉ")
+    assert out == "RÉSUMÉ"
+
+
+def test_curl_alias_powershell_hint():
+    # `curl -s <url>` sous PowerShell 5.1 = alias d'Invoke-WebRequest -> erreur de
+    # binding « paramètres obligatoires absents » (18× dans la session du 14/07).
+    # La table unix-ismes ne couvrait que « commande inconnue ».
+    from loom.tools.shell import _unix_ism_hint
+
+    stderr = (
+        "Invoke-WebRequest : Impossible de traiter la commande, car un ou "
+        "plusieurs paramètres obligatoires sont absents : Uri."
+    )
+    hint = _unix_ism_hint("curl -s https://exemple.fr/api", stderr)
+    assert "curl.exe" in hint
+
+
+def test_unix_ism_hint_stderr_francais():
+    # Windows FR : « n'est pas reconnu » (pas « not recognized ») — le hint doit
+    # quand même se déclencher.
+    from loom.tools.shell import _unix_ism_hint
+
+    stderr = (
+        "grep : Le terme «grep» n'est pas reconnu comme nom d'applet de commande, "
+        "fonction, fichier de script ou programme exécutable."
+    )
+    hint = _unix_ism_hint("grep -r motif .", stderr)
+    assert "Select-String" in hint
+
+
+def test_use_skill_nom_d_outil_redirige():
+    # use_skill('dispatch_agent') (vu en session) : dire que c'est un OUTIL à
+    # appeler directement, pas seulement « skill inconnu ».
+    from loom.tools.skills import make_use_skill
+
+    us = make_use_skill(lambda: [])
+    with pytest.raises(ToolError) as e:
+        us.run({"name": "dispatch_agent"})
+    msg = str(e.value).lower()
+    assert "outil" in msg and "dispatch_agent" in msg

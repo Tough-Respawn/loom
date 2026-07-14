@@ -57,9 +57,26 @@ def _unix_ism_hint(command: str, stderr: str) -> str:
     if detect().shell_kind != "powershell":
         return ""
     low = (stderr or "").lower()
-    if "not recognized" not in low and "commandnotfoundexception" not in low:
-        return ""
     first = command.split(maxsplit=1)[0].strip("'\"`").lower() if command else ""
+    # curl/wget : cas À PART — ils EXISTENT sous PowerShell 5.1 comme alias
+    # d'Invoke-WebRequest, donc l'échec est une erreur de BINDING (« paramètres
+    # obligatoires absents » avec des flags unix type -s), pas « commande inconnue »
+    # (18 occurrences dans la session du 14/07, jamais couvertes par la table).
+    if first in ("curl", "wget") and (
+        "paramètre" in low or "parameter" in low or "invoke-webrequest" in low
+    ):
+        return (
+            f"\nAstuce PowerShell : « {first} » est ici un alias d'Invoke-WebRequest "
+            "(flags unix incompatibles) -> utilise curl.exe (le vrai curl) ou "
+            "Invoke-RestMethod -Uri <url>"
+        )
+    # « n'est pas reconnu » : Windows en français (le libellé anglais n'y figure pas).
+    if (
+        "not recognized" not in low
+        and "commandnotfoundexception" not in low
+        and "pas reconnu" not in low
+    ):
+        return ""
     equiv = _UNIX_EQUIV.get(first)
     return (
         f"\nAstuce PowerShell : « {first} » n'existe pas ici -> {equiv}"
