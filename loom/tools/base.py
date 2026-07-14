@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -328,6 +329,13 @@ def _resolve_in_root(root: Path, rel: str) -> Path:
     Le garde-fou n'est plus le périmètre mais la deny-list dure de loom.permissions
     (rm -rf, format, …), incontournable même ici.
     """
+    # Nettoyage des écritures fréquentes d'un modèle : guillemets englobants (copiés
+    # d'une commande shell) et `~` (home). Sans ça, `"C:/x"` et `~/x` étaient résolus
+    # littéralement sous root -> « fichier introuvable » alors que le chemin était valide.
+    rel = rel.strip()
+    if len(rel) >= 2 and rel[0] == rel[-1] and rel[0] in ("'", '"'):
+        rel = rel[1:-1].strip()
+    rel = os.path.expanduser(rel)
     p = Path(rel)
     if p.is_absolute():
         return p.resolve()

@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from loom.tools.base import ToolError, coerce_enum, validate_and_coerce
+from loom.tools.base import (
+    ToolError,
+    _resolve_in_root,
+    coerce_enum,
+    validate_and_coerce,
+)
+from loom.tools.browser import _looks_like_host
 from loom.tools.calc import calculate
 from loom.tools.fs import make_edit_file
 from loom.tools.read import make_read_file
@@ -176,3 +182,55 @@ def test_read_file_offset_limit_alias():
     out = rf.run({"path": "big.txt", "offset": 50, "limit": 3})
     assert "L50" in out and "L52" in out
     assert "L1\n" not in out  # ne repart PAS du début
+
+
+# ---------- Vague 2 : chemins (~/guillemets) ----------
+
+
+def test_resolve_expanduser():
+    root = Path(tempfile.gettempdir())
+    got = _resolve_in_root(root, "~/sous/fichier.txt")
+    assert "~" not in str(got)
+    assert got == (Path.home() / "sous" / "fichier.txt").resolve()
+
+
+def test_resolve_strip_guillemets():
+    root = Path(tempfile.gettempdir())
+    got = _resolve_in_root(root, '"C:/Users/x.txt"')
+    assert '"' not in str(got)
+
+
+# ---------- Vague 2 : détection d'hôte réseau (check_page sans schéma) ----------
+
+
+@pytest.mark.parametrize(
+    "target,is_host",
+    [
+        ("localhost:3000", True),
+        ("127.0.0.1:8080", True),
+        ("example.com", True),
+        ("www.a.org/foo", True),
+        ("plain_word", False),  # pas de point ni de port -> pas un hôte
+    ],
+)
+def test_looks_like_host(target, is_host):
+    assert bool(_looks_like_host(target)) is is_host
+
+
+# ---------- Vague 2 : fetch_url domaine nu / schéma ----------
+
+
+def test_fetch_url_domaine_nu_et_schema(monkeypatch):
+    import loom.tools.web as web
+
+    seen = {}
+    monkeypatch.setattr(
+        web,
+        "fetch_page",
+        lambda url, cfg, snippet="": seen.setdefault("url", url) or "OK",
+    )
+    fu = web.make_fetch_url(web.WebSearchConfig())
+    fu.run({"url": "example.com"})
+    assert seen["url"] == "https://example.com"
+    with pytest.raises(ToolError):
+        fu.run({"url": "ftp://x"})
