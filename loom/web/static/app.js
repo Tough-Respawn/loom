@@ -1226,9 +1226,11 @@ function updateUsageMeter(t) {
 }
 updateUsageMeter(INIT.usage_totals);
 
-// Bouton « compacter » (près de la jauge de contexte) : résume les vieux tours en un bloc
-// dense pour libérer du contexte SANS attendre la saturation. Cible la session active de
-// l'onglet ; met à jour la jauge avec les compteurs renvoyés.
+// Bouton « compacter » (près de la jauge de contexte) : DÉTERMINISTE et instantané (aucun
+// appel modèle) — allège les vieux résultats d'outils et clippe l'historique pour libérer
+// du contexte sans attendre la saturation (le résumé LLM dense, lui, est réservé à la
+// compaction AUTO en cours de conversation). Cible la session active de l'onglet ; met à
+// jour la jauge avec les compteurs renvoyés.
 const compactBtn = document.getElementById("um-compact");
 if (compactBtn) {
   compactBtn.addEventListener("click", async () => {
