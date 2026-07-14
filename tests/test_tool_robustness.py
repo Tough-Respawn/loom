@@ -234,3 +234,35 @@ def test_fetch_url_domaine_nu_et_schema(monkeypatch):
     assert seen["url"] == "https://example.com"
     with pytest.raises(ToolError):
         fu.run({"url": "ftp://x"})
+
+
+# ---------- Vague 3 : finitions (search récursif, read line_count, edit N→) ----------
+
+
+def test_find_files_recursif_par_defaut():
+    from loom.tools.search import make_find_files
+
+    d = Path(tempfile.mkdtemp())
+    (d / "src").mkdir()
+    (d / "src" / "a.py").write_text("x", encoding="utf-8")
+    (d / "top.py").write_text("y", encoding="utf-8")
+    ff = make_find_files(str(d))
+    out = ff.run({"pattern": "*.py"})
+    assert "src/a.py" in out and "top.py" in out  # récursif, pas seulement la racine
+
+
+def test_read_line_count_zero_rejete():
+    d = Path(tempfile.mkdtemp())
+    (d / "f.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    rf = make_read_file(str(d), 60000)
+    with pytest.raises(ToolError):
+        rf.run({"path": "f.txt", "start_line": 2, "line_count": 0})
+
+
+def test_edit_file_prefixe_numero_ligne_detecte():
+    d = Path(tempfile.mkdtemp())
+    (d / "e.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    ef = make_edit_file(str(d))
+    with pytest.raises(ToolError) as e:
+        ef.run({"path": "e.py", "old_string": "  2→    return 1", "new_string": "x"})
+    assert "N→" in str(e.value) or "préfixe" in str(e.value)  # pointe le piège N→

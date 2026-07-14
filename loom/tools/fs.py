@@ -20,6 +20,7 @@ contenu byte-exact (pas de traduction \\n -> \\r\\n sous Windows).
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from loom.permissions import is_protected_write_path
@@ -228,10 +229,19 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
         new_string = new_string.replace("\r\n", "\n")
         count = text.count(old_string)
         if count == 0:
+            # Piège fréquent : le modèle copie l'affichage de read_file, qui préfixe chaque
+            # ligne d'un « N→ » (numéro de ligne + flèche) ABSENT du fichier réel.
+            prefix_hint = ""
+            if re.search(r"(?m)^\s*\d+→", old_string):
+                prefix_hint = (
+                    " ATTENTION : ton old_string contient le préfixe « N→ » de "
+                    "l'affichage read_file — RETIRE-le (numéros de ligne et flèche ne "
+                    "sont PAS dans le fichier)."
+                )
             raise ToolError(
                 f"old_string introuvable dans {rel} — copie l'extrait EXACT du fichier "
                 "(indentation et espaces au caractère près). Pour AJOUTER du code à la FIN, "
-                "utilise append_file, pas edit_file."
+                f"utilise append_file, pas edit_file.{prefix_hint}"
             )
         if count > 1 and not replace_all:
             locs = ", ".join(str(n) for n in _occurrence_lines(text, old_string)[:12])
