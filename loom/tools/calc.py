@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import csv
 import math
+import re
 from pathlib import Path
 
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
@@ -148,7 +149,7 @@ _UNICODE_OPS = {
     "×": "*", "·": "*", "⋅": "*", "∗": "*", "∙": "*",
     "÷": "/", "∕": "/", "⁄": "/",
     "−": "-", "‑": "-", "–": "-", "—": "-",  # moins/tirets Unicode
-    "π": "pi", "τ": "tau", "√": "sqrt",  # symboles maths courants
+    "π": "pi", "τ": "tau",  # symboles maths courants (√ traité à part : wrapping)
     "^": "**",
 }  # fmt: skip
 
@@ -186,7 +187,32 @@ def _normalize_expr(expr: str) -> str:
             continue
         out.append(_UNICODE_OPS.get(ch, ch))
         i += 1
-    return "".join(out)
+    return _rewrite_math_shorthand("".join(out))
+
+
+# Notation « raccourcie » d'un modèle, appliquée HORS chaînes (déjà séparées ci-dessus).
+_NUM = r"\d*\.?\d+"
+
+
+def _rewrite_math_shorthand(s: str) -> str:
+    """√ sans parenthèses, multiplication implicite, `%` postfixe (pourcentage). Chaque
+    passe est bornée pour NE PAS casser un identifiant (log10) ni la notation
+    scientifique (1e3) : cf. les lookarounds."""
+    # √ : √16 -> sqrt(16) ; √(x) -> sqrt(x) ; √ isolé -> sqrt
+    s = re.sub(r"√\s*\(", "sqrt(", s)
+    s = re.sub(rf"√\s*({_NUM})", r"sqrt(\1)", s)
+    s = s.replace("√", "sqrt")
+    # `%` postfixe = pourcentage : 20% -> (20*0.01). PAS quand un opérande suit (modulo :
+    # 10%3 reste 10%3) — d'où le lookahead négatif sur un chiffre/point/paren.
+    s = re.sub(rf"({_NUM})\s*%(?!\s*[\d.(])", r"(\1*0.01)", s)
+    # Multiplication implicite : 2pi -> 2*pi, 3(4+5) -> 3*(4+5), )(  -> )*( .
+    # Lookbehind : le nombre ne doit pas être la fin d'un identifiant (log10). Lookahead
+    # (?![eE][+-]?\d) : ne pas couper la notation scientifique 1e3 / 1.5e-3.
+    s = re.sub(
+        rf"(?<![A-Za-z0-9_.])({_NUM})(?![eE][+-]?\d)\s*(?=[A-Za-z_(])", r"\1*", s
+    )
+    s = re.sub(r"(\))\s*(?=[A-Za-z0-9_(])", r"\1*", s)
+    return s
 
 
 # --- évaluateur AST -------------------------------------------------------
@@ -253,6 +279,19 @@ _AGGS = {
 
 _CONSTS = {"pi": math.pi, "e": math.e, "tau": math.tau, "inf": math.inf}
 
+
+def _safe_pow(a, b):
+    """Puissance BORNÉE : `9^9^9` (exposant = 387 M) produit un entier de centaines de
+    millions de chiffres qui GÈLE le process (calc n'a aucun timeout). On refuse un
+    exposant démesuré avec une erreur claire, au lieu de partir en calcul infini."""
+    if isinstance(b, (int, float)) and abs(b) > 1e4 and abs(a) > 1:
+        raise ToolError(
+            "exposant trop grand (calcul refusé pour éviter un gel) : "
+            f"|{b}| dépasse 10000"
+        )
+    return a**b
+
+
 _BINOPS = {
     ast.Add: lambda a, b: a + b,
     ast.Sub: lambda a, b: a - b,
@@ -260,7 +299,7 @@ _BINOPS = {
     ast.Div: lambda a, b: a / b,
     ast.FloorDiv: lambda a, b: a // b,
     ast.Mod: lambda a, b: a % b,
-    ast.Pow: lambda a, b: a**b,
+    ast.Pow: _safe_pow,
 }
 
 _UNARY = {ast.UAdd: lambda a: +a, ast.USub: lambda a: -a}
@@ -324,6 +363,16 @@ def _eval_node(node, table):
             return _FUNCS[fname](*args)
         raise ToolError(
             f"fonction non autorisée : {fname} (admises : {', '.join(sorted(_FUNCS))})"
+        )
+    # Cas fréquent : une virgule décimale FR (« 1,5 ») ou un séparateur de milliers
+    # (« 1,000 ») fait lire l'expression comme un tuple par Python. Message actionnable
+    # plutôt que « syntaxe non supportée : Tuple » (la virgule ne sépare QUE les
+    # arguments de fonction ici).
+    if isinstance(node, ast.Tuple):
+        raise ToolError(
+            "virgule inattendue : utilise un POINT décimal (1.5, pas 1,5) et pas de "
+            "séparateur de milliers (1000, pas 1,000). La virgule ne sépare que les "
+            "arguments d'une fonction, ex. log(100, 10)."
         )
     raise ToolError(f"syntaxe non supportée : {type(node).__name__}")
 

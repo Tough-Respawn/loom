@@ -18,8 +18,26 @@ def make_use_skill(skills_provider: Callable[[], list[Skill]]) -> ToolSpec:
         skills = skills_provider()
         body = load_skill_body(skills, name)
         if body is None:
-            valid = ", ".join(s.name for s in skills) or "(aucun)"
-            raise ToolError(f"skill inconnu '{name}'. Skills valides : {valid}")
+            # Le modèle appelle souvent le nom COURT ('brainstorming') au lieu du nom
+            # namespacé du catalogue ('superpowers:brainstorming'), ou varie la casse.
+            # On résout par égalité insensible à la casse, puis par suffixe UNIQUE, avant
+            # d'échouer (analogue de la leçon `^` : accepter l'écriture équivalente).
+            low = name.lower()
+            exact_ci = [s for s in skills if s.name.lower() == low]
+            by_suffix = [s for s in skills if s.name.lower().split(":")[-1] == low]
+            match = exact_ci or by_suffix
+            if len(match) == 1:
+                body = load_skill_body(skills, match[0].name)
+            if body is None:
+                valid = ", ".join(s.name for s in skills) or "(aucun)"
+                hint = (
+                    " (plusieurs skills matchent ce nom court, précise le namespace)"
+                    if len(match) > 1
+                    else ""
+                )
+                raise ToolError(
+                    f"skill inconnu '{name}'{hint}. Skills valides : {valid}"
+                )
         return body
 
     return ToolSpec(
