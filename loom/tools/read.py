@@ -119,6 +119,11 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
                 count = max(0, int(el) - start + 1)
         except (TypeError, ValueError):
             raise ToolError("line_count/end_line doit être un entier") from None
+        if count is not None and count < 1:
+            # count=0 rendait une plage vide « lignes 2–1 » (silencieux, absurde).
+            raise ToolError(
+                "line_count doit être >= 1 (ou omis pour lire jusqu'au bout)"
+            )
         sc = args.get("start_char")
         try:
             start_char = None if sc in (None, "") else int(sc)
