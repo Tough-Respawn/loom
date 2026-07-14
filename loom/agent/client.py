@@ -1356,6 +1356,12 @@ def _run_tools_parallel(
     ) in tool_calls:  # résultats DANS L'ORDRE (messages `tool` cohérents pour l'API)
         name = tc["name"]
         r, okp, pargs = _res.get(tc["id"], ("(vide)", False, {}))
+        # Streak de troncature tenu ICI (mono-thread) et pas dans _pworker : st
+        # n'est pas protégé contre les écritures concurrentes des workers.
+        if str(r).startswith("erreur: arguments tronqués"):
+            st["truncated_streak"] = st.get("truncated_streak", 0) + 1
+        else:
+            st["truncated_streak"] = 0
         convo.append({"role": "tool", "tool_call_id": tc["id"], "content": r})
         if name == "dispatch_agent" and not str(r).startswith("refusé"):
             st["executed"] = True
@@ -1390,10 +1396,15 @@ def _run_tools_sequential(
         _t_tool = time.monotonic()
         try:
             args = json.loads(tc["arguments"] or "{}")
+            st["truncated_streak"] = 0
         except json.JSONDecodeError:
             # Arguments tronqués (réponse coupée par max_tokens). NE PAS exécuter
             # avec des args vides (erreur trompeuse 'path manquant') : signaler la
             # troncature pour que le modèle réémette l'appel en plus court.
+            # Le streak est lu par _preventive_compaction : à saturation de fenêtre
+            # (completion étranglée), « plus court » ne suffit JAMAIS — 2 troncatures
+            # de suite déclenchent une compaction forcée avant l'appel suivant.
+            st["truncated_streak"] = st.get("truncated_streak", 0) + 1
             result = (
                 "erreur: arguments tronqués (réponse coupée). "
                 "Réémets cet appel d'outil, en plus court."
@@ -2118,6 +2129,37 @@ class LoomClient:
         """Compaction PRÉVENTIVE avant l'appel modèle : microcompact des vieux
         résultats d'outils, puis force-fit si un résultat RÉCENT est géant (local).
         Ne stoppe jamais le tour ; met à jour st["refocus_done"]."""
+        # BACKSTOP TRONCATURE (session 2026-07-14) : 2 arguments d'outil tronqués de
+        # suite = la génération est étranglée par la fenêtre (prompt+completion ≈
+        # contexte), pas par la verbosité — « réémets plus court » ne débloquera
+        # jamais. On compacte de FORCE, même sans seuil configuré et même si
+        # l'estimation en caractères (qui peut sous-compter) reste sous le seuil.
+        if st.get("truncated_streak", 0) >= 2 and not self.is_remote(model):
+            st["truncated_streak"] = 0
+            _microcompact_tools(convo, keep_recent_tools)
+            _force_fit(
+                convo,
+                system_prompt,
+                max((compact_after_tokens or 0) * 3, len(system_prompt) + 4000),
+            )
+            _debug(
+                "COMPACT_TRONCATURE",
+                "2 tool calls tronqués de suite -> compaction forcée "
+                f"(~{_ctx_estimate(system_prompt, convo)} tokens).",
+            )
+            yield (
+                "tool_result",
+                {
+                    "name": "(compaction sur troncature)",
+                    "ok": True,
+                    "preview": (
+                        "Appels d'outil coupés deux fois de suite : contexte "
+                        "compacté pour redonner de la place à la génération. "
+                        "Je réémets l'appel."
+                    ),
+                },
+            )
+            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
         # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
         # résultats d'outils AVANT d'appeler le modèle (évite l'overflow sur une
         # chaîne longue). Estimation grossière ~4 car./token, comme loom.context.
@@ -2501,6 +2543,7 @@ class LoomClient:
             "debug_forced": False,  # méthode debug déjà imposée ce tour ? (anti-nag)
             "refocus_done": False,  # note de recentrage post-force-fit déjà émise ? (une seule)
             "empty_retries": 0,  # nb de relances sur réponse VIDE (0 texte, 0 tool call)
+            "truncated_streak": 0,  # troncatures d'arguments d'outil CONSÉCUTIVES
             "verify_streak": 0,  # checks navigateur verts consécutifs (anti sur-vérification)
             "text": "",  # texte accumulé du dernier appel modèle
             "reasoning": "",  # raisonnement accumulé du dernier appel modèle

@@ -44,6 +44,7 @@ def build_registry(
     conversation=None,
     model: str | None = None,
     sub_max_tokens: int = 2048,
+    sub_compact_after_tokens: int | None = None,
     permission=None,
     active_model: str | None = None,
     skills_dir: str | None = None,
@@ -188,6 +189,7 @@ def build_registry(
                 model=model,
                 max_tokens=sub_max_tokens,
                 permission=permission,
+                compact_after_tokens=sub_compact_after_tokens,
             )
         )
     if "use_skill" in enabled and skills_dir is not None:

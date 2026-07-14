@@ -126,6 +126,16 @@ def build_app(cfg):
     # manage_todos, dont le plan vit dans `conversation.todos` (par session, persisté).
     def make_registry(active, workspace=None, conversation=None):
         _model = conversation.model if conversation else cfg.default_model
+        # Seuil de compaction de la SOUS-boucle (dispatch_agent) : même formule que
+        # _model_limits côté routes (fenêtre du modèle - réserve de sortie - marge).
+        # Sans lui, le sous-agent saturait sa fenêtre : completion étranglée, tool
+        # calls tronqués en boucle (session 2026-07-14, campagne chasse-invest).
+        _win = model_contexts.get(_model) or cfg.context
+        if _model in remote_ids:
+            _reserve = model_max_tokens.get(_model) or 8192
+        else:
+            _reserve = cfg.chat.max_tokens
+        _sub_compact = max(1024, _win - _reserve - 1024)
         return build_registry(
             workspace_dir=workspace or cfg.chat.workspace_dir,
             max_bytes=cfg.chat.read_file_max_bytes,
@@ -138,6 +148,7 @@ def build_app(cfg):
             # propage donc aussi aux sous-agents. Repli sur le défaut hors session.
             model=_model,
             sub_max_tokens=cfg.chat.max_tokens,
+            sub_compact_after_tokens=_sub_compact,
             permission=permission,
             active_model=_model,
             skills_dir=cfg.chat.skills_dir,
@@ -197,6 +208,7 @@ def build_app(cfg):
     model_max_tokens = {
         rm.id: rm.max_tokens for rm in cfg.remote_models if rm.max_tokens
     }
+    remote_ids = {rm.id for rm in cfg.remote_models}
     # Modèles LOCAUX (découverts par dossier) : détails pour l'onglet Modèles locaux de la
     # console. `dir` porte le model.toml -> édition du tuning machine (offload) via tomlkit.
     local_models = [
