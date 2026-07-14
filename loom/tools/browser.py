@@ -17,6 +17,7 @@ from __future__ import annotations
 import atexit
 import ipaddress
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -172,6 +173,19 @@ def _browser_http_blocked(url: str) -> str | None:
     return None
 
 
+def _looks_like_host(target: str) -> str | bool:
+    """Vrai si `target` (sans schéma) ressemble à un hôte réseau : localhost, IP, ou
+    domaine, avec port optionnel. Sert à router un check_page sans http:// vers le web
+    plutôt que de le prendre pour un fichier local introuvable."""
+    first = target.split("/")[0]
+    if first.lower() == "localhost" or first.lower().startswith("localhost:"):
+        return True
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}(:\d+)?$", first):  # IPv4[:port]
+        return True
+    # domaine a.b[.c][:port] — au moins un point, segments alphanumériques
+    return bool(re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$", first, re.IGNORECASE))
+
+
 def _browser_url(root: Path, target: str) -> str:
     """Resout et VALIDE la cible d'un outil navigateur ; leve ToolError si refusee.
 
@@ -195,11 +209,16 @@ def _browser_url(root: Path, target: str) -> str:
         return target
     # chemin local (relatif au dossier de travail ou absolu) -> file:// (Path.as_uri()).
     path = _resolve_in_root(root, target)
-    if not path.exists():
-        raise ToolError(f"fichier introuvable : {target}")
-    if path.suffix.lower() not in _WEB_EXT:
-        raise ToolError(_NOT_WEB_MSG)
-    return path.as_uri()
+    if path.exists():
+        if path.suffix.lower() not in _WEB_EXT:
+            raise ToolError(_NOT_WEB_MSG)
+        return path.as_uri()
+    # Pas un fichier local : peut-être un hôte réseau SANS schéma (localhost:3000,
+    # 127.0.0.1:8080, example.com) — un modèle omet souvent http://. On re-route par la
+    # garde HTTP. Test APRÈS l'existence locale pour ne jamais détourner un vrai fichier.
+    if _looks_like_host(target):
+        return _browser_url(root, "http://" + target)
+    raise ToolError(f"fichier introuvable : {target}")
 
 
 def _render_page(

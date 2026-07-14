@@ -21,7 +21,7 @@ import ipaddress
 import re
 import socket
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -80,17 +80,36 @@ class WebSearchConfig:
 # --- indirections HTTP / extraction (points de monkeypatch) -------------
 
 
+# User-Agent navigateur par défaut : beaucoup de sites renvoient 403 au UA httpx nu.
+_DEFAULT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+)
+
+
+def _with_ua(headers):
+    """Ajoute un User-Agent navigateur si l'appelant n'en a pas fourni."""
+    h = dict(headers or {})
+    h.setdefault("User-Agent", _DEFAULT_UA)
+    return h
+
+
 def _http_get(url, params=None, headers=None, timeout=None, pin_ip=None):
     """GET via httpx (isolé pour faciliter le monkeypatch en test).
 
     follow_redirects=False : un redirect 30x pourrait renvoyer vers une adresse interne
-    (contournement du garde anti-SSRF). On ne suit aucun saut automatiquement.
+    (contournement du garde anti-SSRF). On ne suit aucun saut automatiquement ; le suivi
+    est fait par `fetch_page` en RE-VALIDANT chaque saut (anti-SSRF préservé).
 
     Si `pin_ip` est fourni (anti DNS-rebinding), on se connecte à CETTE IP déjà validée
     en préservant le Host et le SNI d'origine : httpx ne re-résout pas le nom d'hôte."""
     if pin_ip is None:
         return httpx.get(
-            url, params=params, headers=headers, timeout=timeout, follow_redirects=False
+            url,
+            params=params,
+            headers=_with_ua(headers),
+            timeout=timeout,
+            follow_redirects=False,
         )
     parsed = urlparse(url)
     host = parsed.hostname or ""
@@ -98,7 +117,7 @@ def _http_get(url, params=None, headers=None, timeout=None, pin_ip=None):
     ip_lit = f"[{pin_ip}]" if ":" in pin_ip else pin_ip  # crochets pour l'IPv6
     ip_netloc = ip_lit if parsed.port is None else f"{ip_lit}:{parsed.port}"
     pinned_url = parsed._replace(netloc=ip_netloc).geturl()
-    hdrs = {**(headers or {}), "Host": host_hdr}
+    hdrs = {**_with_ua(headers), "Host": host_hdr}
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         req = httpx.Request(
             "GET",
@@ -252,25 +271,33 @@ def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
 
 def fetch_page(url: str, cfg: WebSearchConfig, snippet: str = "") -> str:
     """Récupère et extrait le texte principal d'une page ; replie sur snippet."""
-    reason, pin_ip = _resolve_validated(url)  # anti-SSRF + IP épinglée (anti-rebinding)
-    if reason:  # hôte interne/introuvable : on ne fetch jamais
-        return snippet
+    # Suivi des redirections MANUEL et RE-VALIDÉ : http->https, / final, apex->www sont
+    # ultra-fréquents. Chaque saut repasse par _resolve_validated (anti-SSRF préservé :
+    # un 30x vers une IP interne est bloqué). Borné à 5 sauts.
     try:
-        resp = _http_get(url, timeout=cfg.http_timeout, pin_ip=pin_ip)
-        resp.raise_for_status()
-        # Réponse JSON (API) : trafilatura n'extrait que de l'HTML et renverrait
-        # vide -> on renvoie le corps BRUT (tronqué). Détection par content-type
-        # ET par le premier caractère (des API servent du JSON en text/plain).
-        ctype = (resp.headers.get("content-type") or "").lower()
-        body = resp.text or ""
-        if "json" in ctype or body.lstrip()[:1] in ("{", "["):
-            return _truncate(body, cfg.max_chars_per_page)
-        text = _extract(body)
-    except (httpx.ConnectError, httpx.TimeoutException):
+        for _hop in range(5):
+            reason, pin_ip = _resolve_validated(url)
+            if reason:  # hôte interne/introuvable : on ne fetch jamais
+                return snippet
+            resp = _http_get(url, timeout=cfg.http_timeout, pin_ip=pin_ip)
+            if resp.is_redirect and resp.headers.get("location"):
+                url = urljoin(url, resp.headers["location"])
+                continue
+            resp.raise_for_status()
+            # Réponse JSON (API) : trafilatura n'extrait que de l'HTML et renverrait
+            # vide -> on renvoie le corps BRUT (tronqué). Détection par content-type
+            # ET par le premier caractère (des API servent du JSON en text/plain).
+            ctype = (resp.headers.get("content-type") or "").lower()
+            body = resp.text or ""
+            if "json" in ctype or body.lstrip()[:1] in ("{", "["):
+                return _truncate(body, cfg.max_chars_per_page)
+            text = _extract(body)
+            if not text:
+                return snippet
+            return _truncate(text, cfg.max_chars_per_page)
+        return snippet  # trop de redirections
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
         return snippet
-    if not text:
-        return snippet
-    return _truncate(text, cfg.max_chars_per_page)
 
 
 def _format_results(query: str, results: list[dict], cfg: WebSearchConfig) -> str:
@@ -330,8 +357,14 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
         url = (args.get("url") or "").strip()
         if not url:
             raise ToolError("argument 'url' manquant")
-        if not re.match(r"^https?://", url, re.IGNORECASE):
-            raise ToolError("l'url doit commencer par http:// ou https://")
+        # Domaine nu (example.com, www.x.org/foo) : un modèle omet souvent le schéma.
+        # On préfixe https:// au lieu de rejeter (le suivi de redirections gère le repli
+        # http et apex/www). Un schéma non-http (file:, ftp:) reste refusé clairement.
+        m = re.match(r"^([a-z][a-z0-9+.-]*)://", url, re.IGNORECASE)
+        if not m:
+            url = "https://" + url
+        elif m.group(1).lower() not in ("http", "https"):
+            raise ToolError("seuls http:// et https:// sont supportés")
         blocked = _blocked_host_reason(url)  # anti-SSRF (refus explicite et clair)
         if blocked:
             raise ToolError(blocked)

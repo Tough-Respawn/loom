@@ -30,6 +30,43 @@ from loom.tools.base import AVAILABLE_TOOLS, ToolError, ToolSpec
 # détecte le cas en tête de run_shell et on REDIRIGE vers l'appel d'outil direct.
 _LOOM_TOOL_NAMES = frozenset(t["name"] for t in AVAILABLE_TOOLS)
 
+# Unix-ismes SANS équivalent-alias sous PowerShell 5.1 (ls/cat/rm/cp/mv/pwd/echo, EUX,
+# sont des alias qui marchent). On ne PRÉEMPTE pas (un grep.exe de Git peut être sur le
+# PATH) : on n'ajoute l'équivalent QUE si la commande a réellement échoué en « commande
+# inconnue ». Table volontairement courte, ciblée sur ce qu'un modèle tape par réflexe.
+_UNIX_EQUIV = {
+    "grep": "Select-String -Pattern <motif> <fichiers>",
+    "sed": "(Get-Content f) -replace 'a','b' | Set-Content f",
+    "awk": "Get-Content f | ForEach-Object { ($_ -split ' ')[0] }",
+    "head": "Get-Content f -TotalCount N   (ou | Select-Object -First N)",
+    "tail": "Get-Content f -Tail N",
+    "wc": "(Get-Content f | Measure-Object -Line).Lines",
+    "touch": "New-Item -ItemType File f   (ou : if (!(Test-Path f)) { New-Item f })",
+    "which": "(Get-Command nom).Source",
+    "export": "$env:NOM = 'valeur'",
+    "man": "Get-Help <cmdlet>",
+    "df": "Get-PSDrive",
+    "sudo": "(pas de sudo : lance un terminal en administrateur)",
+}
+
+
+def _unix_ism_hint(command: str, stderr: str) -> str:
+    """Si la commande a échoué en « commande inconnue » et que son 1er mot est un
+    unix-isme connu, renvoie l'équivalent PowerShell (préfixé d'un saut de ligne).
+    Sinon ''. Non intrusif : n'agit qu'APRÈS un vrai échec, jamais en préemption."""
+    if detect().shell_kind != "powershell":
+        return ""
+    low = (stderr or "").lower()
+    if "not recognized" not in low and "commandnotfoundexception" not in low:
+        return ""
+    first = command.split(maxsplit=1)[0].strip("'\"`").lower() if command else ""
+    equiv = _UNIX_EQUIV.get(first)
+    return (
+        f"\nAstuce PowerShell : « {first} » n'existe pas ici -> {equiv}"
+        if equiv
+        else ""
+    )
+
 
 def _shell_argv(command: str) -> list[str]:
     """argv adapté à l'OS courant (délègue à la détection centrale)."""
@@ -159,7 +196,8 @@ def make_run_shell(
             head = (stderr or stdout or "").strip().split("\n")[0][
                 :200
             ] or "commande échouée"
-            return f"erreur: exit {proc.returncode} — {head}\n{body}"
+            hint = _unix_ism_hint(command, stderr)
+            return f"erreur: exit {proc.returncode} — {head}{hint}\n{body}"
         return body
 
     return ToolSpec(
