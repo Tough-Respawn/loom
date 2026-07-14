@@ -1,8 +1,8 @@
-# Palier 1 « LSP » (2026-07-15) : après CHAQUE écriture d'un .py, write_file/append_file/
-# edit_file collent au résultat d'outil les diagnostics `ruff check` NON-MUTANTS (syntaxe,
-# noms non définis — jamais de --fix, jamais bloquant, plafonné à 8 lignes). Ces tests
-# figent le contrat : présence du hint sur code cassé, silence sur code sain et non-.py,
-# fichier jamais modifié par le check.
+# Palier 1 « LSP » (2026-07-15) : après CHAQUE écriture d'un fichier code,
+# write_file/append_file/edit_file collent au résultat d'outil des diagnostics
+# NON-MUTANTS plafonnés (.py -> ruff, .js/.ts -> oxlint ; jamais de --fix, jamais
+# bloquant). Ces tests figent le contrat : présence du hint sur code cassé, silence
+# sur code sain / extension non couverte / style seul, fichier jamais modifié.
 from __future__ import annotations
 
 import shutil
@@ -10,7 +10,7 @@ import shutil
 import pytest
 
 from loom.tools.fs import (
-    _ruff_auto_hint,
+    _lint_auto_hint,
     make_append_file,
     make_edit_file,
     make_write_file,
@@ -18,6 +18,10 @@ from loom.tools.fs import (
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ruff") is None, reason="ruff absent du PATH (dépendance Loom)"
+)
+
+needs_oxlint = pytest.mark.skipif(
+    shutil.which("oxlint") is None, reason="oxlint absent du PATH (binaire optionnel)"
 )
 
 BROKEN = "def f(:\n    return 1\n"  # erreur de syntaxe franche (E999)
@@ -40,10 +44,10 @@ def test_write_file_py_sain_reste_silencieux(tmp_path):
     assert "ruff" not in out
 
 
-def test_write_file_non_py_jamais_linte(tmp_path):
+def test_write_file_extension_non_couverte_jamais_lintee(tmp_path):
     tool = make_write_file(str(tmp_path), max_bytes=1_000_000)
-    out = tool.run({"path": "a.js", "content": "function f( {"})
-    assert "ruff" not in out
+    out = tool.run({"path": "a.txt", "content": "def f(:\nfunction g( {"})
+    assert "(auto)" not in out
 
 
 def test_write_file_nom_non_defini_F821(tmp_path):
@@ -80,7 +84,57 @@ def test_hint_plafonne_a_8_lignes(tmp_path):
     body = "\n".join(f"x{i} = manquant{i}" for i in range(12)) + "\n"
     path = tmp_path / "a.py"
     path.write_text(body, encoding="utf-8")
-    hint = _ruff_auto_hint(path)
+    hint = _lint_auto_hint(path)
     diags = [ln for ln in hint.splitlines() if "F821" in ln]
     assert len(diags) == 8
     assert "(+4 autres)" in hint
+
+
+# ---------- oxlint (.js/.ts) : mêmes contrats que ruff ----------
+
+JS_BROKEN = "function f( {\n  return 1\n}\n"  # erreur de syntaxe franche
+JS_CLEAN = "export function h(n) {\n  return n + 1\n}\n"
+# valid-typeof (catégorie correctness) : bug quasi certain, doit remonter.
+JS_TYPEOF = "export const t = typeof window === 'undefned'\n"
+# Fonction pas encore appelée (no-unused-vars) : bruit de chunking, doit se taire.
+JS_UNUSED = "function future(n) {\n  return n\n}\n"
+
+
+@needs_oxlint
+def test_write_file_js_casse_remonte_oxlint(tmp_path):
+    tool = make_write_file(str(tmp_path), max_bytes=1_000_000)
+    out = tool.run({"path": "a.js", "content": JS_BROKEN})
+    assert "oxlint (auto)" in out
+    # NON-MUTANT : le fichier reste byte-identique à ce que le modèle a écrit.
+    assert (tmp_path / "a.js").read_text(encoding="utf-8") == JS_BROKEN
+
+
+@needs_oxlint
+def test_write_file_js_sain_reste_silencieux(tmp_path):
+    tool = make_write_file(str(tmp_path), max_bytes=1_000_000)
+    out = tool.run({"path": "a.js", "content": JS_CLEAN})
+    assert "oxlint" not in out
+
+
+@needs_oxlint
+def test_write_file_js_correctness_remonte(tmp_path):
+    tool = make_write_file(str(tmp_path), max_bytes=1_000_000)
+    out = tool.run({"path": "a.js", "content": JS_TYPEOF})
+    assert "valid-typeof" in out
+
+
+@needs_oxlint
+def test_write_file_js_unused_seul_reste_silencieux(tmp_path):
+    tool = make_write_file(str(tmp_path), max_bytes=1_000_000)
+    out = tool.run({"path": "a.js", "content": JS_UNUSED})
+    assert "oxlint" not in out
+
+
+@needs_oxlint
+def test_edit_file_ts_qui_casse_remonte_oxlint(tmp_path):
+    (tmp_path / "a.ts").write_text(JS_CLEAN, encoding="utf-8")
+    tool = make_edit_file(str(tmp_path))
+    out = tool.run(
+        {"path": "a.ts", "old_string": "function h(n)", "new_string": "function h(n"}
+    )
+    assert "oxlint (auto)" in out
