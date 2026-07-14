@@ -207,6 +207,33 @@ def _seed_notes(ws: Path) -> None:
     (d / "notes.md").write_text(_NOTES_MD, encoding="utf-8")
 
 
+# Fichier UTF-16 (défaut d'un fichier généré par PowerShell) : avant le fix edit_file
+# 2026-07-14, edit_file le déclarait « binaire non éditable » -> la tâche échouait
+# alors que read_file, lui, le lisait très bien. Écrit en UTF-16 (BOM) pour le prouver.
+_SETTINGS_UTF16 = "MaxRetries=3\r\nTimeout=30\r\nVerbose=false\r\n"
+
+
+def _seed_settings_utf16(ws: Path) -> None:
+    (ws / "settings.txt").write_bytes(_SETTINGS_UTF16.encode("utf-16"))
+
+
+# Mini-projet à fichiers .py répartis dans des SOUS-DOSSIERS : avant le fix search
+# 2026-07-14, find_files('*.py') ne matchait que la racine (récursif attendu).
+_PYPROJ_FILES = {
+    "main.py": "print('root')\n",
+    "src/core.py": "def core():\n    pass\n",
+    "src/util/helpers.py": "def helper():\n    pass\n",
+    "README.md": "# projet\n",
+}
+
+
+def _seed_pyproj(ws: Path) -> None:
+    for rel, content in _PYPROJ_FILES.items():
+        p = ws / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+
 # --- checks ------------------------------------------------------------------
 
 
@@ -382,6 +409,61 @@ def _check_context_squeeze(traj, ws: Path) -> dict:
     }
 
 
+def _check_edit_utf16(traj, ws: Path) -> dict:
+    # E2E : la valeur est-elle changée ET le fichier reste-t-il un texte UTF-16 lisible ?
+    new_value = False
+    still_utf16 = False
+    try:
+        raw = (ws / "settings.txt").read_bytes()
+        still_utf16 = raw[:2] in (b"\xff\xfe", b"\xfe\xff")  # BOM UTF-16 conservé
+        text = raw.decode("utf-16", errors="replace")
+        new_value = "MaxRetries=5" in text and "Timeout=30" in text
+    except OSError:
+        pass
+    return {
+        "édite par bloc (edit_file)": used(traj, "edit_file"),
+        "ne réécrit pas tout au write_file": not any(
+            a.get("path", "").endswith("settings.txt")
+            for a in calls_to(traj, "write_file")
+        ),
+        "E2E: MaxRetries passé à 5": new_value,
+        "fichier reste un UTF-16 lisible (pas corrompu)": still_utf16,
+        "_zéro échec edit_file": edit_file_failures(traj) == 0,
+    }
+
+
+def _check_calc_power(traj, ws: Path) -> dict:
+    # 1000 * 1.05^10 = 1628.894... ; on tolère l'arrondi (1628 ou 1629). Le modèle écrit
+    # souvent « 1 628,89 » (séparateur de milliers = espace/insécable) -> on retire les
+    # séparateurs avant de matcher, sinon un résultat CORRECT compte comme un échec
+    # (exactement le travers de tolérance qu'on corrige côté outils).
+    text = re.sub(r"[\s \xa0]", "", traj.final_text or "")
+    correct = bool(re.search(r"1628|1629", text))
+    return {
+        "utilise l'outil calculate": used(traj, "calculate"),
+        "E2E: résultat correct (~1628.89)": correct,
+    }
+
+
+def _check_search_recursive(traj, ws: Path) -> dict:
+    text = traj.final_text or ""
+    # Les 3 .py sont dans la racine ET des sous-dossiers : une recherche récursive les
+    # trouve tous. On accepte le compte (3) ou la mention des fichiers en sous-dossier.
+    found_all = bool(re.search(r"\b3\b", text)) or (
+        "core.py" in text and "helpers.py" in text
+    )
+    explored = (
+        used(traj, "find_files")
+        or used(traj, "search_text")
+        or used(traj, "list_dir")
+        or used(traj, "run_shell")
+    )
+    return {
+        "a cherché (outil)": explored,
+        "E2E: trouve les .py en sous-dossiers (récursif)": found_all,
+    }
+
+
 # --- l'eval set --------------------------------------------------------------
 
 CASES: list[EvalCase] = [
@@ -482,5 +564,43 @@ CASES: list[EvalCase] = [
         rubric="L'agent répond directement (sorted avec key=lambda) sans appeler d'outil.",
         setup=_noop,
         check=_check_direct_answer,
+    ),
+    # --- cas ajoutés 2026-07-15 : exercent les fixes de robustesse des outils, model-
+    # facing (chacun ÉCHOUERAIT sur la baseline d'avant le 2026-07-14). ---
+    EvalCase(
+        id="edit_utf16",
+        prompt=(
+            "Dans le fichier settings.txt de ce dossier, passe MaxRetries de 3 à 5. "
+            "Ne change rien d'autre."
+        ),
+        rubric=(
+            "settings.txt (encodé UTF-16, comme un fichier PowerShell) contient "
+            "MaxRetries=5, via une édition chirurgicale, sans corrompre l'encodage."
+        ),
+        setup=_seed_settings_utf16,
+        check=_check_edit_utf16,
+    ),
+    EvalCase(
+        id="calc_power",
+        prompt=(
+            "Un capital de 1000€ placé à 5% par an pendant 10 ans vaut 1000 × 1.05^10. "
+            "Calcule ce montant avec l'outil et donne-le."
+        ),
+        rubric="L'agent calcule 1000 × 1.05^10 ≈ 1628.89 via l'outil calculate.",
+        setup=_noop,
+        check=_check_calc_power,
+    ),
+    EvalCase(
+        id="search_recursive",
+        prompt=(
+            "Combien de fichiers .py y a-t-il dans ce projet (dossier et sous-dossiers) ? "
+            "Liste-les."
+        ),
+        rubric=(
+            "L'agent trouve les 3 fichiers .py (main.py, src/core.py, "
+            "src/util/helpers.py), y compris ceux en sous-dossiers."
+        ),
+        setup=_seed_pyproj,
+        check=_check_search_recursive,
     ),
 ]
