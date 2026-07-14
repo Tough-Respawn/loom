@@ -269,8 +269,15 @@ def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
         return []
 
 
-def fetch_page(url: str, cfg: WebSearchConfig, snippet: str = "") -> str:
-    """Récupère et extrait le texte principal d'une page ; replie sur snippet."""
+def fetch_page(
+    url: str, cfg: WebSearchConfig, snippet: str = "", raise_status: bool = False
+) -> str:
+    """Récupère et extrait le texte principal d'une page ; replie sur snippet.
+
+    `raise_status=True` (fetch_url) : une erreur HTTP devient une ToolError EXPLICITE
+    (statut + URL d'ORIGINE — jamais l'URL à IP épinglée, illisible pour le modèle).
+    Défaut False (web_search) : repli silencieux sur snippet, un résultat qui 403
+    ne casse pas la recherche."""
     # Suivi des redirections MANUEL et RE-VALIDÉ : http->https, / final, apex->www sont
     # ultra-fréquents. Chaque saut repasse par _resolve_validated (anti-SSRF préservé :
     # un 30x vers une IP interne est bloqué). Borné à 5 sauts.
@@ -296,7 +303,20 @@ def fetch_page(url: str, cfg: WebSearchConfig, snippet: str = "") -> str:
                 return snippet
             return _truncate(text, cfg.max_chars_per_page)
         return snippet  # trop de redirections
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
+    except httpx.HTTPStatusError as e:
+        if raise_status:
+            # `url` = le saut courant sous sa forme NOM D'HÔTE (seul _http_get pinne
+            # l'IP) : c'est elle qu'on montre, pas e.request.url (IP épinglée).
+            code = e.response.status_code
+            phrase = e.response.reason_phrase or ""
+            extra = (
+                " — accès refusé (anti-bot probable) : essaye une autre source"
+                if code == 403
+                else ""
+            )
+            raise ToolError(f"erreur HTTP {code} ({phrase}) sur {url}{extra}") from e
+        return snippet
+    except (httpx.ConnectError, httpx.TimeoutException):
         return snippet
 
 
@@ -368,7 +388,7 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
         blocked = _blocked_host_reason(url)  # anti-SSRF (refus explicite et clair)
         if blocked:
             raise ToolError(blocked)
-        text = fetch_page(url, cfg)
+        text = fetch_page(url, cfg, raise_status=True)
         if not text:
             return "page indisponible (hors-ligne) ou sans contenu extractible"
         return untrusted(text, f"page web {url}")

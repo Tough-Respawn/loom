@@ -29,6 +29,15 @@ def make_use_skill(skills_provider: Callable[[], list[Skill]]) -> ToolSpec:
             if len(match) == 1:
                 body = load_skill_body(skills, match[0].name)
             if body is None:
+                # Confusion outil/skill (vu en session : use_skill('dispatch_agent')) :
+                # rediriger vers l'appel direct au lieu d'un simple « skill inconnu ».
+                from loom.tools.base import AVAILABLE_TOOLS
+
+                if low in (t["name"] for t in AVAILABLE_TOOLS):
+                    raise ToolError(
+                        f"'{name}' est un OUTIL, pas un skill : appelle-le "
+                        "directement (comme n'importe quel autre outil)."
+                    )
                 valid = ", ".join(s.name for s in skills) or "(aucun)"
                 hint = (
                     " (plusieurs skills matchent ce nom court, précise le namespace)"
