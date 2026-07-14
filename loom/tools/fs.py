@@ -24,6 +24,7 @@ from pathlib import Path
 
 from loom.permissions import is_protected_write_path
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
+from loom.tools.read import _decode_text_enc
 
 
 def _guard_write_path(path: Path) -> None:
@@ -37,12 +38,14 @@ def _guard_write_path(path: Path) -> None:
         )
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    """Écrit `content` en utf-8 de façon atomique (tmp + os.replace)."""
+def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Écrit `content` de façon atomique (tmp + os.replace). `encoding` par défaut utf-8 ;
+    edit_file le passe à l'encodage d'origine du fichier (utf-16/cp1252) pour ré-écrire
+    à l'identique et ne pas casser un fichier PowerShell (UTF-16)."""
     _guard_write_path(path)  # choke point : write_file/edit/replace/insert passent ici
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+    with open(tmp, "w", encoding=encoding, newline="") as fh:
         fh.write(content)
     os.replace(tmp, path)
 
@@ -204,10 +207,15 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
             raise ToolError(f"fichier introuvable : {rel}")
         if path.is_dir():
             raise ToolError(f"'{rel}' est un répertoire, pas un fichier")
-        try:
-            raw = path.read_bytes().decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ToolError(f"fichier binaire non éditable : {rel}") from exc
+        # Décodage MULTI-ENCODAGE (comme read_file) : un fichier UTF-16 (défaut
+        # PowerShell) ou cp1252 se lit et s'édite, on mémorise l'encodage pour ré-écrire
+        # à l'identique. Avant, un `decode("utf-8")` sec déclarait « binaire » un fichier
+        # que read_file venait pourtant de lire — impasse pour le modèle.
+        raw, _enc = _decode_text_enc(path.read_bytes())
+        if raw is None:
+            raise ToolError(
+                f"fichier binaire non éditable : {rel} (aucun encodage texte détecté)"
+            )
         # Matching AGNOSTIQUE aux fins de ligne. read_file montre du LF (splitlines) -> le
         # modèle copie un old_string en LF, alors que le fichier sur disque est souvent CRLF
         # (Windows). AVANT, `text.count(old_string)` échouait sur tout extrait multi-ligne
@@ -238,7 +246,7 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
         )
         if is_crlf:
             result = result.replace("\n", "\r\n")
-        _atomic_write(path, result)
+        _atomic_write(path, result, encoding=_enc)
         msg = (
             f"modifié : {rel} ({count} occurrence(s))"
             if replace_all

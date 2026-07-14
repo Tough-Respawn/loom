@@ -1,0 +1,178 @@
+# Robustesse des outils face aux écritures « naturelles » d'un modèle (audit 2026-07-14).
+# Cause racine commune au bug `^` du calc : la frontière d'entrée (base.py) coerçait les
+# scalaires mais PAS les conteneurs JSON-string ni les enums. Ces tests figent les
+# corrections (coercition centrale + enum tolérant + calc/edit_file/read robustes).
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from loom.tools.base import ToolError, coerce_enum, validate_and_coerce
+from loom.tools.calc import calculate
+from loom.tools.fs import make_edit_file
+from loom.tools.read import make_read_file
+from loom.tools.todo import make_manage_todos
+
+
+# ---------- base.py : coercition des conteneurs ----------
+
+
+def test_array_json_string_parsee():
+    sch = {"properties": {"xs": {"type": "array"}}, "required": []}
+    assert validate_and_coerce("t", sch, {"xs": "[1,2,3]"}) == {"xs": [1, 2, 3]}
+
+
+def test_array_scalaire_seul_enveloppe():
+    sch = {"properties": {"xs": {"type": "array"}}, "required": []}
+    assert validate_and_coerce("t", sch, {"xs": "foo"}) == {"xs": ["foo"]}
+
+
+def test_object_json_string_parsee():
+    sch = {"properties": {"w": {"type": "object"}}, "required": []}
+    assert validate_and_coerce("t", sch, {"w": '{"a":1}'}) == {"w": {"a": 1}}
+
+
+def test_string_recoit_liste_jointe():
+    sch = {"properties": {"cmd": {"type": "string"}}, "required": []}
+    out = validate_and_coerce("t", sch, {"cmd": ["git", "status"]})
+    assert out == {"cmd": "git status"}
+
+
+# ---------- base.py : coerce_enum ----------
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("done", "done"),
+        ("Done", "done"),  # casse
+        ("DONE", "done"),
+        ("in-progress", "in_progress"),  # tiret
+        ("in progress", "in_progress"),  # espace
+    ],
+)
+def test_coerce_enum_mecanique(value, expected):
+    assert coerce_enum(value, ["pending", "in_progress", "done"]) == expected
+
+
+def test_coerce_enum_alias():
+    aliases = {"completed": "done", "wip": "in_progress"}
+    allowed = ["pending", "in_progress", "done"]
+    assert coerce_enum("completed", allowed, aliases) == "done"
+    assert coerce_enum("wip", allowed, aliases) == "in_progress"
+
+
+def test_coerce_enum_inconnu_reste_tel_quel():
+    # On ne DEVINE pas : une valeur non résolue reste inchangée (l'outil rejettera).
+    assert coerce_enum("banane", ["pending", "done"]) == "banane"
+
+
+def test_coerce_enum_top_level_via_schema():
+    sch = {
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["episodic", "memory", "profile", "soul"],
+                "x_aliases": {"fact": "memory", "user": "profile"},
+            }
+        },
+        "required": [],
+    }
+    assert validate_and_coerce("remember", sch, {"kind": "fact"})["kind"] == "memory"
+    assert validate_and_coerce("remember", sch, {"kind": "USER"})["kind"] == "profile"
+
+
+# ---------- manage_todos : statuts tolérants + plan préservé ----------
+
+
+class _Conv:
+    def __init__(self):
+        self.todos = []
+
+
+@pytest.mark.parametrize(
+    "status,mark",
+    [
+        ("completed", "[x]"),
+        ("Done", "[x]"),
+        ("fini", "[x]"),
+        ("in-progress", "[~]"),
+        ("in progress", "[~]"),
+        ("wip", "[~]"),
+        ("todo", "[ ]"),
+    ],
+)
+def test_todo_statuts_synonymes(status, mark):
+    todo = make_manage_todos(_Conv())
+    out = todo.run({"todos": [{"content": "x", "status": status}]})
+    assert mark in out
+
+
+def test_todo_statut_vraiment_invalide_rejete():
+    todo = make_manage_todos(_Conv())
+    with pytest.raises(ToolError):
+        todo.run({"todos": [{"content": "x", "status": "zzz"}]})
+
+
+# ---------- calc : cas de l'audit ----------
+
+
+@pytest.mark.parametrize(
+    "expr,expected",
+    [
+        ("√16", 4),
+        ("2√9", 6),
+        ("3(4+5)", 27),
+        ("2pi", pytest.approx(6.283185307, rel=1e-6)),
+        ("200*20%", pytest.approx(40)),
+        ("20%", pytest.approx(0.2)),
+        ("10%3", 1),  # modulo PRÉSERVÉ (pas pourcentage)
+        ("1e3", 1000),  # notation scientifique PRÉSERVÉE
+        ("1.5e-3", pytest.approx(0.0015)),
+        ("log10(1000)", 3),  # identifiant à chiffre non cassé
+    ],
+)
+def test_calc_ecritures_modele(expr, expected):
+    out = calculate(expr)
+    val = float(out.split(" = ", 1)[1].split(" (~", 1)[0])
+    assert val == expected
+
+
+def test_calc_exposant_borne_ne_gele_pas():
+    with pytest.raises(ToolError):
+        calculate("9^9^9")
+
+
+def test_calc_virgule_message_actionnable():
+    with pytest.raises(ToolError) as e:
+        calculate("1,5*2")
+    assert "POINT décimal" in str(e.value)
+
+
+# ---------- edit_file : fichier UTF-16 (défaut PowerShell) ----------
+
+
+def test_edit_file_utf16():
+    d = Path(tempfile.mkdtemp())
+    f = d / "ps.txt"
+    f.write_text("bonjour monde\ndeux\n", encoding="utf-16")
+    ef = make_edit_file(str(d))
+    out = ef.run({"path": "ps.txt", "old_string": "bonjour", "new_string": "salut"})
+    assert "modifié" in out
+    # Le fichier reste lisible et l'édition a pris.
+    assert "salut monde" in f.read_text(encoding="utf-16")
+
+
+# ---------- read_file : alias offset/limit ----------
+
+
+def test_read_file_offset_limit_alias():
+    d = Path(tempfile.mkdtemp())
+    f = d / "big.txt"
+    f.write_text("\n".join(f"L{i}" for i in range(1, 101)), encoding="utf-8")
+    rf = make_read_file(str(d), 60000)
+    out = rf.run({"path": "big.txt", "offset": 50, "limit": 3})
+    assert "L50" in out and "L52" in out
+    assert "L1\n" not in out  # ne repart PAS du début
