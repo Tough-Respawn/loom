@@ -264,18 +264,32 @@ def _render_page(
                     try:
                         page.wait_for_selector(wait_selector, timeout=5000)
                     except Exception:  # noqa: BLE001 - absence = info, pas un crash
-                        pass
+                        # DIAGNOSTIC explicite : sans ça, un wait_selector jamais apparu
+                        # était indistinguable d'un succès (le modèle ne savait pas).
+                        note = (
+                            f"wait_selector « {wait_selector} » jamais apparu en 5s : "
+                            "l'élément attendu n'existe pas (ou tarde/est mal orthographié)."
+                        )
                 page.wait_for_timeout(1200)  # laisse le JS d'init s'executer
                 try:
                     title = page.title()
                     body = page.query_selector("body")
                     body_text = body.inner_text()[:2000] if body else ""
-                    counts = {
-                        sel: len(page.query_selector_all(sel))
-                        for sel in count_selectors
-                    }
                 except Exception as exc:  # noqa: BLE001 - lecture partiellement bloquee
                     note = f"lecture de la page interrompue : {str(exc)[:120]}"
+                # Comptage par sélecteur ISOLÉ : un sélecteur CSS invalide ne doit pas
+                # faire perdre le titre, le texte ET les autres comptes (avant : la
+                # dict-comprehension entière échouait sur un seul mauvais sélecteur).
+                bad: list[str] = []
+                for sel in count_selectors:
+                    try:
+                        counts[sel] = len(page.query_selector_all(sel))
+                    except Exception:  # noqa: BLE001 - sélecteur invalide isolé
+                        bad.append(sel)
+                if bad:
+                    note = (note + " | " if note else "") + (
+                        f"sélecteur(s) invalide(s) ignoré(s) : {', '.join(bad)}"
+                    )
             browser.close()
     except Exception as exc:  # noqa: BLE001 - navigateur absent / page injoignable
         msg = str(exc)

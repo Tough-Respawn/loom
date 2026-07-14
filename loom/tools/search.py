@@ -114,6 +114,12 @@ def _glob_base_and_pattern(root: Path, pattern: str) -> tuple[Path, str]:
     """
     p = Path(pattern)
     if not p.is_absolute():
+        # Motif NU (juste un nom, ex '*.py') -> RÉCURSIF (**/), comme ripgrep/fd et l'attend
+        # un agent qui « cherche dans le projet » : avant, '*.py' ne matchait QUE la racine
+        # (src/a.py manqué), et de façon incohérente selon que ripgrep était là ou non. Un
+        # motif avec dossier ('src/*.js') ou déjà récursif ('**/x') est respecté tel quel.
+        if "/" not in pattern and "\\" not in pattern and "**" not in pattern:
+            pattern = "**/" + pattern
         return root.resolve(), pattern
     magic = ("*", "?", "[")
     base_parts: list[str] = []
