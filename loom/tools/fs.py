@@ -29,64 +29,98 @@ from loom.permissions import is_protected_write_path
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.read import _decode_text_enc
 
-# ---- Diagnostics auto après écriture Python (« palier 1 LSP ») -------------------
+# ---- Diagnostics auto après écriture de code (« palier 1 LSP ») ------------------
 # Le modèle n'appelle format_code que s'il y pense (et le 4B confabule l'exécution) :
 # on déplace le check de l'espace prompt vers l'espace harnais. Après CHAQUE écriture
-# d'un .py, un `ruff check` NON-MUTANT (jamais --fix : ne pas invalider les lignes que
-# le modèle vient de viser) colle les erreurs au résultat d'outil. Jamais bloquant :
-# ruff absent / timeout / rc inattendu -> silence, l'écriture reste acquise.
-_LINT_EXTS = frozenset({".py", ".pyi"})
-# E9/F63/F7/F82 = syntaxe, comparaisons cassées, return/yield hors fonction, noms non
-# définis : haute confiance uniquement. PAS F401/F841 (imports/variables inutilisés) :
-# sur un squelette en cours de chunking ils pousseraient le modèle à « corriger » des
-# imports dont le chunk suivant a besoin.
-_LINT_SELECT = "E9,F63,F7,F82"
+# d'un fichier code couvert, un lint NON-MUTANT (jamais de --fix : ne pas invalider
+# les lignes que le modèle vient de viser) colle les ERREURS au résultat d'outil.
+# Jamais bloquant : linter absent / timeout / rc inattendu -> silence, l'écriture
+# reste acquise. Haute confiance uniquement (syntaxe, bugs quasi certains), JAMAIS
+# les règles « inutilisé » (F401/F841/no-unused-vars) : sur un squelette en cours de
+# chunking elles pousseraient le modèle à « corriger » du code que le chunk suivant
+# utilise.
+#   - .py/.pyi -> ruff (dépendance Loom) : E9/F63/F7/F82 (syntaxe, comparaisons
+#     cassées, return/yield hors fonction, noms non définis), `--isolated` car le
+#     workspace = de vrais projets dont la config ne doit pas changer le harnais.
+#   - .js/.ts/... -> oxlint (binaire Rust autonome, optionnel) : catégorie
+#     correctness en erreur. Ne couvre PAS le JS inline d'un .html (filet runtime :
+#     check_page).
+_LINT_PY_EXTS = frozenset({".py", ".pyi"})
+_LINT_JS_EXTS = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx"})
 _LINT_MAX_LINES = 8  # budget contexte : plafond dur sur ce qu'on injecte
 
+# Résumés de fin de sortie à écarter ("Found 2 errors." ruff, "3 problems" oxlint).
+_LINT_NOISE = re.compile(r"^(Found \d+|\[\*\]|\d+ problems?\b)")
 
-def _ruff_auto_hint(path: Path) -> str:
-    """Diagnostics ruff plafonnés pour `path`, ou '' (pas un .py, fichier sain, ruff
-    indisponible). `--isolated` : le workspace = de vrais projets, leur config ruff ne
-    doit pas changer le comportement du harnais."""
-    if path.suffix.lower() not in _LINT_EXTS:
-        return ""
-    ruff = shutil.which("ruff")
-    if not ruff:
-        return ""
+
+def _lint_diags(argv: list[str]) -> list[str]:
+    """Lignes de diagnostic d'un linter, ou [] (sain, absent, timeout, rc inattendu).
+    Contrat commun ruff/oxlint : rc 0 = sain, rc 1 = diagnostics, autre = silence."""
     try:
         proc = subprocess.run(
-            [
-                ruff,
-                "check",
-                "--no-fix",
-                "--isolated",
-                "--select",
-                _LINT_SELECT,
-                "--output-format",
-                "concise",
-                str(path),
-            ],
+            argv,
             capture_output=True,
             timeout=10,
             encoding="utf-8",
             errors="replace",
         )
     except (subprocess.TimeoutExpired, OSError):
-        return ""
-    # ruff : 0 = sain, 1 = diagnostics ; tout autre code (config cassée, IO) = silence.
+        return []
     if proc.returncode != 1:
-        return ""
-    lines = [
+        return []
+    return [
         ln
         for ln in (proc.stdout or "").splitlines()
-        if ln.strip() and not ln.startswith(("Found ", "[*]"))
+        if ln.strip() and not _LINT_NOISE.match(ln)
     ]
+
+
+def _lint_auto_hint(path: Path) -> str:
+    """Diagnostics plafonnés pour `path`, ou '' (extension non couverte, fichier
+    sain, linter indisponible)."""
+    ext = path.suffix.lower()
+    if ext in _LINT_PY_EXTS:
+        tool = shutil.which("ruff")
+        if not tool:
+            return ""
+        label = "ruff"
+        argv = [
+            tool,
+            "check",
+            "--no-fix",
+            "--isolated",
+            "--select",
+            "E9,F63,F7,F82",
+            "--output-format",
+            "concise",
+            str(path),
+        ]
+    elif ext in _LINT_JS_EXTS:
+        tool = shutil.which("oxlint")
+        if not tool:
+            return ""
+        label = "oxlint"
+        # correctness passé en ERREUR (rc 1) ; no-unused-vars retiré (bruit de
+        # chunking, cf. bloc ci-dessus).
+        argv = [
+            tool,
+            "-f",
+            "unix",
+            "-D",
+            "correctness",
+            "-A",
+            "no-unused-vars",
+            str(path),
+        ]
+    else:
+        return ""
+    lines = _lint_diags(argv)
     if not lines:
         return ""
     extra = len(lines) - _LINT_MAX_LINES
     shown = "\n".join(lines[:_LINT_MAX_LINES])
     more = f"\n… (+{extra} autres)" if extra > 0 else ""
-    return f"\nruff (auto) — erreurs à corriger :\n{shown}{more}"
+    return f"\n{label} (auto) — erreurs à corriger :\n{shown}{more}"
 
 
 def _guard_write_path(path: Path) -> None:
@@ -142,7 +176,7 @@ def make_write_file(
             )
         path = _resolve_in_root(root, rel)
         _atomic_write(path, content)
-        return f"écrit : {rel} ({len(content)} caractères)" + _ruff_auto_hint(path)
+        return f"écrit : {rel} ({len(content)} caractères)" + _lint_auto_hint(path)
 
     return ToolSpec(
         name="write_file",
@@ -209,7 +243,7 @@ def make_append_file(
             fh.write(content)
         # Une erreur de syntaxe ICI = chunk coupé au milieu d'une unité logique
         # (la doctrine du chunking veut que le fichier parse après chaque append).
-        return f"ajouté : {rel} (+{len(content)} caractères)" + _ruff_auto_hint(path)
+        return f"ajouté : {rel} (+{len(content)} caractères)" + _lint_auto_hint(path)
 
     return ToolSpec(
         name="append_file",
@@ -334,7 +368,7 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
                 f" — édition multi-ligne : relis la zone modifiée (read_file, "
                 f"start_line {line}) pour VÉRIFIER avant d'affirmer que c'est bon."
             )
-        return msg + _ruff_auto_hint(path)
+        return msg + _lint_auto_hint(path)
 
     return ToolSpec(
         name="edit_file",
