@@ -366,6 +366,7 @@ def create_app(
     model_contexts=None,
     model_max_tokens=None,
     remote_model_ids=None,
+    remote_weak_ids=None,
     remote_model_names=None,
     model_prices=None,
     model_descriptions=None,
@@ -466,6 +467,9 @@ def create_app(
     vision_models = set(vision_models or [])  # ids des modèles avec mmproj (vision)
 
     remote_model_ids = set(remote_model_ids or [])  # ids servis par une API distante
+    # Distants FAIBLES (strong=false en config) : gardent le harnais complet — le tier
+    # « fort » n'est plus déduit de la seule distance (leçon GLM-4.7-Flash 2026-07-15).
+    remote_weak_ids = set(remote_weak_ids or [])
     # ids des modèles LOCAUX (servis par llama-swap sur la machine) = tout sauf les distants.
     # Sert à /machine_state (quel modèle machine est chargé).
     local_model_ids = [m for m in (models or []) if m not in remote_model_ids]
@@ -534,6 +538,7 @@ def create_app(
         models=models,
         vision_models=vision_models,
         remote_model_ids=remote_model_ids,
+        remote_weak_ids=remote_weak_ids,
         remote_model_names=remote_model_names,
         local_model_ids=local_model_ids,
         local_model_specs=local_model_specs,
