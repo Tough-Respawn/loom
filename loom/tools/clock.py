@@ -54,23 +54,21 @@ def make_current_date() -> ToolSpec:
     return ToolSpec(
         name="current_date",
         description=(
-            "Returns the REAL current date and local time (plus yesterday/tomorrow). "
-            "ALWAYS call it before answering anything involving today's date or a "
-            "relative date (yesterday, next week, a deadline) — NEVER guess dates "
-            "from training data. Optional exact date arithmetic: `plus_days` (date N "
-            "days from today, N may be negative) and `until` (days from today until "
-            "YYYY-MM-DD)."
+            "Returns the REAL current date and local time — call it before answering "
+            "anything involving today or a relative date; NEVER guess dates from "
+            "training data. `plus_days` gives the date N days away; `until` counts "
+            "days to a YYYY-MM-DD."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "plus_days": {
                     "type": "integer",
-                    "description": "Optional: compute the date N days from today (negative = past).",
+                    "description": "Date N days from today (negative = past).",
                 },
                 "until": {
                     "type": "string",
-                    "description": "Optional: count the days from today until this date (YYYY-MM-DD).",
+                    "description": "Count days from today to this YYYY-MM-DD.",
                 },
             },
         },

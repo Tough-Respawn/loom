@@ -229,6 +229,16 @@ AVAILABLE_TOOLS = [
 ]
 
 
+def _strip_x_keys(obj):
+    """Copie d'un fragment de schéma sans les clés x_* (métadonnées internes,
+    jamais envoyées au modèle). Récursif, ne mute pas l'original."""
+    if isinstance(obj, dict):
+        return {k: _strip_x_keys(v) for k, v in obj.items() if not k.startswith("x_")}
+    if isinstance(obj, list):
+        return [_strip_x_keys(v) for v in obj]
+    return obj
+
+
 @dataclass
 class ToolSpec:
     name: str
@@ -247,7 +257,9 @@ class ToolSpec:
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                # Les clés x_* (métadonnées internes, ex. x_aliases de coercition)
+                # ne partent pas au modèle : bruit de schéma sans valeur d'usage.
+                "parameters": _strip_x_keys(self.parameters),
             },
         }
 

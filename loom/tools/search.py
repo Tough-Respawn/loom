@@ -175,11 +175,8 @@ def make_find_files(workspace_dir: str, *, max_results: int = 200) -> ToolSpec:
     return ToolSpec(
         name="find_files",
         description=(
-            "Finds files by glob PATTERN. Relative to the working directory "
-            "(e.g. '**/*.py', '**/config.*') OR absolute to search elsewhere "
-            "(e.g. 'C:/Users/moi/Desktop/projet/**/*.md'). Use it to LOCATE a file "
-            "or see the structure. Returns the paths (relative if inside the working "
-            "directory, absolute otherwise)."
+            "Finds files by glob pattern — to LOCATE a file or see the structure. "
+            "Returns paths ready for read_file."
         ),
         parameters={
             "type": "object",
@@ -410,10 +407,9 @@ def make_list_dir(workspace_dir: str, *, max_entries: int = 300) -> ToolSpec:
     return ToolSpec(
         name="list_dir",
         description=(
-            "Lists the contents of a directory (sub-directories suffixed with '/'). Path "
-            "relative to the working directory OR absolute (e.g. 'C:/Users/moi/Desktop/projet'). "
-            "Returns READY-TO-USE paths (prefixed with the listed directory): copy them as-is "
-            "into read_file/edit. For a broad pattern search, find_files is better."
+            "Lists a directory (sub-directories suffixed with '/'). Returns "
+            "READY-TO-USE paths: copy them as-is into read_file/edit_file. For a "
+            "broad pattern search, find_files."
         ),
         parameters={
             "type": "object",
@@ -421,8 +417,8 @@ def make_list_dir(workspace_dir: str, *, max_entries: int = 300) -> ToolSpec:
                 "path": {
                     "type": "string",
                     "description": (
-                        "Directory to list: relative to the working directory (default '.') "
-                        "or absolute path (e.g. 'C:/Users/moi/Desktop/projet')."
+                        "Directory: relative to the working directory (default '.') "
+                        "or absolute."
                     ),
                 }
             },
