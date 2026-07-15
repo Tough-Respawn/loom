@@ -42,13 +42,10 @@ def make_remember(provider, paths: dict) -> ToolSpec:
     return ToolSpec(
         name="remember",
         description=(
-            "Banks a DURABLE, high-value fact into your persistent memory "
-            "(it survives the session). kind='episodic' (default): files a "
-            "lesson/observation into the searchable store (to be retrieved via recall). "
-            "kind='memory': durable general fact (project convention, environment "
-            "detail). kind='profile': stable fact about the user. kind='soul': "
-            "a trait of your own persona. Write the dense LESSON, not the raw log. Only "
-            "memorize what will be useful again."
+            "Banks a durable, high-value fact into persistent memory (survives the "
+            "session). kind: episodic (lesson, retrieved via recall) | memory "
+            "(project/environment fact) | profile (user) | soul (your persona). "
+            "Write the dense LESSON, not the raw log."
         ),
         parameters={
             "type": "object",

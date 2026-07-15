@@ -439,20 +439,14 @@ def make_calculate(workspace_dir: str = ".") -> ToolSpec:
     return ToolSpec(
         name="calculate",
         description=(
-            "Evaluates arithmetic EXACTLY and deterministically. ALWAYS use it for ANY "
-            "calculation beyond a single trivial operation — especially money, "
-            "percentages, VAT, totals — and NEVER compute multi-step arithmetic in "
-            "your head: language models routinely get sums wrong. Pure expression: "
-            "(55000-600)*0.2. With `file` (CSV/TSV/XLSX in the workspace), quoted "
-            'strings become COLUMN references and aggregates activate: sum("Debit") - '
-            'sum("Credit"), avg("Montant"), count("Compte") — NEVER sum table rows '
-            "mentally, use this instead. Optional `where` filters rows by equality "
-            "before aggregating. Power works as ^ or ** or Unicode exponents (2^10, "
-            "e²², 10⁻³); ×·÷− and π√ are also accepted. Operators + - * / // % ; "
-            "functions abs, round, min, max, pow, sign, sqrt, cbrt, floor, ceil, "
-            "trunc, log (log(x) or log(x,base)), ln, log10, log2, exp, factorial, "
-            "gcd, lcm, comb, perm, hypot, sin/cos/tan (+ a/h variants), degrees, "
-            "radians; constants pi, e, tau."
+            "Evaluates arithmetic EXACTLY. ALWAYS use it for any calculation beyond a "
+            "single trivial operation — money, percentages, VAT, totals — and NEVER "
+            "compute multi-step arithmetic in your head: language models routinely "
+            "get sums wrong. Plain expressions: (55000-600)*0.2, 2^10, sqrt/log/trig "
+            "and usual math functions accepted. With `file` (CSV/TSV/XLSX), quoted "
+            'strings become COLUMN references with aggregates — sum("Debit") - '
+            'sum("Credit"), avg, count — and `where` filters rows first: NEVER sum '
+            "table rows mentally."
         ),
         parameters={
             "type": "object",

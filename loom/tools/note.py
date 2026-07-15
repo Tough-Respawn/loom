@@ -60,13 +60,10 @@ def make_write_note(conversation) -> ToolSpec:
     return ToolSpec(
         name="write_note",
         description=(
-            "Records a DURABLE note in your session memory. Use it for anything you "
-            "need to retain beyond a few turns: file paths, key values, decisions, "
-            "progress state. Tool results (reads, searches) may be cleared from the "
-            "context when it fills up — a note, however, persists: re-read it "
-            "(read_note) instead of re-reading a whole file. Append by default; "
-            "replace=true starts from a clean note when the old one is stale. Record "
-            "a SUMMARY, not a copy-paste of a file."
+            "Saves a durable session note (paths, key values, decisions, progress). "
+            "Tool results get cleared when the context fills — notes survive: record "
+            "the datum the moment you get it, re-read with read_note. A SUMMARY, not "
+            "a file dump. replace=true starts clean."
         ),
         parameters={
             "type": "object",
