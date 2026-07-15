@@ -85,7 +85,10 @@ def build_registry(
     # lecture au lieu de la perdre en silence.
     if "read_file" in enabled or "read_document" in enabled:
         specs.append(make_read_file(workspace_dir, max_bytes))
-    if "read_image" in enabled:
+    # Gaté VISION (2026-07-15) : sur un modèle texte pur, read_image n'occupe pas
+    # ~340 tokens de schéma pour répondre « je ne vois pas » — l'outil disparaît.
+    # La décision 2026-07-09 reste : jamais de repli vers un autre modèle.
+    if "read_image" in enabled and active_is_vision:
         specs.append(
             make_read_image(
                 workspace_dir,
@@ -175,6 +178,7 @@ def build_registry(
                 _SUBAGENT_TOOLS,
                 web_cfg=web_cfg,
                 active_model=active_model,
+                active_is_vision=active_is_vision,
             )
 
         specs.append(
