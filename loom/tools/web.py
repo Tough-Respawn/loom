@@ -18,10 +18,11 @@ monkeypatchables sans aucun appel réseau réel.
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 import socket
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 
@@ -385,6 +386,22 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
             url = "https://" + url
         elif m.group(1).lower() not in ("http", "https"):
             raise ToolError("seuls http:// et https:// sont supportés")
+        # Query params en OBJET : l'outil encode (les valeurs dict/list sont
+        # JSON-sérialisées compactes) — le modèle ne fabrique plus de %7B%22 à la
+        # main (44+ échecs d'encodage PowerShell sur l'API Bien'ici, session 14/07).
+        params = args.get("params")
+        if params:
+            if not isinstance(params, dict):
+                raise ToolError("'params' doit être un objet {clé: valeur}")
+            enc = {
+                k: (
+                    json.dumps(v, separators=(",", ":"), ensure_ascii=False)
+                    if isinstance(v, (dict, list))
+                    else v
+                )
+                for k, v in params.items()
+            }
+            url += ("&" if "?" in url else "?") + urlencode(enc)
         blocked = _blocked_host_reason(url)  # anti-SSRF (refus explicite et clair)
         if blocked:
             raise ToolError(blocked)
@@ -397,8 +414,11 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
         name="fetch_url",
         description=(
             "Fetches and returns the TEXT content of a specific URL (web page, "
-            "online doc). Use it when you ALREADY have the URL. If you don't have "
-            "a URL, run web_search first."
+            "online doc, JSON API). Use it when you ALREADY have the URL. If you "
+            "don't have a URL, run web_search first. For an API with query "
+            "parameters, pass them via `params` (the tool URL-encodes them; "
+            "object/array values are JSON-serialized) instead of building the "
+            "query string yourself."
         ),
         parameters={
             "type": "object",
@@ -406,7 +426,15 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
                 "url": {
                     "type": "string",
                     "description": "Full URL to read (http:// or https://).",
-                }
+                },
+                "params": {
+                    "type": "object",
+                    "description": (
+                        "Optional query parameters as an object; values may be "
+                        'objects/arrays (JSON-encoded), e.g. {"filters": '
+                        '{"size": 50}, "page": 1}.'
+                    ),
+                },
             },
             "required": ["url"],
         },

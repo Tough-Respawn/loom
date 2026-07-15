@@ -350,3 +350,32 @@ def test_use_skill_nom_d_outil_redirige():
         us.run({"name": "dispatch_agent"})
     msg = str(e.value).lower()
     assert "outil" in msg and "dispatch_agent" in msg
+
+
+# ---------- Rationalisation 2026-07-15 : fetch_url params ----------
+
+
+def test_fetch_url_params_objet_encode(monkeypatch):
+    # Le modèle passe les query params en OBJET, l'outil encode (les valeurs
+    # dict/list sont JSON-sérialisées) — fini l'encodage %7B%22 à la main en
+    # PowerShell (44+ échecs dans la session chasse-invest sur l'API Bien'ici).
+    import loom.tools.web as web
+
+    seen = {}
+    monkeypatch.setattr(
+        web,
+        "fetch_page",
+        lambda url, cfg, snippet="", raise_status=False: (
+            seen.setdefault("url", url) or "OK"
+        ),
+    )
+    fu = web.make_fetch_url(web.WebSearchConfig())
+    fu.run(
+        {
+            "url": "https://www.bienici.com/realEstateAds.json",
+            "params": {"filters": {"size": 2, "filterType": "buy"}, "page": 1},
+        }
+    )
+    assert seen["url"].startswith("https://www.bienici.com/realEstateAds.json?")
+    assert "filters=%7B%22size%22" in seen["url"]  # JSON compact url-encodé
+    assert "page=1" in seen["url"]
