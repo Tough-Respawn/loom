@@ -227,7 +227,7 @@ def test_fetch_url_domaine_nu_et_schema(monkeypatch):
     monkeypatch.setattr(
         web,
         "fetch_page",
-        lambda url, cfg, snippet="", raise_status=False: (
+        lambda url, cfg, snippet="", raise_status=False, impersonate=None: (
             seen.setdefault("url", url) or "OK"
         ),
     )
@@ -281,7 +281,7 @@ def test_fetch_url_remonte_statut_http_et_url_origine(monkeypatch):
 
     import loom.tools.web as web
 
-    def fake_get(url, params=None, headers=None, timeout=None, pin_ip=None):
+    def fake_get(url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None):
         req = httpx.Request("GET", "https://52.222.201.14/liste.htm")  # épinglée
         return httpx.Response(403, request=req)
 
@@ -303,7 +303,7 @@ def test_fetch_page_web_search_garde_le_repli_snippet(monkeypatch):
 
     import loom.tools.web as web
 
-    def fake_get(url, params=None, headers=None, timeout=None, pin_ip=None):
+    def fake_get(url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None):
         req = httpx.Request("GET", url)
         return httpx.Response(403, request=req)
 
@@ -365,7 +365,7 @@ def test_fetch_url_params_objet_encode(monkeypatch):
     monkeypatch.setattr(
         web,
         "fetch_page",
-        lambda url, cfg, snippet="", raise_status=False: (
+        lambda url, cfg, snippet="", raise_status=False, impersonate=None: (
             seen.setdefault("url", url) or "OK"
         ),
     )

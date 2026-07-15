@@ -21,6 +21,7 @@ import ipaddress
 import json
 import re
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlencode, urljoin, urlparse
 
@@ -95,8 +96,8 @@ def _with_ua(headers):
     return h
 
 
-def _http_get(url, params=None, headers=None, timeout=None, pin_ip=None):
-    """GET via httpx (isolé pour faciliter le monkeypatch en test).
+def _httpx_get(url, params=None, headers=None, timeout=None, pin_ip=None):
+    """GET via httpx (chemin par défaut).
 
     follow_redirects=False : un redirect 30x pourrait renvoyer vers une adresse interne
     (contournement du garde anti-SSRF). On ne suit aucun saut automatiquement ; le suivi
@@ -128,6 +129,48 @@ def _http_get(url, params=None, headers=None, timeout=None, pin_ip=None):
             extensions={"sni_hostname": host},
         )
         return client.send(req)
+
+
+# Cible d'impersonation par défaut quand le modèle passe juste `impersonate="chrome"`
+# (curl_cffi accepte l'alias "chrome" = dernier Chrome connu).
+_IMPERSONATE_DEFAULT = "chrome"
+
+
+def _impersonate_get(url, pin_ip, headers, timeout, impersonate):
+    """GET via curl_cffi en IMITANT l'empreinte TLS/JA3 d'un vrai navigateur — la seule
+    voie qui passe les protections type Datadome (SeLoger, Leboncoin : 403 à httpx ET au
+    Chromium headless, 200 à curl_cffi ; prouvé le 2026-07-15). Anti-SSRF PRÉSERVÉ :
+    l'hôte est déjà validé par l'appelant (_resolve_validated), et `pin_ip` épingle
+    l'IP au niveau curl (CurlOpt.RESOLVE) -> pas de re-résolution, pas de rebinding."""
+    from curl_cffi import CurlOpt
+    from curl_cffi import requests as _creq
+
+    target = _IMPERSONATE_DEFAULT if impersonate in (True, "1", "auto") else impersonate
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    sess = _creq.Session()
+    if pin_ip:
+        sess.curl.setopt(CurlOpt.RESOLVE, [f"{host}:{port}:{pin_ip}".encode()])
+    return sess.get(
+        url,
+        impersonate=target,
+        headers=headers or None,
+        allow_redirects=False,  # sauts suivis+revalidés par fetch_page (anti-SSRF)
+        timeout=timeout,
+    )
+
+
+def _http_get(
+    url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None
+):
+    """Primitif GET partagé (fetch_url ET web_search passent par ici). `impersonate`
+    (ex. "chrome") route vers curl_cffi + empreinte navigateur ; sinon httpx."""
+    if impersonate:
+        return _impersonate_get(url, pin_ip, _with_ua(headers), timeout, impersonate)
+    return _httpx_get(
+        url, params=params, headers=headers, timeout=timeout, pin_ip=pin_ip
+    )
 
 
 def _http_post(url, json=None, headers=None, timeout=None):
@@ -270,15 +313,35 @@ def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
         return []
 
 
+def _network_errors() -> tuple:
+    """Exceptions RÉSEAU (connexion/timeout) des deux backends -> repli sur snippet.
+    curl_cffi lève ses propres erreurs ; on les inclut si la lib est là."""
+    errs = [httpx.ConnectError, httpx.TimeoutException]
+    try:
+        from curl_cffi import CurlError
+
+        errs.append(CurlError)
+    except Exception:  # noqa: BLE001 - lib absente : on garde juste httpx
+        pass
+    return tuple(errs)
+
+
 def fetch_page(
-    url: str, cfg: WebSearchConfig, snippet: str = "", raise_status: bool = False
+    url: str,
+    cfg: WebSearchConfig,
+    snippet: str = "",
+    raise_status: bool = False,
+    impersonate: str | None = None,
 ) -> str:
     """Récupère et extrait le texte principal d'une page ; replie sur snippet.
 
     `raise_status=True` (fetch_url) : une erreur HTTP devient une ToolError EXPLICITE
     (statut + URL d'ORIGINE — jamais l'URL à IP épinglée, illisible pour le modèle).
     Défaut False (web_search) : repli silencieux sur snippet, un résultat qui 403
-    ne casse pas la recherche."""
+    ne casse pas la recherche.
+    `impersonate` (ex. "chrome") : GET via curl_cffi + empreinte navigateur (passe
+    Datadome/anti-bot) au lieu de httpx. Gestion du statut par CODE (pas d'exception
+    httpx-spécifique) pour marcher avec les deux backends."""
     # Suivi des redirections MANUEL et RE-VALIDÉ : http->https, / final, apex->www sont
     # ultra-fréquents. Chaque saut repasse par _resolve_validated (anti-SSRF préservé :
     # un 30x vers une IP interne est bloqué). Borné à 5 sauts.
@@ -287,11 +350,29 @@ def fetch_page(
             reason, pin_ip = _resolve_validated(url)
             if reason:  # hôte interne/introuvable : on ne fetch jamais
                 return snippet
-            resp = _http_get(url, timeout=cfg.http_timeout, pin_ip=pin_ip)
-            if resp.is_redirect and resp.headers.get("location"):
+            resp = _http_get(
+                url, timeout=cfg.http_timeout, pin_ip=pin_ip, impersonate=impersonate
+            )
+            code = resp.status_code
+            if code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
                 url = urljoin(url, resp.headers["location"])
                 continue
-            resp.raise_for_status()
+            if code >= 400:
+                if raise_status:
+                    # `url` = le saut courant sous sa forme NOM D'HÔTE (jamais l'IP
+                    # épinglée, illisible). Message actionnable pour le modèle.
+                    phrase = (
+                        getattr(resp, "reason_phrase", None)
+                        or getattr(resp, "reason", "")
+                        or ""
+                    )
+                    extra = (
+                        " — accès refusé (anti-bot) : réessaye avec impersonate='chrome'"
+                        if code == 403 and not impersonate
+                        else ""
+                    )
+                    raise ToolError(f"erreur HTTP {code} ({phrase}) sur {url}{extra}")
+                return snippet
             # Réponse JSON (API) : trafilatura n'extrait que de l'HTML et renverrait
             # vide -> on renvoie le corps BRUT (tronqué). Détection par content-type
             # ET par le premier caractère (des API servent du JSON en text/plain).
@@ -304,20 +385,7 @@ def fetch_page(
                 return snippet
             return _truncate(text, cfg.max_chars_per_page)
         return snippet  # trop de redirections
-    except httpx.HTTPStatusError as e:
-        if raise_status:
-            # `url` = le saut courant sous sa forme NOM D'HÔTE (seul _http_get pinne
-            # l'IP) : c'est elle qu'on montre, pas e.request.url (IP épinglée).
-            code = e.response.status_code
-            phrase = e.response.reason_phrase or ""
-            extra = (
-                " — accès refusé (anti-bot probable) : essaye une autre source"
-                if code == 403
-                else ""
-            )
-            raise ToolError(f"erreur HTTP {code} ({phrase}) sur {url}{extra}") from e
-        return snippet
-    except (httpx.ConnectError, httpx.TimeoutException):
+    except _network_errors():
         return snippet
 
 
@@ -371,25 +439,30 @@ def make_web_search(cfg: WebSearchConfig) -> ToolSpec:
     )
 
 
-def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
-    """Outil fetch_url : récupère le TEXTE d'une URL précise (page web / doc en ligne)."""
+_FETCH_MAX_CONCURRENT = 12  # cap du fan-out multi-URL (curl_cffi = HTTP léger)
 
-    def run(args: dict) -> str:
-        url = (args.get("url") or "").strip()
-        if not url:
-            raise ToolError("argument 'url' manquant")
-        # Domaine nu (example.com, www.x.org/foo) : un modèle omet souvent le schéma.
-        # On préfixe https:// au lieu de rejeter (le suivi de redirections gère le repli
-        # http et apex/www). Un schéma non-http (file:, ftp:) reste refusé clairement.
-        m = re.match(r"^([a-z][a-z0-9+.-]*)://", url, re.IGNORECASE)
-        if not m:
-            url = "https://" + url
-        elif m.group(1).lower() not in ("http", "https"):
-            raise ToolError("seuls http:// et https:// sont supportés")
-        # Query params en OBJET : l'outil encode (les valeurs dict/list sont
-        # JSON-sérialisées compactes) — le modèle ne fabrique plus de %7B%22 à la
-        # main (44+ échecs d'encodage PowerShell sur l'API Bien'ici, session 14/07).
-        params = args.get("params")
+
+def _normalize_url(url: str) -> str:
+    """Domaine nu -> https:// ; schéma non-http rejeté clairement."""
+    url = (url or "").strip()
+    if not url:
+        raise ToolError("argument 'url' manquant")
+    m = re.match(r"^([a-z][a-z0-9+.-]*)://", url, re.IGNORECASE)
+    if not m:
+        return "https://" + url
+    if m.group(1).lower() not in ("http", "https"):
+        raise ToolError("seuls http:// et https:// sont supportés")
+    return url
+
+
+def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
+    """Outil fetch_url : récupère le TEXTE d'une URL précise (page web / doc en ligne).
+    `impersonate` passe les anti-bot (Datadome) ; `urls` récupère N pages en parallèle."""
+
+    def _fetch_one(url: str, params, impersonate) -> str:
+        url = _normalize_url(url)
+        # Query params en OBJET : l'outil encode (valeurs dict/list JSON-sérialisées) —
+        # le modèle ne fabrique plus de %7B%22 à la main (session 14/07, API Bien'ici).
         if params:
             if not isinstance(params, dict):
                 raise ToolError("'params' doit être un objet {clé: valeur}")
@@ -405,20 +478,44 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
         blocked = _blocked_host_reason(url)  # anti-SSRF (refus explicite et clair)
         if blocked:
             raise ToolError(blocked)
-        text = fetch_page(url, cfg, raise_status=True)
+        text = fetch_page(url, cfg, raise_status=True, impersonate=impersonate)
         if not text:
             return "page indisponible (hors-ligne) ou sans contenu extractible"
         return untrusted(text, f"page web {url}")
+
+    def run(args: dict) -> str:
+        impersonate = (args.get("impersonate") or "").strip() or None
+        urls = args.get("urls")
+        # --- multi-URL concurrent : N pages en parallèle (curl_cffi = HTTP pur, léger) ---
+        if urls:
+            if not isinstance(urls, list):
+                raise ToolError("'urls' doit être une liste d'URLs")
+            urls = [u for u in urls if str(u).strip()][:_FETCH_MAX_CONCURRENT]
+            if not urls:
+                raise ToolError("'urls' est vide")
+
+            def _one(u):
+                try:
+                    return _fetch_one(u, None, impersonate)
+                except ToolError as e:  # une URL qui casse ne coule pas les autres
+                    return f"erreur: {e}"
+
+            with ThreadPoolExecutor(max_workers=len(urls)) as ex:
+                results = list(ex.map(_one, urls))
+            return "\n\n".join(f"===== {u} =====\n{r}" for u, r in zip(urls, results))
+        return _fetch_one(args.get("url"), args.get("params"), impersonate)
 
     return ToolSpec(
         name="fetch_url",
         description=(
             "Fetches and returns the TEXT content of a specific URL (web page, "
-            "online doc, JSON API). Use it when you ALREADY have the URL. If you "
-            "don't have a URL, run web_search first. For an API with query "
-            "parameters, pass them via `params` (the tool URL-encodes them; "
-            "object/array values are JSON-serialized) instead of building the "
-            "query string yourself."
+            "online doc, JSON API). Use it when you ALREADY have the URL. For an "
+            "API with query parameters, pass them via `params` (the tool "
+            "URL-encodes them; object/array values are JSON-serialized). Pass "
+            "`urls` (a list) to fetch many pages CONCURRENTLY in one call. Set "
+            '`impersonate="chrome"` to fetch with a real browser TLS fingerprint '
+            "when a site blocks the default client (HTTP 403 anti-bot, e.g. "
+            "SeLoger, Leboncoin)."
         ),
         parameters={
             "type": "object",
@@ -426,6 +523,14 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
                 "url": {
                     "type": "string",
                     "description": "Full URL to read (http:// or https://).",
+                },
+                "urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional list of URLs to fetch CONCURRENTLY (max 12) "
+                        "instead of `url` — one labelled block per URL in the result."
+                    ),
                 },
                 "params": {
                     "type": "object",
@@ -439,8 +544,17 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
                         "unknown parameters)."
                     ),
                 },
+                "impersonate": {
+                    "type": "string",
+                    "description": (
+                        'Optional: "chrome" to fetch with a browser TLS '
+                        "fingerprint (curl_cffi) — bypasses anti-bot 403s that "
+                        "block the default client. Use it only after a plain fetch "
+                        "returns 403."
+                    ),
+                },
             },
-            "required": ["url"],
+            "required": [],
         },
         run=run,
     )
