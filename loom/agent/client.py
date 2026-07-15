@@ -36,9 +36,7 @@ _SERIAL_WRITE = frozenset({"write_file", "append_file"})
 # non-progrès les EXCLUT donc de sa signature : sinon il coupe un modèle qui fait exactement
 # ce qu'on lui demande (observé sur le test LRU). Les vraies boucles à attraper sont les
 # re-edit_file / re-write_file / re-read_file à l'identique — elles, restent comptées.
-_VERIFY_TOOLS = frozenset(
-    {"run_shell", "check_page", "serve_and_check", "check_interactive"}
-)
+_VERIFY_TOOLS = frozenset({"run_shell", "check_page", "serve_and_check"})
 
 
 def _safe_args(raw: str) -> str:
@@ -585,7 +583,7 @@ _CLEARED_TOOL = (
 # sur une page qui marchait -> 20 tours, 230k tokens, arrêt max_iters). Les checks sont
 # volontairement EXCLUS du détecteur de non-progrès (re-prouver est légitime, cf.
 # _VERIFY_TOOLS) : le remède n'est donc PAS une coupe, c'est un SIGNAL dans le résultat.
-_BROWSER_CHECKS = frozenset({"check_page", "check_interactive", "serve_and_check"})
+_BROWSER_CHECKS = frozenset({"check_page", "serve_and_check"})
 _STATE_CHANGERS = frozenset(
     {"write_file", "append_file", "edit_file", "run_shell", "format_code"}
 )
@@ -693,9 +691,7 @@ def _intends_to_act(text: str, executed: bool) -> bool:
 _WRITE_TOOLS = frozenset({"write_file", "append_file", "edit_file"})
 # Outils dont un ECHEC = signal de BUG (execution / verification), par opposition aux erreurs
 # d'usage d'outil (ligne hors limite, etc.). Une cascade ici impose la methode debug.
-_BUG_SIGNAL_TOOLS = frozenset(
-    {"run_shell", "check_page", "check_interactive", "format_code"}
-)
+_BUG_SIGNAL_TOOLS = frozenset({"run_shell", "check_page", "format_code"})
 # Outils PARALLEL-SAFE : lecture seule / indépendants, sans effet de bord, sans confirmation,
 # sans ordre entre eux. Pour un modèle DISTANT, un tour n'appelant QUE ceux-ci s'exécute en
 # CONCURRENCE (règle Loom : local = inline/1 slot ; distant = on exploite le parallélisme).

@@ -14,7 +14,7 @@ Each tool's mechanics (params, gotchas) are in its own description. Here is WHEN
 - READ: read_file (any file — code/text line-numbered, PDF/xlsx/docx auto-extracted; slice big files; don't re-read what you already read this turn — act), read_image.
 - EDIT/CREATE: edit_file to change an existing block (copy the EXACT snippet from read_file into old_string), write_file for a new/small file, append_file to build a big file in pieces, format_code after writing.
 - RUN: run_shell for a real command — your proof a console program works. Don't reimplement in shell what a dedicated tool does (search/list/read).
-- WEB & PROOF: web_search + fetch_url for facts / an unknown lib; check_page, check_interactive and serve_and_check to PROVE a page or server actually works — check, don't assume.
+- WEB & PROOF: web_search + fetch_url for facts / an unknown lib; check_page (with `steps` for interactions) and serve_and_check to PROVE a page or server actually works — check, don't assume.
 - DELEGATE: dispatch_agent for a self-contained sub-task (clear goal + done-criterion); it returns only a synthesis, you keep the understanding, it doesn't re-delegate.
 
 PLAN & MEMORY — your reasoning is NOT replayed from one turn to the next; only todos and notes survive:
@@ -31,7 +31,7 @@ PLAN & MEMORY — your reasoning is NOT replayed from one turn to the next; only
 - "where is / who calls X" → search_text → read_file → answer.
 - "change X in Y" → (locate if Y unknown) → read_file(Y) → edit_file → run_shell if executable.
 - "create a script" → write_file → format_code → run_shell → on failure, read the error, fix, rerun.
-- "create a page / HTML game" → write_file (start) + append_file (in pieces) → format_code → check_page → fix (read_file → edit_file) until 0 errors → check_interactive if playable.
+- "create a page / HTML game" → write_file (start) + append_file (in pieces) → format_code → check_page → fix (read_file → edit_file) until 0 errors → check_page with `steps` if playable.
 - "does it work / run the tests" → run_shell → report the real output.
 - "latest version of lib Z" → web_search → fetch_url → answer.
 - "look at / describe this image" → read_image → answer.

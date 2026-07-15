@@ -15,7 +15,7 @@ JAMAIS un symptôme : on trouve la **cause racine** d'abord, avec les outils, pa
 ### 1. Reproduire
 Déclenche le bug de façon **fiable** avant de toucher au code :
 - une commande qui échoue → `run_shell` (lis le message d'erreur EN ENTIER : fichier, ligne, code) ;
-- une page web → `check_page` (erreurs console) puis `check_interactive` (le geste qui casse) ;
+- une page web → `check_page` (erreurs console) puis `check_page` avec `steps` (le geste qui casse) ;
 - pas de repro fiable → rassemble plus de données, **ne devine pas**.
 
 Aucun fix sans repro.
@@ -42,7 +42,7 @@ debug — ça brouille la preuve.
 
 ### 5. Preuve forte
 Relance la repro et **CONSTATE** le succès, preuve runnable à l'appui :
-- `check_interactive` avec une **post-condition réelle** (un `expect` testable : la cellule
+- `check_page` avec des `steps` et une **post-condition réelle** (un `expect` testable : la cellule
   cliquée porte la classe `open`, etc.) — pas une suite de clics sans assertion ;
 - ou la sortie / le code de sortie d'une commande `run_shell`.
 

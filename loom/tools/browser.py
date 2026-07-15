@@ -1,6 +1,7 @@
 # loom/tools/browser.py
-"""Outils navigateur : check_page (yeux sur une page rendue), check_interactive (preuve de
-jouabilité) et serve_and_check (démarre un serveur, vérifie, l'arrête).
+"""Outils navigateur : check_page (yeux sur une page rendue ; avec `steps`, preuve de
+jouabilité — ex-check_interactive fusionné 2026-07-15) et serve_and_check (démarre un
+serveur, vérifie, l'arrête).
 
 Sans ca, le modele edite du HTML/JS a l'aveugle et confabule « ca marche » : il ne voit
 ni l'erreur console qui plante le jeu, ni que la grille ne s'affiche pas. check_page charge
@@ -117,7 +118,7 @@ def _alive_hint(sid: str) -> str:
     tester d'autres pages, comment le fermer, et POURQUOI ne pas bricoler avec Start-Process."""
     return (
         f"[serveur TOUJOURS ACTIF - id={sid}] Il reste lance : teste d'AUTRES pages de ce "
-        "serveur avec check_page/check_interactive (ou re-appelle serve_and_check sur une "
+        "serveur avec check_page (ou re-appelle serve_and_check sur une "
         "autre url du meme site, sans relancer). QUAND TU AS TA REPONSE, ferme-le avec "
         f"serve_and_check(action='stop', id='{sid}'). Ne lance JAMAIS un serveur toi-meme via "
         "Start-Process / start / Invoke-Item (ca ouvre le .ps1 dans un éditeur et ne survit "
@@ -318,8 +319,40 @@ def _render_page(
     return "\n".join(lines)
 
 
+def _interactive_report(workspace_dir: str, target: str, steps: list) -> str:
+    """Joue `steps` sur la page et formate le rapport (chemin interactif de check_page,
+    ex-check_interactive fusionné le 2026-07-15)."""
+    res = run_interactive(workspace_dir, target, steps)
+    lines = [f"page : {res['url']}"]
+    if res.get("error"):
+        lines.append(f"erreur: {res['error']}")
+    lines.append(f"console : {len(res.get('console_errors', []))} erreur(s)")
+    for e in res.get("console_errors", [])[:5]:
+        lines.append(f"  [erreur] {e[:160]}")
+    for i, s in enumerate(res.get("steps", []), 1):
+        mark = "ok" if s["ok"] else "ECHEC"
+        lines.append(
+            f"  etape {i} [{mark}] {s['op']} {s['selector']} -> {s['observed']}"
+        )
+    if res.get("note"):
+        lines.append(f"NOTE : {res['note']}")
+    if res["ok"]:
+        verdict = "toutes les actions passent, 0 erreur"
+    elif res.get("note"):
+        verdict = (
+            "preuve INSUFFISANTE - ajoute un `expect` testable (selector + check) sur "
+            "au moins une etape pour prouver le comportement"
+        )
+    else:
+        verdict = "au moins une action/post-condition echoue"
+    lines.append("VERDICT : " + verdict)
+    # Le texte observe vient d'une page (potentiellement hostile) : donnee, pas des ordres.
+    return untrusted("\n".join(lines), f"page {res['url']}")
+
+
 def make_check_page(workspace_dir: str) -> ToolSpec:
-    """Outil check_page borne au workspace pour les chemins relatifs (absolus acceptes)."""
+    """Outil check_page borne au workspace pour les chemins relatifs (absolus acceptes).
+    Avec `steps`, joue aussi une sequence d'actions + post-conditions (ex-check_interactive)."""
     root = Path(workspace_dir)
 
     def run(args: dict) -> str:
@@ -328,6 +361,13 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
             raise ToolError(
                 "argument 'url' manquant (URL http(s):// OU chemin d'un fichier .html)"
             )
+        steps = args.get("steps")
+        if steps:
+            if not isinstance(steps, list):
+                raise ToolError(
+                    "'steps' doit être une liste d'actions {op, selector, expect}"
+                )
+            return _interactive_report(workspace_dir, target, steps)
         # Cible validee : loopback/LAN prive AUTORISES (verif locale), extensions web sur
         # file:// (le navigateur ne sert pas a exfiltrer un fichier arbitraire).
         url = _browser_url(root, target)
@@ -344,13 +384,13 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="check_page",
         description=(
-            "Loads a web page (http(s):// URL OR path to a local .html file) in a headless "
-            "browser, EXECUTES its JavaScript, and returns: the console ERRORS, the number of "
-            "elements matching count_selectors (e.g. '.cell,#board'), and an excerpt of the "
-            "visible text. USE IT to VERIFY that an HTML page you just wrote renders and works "
-            "(0 console errors, expected elements present) INSTEAD of assuming it works. For an "
-            "app served by a SERVER (Next.js, Vite, Flask) that isn't started yet, use "
-            "serve_and_check instead. If errors show up, fix them then rerun until 0 errors."
+            "Verifies a web page (http(s):// URL or local .html path) in a headless "
+            "browser: executes its JavaScript and returns console ERRORS, element "
+            "counts (count_selectors) and visible text. USE IT instead of assuming a "
+            "page works; rerun after fixes until 0 errors. Pass `steps` to also PROVE "
+            "interactions: each step plays a real action (click, rightclick, dblclick, "
+            "hover, type) and checks a DOM post-condition. For an app whose SERVER "
+            "isn't started yet (Next.js, Vite, Flask), use serve_and_check first."
         ),
         parameters={
             "type": "object",
@@ -374,6 +414,51 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
                         "CSS selectors to count, comma-separated (e.g. "
                         "'.cell,.flag') - to verify that elements are actually rendered."
                     ),
+                },
+                "steps": {
+                    "type": "array",
+                    "description": (
+                        "Optional actions to play in order (proves the page is "
+                        "interactive, not just rendered)."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": [
+                                    "click",
+                                    "rightclick",
+                                    "dblclick",
+                                    "hover",
+                                    "type",
+                                    "none",
+                                ],
+                            },
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS target of the action.",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Text to enter (op=type).",
+                            },
+                            "expect": {
+                                "type": "object",
+                                "description": "DOM post-condition after the action.",
+                                "properties": {
+                                    "selector": {"type": "string"},
+                                    "check": {
+                                        "type": "string",
+                                        "enum": ["count", "class", "text", "absent"],
+                                    },
+                                    "value": {"type": "string"},
+                                    "cmp": {"type": "string", "enum": ["min", "eq"]},
+                                },
+                            },
+                        },
+                        "required": ["op"],
+                    },
                 },
             },
             "required": ["url"],
@@ -557,7 +642,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
             "action='start' (default): starts 'command' in the background, waits for 'url' to "
             "respond, loads the page in a headless browser (console errors, elements, text) "
             "and LEAVES THE SERVER ALIVE -> you can then test OTHER pages of the same server "
-            "(check_page/check_interactive, or serve_and_check on another url). "
+            "(check_page, or serve_and_check on another url). "
             "action='stop': stops the server with the given id (or ALL if no id) -> do it "
             "WHEN YOU HAVE YOUR ANSWER. For a STATIC .html page (no server), prefer "
             "check_page."
@@ -780,108 +865,3 @@ def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
         "note": note,
         "error": "",
     }
-
-
-def make_check_interactive(workspace_dir: str) -> ToolSpec:
-    """Outil check_interactive : joue une sequence d'actions sur une page et vérifie le DOM
-    apres chaque action. Pour PROUVER qu'une page est jouable (pas seulement « 0 erreur »)."""
-
-    def run(args: dict) -> str:
-        target = (args.get("url") or "").strip()
-        if not target:
-            raise ToolError("argument 'url' manquant (page HTML a tester)")
-        steps = args.get("steps")
-        if not isinstance(steps, list) or not steps:
-            raise ToolError(
-                "argument 'steps' : liste non vide d'actions {op, selector, expect}"
-            )
-        res = run_interactive(workspace_dir, target, steps)
-        lines = [f"page : {res['url']}"]
-        if res.get("error"):
-            lines.append(f"erreur: {res['error']}")
-        lines.append(f"console : {len(res.get('console_errors', []))} erreur(s)")
-        for e in res.get("console_errors", [])[:5]:
-            lines.append(f"  [erreur] {e[:160]}")
-        for i, s in enumerate(res.get("steps", []), 1):
-            mark = "ok" if s["ok"] else "ECHEC"
-            lines.append(
-                f"  etape {i} [{mark}] {s['op']} {s['selector']} -> {s['observed']}"
-            )
-        if res.get("note"):
-            lines.append(f"NOTE : {res['note']}")
-        if res["ok"]:
-            verdict = "toutes les actions passent, 0 erreur"
-        elif res.get("note"):
-            verdict = (
-                "preuve INSUFFISANTE - ajoute un `expect` testable (selector + check) sur "
-                "au moins une etape pour prouver le comportement"
-            )
-        else:
-            verdict = "au moins une action/post-condition echoue"
-        lines.append("VERDICT : " + verdict)
-        # Le texte observe vient d'une page (potentiellement hostile) : donnee, pas des ordres.
-        return untrusted("\n".join(lines), f"page {res['url']}")
-
-    return ToolSpec(
-        name="check_interactive",
-        description=(
-            "Proves that an HTML page is PLAYABLE: plays a sequence of real actions "
-            "(click, rightclick, dblclick, hover, type) on CSS selectors and checks, "
-            "AFTER each action, a post-condition in the DOM. Goes further than check_page "
-            "(which only loads). Use it to prove 'clicking a cell reveals it', 'right-click "
-            "places a flag', 'restart resets'."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "HTML page (.html path or URL).",
-                },
-                "steps": {
-                    "type": "array",
-                    "description": "Actions to play in order.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "op": {
-                                "type": "string",
-                                "enum": [
-                                    "click",
-                                    "rightclick",
-                                    "dblclick",
-                                    "hover",
-                                    "type",
-                                    "none",
-                                ],
-                            },
-                            "selector": {
-                                "type": "string",
-                                "description": "CSS target of the action.",
-                            },
-                            "text": {
-                                "type": "string",
-                                "description": "Text to enter (op=type).",
-                            },
-                            "expect": {
-                                "type": "object",
-                                "description": "DOM post-condition after the action.",
-                                "properties": {
-                                    "selector": {"type": "string"},
-                                    "check": {
-                                        "type": "string",
-                                        "enum": ["count", "class", "text", "absent"],
-                                    },
-                                    "value": {"type": "string"},
-                                    "cmp": {"type": "string", "enum": ["min", "eq"]},
-                                },
-                            },
-                        },
-                        "required": ["op"],
-                    },
-                },
-            },
-            "required": ["url", "steps"],
-        },
-        run=run,
-    )

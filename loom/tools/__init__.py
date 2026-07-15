@@ -121,10 +121,6 @@ def build_registry(
         from loom.tools.browser import make_check_page
 
         specs.append(make_check_page(workspace_dir))
-    if "check_interactive" in enabled:
-        from loom.tools.browser import make_check_interactive
-
-        specs.append(make_check_interactive(workspace_dir))
     if "serve_and_check" in enabled:
         from loom.tools.browser import make_serve_and_check
 
