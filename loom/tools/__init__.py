@@ -28,7 +28,16 @@ __all__ = [
 # SYNCHRO : cette liste est décrite dans prompts/subagent.system.md (section TES OUTILS).
 # Si tu ajoutes/retires un outil dans AVAILABLE_TOOLS, cette liste se met à jour
 # automatiquement - mais mets le prompt à jour aussi.
-_SUBAGENT_EXCLUDED = {"dispatch_agent", "manage_todos"}
+# Exclus du kit sous-agent : dispatch_agent (anti-récursion), manage_todos (le plan
+# vit dans la conversation principale), et les outils plugins (opérations de setup,
+# dangereuses et hors-sujet pour un ouvrier — sorties du défaut le 2026-07-15).
+_SUBAGENT_EXCLUDED = {
+    "dispatch_agent",
+    "manage_todos",
+    "list_plugins",
+    "add_marketplace",
+    "install_plugin",
+}
 _SUBAGENT_TOOLS = [
     t["name"] for t in AVAILABLE_TOOLS if t["name"] not in _SUBAGENT_EXCLUDED
 ]
