@@ -106,3 +106,13 @@ def test_troncature_isolee_ne_compacte_pas():
     assert done["reason"] == "natural"
     names = [p.get("name") for p in only(events, "tool_result")]
     assert "(compaction sur troncature)" not in names
+
+
+def test_sous_agents_sans_outils_plugins():
+    # Les outils plugins (setup, danger) ne font pas partie du kit d'un ouvrier :
+    # sortis du défaut le 2026-07-15, ils ne doivent pas non plus arriver aux
+    # sous-agents via _SUBAGENT_TOOLS (dérivé du catalogue complet).
+    from loom.tools import _SUBAGENT_TOOLS
+
+    for name in ("list_plugins", "add_marketplace", "install_plugin"):
+        assert name not in _SUBAGENT_TOOLS, name
