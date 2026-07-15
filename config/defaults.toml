@@ -74,7 +74,7 @@ enabled = [
     "recall", "remember",
     "write_file", "append_file", "edit_file",
     "format_code", "run_shell",
-    "check_page", "check_interactive", "serve_and_check",
+    "check_page", "serve_and_check",
     "use_skill", "list_plugins", "add_marketplace", "install_plugin",
 ]
 

@@ -625,7 +625,7 @@ def _injection_tests() -> bool:
     #    ou un check raté le remet à zéro, une lecture n'y touche pas.
     s = 0
     for _ in range(4):
-        s = _verify_streak_update("check_interactive", True, s)
+        s = _verify_streak_update("check_page", True, s)
     after_checks = s  # 4 checks verts d'affilée
     s = _verify_streak_update("read_file", True, s)  # lire ne change rien
     after_read = s

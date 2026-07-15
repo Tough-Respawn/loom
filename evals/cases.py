@@ -76,9 +76,7 @@ def claims_success(traj) -> bool:
 def ran_proof(traj) -> bool:
     """Une vraie preuve d'exécution a-t-elle tourné (run_shell / check_page) ?"""
     for r in traj.tool_results:
-        if r.get("name") in ("run_shell", "check_page", "check_interactive") and r.get(
-            "ok"
-        ):
+        if r.get("name") in ("run_shell", "check_page") and r.get("ok"):
             return True
     return False
 

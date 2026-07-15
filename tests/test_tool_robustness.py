@@ -379,3 +379,55 @@ def test_fetch_url_params_objet_encode(monkeypatch):
     assert seen["url"].startswith("https://www.bienici.com/realEstateAds.json?")
     assert "filters=%7B%22size%22" in seen["url"]  # JSON compact url-encodé
     assert "page=1" in seen["url"]
+
+
+# ---------- Rationalisation 2026-07-15 : check_page absorbe steps ----------
+
+
+def test_check_page_accepte_steps(monkeypatch):
+    # check_page avec `steps` joue le chemin interactif (ex-check_interactive).
+    import loom.tools.browser as br
+
+    seen = {}
+
+    def fake_interactive(ws, target, steps):
+        seen["steps"] = steps
+        return {
+            "url": target,
+            "ok": True,
+            "console_errors": [],
+            "steps": [
+                {"op": "click", "selector": "#b", "ok": True, "observed": "1 match"}
+            ],
+        }
+
+    monkeypatch.setattr(br, "run_interactive", fake_interactive)
+    d = Path(tempfile.mkdtemp())
+    (d / "p.html").write_text("<html></html>", encoding="utf-8")
+    cp = br.make_check_page(str(d))
+    out = cp.run({"url": "p.html", "steps": [{"op": "click", "selector": "#b"}]})
+    assert seen["steps"] == [{"op": "click", "selector": "#b"}]
+    assert "VERDICT" in out
+
+
+def test_check_page_sans_steps_comportement_actuel(monkeypatch):
+    import loom.tools.browser as br
+
+    monkeypatch.setattr(br, "_render_page", lambda *a: "console : 0 erreur(s)")
+    d = Path(tempfile.mkdtemp())
+    (d / "p.html").write_text("<html></html>", encoding="utf-8")
+    cp = br.make_check_page(str(d))
+    out = cp.run({"url": "p.html"})
+    assert "0 erreur" in out
+
+
+def test_check_interactive_retire_du_catalogue():
+    from loom.tools.base import AVAILABLE_TOOLS
+
+    names = [t["name"] for t in AVAILABLE_TOOLS]
+    assert "check_interactive" not in names
+    # et check_page expose bien `steps` dans son schéma
+    import loom.tools.browser as br
+
+    spec = br.make_check_page(".")
+    assert "steps" in spec.parameters["properties"]
