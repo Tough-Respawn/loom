@@ -16,6 +16,10 @@ class Conversation:
     active_tools: list[str] = field(default_factory=list)
     model: str = ""
     thinking: bool = True
+    # Session PRIVÉE : aucun octet ne part vers une API distante — la chaîne de
+    # routage des sous-agents (dispatch_models) est court-circuitée, tout reste
+    # sur le modèle de la conversation. Décision humaine, jamais devinée.
+    local_only: bool = False
     # Plan de tâches de manage_todos : par conversation (donc par session) et persisté
     # ici -> survit au redémarrage, ne déborde plus d'une session à l'autre.
     todos: list[dict] = field(default_factory=list)
@@ -133,6 +137,9 @@ class Conversation:
     def set_thinking(self, thinking: bool) -> None:
         self.thinking = bool(thinking)
 
+    def set_local_only(self, local_only: bool) -> None:
+        self.local_only = bool(local_only)
+
     def to_messages(self) -> list[dict]:
         return list(self.messages)
 
@@ -144,6 +151,7 @@ class Conversation:
             "active_tools": self.active_tools,
             "model": self.model,
             "thinking": self.thinking,
+            "local_only": self.local_only,
             "todos": self.todos,
             "notes": self.notes,
             "goal": self.goal,
@@ -166,6 +174,7 @@ class Conversation:
             active_tools=list(data.get("active_tools", [])),
             model=data.get("model", ""),
             thinking=bool(data.get("thinking", True)),
+            local_only=bool(data.get("local_only", False)),
             todos=list(data.get("todos", [])),
             notes=list(data.get("notes", [])),
             goal=data.get("goal", ""),

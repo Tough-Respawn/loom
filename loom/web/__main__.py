@@ -124,18 +124,27 @@ def build_app(cfg):
     # conversation courante. `workspace` optionnel : à défaut, celui de la config.
     # `client`/`model` arment dispatch_agent (sous-boucle tool-use) ; `conversation` arme
     # manage_todos, dont le plan vit dans `conversation.todos` (par session, persisté).
-    def make_registry(active, workspace=None, conversation=None):
-        _model = conversation.model if conversation else cfg.default_model
-        # Seuil de compaction de la SOUS-boucle (dispatch_agent) : même formule que
-        # _model_limits côté routes (fenêtre du modèle - réserve de sortie - marge).
+    def _compact_for(mid):
+        # Seuil de compaction d'une sous-boucle pour LE modèle qui bosse : même
+        # formule que _model_limits côté routes (fenêtre - réserve de sortie - marge).
         # Sans lui, le sous-agent saturait sa fenêtre : completion étranglée, tool
         # calls tronqués en boucle (session 2026-07-14, campagne chasse-invest).
-        _win = model_contexts.get(_model) or cfg.context
-        if _model in remote_ids:
-            _reserve = model_max_tokens.get(_model) or 8192
+        win = model_contexts.get(mid) or cfg.context
+        if mid in remote_ids:
+            reserve = model_max_tokens.get(mid) or 8192
         else:
-            _reserve = cfg.chat.max_tokens
-        _sub_compact = max(1024, _win - _reserve - 1024)
+            reserve = cfg.chat.max_tokens
+        return max(1024, win - reserve - 1024)
+
+    def make_registry(active, workspace=None, conversation=None):
+        _model = conversation.model if conversation else cfg.default_model
+        _sub_compact = _compact_for(_model)
+        # Routage des sous-agents : chaîne config (gratuit -> payant -> local),
+        # court-circuitée si la SESSION est privée (local_only). Les tiers inconnus
+        # du client (route absente) sont filtrés — une chaîne mal configurée ne doit
+        # pas casser le dispatch.
+        _chain = [m for m in cfg.chat.dispatch_models if client.is_remote(m)]
+        _priv = bool(conversation and getattr(conversation, "local_only", False))
         return build_registry(
             workspace_dir=workspace or cfg.chat.workspace_dir,
             max_bytes=cfg.chat.read_file_max_bytes,
@@ -149,6 +158,9 @@ def build_app(cfg):
             model=_model,
             sub_max_tokens=cfg.chat.max_tokens,
             sub_compact_after_tokens=_sub_compact,
+            dispatch_models=_chain,
+            dispatch_local_only=_priv,
+            sub_compact_for=_compact_for,
             permission=permission,
             active_model=_model,
             skills_dir=cfg.chat.skills_dir,
