@@ -431,3 +431,37 @@ def test_check_interactive_retire_du_catalogue():
 
     spec = br.make_check_page(".")
     assert "steps" in spec.parameters["properties"]
+
+
+# ---------- Rationalisation 2026-07-15 : B2 plugins hors défaut, B4 vision ----------
+
+
+def test_plugins_hors_du_set_par_defaut():
+    # Les 3 outils plugins (opérations de setup, jamais appelés par le modèle en
+    # usage réel) ne sont plus dans le set par défaut — restent activables.
+    import tomllib
+
+    with open("config/defaults.toml", "rb") as f:
+        cfg = tomllib.load(f)
+    enabled = cfg["tools"]["enabled"]
+    for name in ("list_plugins", "add_marketplace", "install_plugin"):
+        assert name not in enabled, name
+
+
+def test_read_image_absent_sans_vision():
+    # Modèle texte pur : read_image n'occupe pas 344 tokens de schéma pour
+    # répondre « je ne vois pas ». La décision 2026-07-09 (pas de repli vers un
+    # autre modèle) est préservée : l'outil disparaît, il ne bascule pas.
+    from loom.tools import build_registry
+
+    reg = build_registry(
+        ".", 1000, ["read_file", "read_image"], active_is_vision=False
+    )
+    names = [t["function"]["name"] for t in reg.openai_tools()]
+    assert "read_image" not in names
+    assert "read_file" in names
+    # Modèle vision : l'outil est là.
+    reg2 = build_registry(
+        ".", 1000, ["read_file", "read_image"], active_is_vision=True
+    )
+    assert "read_image" in [t["function"]["name"] for t in reg2.openai_tools()]

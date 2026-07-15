@@ -75,7 +75,10 @@ enabled = [
     "write_file", "append_file", "edit_file",
     "format_code", "run_shell",
     "check_page", "serve_and_check",
-    "use_skill", "list_plugins", "add_marketplace", "install_plugin",
+    "use_skill",
+    # Plugins (list_plugins, add_marketplace, install_plugin) : HORS du set par
+    # défaut depuis 2026-07-15 — opérations de setup jamais appelées par le modèle
+    # en usage réel (~300 tokens de schémas). Ajoute-les ici pour les réactiver.
 ]
 
 # Racine autorisée des outils (anti-traversal) ; surchargée dans local.toml
