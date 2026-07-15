@@ -131,6 +131,11 @@ class RemoteModelConfig:
     context: int | None = None
     max_tokens: int | None = None  # plafond de sortie/tour (défaut = global si absent)
     vision: bool = False  # le modèle accepte-t-il les images
+    # Tier de harnais : True (défaut) = modèle FORT -> prompt allégé, gardes de
+    # comportement coupées (décision 2026-07 : le scaffolding bride un modèle fort).
+    # False = distant FAIBLE (ex. GLM-4.7-Flash free, gabarit d'un local) -> harnais
+    # complet ; constaté live : sans les gardes, il annonce ses tool_calls sans agir.
+    strong: bool = True
     # Une API hébergée rejette souvent un extra_body inconnu (chat_template_kwargs) ->
     # par défaut on NE l'envoie PAS pour un modèle distant. Mets True seulement si
     # l'endpoint gère ce champ (vLLM auto-hébergé…) pour piloter le thinking au template.
@@ -247,6 +252,7 @@ def _parse_remote_model(d: dict) -> RemoteModelConfig:
         context=d.get("context"),
         max_tokens=d.get("max_tokens"),
         vision=bool(d.get("vision", False)),
+        strong=bool(d.get("strong", True)),
         enable_thinking_param=bool(d.get("enable_thinking_param", False)),
         price_in=float(d.get("price_in", 0.0) or 0.0),
         price_out=float(d.get("price_out", 0.0) or 0.0),
