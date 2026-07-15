@@ -181,25 +181,21 @@ def make_write_file(
     return ToolSpec(
         name="write_file",
         description=(
-            "Creates or overwrites a file with the provided content. Path relative to the "
-            "working directory OR absolute (e.g. 'C:/Users/me/Desktop/out.txt'). New "
-            "file, or COMPLETE rewrite of a SMALL file. LARGE file (>~150 lines, which "
-            "would exceed the token limit and be truncated): write the skeleton "
-            "(imports + 1st unit) here, then complete it with append_file, one COMPLETE "
-            "LOGICAL UNIT per call (whole function/component), never cut in the middle."
+            "Creates or overwrites a file with the provided content (new file, or "
+            "complete rewrite of a SMALL one). LARGE file (>~150 lines — the output "
+            "would truncate): write the skeleton here, then append_file one COMPLETE "
+            "logical unit per call (whole function/component), never cut mid-unit."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": (
-                        "File path: relative to the working directory or absolute."
-                    ),
+                    "description": ("Relative to the working directory, or absolute."),
                 },
                 "content": {
                     "type": "string",
-                    "description": "Full content to write to the file.",
+                    "description": "Full content to write.",
                 },
             },
             "required": ["path", "content"],
@@ -248,23 +244,20 @@ def make_append_file(
     return ToolSpec(
         name="append_file",
         description=(
-            "APPENDS content to the END of a file (creates it if it does not exist). Used to "
-            "write a LARGE file WITHOUT exceeding the token limit: write_file for the "
-            "beginning, then append_file several times for the rest, in SMALL chunks. "
-            "Path relative to the working directory or absolute."
+            "Appends content to the END of a file (creates it if missing). The way to "
+            "build a LARGE file without hitting the output limit: write_file the "
+            "start, then append in small chunks."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": (
-                        "File path: relative to the working directory or absolute."
-                    ),
+                    "description": ("Relative to the working directory, or absolute."),
                 },
                 "content": {
                     "type": "string",
-                    "description": "Chunk of content to append to the end of the file.",
+                    "description": "Chunk to append.",
                 },
             },
             "required": ["path", "content"],
@@ -373,22 +366,17 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="edit_file",
         description=(
-            "Edits an existing file by replacing old_string with new_string (path "
-            "relative to the working directory or absolute). YOUR surgical editor: read the "
-            "file (read_file), copy the EXACT snippet to change into old_string "
-            "(indentation and whitespace character-for-character), replacement in new_string. "
-            "old_string must be UNIQUE (otherwise the error lists the lines — add "
-            "context, or replace_all=true for all occurrences). To rewrite "
-            "a large portion, use write_file."
+            "Edits an existing file by replacing old_string with new_string. Read the "
+            "file first and copy the EXACT snippet (whitespace character-for-character) "
+            "into old_string; it must be UNIQUE (on ambiguity the error lists the "
+            "lines — add context, or replace_all=true). Large rewrite -> write_file."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": (
-                        "File path: relative to the working directory or absolute."
-                    ),
+                    "description": ("Relative to the working directory, or absolute."),
                 },
                 "old_string": {
                     "type": "string",

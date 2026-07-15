@@ -80,11 +80,10 @@ def make_manage_todos(conversation) -> ToolSpec:
     return ToolSpec(
         name="manage_todos",
         description=(
-            "Keeps your task list up to date for a multi-step request: lay out your "
-            "plan, then re-emit the FULL list on every progress step, updating the "
-            "statuses. Serves as external memory so you don't lose track. Each task "
-            "= {content, status} with status one of pending, in_progress, done. Mark "
-            "in_progress BEFORE starting a step, done once it's verified."
+            "Your plan for a multi-step request: post it, then re-emit the FULL list "
+            "at every progress step with statuses updated — in_progress BEFORE "
+            "starting a step, done once verified. External memory: it keeps track, "
+            "not your head."
         ),
         parameters={
             "type": "object",

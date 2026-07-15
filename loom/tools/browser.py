@@ -634,18 +634,13 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="serve_and_check",
         description=(
-            "Manages the LIFECYCLE of a local server to prove that a SERVER-backed app "
-            "(Next.js, Vite, Flask...) renders/works. run_shell CANNOT keep a server alive "
-            "(it kills it at the timeout) and NEVER start a server yourself via "
-            "Start-Process/start (that opens the .ps1 in an editor and doesn't survive): ALWAYS "
-            "go through this tool.\n"
-            "action='start' (default): starts 'command' in the background, waits for 'url' to "
-            "respond, loads the page in a headless browser (console errors, elements, text) "
-            "and LEAVES THE SERVER ALIVE -> you can then test OTHER pages of the same server "
-            "(check_page, or serve_and_check on another url). "
-            "action='stop': stops the server with the given id (or ALL if no id) -> do it "
-            "WHEN YOU HAVE YOUR ANSWER. For a STATIC .html page (no server), prefer "
-            "check_page."
+            "Runs a local server to prove a SERVER-backed app (Next.js, Vite, "
+            "Flask...) works: action='start' launches `command` in the background, "
+            "waits for `url`, loads it headless (console errors, elements, text) and "
+            "LEAVES THE SERVER ALIVE for further check_page calls; action='stop' "
+            "(+id) closes it WHEN YOU HAVE YOUR ANSWER. run_shell kills servers at "
+            "its timeout and Start-Process doesn't survive: always use this tool. "
+            "Static .html -> check_page."
         ),
         parameters={
             "type": "object",
@@ -654,37 +649,28 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                     "type": "string",
                     "enum": ["start", "stop"],
                     "description": (
-                        "'start' (default) starts+checks+leaves alive; 'stop' closes a "
-                        "server left alive (via id, or all if id absent)."
+                        "'start' (default) starts+checks+leaves alive; 'stop' closes."
                     ),
                 },
                 "id": {
                     "type": "string",
                     "description": (
-                        "For action='stop': id of the server to close (returned by 'start', "
-                        "e.g. 'srv1'). Absent = closes ALL servers left alive."
+                        "Server to stop (returned by 'start'); absent = all."
                     ),
                 },
                 "command": {
                     "type": "string",
                     "description": (
-                        "action='start': command that starts the server (e.g. 'npm run dev "
-                        "-- --port 3000'). Launched in the background, left alive."
+                        "Start command (e.g. 'npm run dev -- --port 3000')."
                     ),
                 },
                 "url": {
                     "type": "string",
-                    "description": (
-                        "action='start': http(s):// URL where to reach the server (e.g. "
-                        "'http://127.0.0.1:3000')."
-                    ),
+                    "description": ("http(s):// URL where to reach the server."),
                 },
                 "cwd": {
                     "type": "string",
-                    "description": (
-                        "Directory where to run the command (relative to the working "
-                        "directory or absolute). Default: the working directory."
-                    ),
+                    "description": ("Run directory (default: the working directory)."),
                 },
                 "wait_selector": {
                     "type": "string",

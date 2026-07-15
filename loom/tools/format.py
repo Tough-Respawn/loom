@@ -158,12 +158,9 @@ def make_format_code(workspace_dir: str) -> ToolSpec:
     return ToolSpec(
         name="format_code",
         description=(
-            "Cleanly reformats a code file IN PLACE according to its language: Python "
-            "(.py) with ruff (fixes safe PEP8 issues + indentation/style), web "
-            "(.js/.ts/.jsx/.tsx/.json/.html/.css/.scss/.md/.yaml/.vue) with prettier. "
-            "Call it AFTER writing or editing a code file so it is "
-            "properly indented and compliant, instead of fixing alignment by hand. "
-            "Returns what changed and any remaining issues to fix."
+            "Reformats a code file IN PLACE (Python via ruff, web/JS/CSS/MD/YAML via "
+            "prettier). Call it AFTER writing or editing code instead of fixing "
+            "alignment by hand. Returns what changed and remaining issues."
         ),
         parameters={
             "type": "object",

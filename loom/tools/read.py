@@ -215,48 +215,34 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
     return ToolSpec(
         name="read_file",
         description=(
-            "Reads ANY common file and returns its content: text/code (with line "
-            "numbers), and DOCUMENTS — PDF (.pdf), Excel (.xlsx/.xlsm), Word (.docx) — "
-            "whose text is extracted automatically (invoice, spreadsheet, report…). "
-            "Path relative to the working directory OR absolute (e.g. "
-            "'C:/Users/moi/Desktop/notes.txt'). Only images go elsewhere: read_image. "
-            "LARGE file: read it in CHUNKS with start_line (and optionally line_count) — "
-            "the response footer tells you where to continue. MINIFIED file (JSON/CSS/JS "
-            "on a single line): reading switches AUTOMATICALLY to characters; then "
-            "continue with start_char (the footer gives you the value). To target a "
-            "precise area, first run search_text then read_file(start_line=…)."
+            "Reads any file: text/code (line-numbered) and documents — PDF, Excel, "
+            "Word — text auto-extracted. Images -> read_image. LARGE file: read in "
+            "chunks with start_line/line_count; the response footer says where to "
+            "continue (minified single-line files switch to start_char automatically). "
+            "To target a precise area, run search_text first."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": (
-                        "File path: relative to the working directory or absolute "
-                        "(e.g. 'C:/Users/moi/notes.txt')."
-                    ),
+                    "description": ("Relative to the working directory, or absolute."),
                 },
                 "start_line": {
                     "type": "integer",
-                    "description": (
-                        "First line to read (1-based, default 1). To read the rest of a "
-                        "large file already started."
-                    ),
+                    "description": "First line to read (1-based, default 1).",
                 },
                 "line_count": {
                     "type": "integer",
                     "description": (
-                        "Number of lines to read from start_line (default: to the end or "
-                        "the size limit)."
+                        "Lines to read from start_line (default: to end/limit)."
                     ),
                 },
                 "start_char": {
                     "type": "integer",
                     "description": (
-                        "Start position IN CHARACTERS (1-based) for MINIFIED/single-line "
-                        "files where start_line splits nothing. Generally unnecessary: the "
-                        "switch is automatic — reuse the value given in the footer "
-                        "'read the rest with start_char=…'."
+                        "Character start (1-based) for minified/single-line files — "
+                        "reuse the value given in the footer."
                     ),
                 },
             },
@@ -401,31 +387,20 @@ def make_read_image(
     return ToolSpec(
         name="read_image",
         description=(
-            "Accesses an IMAGE ON DISK (png/jpg/jpeg/gif/webp/bmp) from its PATH. If you "
-            "are a multimodal model, you SEE it; otherwise, a vision model DESCRIBES it to "
-            "you in text (you can ask a targeted `question`: 'what is the exact text?', "
-            "'describe the layout'). For a file present on disk whose path you know "
-            "(relative to the working directory or absolute), including images attached to "
-            "the chat that are flagged to you with their path. Use it to describe, read "
-            "text, compare a rendering. Any NON-image file (text, PDF/Excel/Word) -> read_file."
+            "Reads an image on disk (png/jpg/gif/webp/bmp) so you SEE it — including "
+            "chat-attached images flagged with their path. Use it to describe, read "
+            "text, or compare a rendering. Non-image files -> read_file."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": (
-                        "Image path: relative to the working directory or absolute "
-                        "(e.g. 'C:/Users/moi/Desktop/capture.png')."
-                    ),
+                    "description": ("Relative to the working directory, or absolute."),
                 },
                 "question": {
                     "type": "string",
-                    "description": (
-                        "Optional: what you want to know about the image (ignored if you "
-                        "see it directly; used to target the description when a vision "
-                        "model describes it for you)."
-                    ),
+                    "description": ("Optional focus (e.g. 'what is the exact text?')."),
                 },
             },
             "required": ["path"],

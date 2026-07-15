@@ -465,3 +465,28 @@ def test_read_image_absent_sans_vision():
         ".", 1000, ["read_file", "read_image"], active_is_vision=True
     )
     assert "read_image" in [t["function"]["name"] for t in reg2.openai_tools()]
+
+
+def test_x_aliases_pas_serialises_au_modele():
+    # Les clés x_* (métadonnées de coercition) restent fonctionnelles côté
+    # validation mais ne partent PAS dans le schéma envoyé au modèle (bruit).
+    from loom.tools.base import ToolSpec
+
+    spec = ToolSpec(
+        name="t",
+        description="d",
+        parameters={
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["a", "b"],
+                    "x_aliases": {"c": "a"},
+                }
+            },
+        },
+        run=lambda a: "",
+    )
+    out = spec.to_openai()
+    assert "x_aliases" not in str(out)
+    assert spec.parameters["properties"]["kind"]["x_aliases"] == {"c": "a"}
