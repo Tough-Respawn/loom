@@ -221,10 +221,11 @@ def make_run_shell(
         name="run_shell",
         description=(
             f"Runs a shell command ({detect().shell_label}) in the workspace and "
-            "returns the exit code, stdout and stderr. To START-CHECK-STOP "
-            "a web server (Next.js/Vite/Flask), use serve_and_check. The command must "
-            "TERMINATE (no GUI or server running in a loop: they will be killed at the "
-            "timeout). Destructive commands are refused."
+            "returns the exit code, stdout and stderr. Write for THAT shell only — "
+            "on Windows that means PowerShell syntax, never unix-isms (ls|wc, grep, "
+            "dir /b). To START-CHECK-STOP a web server (Next.js/Vite/Flask), use "
+            "serve_and_check. The command must TERMINATE (no GUI or server loop: "
+            "killed at the timeout). Destructive commands are refused."
         ),
         parameters={
             "type": "object",
