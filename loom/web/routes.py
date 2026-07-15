@@ -501,7 +501,11 @@ def _build_system_prompt(S, conv):
     # ALLÉGÉ (identité + outils + mémoire + sécurité), sans le scaffolding de comportement
     # de chat.system.md qui ne sert qu'à un petit modèle local. Le flag `strong` sert
     # aussi (plus bas) à couper les gardes de comportement dans la boucle d'outils.
-    strong = bool(conv.model and conv.model in S.remote_model_ids)
+    strong = bool(
+        conv.model
+        and conv.model in S.remote_model_ids
+        and conv.model not in S.remote_weak_ids
+    )
 
     base_prompt = CHAT_SYSTEM_STRONG if strong else conv.system_prompt
 

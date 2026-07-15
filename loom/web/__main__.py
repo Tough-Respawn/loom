@@ -209,6 +209,7 @@ def build_app(cfg):
         rm.id: rm.max_tokens for rm in cfg.remote_models if rm.max_tokens
     }
     remote_ids = {rm.id for rm in cfg.remote_models}
+    remote_weak_ids = {rm.id for rm in cfg.remote_models if not rm.strong}
     # Modèles LOCAUX (découverts par dossier) : détails pour l'onglet Modèles locaux de la
     # console. `dir` porte le model.toml -> édition du tuning machine (offload) via tomlkit.
     local_models = [
@@ -258,6 +259,7 @@ def build_app(cfg):
         model_contexts=model_contexts,
         model_max_tokens=model_max_tokens,
         remote_model_ids=[rm.id for rm in cfg.remote_models],
+        remote_weak_ids=sorted(remote_weak_ids),
         remote_model_names={rm.id: rm.model for rm in cfg.remote_models},
         # Prix ($/M tokens) par modèle distant : (input, output, cached) -> coût réel + mesure
         # de l'effet du cache de préfixe sur la session.
