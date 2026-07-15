@@ -44,6 +44,9 @@ def make_dispatch_agent(
     max_iters: int | None = None,
     permission=None,
     compact_after_tokens: int | None = None,
+    model_chain: list[str] | None = None,
+    local_only: bool = False,
+    compact_for: Callable[[str | None], int | None] | None = None,
 ) -> ToolSpec:
     """Outil dispatch_agent : lance une boucle tool-use isolée et renvoie sa synthèse.
 
@@ -52,12 +55,25 @@ def make_dispatch_agent(
     partager d'état mutable entre délégations. `permission` est relayée telle quelle
     à la sous-boucle (même politique de sécurité que le fil principal).
 
-    `max_iters` None (défaut) -> résolu selon local/distant : 30 en local (bridé),
-    500 en distant (comme le principal ; seul backstop car l'anti-boucle est coupé).
+    ROUTAGE DÉTERMINISTE (décision user 2026-07-15) : `model_chain` = tiers de
+    modèles essayés DANS L'ORDRE (ex. gratuit -> payant) avant le repli final sur
+    `model` (le fil parent). Un tier qui meurt en 'api_error' (429 free tier, 5xx,
+    timeout) passe la main au suivant — le modèle appelant ne choisit RIEN.
+    `local_only` (session privée) court-circuite la chaîne : tout reste sur `model`,
+    aucun octet ne part vers une API. `compact_for(tier)` rend le seuil de
+    compaction de CE tier (fenêtre du modèle qui bosse, pas du parent) ; à défaut,
+    `compact_after_tokens`. `max_iters` None -> résolu PAR TIER : 30 en local
+    (bridé), 500 en distant (backstop seul).
     """
-    # Le sous-agent hérite du modèle du fil parent -> on décide le plafond MAINTENANT.
-    if max_iters is None:
-        max_iters = 500 if client.is_remote(model) else 30
+    tiers = [] if local_only else [m for m in (model_chain or []) if m != model]
+    tiers = [*tiers, model]
+
+    def _limits(tier):
+        iters = max_iters
+        if iters is None:
+            iters = 500 if client.is_remote(tier) else 30
+        threshold = compact_for(tier) if compact_for else compact_after_tokens
+        return iters, threshold
 
     def run_stream(args: dict):
         """Yield les events de la sous-boucle EN DIRECT (pour que l'UI voie l'ouvrier
@@ -67,32 +83,60 @@ def make_dispatch_agent(
         if not task:
             raise ToolError("argument 'task' manquant (décris la tâche à déléguer)")
         sub_registry = build_sub_registry()
-        # Cache souverain : le sous-agent a SON system prompt -> sa sous-boucle va
-        # ÉCRASER le slot KV local du fil parent. On sauve le cache parent avant,
-        # on le restaure après (~ms chacun) : l'itération suivante du parent ne
-        # re-préfille que son delta au lieu de TOUT le contexte (minutes, constaté
-        # le 2026-07-10). No-op en distant (cache géré par le provider).
-        saved = client.save_slot(model, "dispatch.kv")
 
-        def _stream():
+        def _run_tier(tier):
+            """Sous-boucle sur UN tier. Yield ses events ; renvoie (via StopIteration
+            impossible en génération) rien — l'échec se lit dans l'event 'done'."""
+            iters, threshold = _limits(tier)
+            # Cache souverain : une sous-boucle LOCALE écrase le slot KV du parent
+            # -> save/restore autour (~ms, re-prefill évité, constaté 2026-07-10).
+            # Tier DISTANT : le serveur local n'est jamais touché, on ne sauve rien
+            # (le dispatch devient gratuit pour le cache du fil principal).
+            saved = (
+                client.save_slot(model, "dispatch.kv")
+                if not client.is_remote(tier)
+                else False
+            )
             try:
                 yield from client.stream_chat_tools(
                     [{"role": "user", "content": task}],
                     system_prompt,
                     max_tokens,
-                    model=model,
+                    model=tier,
                     registry=sub_registry,
                     thinking=False,
-                    max_iters=max_iters,
+                    max_iters=iters,
                     permission=permission,
                     # Sans seuil, la sous-boucle saturait sa fenêtre (session
                     # 2026-07-14 : completion étranglée à ~129 tokens, tool calls
                     # tronqués en boucle) — le sous-agent compacte comme le principal.
-                    compact_after_tokens=compact_after_tokens,
+                    compact_after_tokens=threshold,
                 )
             finally:
                 if saved:
                     client.restore_slot(model, "dispatch.kv")
+
+        def _stream():
+            for i, tier in enumerate(tiers):
+                failed = False
+                for kind, payload in _run_tier(tier):
+                    if (
+                        kind == "done"
+                        and isinstance(payload, dict)
+                        and payload.get("reason") == "api_error"
+                        and i + 1 < len(tiers)
+                    ):
+                        # Tier mort (429/5xx/timeout) : on passe la main au suivant
+                        # au lieu de rendre un échec — marqueur visible dans la synthèse.
+                        failed = True
+                        yield (
+                            "content",
+                            f"\n[relève : {tier} indisponible -> {tiers[i + 1]}]\n",
+                        )
+                        break
+                    yield (kind, payload)
+                if not failed:
+                    return
 
         return _stream()
 

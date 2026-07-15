@@ -33,6 +33,11 @@ class ChatConfig:
     keep_recent_messages: int = 6
     # Outils (boucle tool-use). enabled vide => aucun outil exposé.
     tools_enabled: list[str] = field(default_factory=list)
+    # Chaîne de ROUTAGE des sous-agents (dispatch_agent), dans l'ordre d'essai
+    # (ex. ["glm-flash", "glm-zai"] = gratuit puis payant) ; repli final implicite =
+    # le modèle de la conversation. Vide = comportement historique (héritage).
+    # Ignorée quand la session est marquée local_only (données privées/sensibles).
+    dispatch_models: list[str] = field(default_factory=list)
     workspace_dir: str = "."
     # Cap par appel read_file (caractères). Volontairement BAS devant le contexte (24576
     # tokens) : un seul gros fichier ne doit pas le faire déborder -> on lit par tranches
@@ -312,6 +317,7 @@ def load_config(
         context_token_budget=int(ch.get("context_token_budget", 3000)),
         keep_recent_messages=int(ch.get("keep_recent_messages", 6)),
         tools_enabled=list(tl.get("enabled", [])),
+        dispatch_models=list(ch.get("dispatch_models", [])),
         workspace_dir=tl.get("workspace_dir", "."),
         read_file_max_bytes=int(tl.get("read_file_max_bytes", 40_000)),
         shell_timeout=int(tl.get("shell_timeout", 180)),
