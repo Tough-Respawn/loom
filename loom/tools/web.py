@@ -431,8 +431,12 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
                     "type": "object",
                     "description": (
                         "Optional query parameters as an object; values may be "
-                        'objects/arrays (JSON-encoded), e.g. {"filters": '
-                        '{"size": 50}, "page": 1}.'
+                        "objects/arrays (JSON-encoded). Each top-level key becomes "
+                        "ONE query parameter: an API expecting a single JSON-valued "
+                        "parameter (?filters={...}) needs the whole object NESTED "
+                        'under that key — params={"filters": {"size": 50, ...}} — '
+                        "never its keys spread flat (most APIs silently ignore "
+                        "unknown parameters)."
                     ),
                 },
             },
