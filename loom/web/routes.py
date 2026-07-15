@@ -372,6 +372,7 @@ def _index_context(S) -> dict:
         "model_descriptions": S.model_descriptions,
         "current_model": conv.model,
         "thinking": conv.thinking,
+        "local_only": conv.local_only,
         "available_tools": S.available_tools,
         "active_tools": conv.active_tools,
         "workspace_dir": ws,
@@ -384,6 +385,7 @@ def _index_context(S) -> dict:
             {
                 "messages": conv.messages,
                 "thinking": conv.thinking,
+                "local_only": conv.local_only,
                 "usage_totals": _totals(S, conv),
                 # Onglet initial : la session active (id/titre/modèle/workspace) + toutes
                 # les sessions (pour la sidebar). Le multi-onglets s'hydrate là-dessus.
@@ -935,6 +937,18 @@ def _register_misc_routes(app, S):
 
         return Response(str(int(conv.thinking)), mimetype="text/plain")
 
+    @app.post("/local_only")
+    def local_only_update():
+        # Session PRIVÉE : coupe tout routage distant des sous-agents (chaîne
+        # dispatch_models ignorée). Décision humaine par session, persistée.
+        conv, save = _ctx(S)
+
+        conv.set_local_only(request.form.get("local_only") == "1")
+
+        save()
+
+        return Response(str(int(conv.local_only)), mimetype="text/plain")
+
     @app.route("/pick-folder", methods=["POST"])
     def pick_folder():
         # Sous-processus : évite les soucis tkinter hors du thread principal de Flask.
@@ -1162,6 +1176,7 @@ def _register_session_routes(app, S):
             "workspace": sess.workspace,
             "messages": conv.messages,
             "thinking": conv.thinking,
+            "local_only": conv.local_only,
             "model": conv.model,
             "active_tools": conv.active_tools,
             "usage_totals": _totals(S, conv),

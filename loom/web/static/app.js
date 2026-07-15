@@ -931,6 +931,7 @@ async function openTab(sid) {
       abort: null,
       model: d.model || "",
       thinking: d.thinking !== false,
+      localOnly: !!d.local_only,
       workspace: d.workspace || "",
       meter: d.usage_totals || null,
       metrics: null,
@@ -964,6 +965,8 @@ function activateTab(sid) {
   if (sel && t.model) sel.value = t.model;
   const think = document.getElementById("thinking-cb");
   if (think) think.checked = !!t.thinking;
+  const lo = document.getElementById("local-only-cb");
+  if (lo) lo.checked = !!t.localOnly;
   if (t.workspace) {
     loomWorkdir = t.workspace;
     try {
@@ -1027,6 +1030,7 @@ async function newSessionTab() {
     abort: null,
     model: "",
     thinking: true,
+    localOnly: false,
     workspace: d.workspace || "",
     meter: null,
     metrics: null,
@@ -1066,6 +1070,7 @@ function addSidebarSession(d) {
       abort: null,
       model: INIT.model || "",
       thinking: INIT.thinking !== false,
+      localOnly: !!INIT.local_only,
       workspace: INIT.workspace || "",
       meter: INIT.usage_totals || null,
       metrics: null,
@@ -1670,6 +1675,17 @@ if (thinkingCb) {
     const fd = new FormData();
     fd.append("thinking", thinkingCb.checked ? "1" : "0");
     fetch("/thinking", { method: "POST", body: fd });
+  });
+}
+
+// --- toggle session privée (local_only : les sous-agents restent sur le modèle de la session) ---
+const localOnlyCb = document.getElementById("local-only-cb");
+if (localOnlyCb) {
+  localOnlyCb.addEventListener("change", () => {
+    if (activeTab()) activeTab().localOnly = localOnlyCb.checked;
+    const fd = new FormData();
+    fd.append("local_only", localOnlyCb.checked ? "1" : "0");
+    fetch("/local_only", { method: "POST", body: fd });
   });
 }
 

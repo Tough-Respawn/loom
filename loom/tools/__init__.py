@@ -54,6 +54,9 @@ def build_registry(
     model: str | None = None,
     sub_max_tokens: int = 2048,
     sub_compact_after_tokens: int | None = None,
+    dispatch_models: list[str] | None = None,
+    dispatch_local_only: bool = False,
+    sub_compact_for=None,
     permission=None,
     active_model: str | None = None,
     skills_dir: str | None = None,
@@ -199,6 +202,9 @@ def build_registry(
                 max_tokens=sub_max_tokens,
                 permission=permission,
                 compact_after_tokens=sub_compact_after_tokens,
+                model_chain=dispatch_models,
+                local_only=dispatch_local_only,
+                compact_for=sub_compact_for,
             )
         )
     if "use_skill" in enabled and skills_dir is not None:

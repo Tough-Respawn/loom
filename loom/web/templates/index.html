@@ -1018,6 +1018,9 @@
       <div class="sb-section">
         <label id="thinking-toggle" title="Réflexion préalable">
           <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> Réflexion</label>
+        <label id="local-only-toggle"
+          title="Session privée : rien ne part vers une API distante — les sous-agents restent sur le modèle de la session (chaîne de routage ignorée)">
+          <input type="checkbox" id="local-only-cb" {% if local_only %}checked{% endif %}> Session privée (local)</label>
       </div>
       <details class="sb-section sb-fold">
         <summary class="sb-label">Skills
