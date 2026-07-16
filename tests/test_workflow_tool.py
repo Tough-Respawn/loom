@@ -190,6 +190,18 @@ def test_run_workflow_args_transmis(tmp_path):
     assert _run_tool(reg, {"path": "wf.py", "args": {"n": 41}}) == "42"
 
 
+def test_file_disponible_dans_le_script(tmp_path):
+    """RÉGRESSION E2E UI (2026-07-16) : le modèle a écrit un script qui se repère par
+    `Path(__file__).parent` — réflexe Python universel — et a pris un NameError, perdant
+    un tour à coder son chemin en dur."""
+    (tmp_path / "wf.py").write_text(
+        "meta = {'name': 'x'}\nfrom pathlib import Path\nreturn Path(__file__).name\n",
+        encoding="utf-8",
+    )
+    reg, _ = _tool(tmp_path, [])
+    assert _run_tool(reg, {"path": "wf.py"}) == "wf.py"
+
+
 def test_script_introuvable_erreur_actionnable(tmp_path):
     reg, _ = _tool(tmp_path, [])
     out = _run_tool(reg, {"path": "absent.py"})
