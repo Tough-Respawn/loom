@@ -356,6 +356,7 @@ def run_workflow(
     is_remote: bool = False,
     on_event: Callable | None = None,
     workers: int | None = None,
+    path: str | None = None,
 ):
     """Exécute un script de workflow et renvoie sa valeur de retour.
 
@@ -372,6 +373,12 @@ def run_workflow(
     ns: dict = {
         "__name__": "__loom_workflow__",
         "__builtins__": __builtins__,
+        # `__file__` = chemin du script. Un script Python se repère par __file__ (réflexe
+        # universel) : sans lui, `Path(__file__).parent` lève un NameError et le modèle
+        # perd un tour à coder son chemin en dur. Constaté en E2E UI le 2026-07-16, dès
+        # le premier run réel. Le fournir coûte une ligne ; ne pas le fournir coûte un
+        # aller-retour modèle à chaque script qui suit ce réflexe.
+        "__file__": path,
         "meta": meta,
         "args": args,
         "agent": run.agent,
