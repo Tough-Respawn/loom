@@ -109,6 +109,7 @@ def make_run_workflow(
                     args=args.get("args"),
                     is_remote=is_remote,
                     on_event=on_event,
+                    path=str(p),
                 )
             except WorkflowError as exc:
                 result["error"] = str(exc)
