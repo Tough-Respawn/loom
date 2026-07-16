@@ -212,6 +212,7 @@ AVAILABLE_TOOLS = [
     {"name": "check_page", "label": "check_page", "danger": False},
     {"name": "serve_and_check", "label": "serve_and_check", "danger": True},
     {"name": "dispatch_agent", "label": "dispatch_agent", "danger": False},
+    {"name": "run_workflow", "label": "run_workflow", "danger": True},
     {"name": "manage_todos", "label": "manage_todos", "danger": False},
     {"name": "write_note", "label": "write_note", "danger": False},
     {"name": "read_note", "label": "read_note", "danger": False},
@@ -278,6 +279,13 @@ class ToolRegistry:
 
     def __contains__(self, name: str) -> bool:
         return name in self._specs
+
+    def add(self, spec: ToolSpec) -> None:
+        """Ajoute/remplace un outil APRÈS construction. Sert à `submit_result`, dont le
+        schéma dépend de l'appel (sortie structurée d'un workflow) et ne peut donc pas
+        être déclaré dans build_registry. Le registre d'un sous-agent est refabriqué à
+        chaque délégation -> pas d'état partagé entre appels."""
+        self._specs[spec.name] = spec
 
     def openai_tools(self) -> list[dict]:
         return [s.to_openai() for s in self._specs.values()]

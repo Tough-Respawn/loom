@@ -31,8 +31,11 @@ __all__ = [
 # Exclus du kit sous-agent : dispatch_agent (anti-récursion), manage_todos (le plan
 # vit dans la conversation principale), et les outils plugins (opérations de setup,
 # dangereuses et hors-sujet pour un ouvrier — sorties du défaut le 2026-07-15).
+# run_workflow : même anti-récursion que dispatch_agent — un ouvrier qui lance un
+# workflow lancerait des ouvriers, et le plafond d'agents ne serait plus global.
 _SUBAGENT_EXCLUDED = {
     "dispatch_agent",
+    "run_workflow",
     "manage_todos",
     "list_plugins",
     "add_marketplace",
@@ -172,10 +175,12 @@ def build_registry(
             )
         if "remember" in enabled:
             specs.append(make_remember(memory.provider, memory.paths))
-    if "dispatch_agent" in enabled and client is not None:
+    if (
+        "dispatch_agent" in enabled or "run_workflow" in enabled
+    ) and client is not None:
         from loom.prompts import SUBAGENT_SYSTEM
         from loom.runtime.platform_info import detect as _platform_detect
-        from loom.tools.agent import make_dispatch_agent
+        from loom.tools.agent import SubAgentRunner, make_dispatch_agent
 
         # Le sous-agent hérite des conventions de l'OS courant (shell/commandes) comme le
         # fil principal : sinon il écrirait du PowerShell sur Linux, etc.
@@ -193,20 +198,43 @@ def build_registry(
                 active_is_vision=active_is_vision,
             )
 
-        specs.append(
-            make_dispatch_agent(
-                client,
-                _build_sub_registry,
-                system_prompt=_sub_system,
-                model=model,
-                max_tokens=sub_max_tokens,
-                permission=permission,
-                compact_after_tokens=sub_compact_after_tokens,
-                model_chain=dispatch_models,
-                local_only=dispatch_local_only,
-                compact_for=sub_compact_for,
-            )
+        # UNE machinerie pour les deux consommateurs : dispatch_agent (le modèle
+        # délègue) et run_workflow (un script délègue). Même routage de tiers, même
+        # cache KV, même politique de permission — un seul endroit à faire évoluer.
+        _runner = SubAgentRunner(
+            client,
+            _build_sub_registry,
+            system_prompt=_sub_system,
+            model=model,
+            max_tokens=sub_max_tokens,
+            permission=permission,
+            compact_after_tokens=sub_compact_after_tokens,
+            model_chain=dispatch_models,
+            local_only=dispatch_local_only,
+            compact_for=sub_compact_for,
         )
+        if "dispatch_agent" in enabled:
+            specs.append(
+                make_dispatch_agent(
+                    client,
+                    _build_sub_registry,
+                    system_prompt=_sub_system,
+                    model=model,
+                    runner=_runner,
+                )
+            )
+        if "run_workflow" in enabled:
+            from loom.tools.workflow import make_run_workflow
+
+            specs.append(
+                make_run_workflow(
+                    _runner,
+                    workspace_dir,
+                    # Concurrence réelle : le modèle ACTIF tourne-t-il sur une API ?
+                    # Un slot llama-swap en local -> parallel() se sérialise.
+                    is_remote=bool(client.is_remote(model)),
+                )
+            )
     if "use_skill" in enabled and skills_dir is not None:
         from loom.extend.skills import collect_skills, effective_skills
         from loom.tools.skills import make_use_skill

@@ -37,6 +37,15 @@ READ_TOOLS = frozenset(
         "read_note",
         "recall",
         "remember",
+        # Outil de SORTIE d'un sous-agent à schéma (loom/tools/agent.py) : il ne fait
+        # que déposer une valeur en mémoire pour son appelant — ni disque, ni process,
+        # ni réseau. RENDRE SON RÉSULTAT N'EST PAS UNE ACTION À AUTORISER.
+        # Sans cette ligne il tombait dans la branche « outil inconnu -> ask », et un
+        # sous-agent tourne SANS UI donc tout 'ask' y est refusé par défaut : le
+        # résultat n'était jamais enregistré et agent(schema=…) rendait None. Le modèle
+        # en concluait « le schéma bloque » et abandonnait la sortie structurée
+        # (constaté deux fois en E2E, 2026-07-16).
+        "submit_result",
     }
 )
 SHELL_TOOLS = frozenset({"run_shell", "serve_and_check"})
@@ -204,9 +213,18 @@ def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
             return Decision("ask", "chemin non listé")
         return Decision("ask")  # mode 'ask'
 
-    if tool_name == "dispatch_agent":
+    if tool_name in ("dispatch_agent", "run_workflow"):
         # Orchestration : délègue à un sous-agent dont CHAQUE action est re-soumise à
         # cette même politique. On ne redemande pas pour l'orchestration, on suit le mode.
+        # run_workflow : chaque action de ses ouvriers repasse ici, comme ci-dessus.
+        # MAIS le script lui-même est du Python exécuté avec les builtins entiers — il
+        # PEUT ouvrir un fichier ou lancer un process sans repasser par un outil.
+        # Contrairement à Claude Code, dont le runtime JS interdit fs/shell au script,
+        # on ne prétend pas confiner : le bac à sable a été supprimé par décision
+        # (2026-06-04) et run_shell("python -c …") ouvre déjà exactement cette porte.
+        # Conséquence assumée, à ne pas se raconter autrement : un `open()` écrit par
+        # le script ne repasse par AUCUNE deny-list. Approuver run_workflow revient
+        # donc à approuver du code arbitraire, comme approuver run_shell.
         if cfg.mode == "deny_all":
             return Decision("deny", "mode deny_all")
         if cfg.mode == "allow":
