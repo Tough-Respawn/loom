@@ -109,6 +109,7 @@ class SubAgentRunner:
         model_chain: list[str] | None = None,
         local_only: bool = False,
         compact_for: Callable[[str | None], int | None] | None = None,
+        model_roles: dict[str, str] | None = None,
     ) -> None:
         self.client = client
         self.build_sub_registry = build_sub_registry
@@ -119,6 +120,12 @@ class SubAgentRunner:
         self.permission = permission
         self.compact_after_tokens = compact_after_tokens
         self.compact_for = compact_for
+        # Rôles ABSTRAITS -> ids concrets (ex. {"cheap": "glm-flash", "strong":
+        # "glm-zai"}), dérivés de la config par l'appelant (flags `strong` des modèles
+        # distants + ordre de la chaîne). Un script de workflow épingle "cheap"/"strong"
+        # et reste PORTABLE : aucun id de machine en dur, et un renommage de modèle ne
+        # dégrade pas le routage en silence — la résolution suit la config.
+        self.model_roles = model_roles or {}
         # Gardé pour les overrides par appel : une session privée ignore TOUT
         # override de modèle (règle cardinale — aucun octet ne part ailleurs).
         self.local_only = local_only
@@ -149,18 +156,21 @@ class SubAgentRunner:
         registre et on pousse les arguments capturés dans `sink`. L'appelant lit
         `sink[-1]` après épuisement du générateur.
 
-        `model` : ÉPINGLE cet appel sur un modèle précis au lieu de la chaîne (cas
-        d'usage : un workflow route ses vérificateurs sur le modèle FORT et laisse ses
-        chercheurs sur le tier gratuit). Le modèle de session reste en repli si le
-        tier épinglé meurt en api_error. IGNORÉ en session privée (local_only) : un
-        override ne doit jamais faire fuir des octets vers une API — la demande de
-        confidentialité prime sur la demande de routage. Modèle inconnu du client
-        (route absente) -> ignoré aussi, la chaîne normale s'applique.
+        `model` : ÉPINGLE cet appel sur un modèle au lieu de la chaîne (cas d'usage :
+        un workflow route ses vérificateurs sur le modèle FORT et laisse ses
+        chercheurs sur le tier gratuit). Accepte un id concret ("glm-zai") ou un RÔLE
+        ("cheap"/"strong") résolu via `model_roles` — la forme à préférer dans un
+        script réutilisable. Le modèle de session reste en repli si le tier épinglé
+        meurt en api_error. IGNORÉ en session privée (local_only) : un override ne
+        doit jamais faire fuir des octets vers une API — la confidentialité prime sur
+        le routage. Modèle/rôle inconnu -> ignoré, la chaîne normale s'applique.
         """
         task = (task or "").strip()
         if not task:
             raise ToolError("argument 'task' manquant (décris la tâche à déléguer)")
         tiers = self.tiers
+        if model:
+            model = self.model_roles.get(model, model)
         if model and not self.local_only and self.client.is_remote(model):
             fallback = [self.model] if self.model and self.model != model else []
             tiers = [model, *fallback]
