@@ -119,6 +119,9 @@ class SubAgentRunner:
         self.permission = permission
         self.compact_after_tokens = compact_after_tokens
         self.compact_for = compact_for
+        # Gardé pour les overrides par appel : une session privée ignore TOUT
+        # override de modèle (règle cardinale — aucun octet ne part ailleurs).
+        self.local_only = local_only
         chain = [] if local_only else [m for m in (model_chain or []) if m != model]
         self.tiers = [*chain, model]
 
@@ -132,7 +135,12 @@ class SubAgentRunner:
         return iters, threshold
 
     def stream(
-        self, task: str, *, schema: dict | None = None, sink: list | None = None
+        self,
+        task: str,
+        *,
+        schema: dict | None = None,
+        sink: list | None = None,
+        model: str | None = None,
     ) -> Iterator[tuple[str, object]]:
         """Yield les events de la sous-boucle EN DIRECT (pour que l'UI voie l'ouvrier
         agir). Lève ToolError tout de suite si la tâche manque.
@@ -140,10 +148,22 @@ class SubAgentRunner:
         `schema` : demande une sortie STRUCTURÉE — on injecte `submit_result` dans le
         registre et on pousse les arguments capturés dans `sink`. L'appelant lit
         `sink[-1]` après épuisement du générateur.
+
+        `model` : ÉPINGLE cet appel sur un modèle précis au lieu de la chaîne (cas
+        d'usage : un workflow route ses vérificateurs sur le modèle FORT et laisse ses
+        chercheurs sur le tier gratuit). Le modèle de session reste en repli si le
+        tier épinglé meurt en api_error. IGNORÉ en session privée (local_only) : un
+        override ne doit jamais faire fuir des octets vers une API — la demande de
+        confidentialité prime sur la demande de routage. Modèle inconnu du client
+        (route absente) -> ignoré aussi, la chaîne normale s'applique.
         """
         task = (task or "").strip()
         if not task:
             raise ToolError("argument 'task' manquant (décris la tâche à déléguer)")
+        tiers = self.tiers
+        if model and not self.local_only and self.client.is_remote(model):
+            fallback = [self.model] if self.model and self.model != model else []
+            tiers = [model, *fallback]
         sub_registry = self.build_sub_registry()
         if schema is not None:
             if sink is None:
@@ -183,21 +203,21 @@ class SubAgentRunner:
                     self.client.restore_slot(self.model, "dispatch.kv")
 
         def _stream():
-            for i, tier in enumerate(self.tiers):
+            for i, tier in enumerate(tiers):
                 failed = False
                 for kind, payload in _run_tier(tier):
                     if (
                         kind == "done"
                         and isinstance(payload, dict)
                         and payload.get("reason") == "api_error"
-                        and i + 1 < len(self.tiers)
+                        and i + 1 < len(tiers)
                     ):
                         # Tier mort (429/5xx/timeout) : on passe la main au suivant
                         # au lieu de rendre un échec — marqueur visible dans la synthèse.
                         failed = True
                         yield (
                             "content",
-                            f"\n[relève : {tier} indisponible -> {self.tiers[i + 1]}]\n",
+                            f"\n[relève : {tier} indisponible -> {tiers[i + 1]}]\n",
                         )
                         break
                     yield (kind, payload)

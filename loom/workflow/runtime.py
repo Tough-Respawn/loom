@@ -218,12 +218,18 @@ class _Run:
         schema: dict | None = None,
         label: str | None = None,
         phase: str | None = None,
+        model: str | None = None,
     ):
         """Lance UN sous-agent et renvoie son résultat (str, ou dict si `schema`).
 
         Renvoie None si le sous-agent échoue : un ouvrier mort ne doit pas tuer le run
         (contrat identique à Claude Code — l'appelant filtre). `phase` explicite évite
         la course sur la phase globale quand des étapes tournent en concurrence.
+
+        `model` : épingle CET agent sur un modèle (ex. vérificateurs sur le modèle
+        fort, chercheurs sur la chaîne par défaut gratuit->payant). Transmis tel quel
+        à l'exécuteur, qui l'ignore si la session est privée ou le modèle inconnu —
+        le script n'a pas à connaître ces politiques.
 
         Un `schema` malformé, lui, ARRÊTE le run (WorkflowError) au lieu de rendre None :
         c'est une faute du script, identique pour tous les agents. La rendre en None la
@@ -245,7 +251,7 @@ class _Run:
         self.on_event("agent_start", {"n": n, "label": name, "phase": where})
         try:
             with self._slots:
-                result = self.agent_fn(prompt, schema=schema, label=name)
+                result = self.agent_fn(prompt, schema=schema, label=name, model=model)
             ok = result is not None
         except WorkflowError:
             raise
