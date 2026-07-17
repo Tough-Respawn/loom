@@ -14,7 +14,7 @@ import pytest
 from loom.workflow import MAX_ITEMS, WorkflowError, parse_meta, run_workflow
 
 
-def _echo(prompt, *, schema=None, label=None):
+def _echo(prompt, *, schema=None, label=None, model=None):
     return f"[{prompt}]"
 
 
@@ -81,7 +81,7 @@ def test_agent_rend_la_reponse():
 def test_agent_avec_schema_passe_le_schema():
     seen = {}
 
-    def fn(prompt, *, schema=None, label=None):
+    def fn(prompt, *, schema=None, label=None, model=None):
         seen["schema"] = schema
         return {"ok": True}
 
@@ -92,7 +92,7 @@ def test_agent_avec_schema_passe_le_schema():
 
 
 def test_agent_qui_leve_rend_none_sans_tuer_le_run():
-    def boom(prompt, *, schema=None, label=None):
+    def boom(prompt, *, schema=None, label=None, model=None):
         raise RuntimeError("ouvrier mort")
 
     assert _run("meta = {'name': 'x'}\nreturn agent('t')", agent_fn=boom) is None
@@ -122,6 +122,20 @@ def test_schema_valide_passe():
         "required": ["bug"],
     }
     assert _run("meta = {'name': 'x'}\nreturn agent('t', schema=args)", args=schema)
+
+
+def test_agent_transmet_le_modele_epingle():
+    """agent(model=...) : le script route un agent sur un modèle précis (ex.
+    vérificateurs sur le fort) — transmis à l'exécuteur tel quel."""
+    seen = {}
+
+    def fn(prompt, *, schema=None, label=None, model=None):
+        seen["model"] = model
+        return "ok"
+
+    src = "meta = {'name': 'x'}\nreturn agent('t', model='glm-zai')"
+    assert _run(src, agent_fn=fn) == "ok"
+    assert seen["model"] == "glm-zai"
 
 
 def test_plafond_agents():
@@ -159,7 +173,7 @@ def test_parallel_thunk_qui_leve_donne_none():
 def test_parallel_est_concurrent_en_distant():
     seen = []
 
-    def slow(prompt, *, schema=None, label=None):
+    def slow(prompt, *, schema=None, label=None, model=None):
         seen.append(threading.current_thread().name)
         time.sleep(0.15)
         return prompt
@@ -187,7 +201,7 @@ def test_parallel_est_serialise_en_local():
     peak = []
     lock = threading.Lock()
 
-    def track(prompt, *, schema=None, label=None):
+    def track(prompt, *, schema=None, label=None, model=None):
         with lock:
             running.append(1)
             peak.append(len(running))

@@ -107,3 +107,59 @@ def test_limites_resolues_par_tier():
     assert kw_flash["max_iters"] == 500  # distant
     assert kw_local["compact_after_tokens"] == 15_000
     assert kw_local["max_iters"] == 30  # local bridé
+
+
+# --- Épinglage par appel (agent(model=...) des workflows) -----------------------
+
+
+def _runner(client, **kw):
+    from loom.tools.agent import SubAgentRunner
+
+    return SubAgentRunner(client, lambda: FakeRegistry(), system_prompt="s", **kw)
+
+
+def _drain(runner, task="t", model=None):
+    return [p for k, p in runner.stream(task, model=model) if k == "content"]
+
+
+def test_override_epingle_le_modele_avec_repli_session():
+    # Vérificateur épinglé sur zai : zai d'abord, repli sur le modèle de session.
+    client = ChainClient({"zai": "ok"}, remote_ids={"flash", "zai"})
+    r = _runner(client, model="local-x", model_chain=["flash", "zai"])
+    out = "".join(_drain(r, model="zai"))
+    assert client.tried == ["zai"]  # PAS flash : l'épinglage remplace la chaîne
+    assert "synthèse de zai" in out
+
+
+def test_override_mort_replie_sur_le_modele_session():
+    client = ChainClient(
+        {"zai": "api_error", "local-x": "ok"}, remote_ids={"flash", "zai"}
+    )
+    r = _runner(client, model="local-x", model_chain=["flash", "zai"])
+    out = "".join(_drain(r, model="zai"))
+    assert client.tried == ["zai", "local-x"]
+    assert "relève" in out
+
+
+def test_override_ignore_en_session_privee():
+    """CARDINAL : la confidentialité prime sur le routage — un script qui épingle un
+    modèle distant dans une session privée n'exfiltre RIEN, la demande est ignorée."""
+    client = ChainClient({"local-x": "ok"}, remote_ids={"flash", "zai"})
+    r = _runner(client, model="local-x", model_chain=["flash", "zai"], local_only=True)
+    _drain(r, model="zai")
+    assert client.tried == ["local-x"]
+
+
+def test_override_inconnu_ignore():
+    # Modèle non routé (is_remote False) : la chaîne normale s'applique, pas d'erreur.
+    client = ChainClient({"flash": "ok"}, remote_ids={"flash", "zai"})
+    r = _runner(client, model="local-x", model_chain=["flash", "zai"])
+    _drain(r, model="inconnu-42")
+    assert client.tried == ["flash"]
+
+
+def test_override_egal_au_modele_session_sans_doublon():
+    client = ChainClient({"zai": "ok"}, remote_ids={"zai"})
+    r = _runner(client, model="zai", model_chain=["flash"])
+    _drain(r, model="zai")
+    assert client.tried == ["zai"]

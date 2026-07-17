@@ -79,12 +79,15 @@ def make_run_workflow(
         events: queue.Queue = queue.Queue()
         _DONE = object()
 
-        def agent_fn(prompt, *, schema=None, label=None):
+        def agent_fn(prompt, *, schema=None, label=None, model=None):
             """Un sous-agent. Sa synthèse est RENVOYÉE au script, pas yieldée : le
-            contexte du modèle appelant ne doit jamais la voir."""
+            contexte du modèle appelant ne doit jamais la voir. `model` : épinglage
+            par agent, relayé au runner (qui l'ignore en session privée)."""
             sink: list = []
             parts: list[str] = []
-            for kind, payload in runner.stream(prompt, schema=schema, sink=sink):
+            for kind, payload in runner.stream(
+                prompt, schema=schema, sink=sink, model=model
+            ):
                 if kind == "content" and isinstance(payload, str):
                     parts.append(payload)
                 elif kind in ("tool_call", "tool_result", "usage"):
@@ -175,11 +178,13 @@ def make_run_workflow(
             "The script is plain SYNCHRONOUS Python. It must start with a literal "
             "`meta = {'name': ..., 'description': ...}` and `return` its result. "
             "Available globals (do not import them):\n"
-            "- agent(prompt, schema=None, label=None) -> the sub-agent's answer as a "
-            "string, or a dict matching `schema` (a JSON Schema) if you pass one, or "
-            "None if it failed. It BLOCKS; no async/await anywhere. `schema` must have "
-            'a `{"type": "object", "properties": {...}}` root, like a tool\'s arguments; '
-            "to get a list back, wrap it in a property.\n"
+            "- agent(prompt, schema=None, label=None, model=None) -> the sub-agent's "
+            "answer as a string, or a dict matching `schema` (a JSON Schema) if you "
+            "pass one, or None if it failed. It BLOCKS; no async/await anywhere. "
+            '`schema` must have a `{"type": "object", "properties": {...}}` root, like '
+            "a tool's arguments; to get a list back, wrap it in a property. `model` "
+            "pins this agent to a specific remote model id (e.g. verification stages "
+            "on the strong model); omit it for the default routing chain.\n"
             "- parallel([lambda: agent(...), ...]) -> list of results; waits for all; "
             "a failed item is None. In a comprehension you MUST bind loop variables by "
             "value: `parallel([lambda f=f: agent(f) for f in files])`. Without `f=f` "
