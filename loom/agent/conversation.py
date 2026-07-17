@@ -51,6 +51,10 @@ class Conversation:
     # -> jauge « ctx X% » (proximité du seuil de microcompact). Le contexte grossit dans la
     # boucle d'outils ; le dernier appel du tour = l'occupation réelle.
     context_tokens: int = 0
+    # État du wizard /add-model (machine à états déterministe, cf. loom/web/wizard.py) :
+    # dict JSON-sérialisable persisté ici -> le parcours survit à un refresh de page.
+    # None = pas de wizard actif (défaut, rétro-compat).
+    wizard: dict | None = None
 
     def add_usage(
         self,
@@ -107,6 +111,7 @@ class Conversation:
         self.todos = []  # nouvelle conversation = plan vierge
         self.notes = []  # ...et notes vierges
         self.goal = ""  # ...et objectif effacé
+        self.wizard = None  # wizard abandonné avec le fil
         # Compteur de consommation remis à zéro : le fil repart, le cumul aussi.
         self.tokens_in = 0
         self.tokens_out = 0
@@ -117,6 +122,9 @@ class Conversation:
 
     def set_goal(self, goal: str) -> None:
         self.goal = (goal or "").strip()
+
+    def set_wizard(self, state: dict | None) -> None:
+        self.wizard = state
 
     def set_disabled_skills(self, names: list[str]) -> None:
         self.disabled_skills = list(names)
@@ -155,6 +163,7 @@ class Conversation:
             "todos": self.todos,
             "notes": self.notes,
             "goal": self.goal,
+            "wizard": self.wizard,
             "disabled_skills": self.disabled_skills,
             "skill_overrides": self.skill_overrides,
             "tokens_in": self.tokens_in,
@@ -178,6 +187,7 @@ class Conversation:
             todos=list(data.get("todos", [])),
             notes=list(data.get("notes", [])),
             goal=data.get("goal", ""),
+            wizard=data.get("wizard"),
             disabled_skills=list(data.get("disabled_skills", [])),
             skill_overrides=dict(data.get("skill_overrides", {})),
             tokens_in=int(data.get("tokens_in", 0) or 0),
