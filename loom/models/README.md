@@ -41,5 +41,9 @@ diffusion, jamais deux résidents. `{IMAGE}` : mets le CHEMIN de ta photo dans l
 (guillemets si espaces). `timeout` : budget d'attente (s), à monter pour la vidéo.
 
 ## Ajouter un modèle
-- Texte : copie `_TEMPLATE/` vers `local/text/<ton-id>/`, édite `model.toml`.
-- Image/vidéo : copie un dossier existant de `local/image/`, édite les deux fichiers.
+- **La voie royale : tape `/add-model` dans le chat** — le wizard fait tout (local :
+  recherche Hugging Face, choix du quant recommandé selon ta machine, téléchargement,
+  model.toml généré ; distant : URL + clé, persisté et monté à chaud).
+- À la main (toujours possible) :
+  - Texte : copie `_TEMPLATE/` vers `local/text/<ton-id>/`, édite `model.toml`.
+  - Image/vidéo : copie un dossier existant de `local/image/`, édite les deux fichiers.
