@@ -59,6 +59,7 @@ def build_registry(
     sub_compact_after_tokens: int | None = None,
     dispatch_models: list[str] | None = None,
     dispatch_local_only: bool = False,
+    dispatch_model_roles: dict[str, str] | None = None,
     sub_compact_for=None,
     permission=None,
     active_model: str | None = None,
@@ -212,6 +213,7 @@ def build_registry(
             model_chain=dispatch_models,
             local_only=dispatch_local_only,
             compact_for=sub_compact_for,
+            model_roles=dispatch_model_roles,
         )
         if "dispatch_agent" in enabled:
             specs.append(

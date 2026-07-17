@@ -183,8 +183,10 @@ def make_run_workflow(
             "pass one, or None if it failed. It BLOCKS; no async/await anywhere. "
             '`schema` must have a `{"type": "object", "properties": {...}}` root, like '
             "a tool's arguments; to get a list back, wrap it in a property. `model` "
-            "pins this agent to a specific remote model id (e.g. verification stages "
-            "on the strong model); omit it for the default routing chain.\n"
+            'pins this agent to a model: prefer the roles "cheap" (fast/free tier) '
+            'and "strong" (frontier model, e.g. for verification stages) — resolved '
+            "from the machine's config — or pass a concrete remote model id; omit it "
+            "for the default routing chain.\n"
             "- parallel([lambda: agent(...), ...]) -> list of results; waits for all; "
             "a failed item is None. In a comprehension you MUST bind loop variables by "
             "value: `parallel([lambda f=f: agent(f) for f in files])`. Without `f=f` "
