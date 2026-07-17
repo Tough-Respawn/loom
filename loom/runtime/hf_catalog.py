@@ -36,8 +36,10 @@ def _err(what: str, exc: Exception) -> HfCatalogError:
 def search_models(query: str, limit: int = 8, api=None) -> list[dict]:
     """Top repos GGUF pour `query`, triés par téléchargements décroissants."""
     try:
+        # NB : pas de `direction` — retiré de HfApi.list_models (huggingface_hub >= 1.x) ;
+        # `sort="downloads"` renvoie déjà les plus téléchargés en premier.
         hits = _api(api).list_models(
-            search=query, filter="gguf", sort="downloads", direction=-1, limit=limit
+            search=query, filter="gguf", sort="downloads", limit=limit
         )
         return [
             {
