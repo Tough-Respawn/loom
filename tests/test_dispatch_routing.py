@@ -163,3 +163,46 @@ def test_override_egal_au_modele_session_sans_doublon():
     r = _runner(client, model="zai", model_chain=["flash"])
     _drain(r, model="zai")
     assert client.tried == ["zai"]
+
+
+def test_roles_cheap_strong_resolus_depuis_la_config():
+    """Un script épingle des RÔLES ("cheap"/"strong"), pas des ids machine : la
+    résolution suit la config (flags strong + ordre de chaîne) — un renommage de
+    modèle ne dégrade pas le routage en silence."""
+    roles = {"cheap": "flash", "strong": "zai"}
+    client = ChainClient({"zai": "ok"}, remote_ids={"flash", "zai"})
+    r = _runner(
+        client, model="local-x", model_chain=["flash", "zai"], model_roles=roles
+    )
+    _drain(r, model="strong")
+    assert client.tried == ["zai"]
+
+    client2 = ChainClient({"flash": "ok"}, remote_ids={"flash", "zai"})
+    r2 = _runner(
+        client2, model="local-x", model_chain=["flash", "zai"], model_roles=roles
+    )
+    _drain(r2, model="cheap")
+    assert client2.tried == ["flash"]
+
+
+def test_role_non_resolu_retombe_sur_la_chaine():
+    # Pas de modèle strong dans la config -> "strong" inconnu -> chaîne normale.
+    client = ChainClient({"flash": "ok"}, remote_ids={"flash"})
+    r = _runner(
+        client, model="local-x", model_chain=["flash"], model_roles={"cheap": "flash"}
+    )
+    _drain(r, model="strong")
+    assert client.tried == ["flash"]
+
+
+def test_role_ignore_en_session_privee():
+    client = ChainClient({"local-x": "ok"}, remote_ids={"flash", "zai"})
+    r = _runner(
+        client,
+        model="local-x",
+        model_chain=["flash", "zai"],
+        local_only=True,
+        model_roles={"strong": "zai"},
+    )
+    _drain(r, model="strong")
+    assert client.tried == ["local-x"]

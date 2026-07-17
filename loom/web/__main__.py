@@ -145,6 +145,17 @@ def build_app(cfg):
         # pas casser le dispatch.
         _chain = [m for m in cfg.chat.dispatch_models if client.is_remote(m)]
         _priv = bool(conversation and getattr(conversation, "local_only", False))
+        # Rôles ABSTRAITS des workflows (agent(model="cheap"/"strong")) : résolus ICI,
+        # seule couche qui voit les flags `strong` de la config. Candidats = la chaîne
+        # puis le modèle de session ; "cheap" = premier non-strong, "strong" = premier
+        # strong. Un script reste portable (aucun id de machine en dur) et un
+        # renommage de modèle ne dégrade pas le routage en silence.
+        _strong_ids = {rm.id for rm in cfg.remote_models if rm.strong}
+        _ordered = _chain + ([_model] if client.is_remote(_model) else [])
+        _roles = {}
+        for mid in _ordered:
+            role = "strong" if mid in _strong_ids else "cheap"
+            _roles.setdefault(role, mid)
         return build_registry(
             workspace_dir=workspace or cfg.chat.workspace_dir,
             max_bytes=cfg.chat.read_file_max_bytes,
@@ -160,6 +171,7 @@ def build_app(cfg):
             sub_compact_after_tokens=_sub_compact,
             dispatch_models=_chain,
             dispatch_local_only=_priv,
+            dispatch_model_roles=_roles,
             sub_compact_for=_compact_for,
             permission=permission,
             active_model=_model,
