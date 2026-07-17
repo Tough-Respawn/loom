@@ -67,3 +67,12 @@ def test_pas_un_gguf(tmp_path):
     p.write_bytes(b"PASGGUF!")
     with pytest.raises(ValueError):
         read_gguf_meta(p)
+
+
+def test_gguf_tronque_leve_valueerror(tmp_path):
+    # Magic OK mais header coupé net : struct.error doit devenir ValueError
+    # (contrat best-effort de finalize_model_toml).
+    p = tmp_path / "m.gguf"
+    p.write_bytes(b"GGUFxxxx")
+    with pytest.raises(ValueError):
+        read_gguf_meta(p)

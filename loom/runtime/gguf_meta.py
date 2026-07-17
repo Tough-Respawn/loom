@@ -58,17 +58,20 @@ def read_gguf_meta(path: str | Path) -> dict:
     Lève ValueError si le fichier n'est pas un GGUF lisible — l'appelant traite ça
     en best-effort (un GGUF exotique n'empêche pas l'installation)."""
     kv: dict = {}
-    with open(path, "rb") as f:
-        if f.read(4) != b"GGUF":
-            raise ValueError("pas un fichier GGUF")
-        (version,) = struct.unpack("<I", f.read(4))
-        if version < 2:
-            raise ValueError(f"GGUF v{version} non géré")
-        _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
-        for _ in range(kv_count):
-            key = _read_string(f)
-            (vtype,) = struct.unpack("<I", f.read(4))
-            kv[key] = _read_value(f, vtype)
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                raise ValueError("pas un fichier GGUF")
+            (version,) = struct.unpack("<I", f.read(4))
+            if version < 2:
+                raise ValueError(f"GGUF v{version} non géré")
+            _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
+            for _ in range(kv_count):
+                key = _read_string(f)
+                (vtype,) = struct.unpack("<I", f.read(4))
+                kv[key] = _read_value(f, vtype)
+    except struct.error as exc:  # header tronqué/corrompu = pas un GGUF valide
+        raise ValueError(f"header GGUF tronqué ou corrompu ({exc})") from exc
 
     arch = kv.get("general.architecture")
 
