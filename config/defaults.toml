@@ -70,7 +70,7 @@ enabled = [
     "find_files", "search_text", "list_dir",
     "read_file", "read_image", "calculate", "current_date",
     "web_search", "fetch_url",
-    "dispatch_agent", "manage_todos", "write_note", "read_note",
+    "dispatch_agent", "run_workflow", "manage_todos", "write_note", "read_note",
     "recall", "remember",
     "write_file", "append_file", "edit_file",
     "format_code", "run_shell",
