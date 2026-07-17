@@ -303,6 +303,7 @@ def build_app(cfg):
         config_local_path=str(PERSONAL_CONFIG_PATH),
         local_models=local_models,
         image_models=image_models,
+        models_dir=str(cfg.models_dir),
     )
     return app
 

@@ -29,11 +29,12 @@ from loom.extend.skills import (
     write_skill_source,
 )
 from loom.prompts import CHAT_SYSTEM_STRONG, IMAGE_REFINE_SYSTEM
-from loom.runtime import model_store
+from loom.runtime import model_install, model_store
 from loom.runtime.comfy import ComfyEngine, ComfyError
 from loom.runtime.hardware import ram_available_mb
 from loom.runtime.models_profile import load_profile
 from loom.runtime.platform_info import detect as platform_detect
+from loom.web import wizard as _wizard
 from loom.web.app import (
     _GOAL_CLEAR_WORDS,
     _NOTE_MAX_CHARS,
@@ -463,6 +464,181 @@ def _handle_init_command(S, message):
         message = _init_message(target_display)
         # (pas de return : le flux normal ci-dessous exécute la consigne)
     return message
+
+
+# ---- Commande /add-model : wizard déterministe d'ajout de modèle -----------------------
+
+
+def _wizard_deps(S):
+    """Dépendances du wizard (INJECTÉES : la machine à états reste pure et testable).
+    Point de patch des tests — garder la construction ici, jamais dans wizard.py."""
+    from types import SimpleNamespace
+
+    from loom.runtime import hardware, hf_catalog
+
+    hw = hardware.detect_hardware()
+    ram = hardware.ram_available_mb()
+    return SimpleNamespace(
+        search_models=hf_catalog.search_models,
+        list_gguf_files=hf_catalog.list_gguf_files,
+        recommend=lambda files: model_install.recommend_quant(
+            files, hw.vram_free_mb, ram
+        ),
+        derive_id=model_install.derive_model_id,
+        existing_ids=set(S.models),
+    )
+
+
+def _mount_local(S, mid, mdir, size_mb, vision=False):
+    """Monte À CHAUD un modèle local fraîchement installé : registres partagés +
+    régénération du llama-swap.yaml (llama-swap -watch-config le recharge). Le
+    sélecteur voit le modèle sans redémarrer loom.web (spec §3.4)."""
+    if not any(m.get("id") == mid for m in S.local_model_specs):
+        S.local_model_specs.append(
+            {"id": mid, "dir": str(mdir), "size_mb": int(size_mb)}
+        )
+    if mid not in S.local_model_ids:
+        S.local_model_ids.append(mid)
+    if mid not in S.models:
+        S.models.append(mid)
+    if vision:
+        S.vision_models.add(mid)
+    _regen_swap_yaml(S)
+
+
+def _persist_wizard_exchange(S, sess, conv, save, message, reply):
+    """Chaque étape du wizard est un VRAI échange du fil : persistée dans la
+    conversation ET le journal (ré-affichage au rechargement) — exigence spec."""
+    conv.add("user", message)
+    S.session_store.append_event(sess.id, "user", {"content": message})
+    conv.add("assistant", reply)
+    S.session_store.append_event(sess.id, "text", {"text": reply})
+    save()
+
+
+def _finish_install(S, sess, chat_lock, mid, mdir, job):
+    """Fin de download (appelé DANS le thread du job, succès ou échec) : finalise le
+    toml (métadonnées GGUF), monte le modèle, pousse le message de fin dans la
+    conversation + le journal — visible même si l'onglet a été fermé entre-temps."""
+    if job.error:
+        msg = (
+            f"Échec du téléchargement de « {mid} » :\n{job.error}\n"
+            "Relance /add-model, ou pose le fichier à la main — la reprise est "
+            "automatique au premier lancement du modèle."
+        )
+    else:
+        meta = model_install.finalize_model_toml(mdir, Path(mdir) / job.filenames[0])
+        _mount_local(
+            S,
+            mid,
+            mdir,
+            job.total_mb,
+            vision=any("mmproj" in f.lower() for f in job.filenames),
+        )
+        extras = []
+        if meta.get("n_layers"):
+            extras.append(f"{meta['n_layers']} couches")
+        if meta.get("expert_count"):
+            extras.append("MoE détecté -> cpu_moe = true")
+        det = f" ({', '.join(extras)})" if extras else ""
+        msg = f"Modèle « {mid} » installé{det} — disponible dans le sélecteur."
+    job.final_message = msg
+    # Écriture de la conversation sous le verrou de session pour ne pas courir contre
+    # une génération. Acquire à timeout COURT avec repli : on écrit de toute façon
+    # (le journal est append-only, le risque réel est borné) — et dans le cas
+    # synchrone (download instantané) le verrou est encore tenu par la requête du
+    # wizard, inutile d'attendre longtemps.
+    got = chat_lock.acquire(timeout=2)
+    try:
+        conv = sess.conversation
+        conv.add("assistant", msg)
+        S.session_store.append_event(sess.id, "text", {"text": msg})
+        S.session_store.save(sess)
+    finally:
+        if got:
+            chat_lock.release()
+
+
+def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
+    """Intercepte /add-model ET tout message d'une session au wizard actif.
+    Même contrat que _handle_goal_command : (message, response) — response non None
+    = ack SSE immédiat, le flux LLM n'est jamais sollicité (wizard déterministe)."""
+    active = bool(conv.wizard)
+    is_cmd = message == "/add-model" or message.startswith("/add-model ")
+    if not (active or is_cmd):
+        return message, None
+
+    try:
+        deps = _wizard_deps(S)
+        if is_cmd:
+            res = _wizard.start(message[len("/add-model") :].strip(), deps)
+        else:
+            res = _wizard.step(conv.wizard, message, deps)
+    except Exception as exc:  # noqa: BLE001 - HfCatalogError & co : actionnable, jamais de stacktrace
+        res = _wizard.WizardResult(
+            conv.wizard,
+            f"{exc}\n(l'assistant reste à cette étape — réessaie, ou /cancel)",
+        )
+
+    conv.set_wizard(res.state)
+    _persist_wizard_exchange(S, sess, conv, save, message, res.reply)
+
+    job = None
+    extra_reply = ""
+    if res.action and res.action["kind"] == "upsert_remote":
+        rec = {k: v for k, v in res.action["record"].items() if v is not None}
+        if S.remote_store_path:
+            with S.toml_lock:
+                model_store.upsert(S.remote_store_path, rec)
+            if getattr(S, "client", None) is not None:
+                _mount_remote(S, rec)
+        else:
+            extra_reply = "\n(store des modèles indisponible : ajout NON persisté)"
+    elif res.action and res.action["kind"] == "install":
+        a = res.action
+        if not S.models_dir:
+            extra_reply = (
+                "\n(models_dir non configuré : installation locale indisponible)"
+            )
+        else:
+            mdir = Path(S.models_dir) / a["model_id"]
+            files = list(a["files"])
+            if a.get("mmproj_filename"):
+                files.append(a["mmproj_filename"])
+            model_install.write_model_toml(
+                mdir,
+                a["repo"],
+                a["filename"],
+                a["size_mb"],
+                mmproj_filename=a.get("mmproj_filename"),
+            )
+            job = model_install.start_download(
+                a["repo"],
+                files,
+                mdir,
+                a["size_mb"],
+                on_done=lambda j: _finish_install(
+                    S, sess, chat_lock, a["model_id"], mdir, j
+                ),
+            )
+
+    chat_lock.release()
+
+    def _stream():
+        yield _sse("text", text=res.reply + extra_reply)
+        if job is not None:
+            while not job.done:
+                yield _sse(
+                    "status",
+                    label=f"téléchargement… {job.progress_mb()}/{job.total_mb} Mo",
+                )
+                time.sleep(2)
+            yield _sse("status", label="")
+            if job.final_message:
+                yield _sse("text", text="\n" + job.final_message)
+        yield _sse("done")
+
+    return message, Response(_stream(), mimetype="text/event-stream")
 
 
 # ---- System prompt --------------------------------------------------------------------
@@ -1991,6 +2167,15 @@ def _register_chat_routes(app, S):
 
         conv = sess.conversation
         save = lambda: S.session_store.save(sess)  # noqa: E731
+
+        # Commande /add-model + wizard actif : le wizard déterministe capte TOUT
+        # message de la session tant qu'il est actif (y compris avant /goal — un
+        # « /goal » tapé en plein wizard est une réponse au wizard, pas une commande).
+        message, _wiz_resp = _handle_add_model_command(
+            S, message, conv, sess, save, chat_lock
+        )
+        if _wiz_resp is not None:
+            return _wiz_resp
 
         # Commande /goal : pilote l'OBJECTIF de complétion de la session. La logique
         # (pose/statut/efface) est factorisée dans _handle_goal_command, qui renvoie
