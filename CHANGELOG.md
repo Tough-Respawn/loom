@@ -6,6 +6,13 @@
 
 ---
 
+## 2026-07-17 — /add-model
+
+### Nouvelles fonctionnalités
+- **`/add-model`** : ajout d'un modèle en une commande (wizard chat déterministe, zéro LLM) — local : recherche Hugging Face, choix du quant recommandé selon VRAM/RAM, téléchargement avec progression, `model.toml` généré (n_layers/MoE lus du GGUF), montage à chaud dans le sélecteur ; distant : URL + clé, persisté via le store du panneau engrenage.
+
+---
+
 ## 2026-06-09 — Mémoire & Reflection
 
 ### Nouvelles fonctionnalités
