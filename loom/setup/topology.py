@@ -279,7 +279,10 @@ def calibrate(
         ladder = [cap]
     for ctx in ladder:
         elapsed = time.monotonic() - t0
-        if elapsed > time_budget_s:
+        # >= : un budget ATTEINT arrête (et budget 0 = aucun barreau, même quand
+        # l'horloge n'a pas encore tické — monotonic a ~15 ms de résolution sur
+        # Windows < 3.13, un `>` strict laissait passer toute l'échelle).
+        if elapsed >= time_budget_s:
             mecanisme = (
                 f"budget temps ({time_budget_s}s) — vitesse validée jusqu'à {valide}"
             )
