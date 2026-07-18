@@ -219,6 +219,56 @@ def _step_r_adv(state, t, deps):
     )
 
 
+# ---------- flux suppression (/remove-model) ----------
+
+
+def start_remove(deps) -> WizardResult:
+    """Liste numérotée des modèles supprimables : locaux (dossier sur disque) et
+    distants gérés par l'UI (les distants de config/local.toml s'éditent là-bas)."""
+    items = deps.removable_models()
+    if not items:
+        return WizardResult(
+            None,
+            "Aucun modèle supprimable ici. (Un distant défini dans "
+            "config/local.toml se retire en éditant ce fichier.)",
+        )
+    lines = [f"  {i + 1}. {it['label']}" for i, it in enumerate(items)]
+    return WizardResult(
+        {"step": "d_pick", "items": items},
+        "[remove-model 1/2] Quel modèle supprimer ?\n"
+        + "\n".join(lines)
+        + "\n(réponds par un numéro — /cancel pour annuler)",
+    )
+
+
+def _step_d_pick(state, t, deps):
+    items = state["items"]
+    if not (t.isdigit() and 1 <= int(t) <= len(items)):
+        return WizardResult(state, "Réponds par le numéro du modèle (ou /cancel).")
+    it = items[int(t) - 1]
+    warn = (
+        "son DOSSIER et ses fichiers (GGUF compris) seront SUPPRIMÉS du disque"
+        if it["kind"] == "local"
+        else "il sera retiré du store (sa clé avec) et démonté"
+    )
+    return WizardResult(
+        {"step": "d_confirm", "item": it},
+        f"[remove-model 2/2] Supprimer « {it['id']} » ? {warn}.\n"
+        "Tape « oui » pour confirmer — toute autre réponse annule.",
+    )
+
+
+def _step_d_confirm(state, t, deps):
+    if t.lower() not in ("oui", "o", "yes"):
+        return WizardResult(None, "Suppression annulée — rien n'a été touché.")
+    it = state["item"]
+    return WizardResult(
+        None,
+        f"Suppression de « {it['id']} »…",
+        {"kind": "remove", "id": it["id"], "model_kind": it["kind"]},
+    )
+
+
 # ---------- flux local ----------
 
 
@@ -345,4 +395,6 @@ _STEPS = {
     "r_model": _step_r_model,
     "r_key": _step_r_key,
     "r_adv": _step_r_adv,
+    "d_pick": _step_d_pick,
+    "d_confirm": _step_d_confirm,
 }
