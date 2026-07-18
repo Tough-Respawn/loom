@@ -59,6 +59,7 @@ def _fake_deps(monkeypatch, hits=(), files=()):
         list_gguf_files=lambda repo: list(files),
         recommend=lambda fs: [dict(f, fits=True, recommended=True) for f in fs],
         derive_id=lambda repo: "nouveau-modele",
+        list_remote_models=lambda base_url, key: None,  # provider muet -> saisie libre
     )
     monkeypatch.setattr(routes, "_wizard_deps", lambda S: deps)
 
@@ -83,13 +84,14 @@ def test_add_model_cancel(env, monkeypatch):
 
 def test_add_model_distant_persiste_le_store(env, monkeypatch):
     _fake_deps(monkeypatch)
+    # nouvel ordre : la CLÉ vient avant le modèle (elle sert à lister GET /models)
     for msg in [
         "/add-model",
         "2",
         "glm-test",
         "https://api.exemple/v4",
-        "glm-test-model",
         "aucune",
+        "glm-test-model",
     ]:
         env.web.post("/chat", data={"message": msg})
     r = env.web.post("/chat", data={"message": "non"})
