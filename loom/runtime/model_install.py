@@ -120,12 +120,16 @@ class DownloadJob:
         except ModelUnavailable as exc:
             self.error = str(exc)
         finally:
-            self.done = True
+            # on_done AVANT done=True : les observateurs de `done` (flux SSE qui
+            # pousse l'événement « models » au front) ne doivent se réveiller
+            # qu'une fois le modèle FINALISÉ ET MONTÉ — sinon le sélecteur se
+            # recharge avant le montage et n'affiche pas le nouveau modèle.
             if self._on_done is not None:
                 try:
                     self._on_done(self)
                 except Exception as exc:  # noqa: BLE001 - jamais planter le thread
                     print(f"[loom] add-model finalisation : {exc}", flush=True)
+            self.done = True
 
     def progress_mb(self) -> int:
         total = 0
