@@ -41,6 +41,28 @@ def test_etat_inconnu_annule_proprement():
 # ---------- flux distant ----------
 
 
+def test_start_distant_et_url_routent_vers_le_flux_distant():
+    # « /add-model distant » -> flux distant direct, sans passer par le menu
+    r = wizard.start("distant", deps())
+    assert r.state == {"step": "r_id"}
+    # une URL brute n'est JAMAIS une recherche HF -> distant, base_url pré-remplie
+    r = wizard.start("https://api.z.ai/api/paas/v4/", deps())
+    assert r.state == {"step": "r_id", "base_url": "https://api.z.ai/api/paas/v4"}
+    assert "base_url notée" in r.reply
+    # l'id fourni ensuite SAUTE l'étape base_url
+    r2 = wizard.step(r.state, "glm-5", deps())
+    assert r2.state["step"] == "r_model"
+    assert r2.state["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+def test_start_url_plus_cle_ignore_la_cle_et_avertit():
+    # une clé collée dans la commande est IGNORÉE (jamais interprétée) + alerte
+    r = wizard.start("distant https://api.z.ai/api/paas/v4/ sk-tres-secret", deps())
+    assert r.state == {"step": "r_id", "base_url": "https://api.z.ai/api/paas/v4"}
+    assert "sk-tres-secret" not in r.reply
+    assert "IGNORÉ" in r.reply and "régénérer" in r.reply
+
+
 def test_distant_parcours_complet():
     d = deps(existing={"deja-la"})
     r = wizard.step({"step": "kind"}, "2", d)
@@ -117,6 +139,32 @@ FILES = [
         "is_mmproj": True,
     },
 ]
+
+
+def test_les_fichiers_auxiliaires_ne_sont_pas_des_quants():
+    # Un mtp-*.gguf (is_aux) ne doit JAMAIS apparaître dans les quants proposés
+    # (vécu : recommandé comme seul quant « qui tient » -> coquille vide installée).
+    files = [
+        {
+            "filename": "mtp-ggml-model-bf16.gguf",
+            "part_files": ["mtp-ggml-model-bf16.gguf"],
+            "size_mb": 200,
+            "is_mmproj": False,
+            "is_aux": True,
+        },
+        {
+            "filename": "m.Q4_K.gguf",
+            "part_files": ["m.Q4_K.gguf"],
+            "size_mb": 4900,
+            "is_mmproj": False,
+            "is_aux": False,
+        },
+    ]
+    d = deps(hits=[{"repo_id": "org/r", "downloads": 1, "likes": 0}], files=files)
+    r = wizard.step({"step": "l_repo", "hits": d.search_models("x")}, "1", d)
+    assert r.state["step"] == "l_quant"
+    assert "mtp-ggml" not in r.reply
+    assert "m.Q4_K.gguf" in r.reply
 
 
 def test_local_parcours_complet():

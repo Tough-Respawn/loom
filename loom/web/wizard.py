@@ -29,15 +29,51 @@ def _valid_id(mid: str) -> bool:
 
 
 def start(arg: str, deps) -> WizardResult:
-    if arg:  # /add-model <recherche> : direct au flux local
-        return _search(arg, deps)
-    return WizardResult(
-        {"step": "kind"},
-        "[add-model 1/2] Quel type de modèle ?\n"
-        "  1. local — GGUF téléchargé depuis Hugging Face, servi sur la machine\n"
-        "  2. distant — API OpenAI-compatible (URL + clé)\n"
-        "(réponds 1 ou 2 — /cancel pour annuler)",
-    )
+    a = (arg or "").strip()
+    if not a:
+        return WizardResult(
+            {"step": "kind"},
+            "[add-model 1/2] Quel type de modèle ?\n"
+            "  1. local — GGUF téléchargé depuis Hugging Face, servi sur la machine\n"
+            "  2. distant — API OpenAI-compatible (URL + clé)\n"
+            "(réponds 1 ou 2 — /cancel pour annuler)",
+        )
+    low = a.lower()
+    # « /add-model distant [url] » ou une URL brute -> flux DISTANT direct. Une URL
+    # n'est JAMAIS une recherche Hugging Face (vécu : URL + clé collées partaient en
+    # recherche locale, incompréhensible).
+    if low.startswith(("distant", "remote")) or low.startswith(("http://", "https://")):
+        tokens = a.split()
+        if tokens[0].lower() in ("distant", "remote"):
+            tokens = tokens[1:]
+        url = (
+            tokens[0].rstrip("/")
+            if tokens and tokens[0].lower().startswith(("http://", "https://"))
+            else None
+        )
+        # SÉCURITÉ : tout ce qui suit l'URL (une clé API collée ?) est IGNORÉ — la
+        # clé se donne à l'étape dédiée. Une clé tapée dans le fil reste dans
+        # l'historique de session : mieux vaut la régénérer.
+        leaked = len(tokens) > (1 if url else 0)
+        warn = (
+            "\n⚠️ Le reste de ta commande a été IGNORÉ — la clé se donne à l'étape "
+            "dédiée. Si c'était une vraie clé, elle est dans l'historique de la "
+            "session : pense à la régénérer chez le provider."
+            if leaked
+            else ""
+        )
+        if url:
+            return WizardResult(
+                {"step": "r_id", "base_url": url},
+                f"[add-model — distant 1/5] base_url notée ({url}). "
+                "Choisis un id court pour ce modèle (ex. « glm-5-flash ») :" + warn,
+            )
+        return WizardResult(
+            {"step": "r_id"},
+            "[add-model — distant 1/5] Choisis un id court pour ce modèle "
+            "(ex. « glm-5-flash ») :" + warn,
+        )
+    return _search(a, deps)  # /add-model <recherche> : direct au flux local
 
 
 def step(state: dict, text: str, deps) -> WizardResult:
@@ -80,6 +116,11 @@ def _step_r_id(state, t, deps):
         )
     if t in deps.existing_ids:
         return WizardResult(state, f"« {t} » existe déjà. Choisis un autre id :")
+    if state.get("base_url"):  # URL déjà fournie dans la commande -> étape sautée
+        return WizardResult(
+            {"step": "r_model", "id": t, "base_url": state["base_url"]},
+            "[add-model — distant 3/5] Nom du modèle côté provider (ex. « glm-4.7 ») :",
+        )
     return WizardResult(
         {"step": "r_base_url", "id": t},
         "[add-model — distant 2/5] base_url de l'API "
@@ -175,7 +216,8 @@ def _step_l_repo(state, t, deps):
         return _search(t, deps)  # texte libre = nouvelle recherche
     repo = hits[int(t) - 1]["repo_id"]
     files = deps.list_gguf_files(repo)
-    weights = [f for f in files if not f["is_mmproj"]]
+    # is_aux exclut mmproj ET mtp (repli sur is_mmproj pour un state d'avant la clé)
+    weights = [f for f in files if not f.get("is_aux", f["is_mmproj"])]
     if not weights:
         return WizardResult(
             {"step": "l_query"},

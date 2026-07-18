@@ -67,3 +67,21 @@ def test_list_gguf_regroupe_les_parties_et_repere_mmproj():
     assert by_name["m.Q8_0.gguf"]["size_mb"] == 30
     # tri par taille croissante
     assert [f["size_mb"] for f in files] == sorted(f["size_mb"] for f in files)
+
+
+def test_list_gguf_marque_les_auxiliaires():
+    mb = 1024 * 1024
+    info = SimpleNamespace(
+        siblings=[
+            _sib("mtp-ggml-model-bf16.gguf", 200 * mb),  # tête MTP = auxiliaire
+            _sib("mmproj-model-bf16.gguf", 800 * mb),  # projecteur vision
+            _sib("m.Q4_K.gguf", 4900 * mb),  # vrai quant
+            _sib("empty-model.gguf", mb),  # « mtp »/« mmproj » absents -> poids
+        ]
+    )
+    files = list_gguf_files("org/a", api=FakeApi(info=info))
+    by_name = {f["filename"]: f for f in files}
+    assert by_name["mtp-ggml-model-bf16.gguf"]["is_aux"] is True
+    assert by_name["mmproj-model-bf16.gguf"]["is_aux"] is True
+    assert by_name["m.Q4_K.gguf"]["is_aux"] is False
+    assert by_name["empty-model.gguf"]["is_aux"] is False
