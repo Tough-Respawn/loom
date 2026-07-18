@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-07-18 — boot remote-only
+
+### Améliorations
+- **`loom.web` boote sans modèle local** quand un modèle DISTANT existe (`[[remote_models]]` de `config/local.toml` OU store UI `var/remote_models.json`) : `load_config` tolère `models=[]` dans ce cas (le serveur llama.cpp local ne sert que les locaux et démarre à la demande), `default_model` retombe sur le premier distant si le défaut configuré pointe un local disparu. Machine vraiment vierge (ni local ni distant) : comportement inchangé — installeur guidé (`maybe_bootstrap`) ou `ValueError` claire.
+- La fusion du store UI (`var/remote_models.json`) dans `cfg.remote_models` vit désormais dans `load_config` (plus dans `build_app`) : une seule source pour tous les consommateurs, y compris le reload à chaud ; dérivation du chemin centralisée (`config.remote_store_path`).
+- `serve.py` (moteur llama.cpp) continue d'exiger un modèle local : garde explicite « aucun modèle LOCAL à servir » (code 1) au lieu d'un crash, `cfg.model`/`model_by_id` lèvent une erreur claire sur parc local vide.
+
+---
+
 ## 2026-07-18 — loom-setup
 
 ### Nouvelles fonctionnalités

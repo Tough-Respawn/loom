@@ -2,9 +2,10 @@
 """Logique PURE de l'installeur : lecture de la config brute, constats
 (binaire présent ? modèles branchés ?) et écriture ciblée de config/local.toml.
 
-Pourquoi « brute » : load_config() lève quand AUCUN modèle n'existe — exactement
-l'état post-clone que le setup doit gérer. On lit donc defaults + local fusionnés
-SANS validation, et on ne passe par load_config qu'une fois le parc installé."""
+Pourquoi « brute » : load_config() lève quand NI modèle local NI distant n'existe —
+exactement l'état post-clone que le setup doit gérer. On lit donc defaults + local
+fusionnés SANS validation, et on ne passe par load_config qu'une fois le parc
+installé."""
 
 from __future__ import annotations
 
@@ -120,6 +121,20 @@ def needs_setup(raw_cfg: dict, package_models: Path) -> bool:
     `serve.py` (et le critère d'idempotence de loom-setup)."""
     present, _ = server_bin_status(raw_cfg)
     return not present or not installed_model_ids(raw_cfg, package_models)
+
+
+def has_remote_models(raw_cfg: dict) -> bool:
+    """Au moins un modèle DISTANT disponible : bloc [[remote_models]] (config) OU
+    store UI (remote_models.json à côté de l'historique). Sert au boot remote-only
+    de loom.web (maybe_bootstrap remote_ok) : avec un distant on peut discuter sans
+    moteur local — l'installeur reste accessible via `uv run loom-setup`."""
+    if raw_cfg.get("remote_models"):
+        return True
+    from loom.config import remote_store_path
+    from loom.runtime import model_store
+
+    history = raw_cfg.get("chat", {}).get("history_path", "var/conversation.json")
+    return bool(model_store.load(remote_store_path(history)))
 
 
 def set_local_values(local_path: str | Path, values: dict[str, dict]) -> None:

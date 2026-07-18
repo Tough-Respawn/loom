@@ -265,17 +265,24 @@ def regenerate_swap_yaml(
         return None
 
 
-def maybe_bootstrap() -> int | None:
+def maybe_bootstrap(remote_ok: bool = False) -> int | None:
     """Premier run sur machine vierge (binaire ou modèle manquant) : lance
     l'installeur guidé loom-setup DANS ce terminal. Renvoie None si la machine
     est (devenue) prête à servir, sinon un code de sortie.
 
+    remote_ok (loom.web) : un modèle DISTANT ([[remote_models]] ou store UI)
+    suffit pour discuter -> pas d'installeur forcé s'il en existe un (boot
+    « remote-only »). serve.py, moteur llama.cpp, garde remote_ok=False : un
+    modèle local y reste obligatoire.
+
     Terminal non interactif (service, CI) : pas de questions possibles — on
     guide vers la commande dédiée et on sort proprement."""
-    from loom.setup.steps import needs_setup, read_raw_config
+    from loom.setup.steps import has_remote_models, needs_setup, read_raw_config
 
     raw = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
     if not needs_setup(raw, MODELS_DIR):
+        return None
+    if remote_ok and has_remote_models(raw):
         return None
     if not (sys.stdin and sys.stdin.isatty()):
         _log(
@@ -310,6 +317,14 @@ def main() -> int:
     if code is not None:
         return code
     cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
+    if not cfg.models:
+        # load_config tolère un parc 100 % distant (boot remote-only de loom.web) ;
+        # serve, lui, EST le moteur des modèles locaux -> rien à servir ici.
+        _log(
+            "[loom] Aucun modèle LOCAL à servir (parc distant uniquement) — "
+            "lance 'uv run loom-setup' pour en installer un."
+        )
+        return 1
     profile = detect_hardware()
     _log(f"[loom] Profil détecté : {profile}")
 
