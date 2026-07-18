@@ -311,10 +311,11 @@ def build_app(cfg):
 def main() -> None:
     cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
     app = build_app(cfg)
-    # Le moniteur système poll GET /sysmon toutes les ~1,2 s : sans ce filtre, le log
-    # d'accès werkzeug est inondé et noie les requêtes utiles au debug.
+    # Les polls périodiques (GET /sysmon ~1,2 s, GET /machine_state ~2-3 s) inondent
+    # le log d'accès werkzeug et noient les requêtes utiles au debug : filtrés.
+    _POLL_PATHS = ("/sysmon", "/machine_state")
     logging.getLogger("werkzeug").addFilter(
-        lambda record: "/sysmon" not in record.getMessage()
+        lambda record: not any(p in record.getMessage() for p in _POLL_PATHS)
     )
     print(
         f"[loom-chat] http://127.0.0.1:{cfg.chat.web_port}  (modèle: http://127.0.0.1:{cfg.port}/v1)"
