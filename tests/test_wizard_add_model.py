@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from loom.web import wizard
 
 
-def deps(existing=(), hits=None, files=None):
+def deps(existing=(), hits=None, files=None, remote_models=None):
     return SimpleNamespace(
         existing_ids=set(existing),
         search_models=lambda q: list(hits or []),
@@ -13,6 +13,8 @@ def deps(existing=(), hits=None, files=None):
             dict(f, fits=True, recommended=(i == len(fs) - 1)) for i, f in enumerate(fs)
         ],
         derive_id=lambda repo: "id-propose",
+        # None = GET /models du provider injoignable -> saisie manuelle
+        list_remote_models=lambda base_url, key: remote_models,
     )
 
 
@@ -49,9 +51,9 @@ def test_start_distant_et_url_routent_vers_le_flux_distant():
     r = wizard.start("https://api.z.ai/api/paas/v4/", deps())
     assert r.state == {"step": "r_id", "base_url": "https://api.z.ai/api/paas/v4"}
     assert "base_url notée" in r.reply
-    # l'id fourni ensuite SAUTE l'étape base_url
+    # l'id fourni ensuite SAUTE l'étape base_url et passe à la clé
     r2 = wizard.step(r.state, "glm-5", deps())
-    assert r2.state["step"] == "r_model"
+    assert r2.state["step"] == "r_key"
     assert r2.state["base_url"] == "https://api.z.ai/api/paas/v4"
 
 
@@ -64,7 +66,8 @@ def test_start_url_plus_cle_ignore_la_cle_et_avertit():
 
 
 def test_distant_parcours_complet():
-    d = deps(existing={"deja-la"})
+    # provider qui expose GET /models -> la clé (étape 3) débloque la LISTE (étape 4)
+    d = deps(existing={"deja-la"}, remote_models=["glm-5", "glm-5-flash"])
     r = wizard.step({"step": "kind"}, "2", d)
     assert r.state == {"step": "r_id"}
 
@@ -78,13 +81,16 @@ def test_distant_parcours_complet():
     assert r.state["step"] == "r_base_url"
 
     r = wizard.step(r.state, "https://api.z.ai/api/paas/v4/", d)
-    assert r.state["step"] == "r_model"
-    assert r.state["base_url"] == "https://api.z.ai/api/paas/v4"  # slash retiré
-
-    r = wizard.step(r.state, "glm-5-flash", d)
     assert r.state["step"] == "r_key"
+    assert r.state["base_url"] == "https://api.z.ai/api/paas/v4"  # slash retiré
+    assert "MASQUÉE" in r.reply  # la clé est annoncée comme masquée
 
     r = wizard.step(r.state, "sk-secret", d)
+    assert r.state["step"] == "r_model"
+    assert r.state["choices"] == ["glm-5", "glm-5-flash"]
+    assert "glm-5-flash" in r.reply  # liste numérotée affichée
+
+    r = wizard.step(r.state, "2", d)  # choix PAR NUMÉRO dans la liste
     assert r.state["step"] == "r_adv"
 
     r = wizard.step(r.state, "contexte=200000 vision=oui", d)
@@ -103,11 +109,16 @@ def test_distant_parcours_complet():
     }
 
 
-def test_distant_sans_avance_ni_cle():
+def test_distant_sans_liste_ni_avance_ni_cle():
+    # provider muet sur GET /models -> saisie manuelle du nom, comme avant
     d = deps()
-    st = {"step": "r_key", "id": "m", "base_url": "https://a", "model": "mm"}
+    st = {"step": "r_key", "id": "m", "base_url": "https://a"}
     r = wizard.step(st, "aucune", d)
+    assert r.state["step"] == "r_model" and "choices" not in r.state
+    assert "tape le nom" in r.reply
+    r = wizard.step(r.state, "mm", d)  # texte libre accepté
     r = wizard.step(r.state, "non", d)
+    assert r.action["record"]["model"] == "mm"
     assert r.action["record"]["api_key"] == ""
     assert r.action["record"]["context"] is None
     assert r.action["record"]["vision"] is False
