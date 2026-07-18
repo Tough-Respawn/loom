@@ -21,6 +21,10 @@ dependencies = [
     "tomlkit>=0.13",
 ]
 
+[project.scripts]
+# Installeur guidé : binaire llama.cpp + premier modèle. `uv run loom-setup`
+loom-setup = "loom.setup.cli:main"
+
 [project.optional-dependencies]
 web-search = [
     "ddgs>=6.0",

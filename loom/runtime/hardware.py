@@ -47,6 +47,34 @@ def ram_available_mb() -> int:
     return 0
 
 
+def top_ram_processes(limit: int = 8) -> list[dict]:
+    """Plus gros consommateurs de RAM, GROUPÉS par nom de process (un Chrome =
+    des dizaines de process : la somme est la seule vue actionnable). Renvoie
+    [{name, mb, count}] triés décroissants. Liste vide si psutil indisponible —
+    affichage best-effort, jamais bloquant."""
+    try:
+        import psutil
+    except ImportError:
+        return []
+    totals: dict[str, list[int]] = {}
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            name = p.info["name"] or "?"
+            mem = p.info["memory_info"]
+            rss = mem.rss if mem else 0
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        t = totals.setdefault(name, [0, 0])
+        t[0] += rss
+        t[1] += 1
+    rows = [
+        {"name": n, "mb": rss // (1024 * 1024), "count": c}
+        for n, (rss, c) in totals.items()
+    ]
+    rows.sort(key=lambda r: r["mb"], reverse=True)
+    return rows[:limit]
+
+
 def recommend_gpu_layers(
     vram_free_mb: int,
     model_size_mb: int,

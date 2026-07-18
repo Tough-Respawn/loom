@@ -4,8 +4,10 @@
 # ============================ Serveur (llama.cpp) ============================
 [server]
 
-# Fenêtre de contexte ; tient sur 6 Go avec KV q8_0. cf. docs/perf-gpu.md
-context = 24576
+# Fenêtre de contexte de REPLI, volontairement prudente et NEUTRE (aucune machine
+# en tête). La vraie valeur est calibrée PAR MACHINE par loom-setup (étape bench :
+# le plus grand cache KV qui tient en RAM sans swap) -> config/local.toml.
+context = 8192
 
 # Mono-flux : 1 slot llama-server = tout le pool KV
 n_parallel = 1
@@ -38,8 +40,10 @@ swap_bin = "llama-swap"
 # ============================== Chat / runtime ==============================
 [chat]
 
-# Modèle chargé au démarrage (le sélecteur de l'UI hot-swap ensuite)
-default_model = "qwen3.6-35b-a3b-abliterated"
+# Modèle chargé au démarrage : PAS de défaut ici (ce serait le modèle d'une
+# machine en particulier) — repli sur le premier modèle installé ; loom-setup
+# écrit le choix de CETTE machine dans config/local.toml.
+# default_model = "mon-modele"
 
 # system_prompt centralisé dans loom/prompts/chat.system.md (pas ici)
 history_path = "var/conversation.json"
