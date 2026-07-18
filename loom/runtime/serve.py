@@ -49,8 +49,12 @@ def slots_dir() -> str:
 
 
 def _log(msg: str) -> None:
-    """Écrit une ligne sur stderr (terminal) ET dans serve.log, sans jamais lever."""
-    print(msg, file=sys.stderr)
+    """Écrit une ligne sur stderr (terminal, colorée si TTY) ET dans serve.log
+    (toujours en texte brut), sans jamais lever."""
+    from loom.runtime.term import colorize, supports_color
+
+    shown = colorize(msg) if supports_color(sys.stderr) else msg
+    print(shown, file=sys.stderr)
     try:
         SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(SERVE_LOG, "a", encoding="utf-8", errors="replace") as fh:
@@ -198,7 +202,8 @@ def launch_direct(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
     return _run(
         args,
         cfg.server_bin,
-        "Renseigne 'bin' dans config/local.toml (voir docs/install-windows.md).",
+        "Lance 'uv run loom-setup' pour installer llama.cpp, ou renseigne "
+        "'bin' dans config/local.toml.",
     )
 
 
@@ -227,8 +232,8 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
     return _run(
         args,
         cfg.swap_bin,
-        "Télécharge llama-swap (voir docs/install-windows.md), ou garde un seul "
-        "modèle pour lancer llama-server en direct.",
+        "Télécharge llama-swap et renseigne 'swap_bin' dans config/local.toml, "
+        "ou garde un seul modèle pour lancer llama-server en direct.",
     )
 
 
@@ -260,6 +265,40 @@ def regenerate_swap_yaml(
         return None
 
 
+def maybe_bootstrap() -> int | None:
+    """Premier run sur machine vierge (binaire ou modèle manquant) : lance
+    l'installeur guidé loom-setup DANS ce terminal. Renvoie None si la machine
+    est (devenue) prête à servir, sinon un code de sortie.
+
+    Terminal non interactif (service, CI) : pas de questions possibles — on
+    guide vers la commande dédiée et on sort proprement."""
+    from loom.setup.steps import needs_setup, read_raw_config
+
+    raw = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
+    if not needs_setup(raw, MODELS_DIR):
+        return None
+    if not (sys.stdin and sys.stdin.isatty()):
+        _log(
+            "[loom] Binaire llama-server ou modèle manquant — lance "
+            "'uv run loom-setup' pour l'installation guidée."
+        )
+        return 1
+    from loom.setup.cli import SETUP_LOG, Console, Deps, ensure_utf8_stdio, run
+
+    _log("[loom] Premier lancement : installation guidée (loom-setup)…")
+    ensure_utf8_stdio()
+    run(Console(log_path=SETUP_LOG), Deps())
+    # L'installeur a pu être refusé ou échouer : on ne sert que si tout est là.
+    raw = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
+    if needs_setup(raw, MODELS_DIR):
+        _log(
+            "[loom] Configuration incomplète — relance 'uv run loom-setup' "
+            "(ou complète config/local.toml à la main) puis relance serve."
+        )
+        return 1
+    return None
+
+
 def main() -> int:
     # Log serveur frais à chaque lancement (on veut la session courante, pas l'historique).
     try:
@@ -267,6 +306,9 @@ def main() -> int:
         SERVE_LOG.write_text("", encoding="utf-8")
     except OSError:
         pass
+    code = maybe_bootstrap()
+    if code is not None:
+        return code
     cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
     profile = detect_hardware()
     _log(f"[loom] Profil détecté : {profile}")
