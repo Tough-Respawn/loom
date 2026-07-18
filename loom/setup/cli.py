@@ -30,6 +30,7 @@ from loom.runtime.platform_info import detect as detect_platform
 from loom.runtime.term import colorize, supports_color
 from loom.setup import bench as bench_mod
 from loom.setup import llama_release
+from loom.setup import topology as topo_mod
 from loom.setup.catalog import (
     budget_mb,
     filter_by_budget,
@@ -144,6 +145,9 @@ class Deps:
     has_gpu_backend: object = bench_mod.has_gpu_backend
     cpu_physical: object = None  # () -> int|None (cœurs physiques)
     sleep: object = time.sleep
+    # Calibration topologique du contexte (topology.py) — injectables pour tests.
+    gpu_vram_total_mb: object = topo_mod.gpu_vram_total_mb
+    make_probe: object = topo_mod.ServerProbe  # (**kw) -> objet avec .run(ctx, depth)
 
     def __post_init__(self):
         if self.fetch_release is None:
@@ -473,6 +477,45 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
     report.add("modele", "fait", f"{model_id} ({rec['filename']}, {rec['size_mb']} Mo)")
 
 
+def _read_model_toml(gguf_path: Path) -> dict:
+    """model.toml voisin du GGUF (cpu_moe, n_cpu_moe, mmproj…) — {} s'il manque.
+    C'est LUI qui porte les flags que l'exécutant utilisera : la sonde doit les lire."""
+    p = Path(gguf_path).parent / "model.toml"
+    if not p.is_file():
+        return {}
+    import tomllib
+
+    try:
+        return tomllib.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
+def _set_model_context(gguf_path: Path, context: int, mecanisme: str) -> None:
+    """Écrit le contexte CALIBRÉ dans le model.toml du modèle benché (la vérité est
+    par modèle : la pente KV dépend de l'architecture). Remplace la ligne `context =`
+    existante ou l'ajoute, sans toucher au reste du fichier (commentaires compris)."""
+    p = Path(gguf_path).parent / "model.toml"
+    if not p.is_file():
+        return
+    lines = p.read_text(encoding="utf-8").splitlines()
+    stamp = f"# context calibré par loom-setup (pente mesurée) — {mecanisme}"
+    new_line = f"context = {context}"
+    for i, line in enumerate(lines):
+        code = line.split("#")[0].strip()
+        # `context = N` exactement — pas context_length ni un commentaire.
+        if code.startswith("context") and code.replace(" ", "").startswith("context="):
+            lines[i] = new_line
+            if i == 0 or not lines[i - 1].strip().startswith("# context calibré"):
+                lines.insert(i, stamp)
+            else:
+                lines[i - 1] = stamp
+            break
+    else:
+        lines += ["", stamp, new_line]
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     """[4/4] Bench du matériel avec le VRAI modèle : mesure -t (et -ngl si backend
     GPU), calcule le contexte qui tient en RAM, écrit le tout dans local.toml."""
@@ -537,9 +580,59 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         meta = read_gguf_meta(gguf_path)
     except ValueError:
         meta = {}
-    context = bench_mod.compute_context(
-        deps.ram_available_mb(), model_size_mb, bench_mod.kv_bytes_per_token(meta)
+
+    # ── Contexte : calibration TOPOLOGIQUE (topology.py) — pente MESURÉE entre
+    # deux chargements + échelle de vitesse en profondeur, avec les flags EXACTS
+    # de l'exécutant. Remplace l'ex-formule « KV théorique vs RAM », fausse d'un
+    # facteur 2 (q8_0 vs f16) à 5 (sliding-window) sur le parc réel — audit et
+    # sondes du 2026-07-18, docs/bench-contexte-2026-07-18.md.
+    import psutil
+
+    vram_total = deps.gpu_vram_total_mb()
+    topo = topo_mod.discover_topology(
+        meta, deps.has_gpu_backend(server_bin), vram_total
     )
+    headroom = int((raw_cfg.get("server") or {}).get("gpu_kv_headroom_mb", 640) or 640)
+    # RAM TOTALE (déterministe), jamais la dispo du moment — audit P3.
+    ram_total_mb = int(psutil.virtual_memory().total // (1024 * 1024))
+    budget = topo_mod.memory_budget_mb(topo, vram_total, ram_total_mb, headroom)
+    model_toml = _read_model_toml(gguf_path)
+    is_moe = bool(meta.get("expert_count"))
+    mmproj_name = model_toml.get("mmproj_filename")
+    probe = deps.make_probe(
+        server_bin=str(server_bin),
+        model_path=str(gguf_path),
+        threads=best["threads"],
+        # MoE + GPU : doctrine mesurée du parc — attention sur GPU, experts en RAM.
+        ngl=99 if (is_moe and topo != topo_mod.TOPO_RAM) else best["ngl"],
+        topology=topo,
+        mmproj_path=str(gguf_path.parent / mmproj_name) if mmproj_name else None,
+        cpu_moe=bool(model_toml.get("cpu_moe", is_moe)),
+        n_cpu_moe=model_toml.get("n_cpu_moe"),
+    )
+    con.say(
+        f"  Topologie découverte : {topo} (budget {budget} Mo). Calibration du "
+        "contexte par PENTE MESURÉE + vitesse en profondeur (~5-15 min)…"
+    )
+    con.progress("calibration du contexte…")
+    try:
+        calib = topo_mod.calibrate(
+            probe,
+            meta,
+            topology=topo,
+            budget_mb=budget,
+            progress=lambda m: con.progress(f"calibration : {m}"),
+        )
+    except (RuntimeError, ValueError) as exc:
+        con.progress_end()
+        con.say(
+            f"  ❌ calibration échouée ({exc}) — context inchangé, relance loom-setup."
+        )
+        report.add("bench", "echec", f"calibration contexte : {exc}")
+        return
+    con.progress_end()
+    context = calib["context"]
+
     values = {
         "server": {"context": context},
         "override": {"threads": best["threads"]},
@@ -549,24 +642,34 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "tg_ts": round(best["tg_ts"], 2),
             "pp_ts": round(best["pp_ts"], 2),
             "context": context,
+            # La décision porte son MÉCANISME (audit P6) : on saura toujours
+            # pourquoi ce chiffre, et jusqu'où la vitesse a été vérifiée.
+            "context_mode": calib["mode"],
+            "context_mecanisme": calib["mecanisme"],
+            "context_pente_kb_tok": calib["slope_kb_tok"],
+            "context_valide_jusqua": calib["valide_jusqua"],
         },
     }
     if best["ngl"] > 0:
         values["override"]["n_gpu_layers"] = best["ngl"]
     set_local_values(PERSONAL_CONFIG_PATH, values)
+    # Vérité PAR MODÈLE : la pente est propre à chaque architecture — le contexte
+    # calibré s'écrit aussi dans le model.toml du modèle benché.
+    _set_model_context(gguf_path, context, calib["mecanisme"])
     gpu_txt = f", offload GPU -ngl {best['ngl']}" if best["ngl"] > 0 else ""
     con.say(
         f"  Mesuré : génération {best['tg_ts']:.1f} t/s · prefill "
         f"{best['pp_ts']:.1f} t/s (threads={best['threads']}{gpu_txt})"
     )
     con.say(
-        f"  ✅ config/local.toml : threads={best['threads']}{gpu_txt}, "
-        f"context={context} (KV qui tient en RAM, sans swap)"
+        f"  ✅ context={context} ({topo}, pente {calib['slope_kb_tok']} Ko/token "
+        f"mesurée, vitesse validée jusqu'à {calib['valide_jusqua']} tokens)"
     )
+    con.say(f"     mécanisme : {calib['mecanisme']}")
     report.add(
         "bench",
         "fait",
-        f"threads={best['threads']}{gpu_txt} · ctx={context} · "
+        f"threads={best['threads']}{gpu_txt} · ctx={context} ({topo}) · "
         f"{best['tg_ts']:.1f} t/s gén.",
     )
 
