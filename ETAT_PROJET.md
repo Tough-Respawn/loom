@@ -111,6 +111,29 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
 - **Skill de debug** intégré (`loom/skills/debugging/`) : reproduire → localiser → cause racine
   → fix minimal → preuve forte → réécrire-si-pourri.
 
+### Workflows (2026-07-16 → 18)
+- **`run_workflow`** (`loom/workflow/` + `loom/tools/workflow.py`) : un script Python — écrit
+  par le modèle ou canonique livré par un skill — orchestre N sous-agents : `agent()` (sortie
+  STRUCTURÉE via l'outil `submit_result`, dont le schéma = les `parameters`, validé par
+  `validate_and_coerce`), `parallel()`, `pipeline()` (sans barrière), `phase()`/`log()`, `args`.
+  Les synthèses des ouvriers restent dans les variables du script — le contexte du fil
+  principal ne voit que le retour final. Concurrence : distant = pool réel, local = sérialisé
+  (1 slot). Rôles abstraits `cheap`/`strong` résolus depuis la config (flags `strong` + ordre
+  de la chaîne dispatch) — un script reste portable, la session privée ignore tout épinglage.
+  Validé en production : campagne chasse-invest full France (24 agents, 2 vagues, 7 confirmés/
+  34 réfutés, 10,71 $). Leçons durcies en tests : outil interne à classer dans permissions
+  (sinon 'ask' silencieux), `__file__` fourni au script, args tolérés en chaîne JSON.
+
+### Calibration machine agnostique (2026-07-18)
+- **`loom-setup` étape bench = topologie découverte + pente MESURÉE** (`loom/setup/topology.py`) :
+  plus aucune formule de header (fausse ×2 à ×5 sur les architectures à fenêtre glissante).
+  Deux chargements réels → coût mémoire/token ; échelle de vitesse en profondeur → on n'écrit
+  que du **vérifié**. Décision tracée (mécanisme dans `[bench]` + `model.toml` du modèle benché,
+  la vérité est PAR MODÈLE), budgets déterministes (totaux, pas la dispo du moment), fail-loud
+  au boot sur repli neutre. Fixture « machine dorée » (sondes réelles 2060/Ornith du 18/07) ;
+  validé live en aveugle : `moe_hybride`, pente 7,6 Ko/token, 131072 tokens à 10 t/s.
+  Rapport : `docs/bench-contexte-2026-07-18.md`.
+
 ### Sécurité
 - **Mode permission** (`loom/permissions.py`) : `evaluate()` pur + `DEFAULT_DENY` (regex
   incontournable même en `allow`) + confirmation interactive (`ask`) ; install de plugins gardée.

@@ -161,6 +161,28 @@ outils armés, permissions). Les réglages spécifiques à une machine (chemin d
 GPU) vont dans [config/local.toml](config/local.toml) — gitignoré, à copier depuis
 `config/local.example.toml` et adapter à ta machine (les valeurs livrées sont celles d'une RTX 2060).
 
+### Calibration machine : mesurée, jamais supposée
+
+`defaults.toml` ne contient **aucune valeur liée à une machine** — les vrais réglages sortent du
+bench de `loom-setup` (étape 4), qui **mesure au lieu de calculer** :
+
+- **Topologie découverte** depuis le matériel et le modèle : `moe_hybride` (MoE + GPU : experts
+  en RAM, attention + cache KV en VRAM), `gpu_dense` (tout en VRAM) ou `ram` (pas de GPU).
+- **Contexte par pente mesurée** : deux chargements réels de `llama-server` (avec les flags
+  exacts de l'exécutant — `server_args.py`) donnent le coût mémoire *réel* par token, puis une
+  échelle de **vitesse en profondeur** valide barreau par barreau. On n'écrit que du vérifié :
+  aucune formule de header GGUF ne survit aux architectures modernes (attention à fenêtre
+  glissante : facteur ×5 constaté entre la formule et la mesure — [le rapport](docs/bench-contexte-2026-07-18.md)).
+- **Décision tracée** : `local.toml [bench]` garde le *mécanisme* (`context_mecanisme`,
+  `context_pente_kb_tok`, `context_valide_jusqua`) — on sait toujours d'où sort un chiffre.
+  Le contexte calibré s'écrit aussi dans le `model.toml` du modèle benché : la vérité est
+  **par modèle** (la pente KV dépend de l'architecture).
+- **Fail-loud** : si le contexte tourne sur le repli neutre de `defaults.toml` (machine jamais
+  calibrée), `loom.web` l'annonce au boot au lieu de brider en silence.
+
+Re-calibrer (nouveau matériel, nouveau modèle par défaut) : supprimer la table `[bench]` de
+`config/local.toml` et relancer `uv run loom-setup`. Compter 5-20 min (chargements réels).
+
 ## Statut
 
 État détaillé : [ETAT_PROJET.md](ETAT_PROJET.md).
@@ -170,6 +192,11 @@ GPU) vont dans [config/local.toml](config/local.toml) — gitignoré, à copier 
 - ✅ Garde-fous de boucle (stop naturel + plafond de tours + anti-répétition).
 - ✅ Sécurité d'ingestion : anti-SSRF + frontière de confiance (active même hors-ligne).
 - ✅ Skills déclenchés par le modèle (catalogue + `use_skill`) ; store de plugins compatible CC.
+- ✅ Workflows : `run_workflow` — un script Python (écrit par le modèle ou canonique d'un skill)
+  orchestre N sous-agents (`agent`/`parallel`/`pipeline`, sortie structurée, rôles cheap/strong) ;
+  les synthèses restent hors du contexte du fil principal.
+- ✅ Calibration machine agnostique (`loom-setup`) : topologie découverte + contexte par pente
+  mesurée et vitesse validée, décision tracée, fail-loud sur repli.
 - 🔜 Banc d'éval (juge LLM), tranches plugins (hooks, agents), SearXNG, RAG (skills volumineux).
 
 ## Stack
