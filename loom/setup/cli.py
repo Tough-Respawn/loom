@@ -416,7 +416,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
         report.add("modele", "ignore", f"repo injoignable ({repo})")
         return
 
-    quants = [f for f in files if not f["is_mmproj"]]
+    quants = [f for f in files if not f.get("is_aux", f["is_mmproj"])]
     if not quants:
         con.say(f"  ❌ Aucun GGUF exploitable dans {repo}.")
         report.add("modele", "ignore", f"aucun GGUF dans {repo}")

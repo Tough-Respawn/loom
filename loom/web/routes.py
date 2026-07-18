@@ -409,9 +409,10 @@ def _index_context(S) -> dict:
 CHAT_COMMANDS = [
     {
         "name": "/add-model",
-        "usage": "/add-model",
+        "usage": "/add-model · /add-model <recherche HF> · /add-model distant [url]",
         "description": "Ajouter un modèle : local (recherche Hugging Face, quant "
-        "recommandé selon ta machine) ou distant (API OpenAI-compatible + clé).",
+        "recommandé selon ta machine) ou distant (API OpenAI-compatible — la clé "
+        "se donne à une étape dédiée, jamais dans la commande).",
     },
     {
         "name": "/goal",
