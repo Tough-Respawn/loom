@@ -115,6 +115,21 @@ def test_download_job_succes(tmp_path, monkeypatch):
     assert job.progress_mb() == 0  # 4096 octets -> 0 Mo entier : compteur en Mo
 
 
+def test_download_job_on_done_avant_done(tmp_path, monkeypatch):
+    """on_done doit s'exécuter AVANT que `done` devienne vrai : les observateurs
+    de `done` (le flux SSE qui pousse « models » au front) ne doivent se réveiller
+    qu'une fois la finalisation/montage de on_done TERMINÉE — sinon le sélecteur
+    se recharge avant le montage et rate le nouveau modèle."""
+    monkeypatch.setattr(model_install, "ensure_model", lambda r, f, d: None)
+    observed = []
+    job = start_download(
+        "org/r", ["a.gguf"], tmp_path, 1, on_done=lambda j: observed.append(j.done)
+    )
+    job._thread.join(timeout=10)
+    assert observed == [False]  # vu depuis on_done : pas encore done
+    assert job.done is True  # et done à la toute fin
+
+
 def test_download_job_echec_message_actionnable(tmp_path, monkeypatch):
     from loom.runtime.models_fetch import ModelUnavailable
 
