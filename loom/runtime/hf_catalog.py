@@ -11,6 +11,11 @@ import re
 # Multi-parties llama.cpp : "...-00001-of-00003.gguf". On regroupe sous la 1re partie
 # (celle que charge llama-server) avec la taille CUMULÉE.
 _PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+# Fichiers AUXILIAIRES d'un repo : pas des quants du modèle — mmproj (projecteur
+# vision) et mtp (tête multi-token prediction). À ne JAMAIS proposer comme quant :
+# vécu 2026-07-18, « mtp-ggml-model-bf16.gguf 0.2 Go » recommandé comme seul quant
+# qui tient -> installation d'une coquille vide.
+_AUX_RE = re.compile(r"(^|[/\-_.])(mmproj|mtp)([\-_.]|$)", re.IGNORECASE)
 
 
 class HfCatalogError(Exception):
@@ -78,6 +83,9 @@ def list_gguf_files(repo_id: str, api=None) -> list[dict]:
                 "part_files": parts,
                 "size_mb": max(1, g["size"] // (1024 * 1024)),
                 "is_mmproj": "mmproj" in parts[0].lower(),
+                # is_aux ⊇ is_mmproj : tout fichier annexe (mmproj, mtp) à exclure
+                # des choix de quant.
+                "is_aux": bool(_AUX_RE.search(parts[0])),
             }
         )
     return sorted(out, key=lambda f: f["size_mb"])
