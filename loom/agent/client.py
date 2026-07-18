@@ -96,16 +96,18 @@ def _classify_stream_error(exc: Exception) -> str:
     return "connection"
 
 
-# --- Mode debug (LOOM_DEBUG=1) : trace l'échange avec le modèle dans le terminal -------
+# --- Mode debug : trace l'échange avec le modèle (terminal + debug.log) ----------------
+# ACTIF PAR DÉFAUT : le trace par session est le premier outil de diagnostic de Loom, et
+# son coût est négligeable (fichiers texte, images masquées). LOOM_DEBUG=0 pour couper.
 _B64_RE = re.compile(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+")
 
 
 def _debug_on() -> bool:
-    return os.environ.get("LOOM_DEBUG", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
+    return os.environ.get("LOOM_DEBUG", "").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
     }
 
 
@@ -144,20 +146,22 @@ def _current_debug_log() -> Path:
     return getattr(_debug_local, "path", None) or _DEBUG_LOG_DEFAULT
 
 
-def _emit(text: str) -> None:
-    """Écrit sur stderr ET dans le fichier de log, sans JAMAIS lever (un crash d'encodage
-    ne doit pas casser la génération) : encodage tolérant, caractères non gérés remplacés."""
-    try:
-        enc = getattr(sys.stderr, "encoding", None) or "utf-8"
-        buf = getattr(sys.stderr, "buffer", None)
-        if buf is not None:
-            buf.write(text.encode(enc, "replace") + b"\n")
-            buf.flush()
-        else:
-            sys.stderr.write(text + "\n")
-            sys.stderr.flush()
-    except Exception:  # noqa: BLE001 - le debug est best-effort, jamais bloquant
-        pass
+def _emit(text: str, terminal: bool = True) -> None:
+    """Écrit dans le fichier de log, et sur stderr si `terminal` (défaut), sans JAMAIS
+    lever (un crash d'encodage ne doit pas casser la génération) : encodage tolérant.
+    `terminal=False` = détail réservé au fichier — le terminal reste tenable."""
+    if terminal:
+        try:
+            enc = getattr(sys.stderr, "encoding", None) or "utf-8"
+            buf = getattr(sys.stderr, "buffer", None)
+            if buf is not None:
+                buf.write(text.encode(enc, "replace") + b"\n")
+                buf.flush()
+            else:
+                sys.stderr.write(text + "\n")
+                sys.stderr.flush()
+        except Exception:  # noqa: BLE001 - le debug est best-effort, jamais bloquant
+            pass
     try:
         path = _current_debug_log()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -167,10 +171,12 @@ def _emit(text: str) -> None:
         pass
 
 
-def _debug(label: str, payload: Any, limit: int = 4000) -> None:
-    """Imprime un bloc de debug sur stderr (terminal de loom.web), no-op si désactivé.
-    Labels ASCII volontairement (pas d'accents/flèches) pour rester lisible sur tout
-    terminal Windows."""
+def _debug(label: str, payload: Any, limit: int = 4000, terminal: bool = True) -> None:
+    """Imprime un bloc de debug (fichier debug.log, + stderr si `terminal`), no-op si
+    désactivé. Labels ASCII volontairement (pas d'accents/flèches) pour rester lisible
+    sur tout terminal Windows. Les blocs VOLUMINEUX (dump de requête, slots KV) passent
+    terminal=False : le détail vit dans le fichier, le terminal garde les lignes
+    compactes de log_event."""
     if not _debug_on():
         return
     body = (
@@ -178,8 +184,8 @@ def _debug(label: str, payload: Any, limit: int = 4000) -> None:
         if isinstance(payload, str)
         else json.dumps(payload, ensure_ascii=False, indent=2, default=str)
     )
-    _emit(f"\n===== [LOOM_DEBUG] {label} =====")
-    _emit(_trunc(body, limit))
+    _emit(f"\n===== [LOOM_DEBUG] {label} =====", terminal)
+    _emit(_trunc(body, limit), terminal)
 
 
 # --- Flux d'événements STRUCTURÉ (façon Claude Code) : une ligne par événement, horodatée --
@@ -230,7 +236,10 @@ def _debug_messages(model: str, messages: list[dict]) -> None:
         # sorties d'outils) restent bornés pour ne pas noyer le log.
         cap = 40000 if m.get("role") == "system" else 1500
         lines.append(f"  [{m.get('role')}] {_trunc((content or '') + extra, cap)}")
-    _debug("REQUETE -> modele", "\n".join(lines), limit=60000)
+    # Dump complet RÉSERVÉ AU FICHIER : dans le terminal, la ligne compacte
+    # `turn.request model=… msgs=…` (log_event) suffit — le system prompt entier
+    # à chaque tour rendait la console intenable.
+    _debug("REQUETE -> modele", "\n".join(lines), limit=60000, terminal=False)
 
 
 def _sub_activity_line(kind: str, payload) -> str:
@@ -1881,7 +1890,7 @@ class LoomClient:
             try:
                 with urllib.request.urlopen(req, timeout=20) as resp:
                     body = json.loads(resp.read().decode() or "{}")
-                _debug(f"SLOT_{action.upper()}", {"name": name, **body})
+                _debug(f"SLOT_{action.upper()}", {"name": name, **body}, terminal=False)
                 return True
             except Exception as e:  # noqa: BLE001 - slot KV best-effort, jamais bloquant
                 # DISJONCTE (plus d'essais pour ce modèle) sur les échecs DURABLES :
@@ -1925,7 +1934,7 @@ class LoomClient:
                         flush=True,
                     )
                     return False
-                _debug(f"SLOT_{action.upper()}_ERR", f"{path} : {e}")
+                _debug(f"SLOT_{action.upper()}_ERR", f"{path} : {e}", terminal=False)
         return False
 
     def save_slot(self, model: str | None, name: str) -> bool:
