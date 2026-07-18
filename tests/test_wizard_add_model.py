@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from loom.web import wizard
 
 
-def deps(existing=(), hits=None, files=None, remote_models=None):
+def deps(existing=(), hits=None, files=None, remote_models=None, removable=None):
     return SimpleNamespace(
         existing_ids=set(existing),
         search_models=lambda q: list(hits or []),
@@ -15,6 +15,7 @@ def deps(existing=(), hits=None, files=None, remote_models=None):
         derive_id=lambda repo: "id-propose",
         # None = GET /models du provider injoignable -> saisie manuelle
         list_remote_models=lambda base_url, key: remote_models,
+        removable_models=lambda: list(removable or []),
     )
 
 
@@ -122,6 +123,47 @@ def test_distant_sans_liste_ni_avance_ni_cle():
     assert r.action["record"]["api_key"] == ""
     assert r.action["record"]["context"] is None
     assert r.action["record"]["vision"] is False
+
+
+# ---------- flux suppression (/remove-model) ----------
+
+REMOVABLE = [
+    {"id": "qwen-local", "kind": "local", "label": "qwen-local — local, 5.4 Go"},
+    {"id": "glm-flash", "kind": "remote", "label": "glm-flash — distant (glm-4.7)"},
+]
+
+
+def test_remove_liste_puis_confirme():
+    d = deps(removable=REMOVABLE)
+    r = wizard.start_remove(d)
+    assert r.state["step"] == "d_pick"
+    assert "qwen-local" in r.reply and "glm-flash" in r.reply
+
+    r = wizard.step(r.state, "9", d)  # hors liste -> re-demande
+    assert r.state["step"] == "d_pick"
+
+    r = wizard.step(r.state, "1", d)
+    assert r.state["step"] == "d_confirm"
+    assert "SUPPRIMÉS du disque" in r.reply  # local = destruction annoncée
+
+    r = wizard.step(r.state, "oui", d)
+    assert r.state is None
+    assert r.action == {"kind": "remove", "id": "qwen-local", "model_kind": "local"}
+
+
+def test_remove_tout_sauf_oui_annule():
+    d = deps(removable=REMOVABLE)
+    r = wizard.start_remove(d)
+    r = wizard.step(r.state, "2", d)
+    r = wizard.step(r.state, "vas-y", d)  # ni « oui » ni variantes -> annulation
+    assert r.state is None and r.action is None
+    assert "annulée" in r.reply
+
+
+def test_remove_sans_rien_a_supprimer():
+    r = wizard.start_remove(deps())
+    assert r.state is None and r.action is None
+    assert "Aucun modèle" in r.reply
 
 
 # ---------- flux local ----------

@@ -415,6 +415,12 @@ CHAT_COMMANDS = [
         "se donne à une étape dédiée, jamais dans la commande).",
     },
     {
+        "name": "/remove-model",
+        "usage": "/remove-model",
+        "description": "Supprimer un modèle : local (dossier et GGUF effacés du "
+        "disque) ou distant géré par l'UI — liste numérotée + confirmation.",
+    },
+    {
         "name": "/goal",
         "usage": "/goal <condition> · /goal (statut) · /goal clear",
         "description": "Poser un objectif vérifiable pour la session, le consulter, "
@@ -517,6 +523,46 @@ def _list_remote_models(base_url: str, api_key: str) -> list[str] | None:
         return None
 
 
+def _removable_models(S) -> list[dict]:
+    """Modèles supprimables via /remove-model : locaux (avec taille/dossier) et
+    distants GÉRÉS par l'UI (ceux de config/local.toml s'éditent là-bas)."""
+    items = []
+    for m in S.local_model_specs:
+        size = (m.get("size_mb") or 0) / 1024
+        items.append(
+            {
+                "id": m["id"],
+                "kind": "local",
+                "label": f"{m['id']} — local, {size:.1f} Go sur disque",
+            }
+        )
+    if S.remote_store_path:
+        for r in model_store.load(S.remote_store_path):
+            items.append(
+                {
+                    "id": r["id"],
+                    "kind": "remote",
+                    "label": f"{r['id']} — distant ({r.get('model', '?')})",
+                }
+            )
+    return items
+
+
+def _forget_remote(S, mid: str) -> None:
+    """Retire un modèle distant de TOUS les registres montés (route client comprise).
+    Partagé entre la route DELETE du panneau engrenage et /remove-model."""
+    if getattr(S, "client", None) is not None:
+        S.client.remove_remote_route(mid)
+    S.remote_model_ids.discard(mid)
+    S.remote_model_names.pop(mid, None)
+    S.model_contexts.pop(mid, None)
+    S.model_max_tokens.pop(mid, None)
+    S.model_prices.pop(mid, None)
+    S.vision_models.discard(mid)
+    if mid in S.models:
+        S.models.remove(mid)
+
+
 def _wizard_deps(S):
     """Dépendances du wizard (INJECTÉES : la machine à états reste pure et testable).
     Point de patch des tests — garder la construction ici, jamais dans wizard.py."""
@@ -535,6 +581,7 @@ def _wizard_deps(S):
         derive_id=model_install.derive_model_id,
         existing_ids=set(S.models),
         list_remote_models=_list_remote_models,
+        removable_models=lambda: _removable_models(S),
     )
 
 
@@ -614,7 +661,8 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
     = ack SSE immédiat, le flux LLM n'est jamais sollicité (wizard déterministe)."""
     active = bool(conv.wizard)
     is_cmd = message == "/add-model" or message.startswith("/add-model ")
-    if not (active or is_cmd):
+    is_rm = message == "/remove-model" or message.startswith("/remove-model ")
+    if not (active or is_cmd or is_rm):
         return message, None
 
     # Étape AVANT transition : si c'était la saisie de la clé (r_key), le message
@@ -623,7 +671,9 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
     try:
         deps = _wizard_deps(S)
-        if is_cmd:
+        if is_rm:
+            res = _wizard.start_remove(deps)
+        elif is_cmd:
             res = _wizard.start(message[len("/add-model") :].strip(), deps)
         else:
             res = _wizard.step(conv.wizard, message, deps)
@@ -641,6 +691,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
     job = None
     extra_reply = ""
+    models_changed = False
     if res.action and res.action["kind"] == "upsert_remote":
         rec = {k: v for k, v in res.action["record"].items() if v is not None}
         if S.remote_store_path:
@@ -648,8 +699,48 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                 model_store.upsert(S.remote_store_path, rec)
             if getattr(S, "client", None) is not None:
                 _mount_remote(S, rec)
+            models_changed = True
         else:
             extra_reply = "\n(store des modèles indisponible : ajout NON persisté)"
+    elif res.action and res.action["kind"] == "remove":
+        a = res.action
+        if a["model_kind"] == "remote":
+            if S.remote_store_path:
+                with S.toml_lock:
+                    model_store.delete(S.remote_store_path, a["id"])
+            _forget_remote(S, a["id"])
+            extra_reply = f"\n✅ « {a['id']} » retiré (store + sélecteur)."
+            models_changed = True
+        else:
+            import shutil
+
+            spec = next(
+                (m for m in S.local_model_specs if m.get("id") == a["id"]), None
+            )
+            try:
+                if spec and spec.get("dir"):
+                    shutil.rmtree(spec["dir"])
+                S.local_model_specs[:] = [
+                    m for m in S.local_model_specs if m.get("id") != a["id"]
+                ]
+                if a["id"] in S.local_model_ids:
+                    S.local_model_ids.remove(a["id"])
+                if a["id"] in S.models:
+                    S.models.remove(a["id"])
+                S.vision_models.discard(a["id"])
+                _regen_swap_yaml(S)
+                extra_reply = f"\n✅ « {a['id']} » supprimé du disque et du sélecteur."
+                models_changed = True
+            except PermissionError:
+                # Windows verrouille un GGUF chargé (mmap llama-server) : on ne
+                # touche à RIEN et on guide — pas de suppression partielle.
+                extra_reply = (
+                    f"\n❌ Fichiers de « {a['id']} » verrouillés — le modèle est "
+                    "probablement CHARGÉ. Éteins le serveur modèle (ou charge un "
+                    "autre modèle), puis relance /remove-model."
+                )
+            except OSError as exc:
+                extra_reply = f"\n❌ Suppression impossible : {exc}"
     elif res.action and res.action["kind"] == "install":
         a = res.action
         if not S.models_dir:
@@ -682,9 +773,9 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
     def _stream():
         yield _sse("text", text=res.reply + extra_reply)
-        # Un modèle vient d'être monté à chaud -> le front recharge le sélecteur
-        # (vécu : « disponible dans le sélecteur »… qui ne l'affichait pas).
-        if res.action and res.action["kind"] == "upsert_remote" and not extra_reply:
+        # Un modèle vient d'être monté/retiré à chaud -> le front recharge le
+        # sélecteur (vécu : « disponible dans le sélecteur »… qui ne l'affichait pas).
+        if models_changed:
             yield _sse("models")
         if job is not None:
             while not job.done:
@@ -1953,15 +2044,7 @@ def _register_model_routes(app, S):
             return {"error": "modèle non géré par l'UI (défini dans local.toml)"}, 400
         with S.toml_lock:
             model_store.delete(S.remote_store_path, mid)
-        S.client.remove_remote_route(mid)
-        S.remote_model_ids.discard(mid)
-        S.remote_model_names.pop(mid, None)
-        S.model_contexts.pop(mid, None)
-        S.model_max_tokens.pop(mid, None)
-        S.model_prices.pop(mid, None)
-        S.vision_models.discard(mid)
-        if mid in S.models:
-            S.models.remove(mid)
+        _forget_remote(S, mid)
         return {"ok": True, "models": _models_payload(S), "remotes": _remote_list(S)}
 
     @app.get("/models/local")
