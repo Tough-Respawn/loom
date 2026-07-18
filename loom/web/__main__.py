@@ -301,6 +301,32 @@ def build_app(cfg):
     return app
 
 
+def _warn_if_fallback_context(cfg) -> None:
+    """FAIL-LOUD (audit 2026-07-18, pattern « plausible-silencieux-faux ») : quand
+    le contexte serveur vient du REPLI NEUTRE de defaults.toml (aucune calibration
+    machine dans local.toml), on le DIT au boot au lieu de brider en silence — la
+    régression du 18/07 (24576 -> 8192 après un pull) était invisible sans ça.
+    N'alerte que si un modèle LOCAL sans context propre est concerné : les modèles
+    dont model.toml porte `context` et les distants ne passent pas par ce repli."""
+    import tomllib
+
+    try:
+        local = tomllib.loads(Path(PERSONAL_CONFIG_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        local = {}
+    if (local.get("server") or {}).get("context"):
+        return  # calibré pour cette machine
+    exposed = [m.id for m in cfg.models if not getattr(m, "context", None)]
+    if not exposed:
+        return
+    print(
+        f"[loom] ⚠️  context = {cfg.context} (REPLI NEUTRE de defaults.toml — cette "
+        "machine n'est pas calibrée). Modèles locaux concernés : "
+        f"{', '.join(exposed[:4])}{'…' if len(exposed) > 4 else ''}. "
+        "Lance `uv run loom-setup` (étape bench) pour mesurer la vraie fenêtre."
+    )
+
+
 def main() -> None:
     # Même filet que serve.py : machine vierge (binaire llama.cpp ou modèle
     # manquant — ex. tout supprimé via /remove-model) -> installeur guidé dans ce
@@ -314,6 +340,7 @@ def main() -> None:
     if code is not None:
         raise SystemExit(code)
     cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
+    _warn_if_fallback_context(cfg)
     app = build_app(cfg)
     # Les polls périodiques (GET /sysmon ~1,2 s, GET /machine_state ~2-3 s) inondent
     # le log d'accès werkzeug et noient les requêtes utiles au debug : filtrés.

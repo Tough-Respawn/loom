@@ -100,7 +100,9 @@ def _deps(tmp_path, **over):
         verify_binary=lambda p: "b5321" if p else None,
         probe_repo=lambda repo: list(_FILES),
         # résolution live des entrées du catalogue : un repo 35B (fit large)
-        search_models=lambda q: [{"repo_id": "org/Qwen3.6-35B-A3B-GGUF", "downloads": 9}],
+        search_models=lambda q: [
+            {"repo_id": "org/Qwen3.6-35B-A3B-GGUF", "downloads": 9}
+        ],
         start_download=lambda repo, filenames, dest, total_mb: _FakeJob(),
         top_ram_processes=lambda limit=8: [
             {"name": "chrome.exe", "mb": 2310, "count": 14}
@@ -195,7 +197,10 @@ def test_recherche_filtree_par_budget_petite_machine(monkeypatch, tmp_path):
     petite = HardwareProfile(False, None, 0, 8)
     hits = [
         {"repo_id": "meshllm/Qwen3.5-397B-A17B-UD-Q4_K_XL-layers", "downloads": 66234},
-        {"repo_id": "Joshua65535/qwen2.5-1.5b-instruct-q4_k_m.gguf", "downloads": 52499},
+        {
+            "repo_id": "Joshua65535/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            "downloads": 52499,
+        },
     ]
     small_files = [
         {
@@ -288,6 +293,21 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         {"threads": 12, "ngl": 0, "kind": "tg", "ts": 2.0},
         {"threads": 12, "ngl": 0, "kind": "pp", "ts": 22.0},
     ]
+
+    # Sonde topologique bouchonnée : mémoire linéaire (pente ~10,5 Ko/token),
+    # débits constants — la calibration doit valider chaque barreau <= capacité.
+    class _FakeProbe:
+        def __init__(self, **kw):
+            self.kw = kw
+
+        def run(self, ctx, depth):
+            from loom.setup.topology import ProbeResult
+
+            r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+            if depth:
+                r.tg_ts, r.pp_ts = 5.0, 20.0
+            return r
+
     con, printed = _console(assume_yes=True)
     deps = _deps(
         tmp_path,
@@ -296,6 +316,8 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
         has_gpu_backend=lambda sb: True,
         cpu_physical=lambda: 10,
+        gpu_vram_total_mb=lambda: 6_144,
+        make_probe=_FakeProbe,
     )
     code = run(con, deps)
     assert code == 0
@@ -304,8 +326,16 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
     )
     assert local["override"]["threads"] == 10
     assert local["override"]["n_gpu_layers"] == 99
-    # 10240 - 5600 - 2048 = 2592 Mo de KV / 150 Ko (repli) ≈ 18k -> 16384
-    assert local["server"]["context"] == 16_384
+    # meta GGUF illisible -> limite modèle par défaut 32768 ; budget 6144-640 et
+    # pente ~10,5 Ko/tok portent bien au-delà -> borné par le modèle, vitesse
+    # validée à chaque barreau. La DÉCISION porte son mécanisme dans [bench].
+    assert local["server"]["context"] == 32_768
+    assert local["bench"]["context_mode"] == "gpu_dense"
+    assert local["bench"]["context_valide_jusqua"] == 32_768
+    assert (
+        "pente" in local["bench"]["context_mecanisme"]
+        or "capacité" in local["bench"]["context_mecanisme"]
+    )
     assert local["bench"]["tg_ts"] == 3.4
     out = "\n".join(printed)
     assert "3.4 t/s" in out.replace(",", ".") or "3,4 t/s" in out
