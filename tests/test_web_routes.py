@@ -17,6 +17,16 @@ def _sse_types(body: bytes) -> list[str]:
 # ---------- socle / sessions ----------
 
 
+def test_commands_catalogue_de_la_palette(web):
+    # GET /commands : source de vérité de la palette « / » du composer — chaque
+    # commande porte name/usage/description, et les handlers connus y figurent.
+    data = web.get("/commands").get_json()
+    cmds = data["commands"]
+    names = {c["name"] for c in cmds}
+    assert {"/add-model", "/goal", "/init", "/cancel"} <= names
+    assert all(c["usage"] and c["description"] for c in cmds)
+
+
 def test_index_cree_une_session(web):
     r = web.get("/")
     assert r.status_code == 200

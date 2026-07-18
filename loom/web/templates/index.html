@@ -944,7 +944,17 @@
 
     /* ---- COMPOSER ---- */
     .composer-wrap { flex: none; padding: 8px 24px 16px; border-top: 1px solid var(--border-soft); background: var(--bg); }
-    .composer-inner { max-width: 860px; margin: 0 auto; }
+    .composer-inner { max-width: 860px; margin: 0 auto; position: relative; }
+    /* Palette de commandes « / » : ancrée au-dessus du composer, filtrée à la frappe.
+       ↑↓ navigue, Tab/Entrée complète, Échap ferme (logique dans app.js). */
+    .cmd-palette { position: absolute; bottom: 100%; left: 0; right: 0; margin-bottom: 6px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 -4px 18px rgba(0,0,0,.25); overflow: hidden; z-index: 40; }
+    .cmd-item { display: flex; flex-direction: column; gap: 1px; padding: 7px 12px; cursor: pointer; border-bottom: 1px solid var(--border-soft); }
+    .cmd-item:last-child { border-bottom: 0; }
+    .cmd-item.sel { background: var(--bg-elev); }
+    .cmd-line { display: flex; align-items: baseline; gap: 10px; }
+    .cmd-name { font-family: var(--mono, monospace); font-size: 12.5px; color: var(--accent, var(--text)); font-weight: 600; }
+    .cmd-usage { font-family: var(--mono, monospace); font-size: 11px; color: var(--text-faint); }
+    .cmd-desc { font-size: 11.5px; color: var(--text-dim); line-height: 1.45; }
     #previewWrap { display: none; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
     .thumb { position: relative; display: inline-flex; }
     .thumb img { max-height: 50px; border-radius: 4px; display: block; }
@@ -1167,9 +1177,10 @@
           <span class="ga-dot"></span><span id="ga-label"></span><span class="ga-dots"></span>
         </div>
         <div id="previewWrap"></div>
+        <div class="cmd-palette" id="cmdPalette" hidden role="listbox" aria-label="Commandes"></div>
         <form id="chat">
           <div class="composer">
-            <textarea id="input" rows="1" placeholder="Écris une demande — Loom agit avec ses outils…" autofocus></textarea>
+            <textarea id="input" rows="1" placeholder="Écris une demande — Loom agit avec ses outils… (« / » pour les commandes)" autofocus></textarea>
             <input type="file" id="file" accept="image/*" multiple style="display:none">
             <button type="button" id="fileBtn" title="Joindre une image" aria-label="Joindre une image">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-4.5-4.5L5 21"/></svg>
