@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-07-18 — loom-setup
+
+### Nouvelles fonctionnalités
+- **`loom-setup`** : installeur console guidé (`uv run loom-setup`) — détecte OS/GPU/VRAM/RAM, télécharge la dernière release stable de llama.cpp (build CUDA/Vulkan/CPU selon la machine, DLL cudart incluses) dans `var/runtime/llama/<tag>/`, écrit `[server] bin` dans `config/local.toml`, puis propose un premier modèle qui fit le budget mémoire. Chaque action lourde est expliquée et confirmée (`--yes` pour tout accepter) ; bilan ✅/⏭️/❌/🔧 + journal `var/logs/setup.log`. Idempotent : relançable, ne refait que ce qui manque.
+- **Shortlist de modèles par palier de budget** : le catalogue porte des FAMILLES éprouvées en tool-use (du 35B MoE au ~1.5B), pas des repos figés — le repo réel est résolu en live sur HF au moment du choix (top téléchargements qui fit), donc la liste ne périme pas. Chaque machine a toujours au moins une proposition ; recherche libre et `/add-model` restent pour les initiés.
+- **Recherche filtrée par la machine** : les résultats HF impossibles (taille estimée depuis le nom, « 397B » sur 1,6 Go de budget…) sont masqués avec un compteur, les jouables annotés `~X Mo mini` ; la taille réelle des quants (`recommend_quant`) tranche après le choix.
+- **« Libère ta RAM » avant le choix du modèle** : le setup liste les plus gros consommateurs (groupés par nom, via psutil), laisse l'utilisateur fermer LUI-MÊME ce qu'il n'utilise pas (rien n'est jamais tué automatiquement), re-mesure sur Entrée et recalcule le budget — la shortlist en profite immédiatement.
+
+### Améliorations
+- **Bootstrap auto au premier run** : `serve.py` détecte la machine vierge (binaire ou modèle manquant) et enchaîne tout seul sur l'installeur guidé dans le terminal ; hors terminal interactif (service), il guide vers `uv run loom-setup` et sort proprement.
+- Hint de `serve.py` quand le binaire manque : pointe vers `loom-setup`.
+- **Couleurs terminal** (`loom/runtime/term.py`) : bannières/étapes en gras, ✅ vert, ❌/ERREUR rouge, ⏭️ estompé, 🔧 jaune — uniquement sur un vrai TTY (jamais de codes ANSI dans les fichiers de log ni les pipes), `NO_COLOR` respecté, mode VT activé sur les vieilles consoles Windows. Branché sur loom-setup et serve.
+- Le premier modèle installé devient `[chat] default_model` dans `config/local.toml` (sinon le défaut de defaults.toml peut pointer un modèle d'une autre machine).
+- Boucle « libère ta RAM » avant le choix du modèle : liste les plus gros consommateurs (groupés par nom), l'utilisateur ferme lui-même, re-mesure — le budget et la shortlist en profitent.
+- **Étape 4 : bench du matériel** (`loom/setup/bench.py`) — après l'install, `llama-bench` (livré avec la release) MESURE la vitesse réelle sur le modèle installé : combinaisons de threads (physiques/logiques/moitié — machines hybrides P+E) et d'offload GPU (`-ngl` si backend Vulkan/CUDA présent). La génération (tg) tranche, le prefill départage. Le contexte est CALCULÉ (KV/token lu du header GGUF → le plus grand cache qui tient en RAM sans swap ; vécu : 24576 par défaut sur 16 Go → swap → 0,8 t/s). Résultats écrits dans `config/local.toml` (`[override] threads`/`n_gpu_layers`, `[server] context`, table `[bench]` pour l'idempotence).
+- **Debug actif par défaut** : le trace des échanges modèle (stderr + `sessions/<id>/debug.log`) n'exige plus `LOOM_DEBUG=1` — c'est le premier outil de diagnostic, coût négligeable. `LOOM_DEBUG=0` pour couper.
+- **Terminal tenable en debug** : les blocs volumineux (dump complet de la requête avec system prompt, save/restore de slot KV) ne vont plus QUE dans `debug.log` — le terminal garde les lignes compactes (`turn.request`, `usage`, premier byte) et la RÉPONSE du modèle. Les polls `GET /machine_state` rejoignent `/sysmon` dans le filtre werkzeug.
+- Docs d'install (Windows/Linux) : voie rapide `loom-setup` + correction du chemin de config obsolète (`loom.config.personnel.toml` → `config/local.toml`).
+
+---
+
 ## 2026-07-17 — /add-model
 
 ### Nouvelles fonctionnalités

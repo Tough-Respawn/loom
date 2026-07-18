@@ -23,7 +23,7 @@ partie incompressible. Le levier, c'est le **continuous batching**.
 --prio 2           # priorité process (Windows)
 ```
 + `n_parallel=4` (auto) = continuous batching déjà actif côté llama-server.
-Override `n_gpu_layers = 99` dans `loom.config.personnel.toml`.
+Override `n_gpu_layers = 99` dans `config/local.toml`.
 
 ## Benchmark (avant → après), prompt 256 tokens
 

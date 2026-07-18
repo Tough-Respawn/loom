@@ -210,6 +210,7 @@ Méthode : lecture statique du code réel, recoupement des symboles par recherch
 ### P5-2. README cite des chemins de config inexistants — ✅ CORRIGÉ
 - `README.md:155-158` — renvoyait vers `loom/loom.config.toml` et `loom/loom.config.personnel.toml`. Les fichiers réels sont dans `config/` (`config/defaults.toml`, `config/local.toml`).
 - **Fix appliqué** : chemins corrigés dans le README (arborescence et texte). Ruff OK.
+- **2026-07-18** : dernières occurrences purgées des docs (`docs/install-windows.md`, `docs/install-linux.md`, `docs/perf-gpu.md`) lors de l'ajout de `loom-setup`.
 
 ### P5-3. `serve.py:4` — chemin d'usage erroné dans le docstring — ✅ CORRIGÉ
 - `loom/runtime/serve.py:4` — disait `Usage : uv run loom/serve.py` mais le chemin réel est `loom/runtime/serve.py`.
