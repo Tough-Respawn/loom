@@ -90,17 +90,20 @@ Navigateur ──HTTP──► Loom (Flask :8000) ──OpenAI API──► llam
 
 ## Démarrer
 
-Prérequis : [`uv`](https://docs.astral.sh/uv/), et le binaire `llama-server`
-(voir [docs/install-windows.md](docs/install-windows.md) / [docs/install-linux.md](docs/install-linux.md)).
+Prérequis : [`uv`](https://docs.astral.sh/uv/). Le binaire `llama-server` et le
+premier modèle s'installent tout seuls via `loom-setup` (ou à la main :
+[docs/install-windows.md](docs/install-windows.md) / [docs/install-linux.md](docs/install-linux.md)).
 
 ```bash
 uv sync                      # dépendances + installe le package loom
-# branche un modèle : copie loom/models/_TEMPLATE en loom/models/<id>/ et édite model.toml
-uv run loom/runtime/serve.py # télécharge le modèle au 1er run + sert sur :8080
+uv run loom-setup            # installeur guidé : OS/GPU/RAM détectés, llama.cpp
+                             # + un modèle qui fit — chaque action confirmée
 uv run python -m loom.web    # interface chat sur :8000
 ```
-Puis ouvre **http://127.0.0.1:8000**. (Deux processus : `serve.py` = le moteur llama.cpp,
-`loom.web` = l'UI de chat.)
+Puis ouvre **http://127.0.0.1:8000**. `loom.web` démarre le serveur modèle toute
+seule (enfant, à la demande) et l'éteint avec elle. (`uv run loom/runtime/serve.py`
+reste dispo pour servir le moteur seul — et déclenche aussi l'installeur au premier
+run sur machine vierge.)
 
 > ⚠️ Avant de t'en servir, lis [Sécurité](#sécurité--périmètre-de-confiance) : Loom donne un
 > shell et l'écriture disque au modèle. En dehors d'un environnement isolé, mets
