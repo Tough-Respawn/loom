@@ -53,7 +53,9 @@ def _read_value(f, vtype: int):
 
 
 def read_gguf_meta(path: str | Path) -> dict:
-    """{'architecture','n_layers','context_length','expert_count'} (None si absents).
+    """{'architecture','n_layers','context_length','expert_count', + champs
+    d'attention pour le calcul du cache KV : 'head_count','head_count_kv',
+    'embedding_length','key_length'} (None si absents).
 
     Lève ValueError si le fichier n'est pas un GGUF lisible — l'appelant traite ça
     en best-effort (un GGUF exotique n'empêche pas l'installation)."""
@@ -84,4 +86,10 @@ def read_gguf_meta(path: str | Path) -> dict:
         "n_layers": _int("block_count"),
         "context_length": _int("context_length"),
         "expert_count": _int("expert_count"),
+        # Attention (pour estimer le cache KV par token) : head_dim = key_length
+        # si présent, sinon embedding_length / head_count.
+        "head_count": _int("attention.head_count"),
+        "head_count_kv": _int("attention.head_count_kv"),
+        "embedding_length": _int("embedding_length"),
+        "key_length": _int("attention.key_length"),
     }
