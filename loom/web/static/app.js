@@ -1543,6 +1543,9 @@ function syncComposer() {
 function submitChat() {
   const text = input.value.trim();
   if (!text || !state.active) return;
+  // Ferme la palette « / » : le clear programmatique du champ n'émet pas d'événement
+  // input, elle resterait ouverte sur du vide.
+  if (typeof hidePal === "function") hidePal();
   const t = activeTab();
   // Pièces jointes pendant une génération : la file /note est TEXTE-ONLY. On bloque
   // net (rien n'est consommé) plutôt que de laisser l'image en attente partir avec
@@ -1621,9 +1624,120 @@ function autosize() {
 }
 input.addEventListener("input", autosize);
 
+// ---- Palette de commandes « / » ---------------------------------------------------
+// Taper « / » en tête de message ouvre la liste des commandes (GET /commands, source
+// de vérité serveur), filtrée à la frappe. ↑↓ navigue, Tab/Entrée complète, Échap
+// ferme, clic insère. Sans elle, /add-model & co sont indécouvrables.
+const cmdPal = document.getElementById("cmdPalette");
+let CMDS = [];
+let palIdx = 0;
+fetch("/commands")
+  .then((r) => r.json())
+  .then((d) => {
+    CMDS = d.commands || [];
+  })
+  .catch(() => {}); // pas de palette = pas de casse, le chat marche sans
+
+function palMatches() {
+  const v = input.value;
+  // Palette uniquement sur le PREMIER mot d'un message qui commence par « / » :
+  // dès qu'un espace ou un retour ligne arrive, on est dans les arguments.
+  if (!v.startsWith("/") || /[\s\n]/.test(v)) return [];
+  const tok = v.slice(1).toLowerCase();
+  return CMDS.filter((c) => c.name.slice(1).toLowerCase().startsWith(tok));
+}
+
+function hidePal() {
+  if (cmdPal) cmdPal.hidden = true;
+}
+
+function renderPal() {
+  if (!cmdPal) return;
+  const m = palMatches();
+  if (!m.length) {
+    hidePal();
+    return;
+  }
+  palIdx = Math.min(palIdx, m.length - 1);
+  cmdPal.replaceChildren(
+    ...m.map((c, i) => {
+      const item = document.createElement("div");
+      item.className = "cmd-item" + (i === palIdx ? " sel" : "");
+      item.setAttribute("role", "option");
+      const line = document.createElement("div");
+      line.className = "cmd-line";
+      const name = document.createElement("span");
+      name.className = "cmd-name";
+      name.textContent = c.name;
+      const usage = document.createElement("span");
+      usage.className = "cmd-usage";
+      usage.textContent = c.usage;
+      line.append(name, usage);
+      const desc = document.createElement("div");
+      desc.className = "cmd-desc";
+      desc.textContent = c.description;
+      item.append(line, desc);
+      // mousedown (pas click) : ne pas voler le focus du textarea avant l'insertion
+      item.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        palPick(c);
+      });
+      item.addEventListener("mouseenter", () => {
+        palIdx = i;
+        renderPal();
+      });
+      return item;
+    }),
+  );
+  cmdPal.hidden = false;
+}
+
+function palPick(c) {
+  input.value = c.name + " ";
+  autosize();
+  hidePal();
+  input.focus();
+}
+
+input.addEventListener("input", () => {
+  palIdx = 0;
+  renderPal();
+});
+input.addEventListener("blur", () => setTimeout(hidePal, 120));
+
 // historique ↑/↓ + Entrée pour envoyer — l'historique est PAR ONGLET (t.history/t.histIdx),
 // amorcé avec les prompts déjà envoyés de la conversation.
 input.addEventListener("keydown", (e) => {
+  // La palette ouverte capte la navigation AVANT l'historique et l'envoi.
+  if (cmdPal && !cmdPal.hidden) {
+    const m = palMatches();
+    if (e.key === "ArrowDown" && m.length) {
+      e.preventDefault();
+      palIdx = (palIdx + 1) % m.length;
+      renderPal();
+      return;
+    }
+    if (e.key === "ArrowUp" && m.length) {
+      e.preventDefault();
+      palIdx = (palIdx - 1 + m.length) % m.length;
+      renderPal();
+      return;
+    }
+    if (e.key === "Escape") {
+      hidePal();
+      return;
+    }
+    if ((e.key === "Tab" || e.key === "Enter") && m.length) {
+      const sel = m[Math.min(palIdx, m.length - 1)];
+      // Entrée sur une commande DÉJÀ complète = envoi normal ; sinon on complète.
+      if (e.key === "Tab" || input.value.trim() !== sel.name) {
+        e.preventDefault();
+        palPick(sel);
+        return;
+      }
+      hidePal();
+    }
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     submitChat();

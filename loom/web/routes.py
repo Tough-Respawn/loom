@@ -403,6 +403,35 @@ def _index_context(S) -> dict:
 
 # ---- Commandes /goal et /init (préambule de /chat) ------------------------------------
 
+# Catalogue des commandes slash du chat — SOURCE DE VÉRITÉ de la palette « / » du
+# composer (GET /commands). À tenir en phase avec les handlers ci-dessous : une
+# commande non listée ici est indécouvrable pour l'utilisateur.
+CHAT_COMMANDS = [
+    {
+        "name": "/add-model",
+        "usage": "/add-model",
+        "description": "Ajouter un modèle : local (recherche Hugging Face, quant "
+        "recommandé selon ta machine) ou distant (API OpenAI-compatible + clé).",
+    },
+    {
+        "name": "/goal",
+        "usage": "/goal <condition> · /goal (statut) · /goal clear",
+        "description": "Poser un objectif vérifiable pour la session, le consulter, "
+        "ou l'effacer.",
+    },
+    {
+        "name": "/init",
+        "usage": "/init [dossier]",
+        "description": "Analyser le workspace et générer sa fiche projet loom.md "
+        "(injectée ensuite au contexte).",
+    },
+    {
+        "name": "/cancel",
+        "usage": "/cancel",
+        "description": "Annuler le wizard en cours (ex. /add-model).",
+    },
+]
+
 
 def _handle_goal_command(S, message, conv, save, chat_lock):
     """Traite la commande /goal : pose/statut/efface l'objectif de session.
@@ -1819,6 +1848,11 @@ def _register_model_routes(app, S):
     # ---- Gestionnaire de modèles (UI) : ajouter/tester/supprimer un modèle DISTANT à chaud,
     # sans redémarrer. Un distant = URL + clé (rien en VRAM) -> l'ajout monte une route et met
     # à jour les registres partagés en place. Persisté dans le store JSON (remote_store_path).
+    @app.get("/commands")
+    def commands():
+        """Catalogue des commandes slash — consommé par la palette « / » du composer."""
+        return {"commands": CHAT_COMMANDS}
+
     @app.get("/models/config")
     def models_config():
         return {"remotes": _remote_list(S), "models": _models_payload(S)}
