@@ -309,6 +309,14 @@ def build_app(cfg):
 
 
 def main() -> None:
+    # Même filet que serve.py : machine vierge (binaire llama.cpp ou modèle
+    # manquant — ex. tout supprimé via /remove-model) -> installeur guidé dans ce
+    # terminal au lieu d'une stacktrace ValueError « aucun modèle » au boot.
+    from loom.runtime.serve import maybe_bootstrap
+
+    code = maybe_bootstrap()
+    if code is not None:
+        raise SystemExit(code)
     cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
     app = build_app(cfg)
     # Les polls périodiques (GET /sysmon ~1,2 s, GET /machine_state ~2-3 s) inondent
