@@ -499,6 +499,24 @@ def _handle_init_command(S, message):
 # ---- Commande /add-model : wizard déterministe d'ajout de modèle -----------------------
 
 
+def _list_remote_models(base_url: str, api_key: str) -> list[str] | None:
+    """Ids exposés par une API OpenAI-compatible (GET /models), triés — ou None si
+    l'endpoint est injoignable/refuse : le wizard retombe sur la saisie manuelle.
+    Évite de taper un nom de modèle qui n'existe pas chez le provider."""
+    import httpx
+
+    try:
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        r = httpx.get(base_url.rstrip("/") + "/models", headers=headers, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json().get("data") or []
+        ids = sorted({str(m["id"]) for m in data if m.get("id")})
+        return ids or None
+    except Exception:  # noqa: BLE001 - best-effort, la saisie manuelle reste possible
+        return None
+
+
 def _wizard_deps(S):
     """Dépendances du wizard (INJECTÉES : la machine à états reste pure et testable).
     Point de patch des tests — garder la construction ici, jamais dans wizard.py."""
@@ -516,6 +534,7 @@ def _wizard_deps(S):
         ),
         derive_id=model_install.derive_model_id,
         existing_ids=set(S.models),
+        list_remote_models=_list_remote_models,
     )
 
 
@@ -598,6 +617,10 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
     if not (active or is_cmd):
         return message, None
 
+    # Étape AVANT transition : si c'était la saisie de la clé (r_key), le message
+    # EST la clé — on la MASQUE dans tout ce qui persiste (conversation, journal).
+    prev_step = (conv.wizard or {}).get("step") if active and not is_cmd else None
+
     try:
         deps = _wizard_deps(S)
         if is_cmd:
@@ -611,7 +634,10 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
         )
 
     conv.set_wizard(res.state)
-    _persist_wizard_exchange(S, sess, conv, save, message, res.reply)
+    shown = message
+    if prev_step == "r_key" and message.strip().lower() not in ("aucune", "none", "-"):
+        shown = "•••••••• (clé masquée)"
+    _persist_wizard_exchange(S, sess, conv, save, shown, res.reply)
 
     job = None
     extra_reply = ""
@@ -656,6 +682,10 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
     def _stream():
         yield _sse("text", text=res.reply + extra_reply)
+        # Un modèle vient d'être monté à chaud -> le front recharge le sélecteur
+        # (vécu : « disponible dans le sélecteur »… qui ne l'affichait pas).
+        if res.action and res.action["kind"] == "upsert_remote" and not extra_reply:
+            yield _sse("models")
         if job is not None:
             while not job.done:
                 yield _sse(
@@ -666,6 +696,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             yield _sse("status", label="")
             if job.final_message:
                 yield _sse("text", text="\n" + job.final_message)
+            yield _sse("models")
         yield _sse("done")
 
     return message, Response(_stream(), mimetype="text/event-stream")

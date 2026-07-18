@@ -118,8 +118,8 @@ def _step_r_id(state, t, deps):
         return WizardResult(state, f"« {t} » existe déjà. Choisis un autre id :")
     if state.get("base_url"):  # URL déjà fournie dans la commande -> étape sautée
         return WizardResult(
-            {"step": "r_model", "id": t, "base_url": state["base_url"]},
-            "[add-model — distant 3/5] Nom du modèle côté provider (ex. « glm-4.7 ») :",
+            {"step": "r_key", "id": t, "base_url": state["base_url"]},
+            _KEY_PROMPT,
         )
     return WizardResult(
         {"step": "r_base_url", "id": t},
@@ -128,26 +128,62 @@ def _step_r_id(state, t, deps):
     )
 
 
+# La clé vient AVANT le choix du modèle : elle permet d'interroger GET /models du
+# provider et de CHOISIR dans la liste au lieu de deviner un nom. Masquée dans
+# l'historique par routes.py (étape r_key).
+_KEY_PROMPT = (
+    "[add-model — distant 3/5] Clé API (ou « aucune ») — elle sert aussi à lister "
+    "les modèles du provider, et sera MASQUÉE dans l'historique :"
+)
+
+
 def _step_r_base_url(state, t, deps):
     if not t.startswith(("http://", "https://")):
         return WizardResult(state, "L'URL doit commencer par http(s)://. Réessaie :")
-    s = dict(state, base_url=t.rstrip("/"), step="r_model")
-    return WizardResult(
-        s, "[add-model — distant 3/5] Nom du modèle côté provider (ex. « glm-4.7 ») :"
-    )
-
-
-def _step_r_model(state, t, deps):
-    s = dict(state, model=t, step="r_key")
-    return WizardResult(s, "[add-model — distant 4/5] Clé API (ou « aucune ») :")
+    s = dict(state, base_url=t.rstrip("/"), step="r_key")
+    return WizardResult(s, _KEY_PROMPT)
 
 
 def _step_r_key(state, t, deps):
     key = "" if t.lower() in ("aucune", "none", "-") else t
-    s = dict(state, api_key=key, step="r_adv")
+    choices = deps.list_remote_models(state["base_url"], key)
+    s = dict(state, api_key=key, step="r_model")
+    if choices:
+        shown = choices[:30]
+        lines = [f"  {i + 1}. {mid}" for i, mid in enumerate(shown)]
+        more = (
+            f"\n  … ({len(choices)} au total — tape le nom s'il n'est pas listé)"
+            if len(choices) > len(shown)
+            else ""
+        )
+        return WizardResult(
+            dict(s, choices=shown),
+            "[add-model — distant 4/5] Modèles disponibles chez le provider :\n"
+            + "\n".join(lines)
+            + more
+            + "\n(réponds par un numéro, ou tape un nom)",
+        )
     return WizardResult(
         s,
-        "[add-model — distant 5/5] Réglages avancés ? « non » = défauts, sinon par ex. "
+        "[add-model — distant 4/5] Impossible de lister les modèles du provider "
+        "(URL ? clé ?) — tape le nom du modèle (ex. « glm-4.7 ») :",
+    )
+
+
+def _step_r_model(state, t, deps):
+    choices = state.get("choices") or []
+    model = choices[int(t) - 1] if t.isdigit() and 1 <= int(t) <= len(choices) else t
+    s = {
+        "step": "r_adv",
+        "id": state["id"],
+        "base_url": state["base_url"],
+        "api_key": state["api_key"],
+        "model": model,
+    }
+    return WizardResult(
+        s,
+        f"[add-model — distant 5/5] Modèle « {model} ». Réglages avancés ? "
+        "« non » = défauts, sinon par ex. "
         "« contexte=200000 max_tokens=8192 vision=oui » :",
     )
 

@@ -702,6 +702,11 @@ async function sendChat(sid, text, images) {
         t.forcedActivity = evt.label || null;
         if (sid === state.active) setGenActivity(t.forcedActivity);
         break;
+      case "models":
+        // Un modèle vient d'être ajouté/monté (wizard /add-model) : recharge le
+        // sélecteur et la liste du panneau engrenage sans rechargement de page.
+        if (window.refreshModels) window.refreshModels();
+        break;
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (connexion à loom.web perdue ?)" });
         break;
@@ -2609,6 +2614,18 @@ function smRestorePos() {
       renderList(cache);
     } catch {}
   }
+
+  // Rafraîchissement GLOBAL (sélecteur + panneau) : appelé par le flux SSE quand le
+  // wizard /add-model monte un modèle à chaud — sans ça, « disponible dans le
+  // sélecteur » n'était vrai qu'après un rechargement de page.
+  window.refreshModels = async function () {
+    try {
+      const d = await (await fetch("/models/config")).json();
+      cache = d.remotes || [];
+      renderList(cache);
+      rebuildModelSelect(d.models);
+    } catch {}
+  };
 
   function bodyFromForm() {
     return {
