@@ -30,19 +30,12 @@ def build_app(cfg):
     conversation = Conversation.load(cfg.chat.history_path, cfg.chat.system_prompt)
     if not conversation.model:
         conversation.set_model(cfg.default_model)
-    # Modèles distants AJOUTÉS VIA L'UI : store machine-owned (var/remote_models.json), fusionné
-    # ici avec ceux de local.toml. Les gérés par l'UI l'emportent par id. Tout le reste (routes,
-    # contexte, prix, sélecteur) se dérive ensuite de cfg.remote_models sans autre changement.
-    from loom.config import remote_model_from_dict
-    from loom.runtime import model_store
+    # Modèles distants : local.toml + store UI (var/remote_models.json) sont déjà
+    # fusionnés par load_config dans cfg.remote_models — on ne recalcule ici que le
+    # chemin du store (routes /add-model, /remove-model).
+    from loom.config import remote_store_path as _remote_store_path
 
-    remote_store_path = (
-        Path(cfg.chat.history_path).resolve().parent / "remote_models.json"
-    )
-    for md in model_store.load(remote_store_path):
-        rc = remote_model_from_dict(md)
-        cfg.remote_models = [rm for rm in cfg.remote_models if rm.id != rc.id]
-        cfg.remote_models.append(rc)
+    remote_store = _remote_store_path(cfg.chat.history_path)
     # Routes vers les modèles distants (API OpenAI-compatible) : la clé vient du TOML en clair
     # ou d'une variable d'env (api_key_env). Un modèle sans clé résolue reste routé mais
     # échouera à l'appel (401) — message clair côté client, pas de crash au démarrage.
@@ -298,7 +291,7 @@ def build_app(cfg):
             **{rm.id: rm.description for rm in cfg.remote_models if rm.description},
             **{im.id: im.description for im in image_models if im.description},
         },
-        remote_store_path=str(remote_store_path),
+        remote_store_path=str(remote_store),
         config_defaults_path=str(CONFIG_PATH),
         config_local_path=str(PERSONAL_CONFIG_PATH),
         local_models=local_models,
@@ -312,9 +305,12 @@ def main() -> None:
     # Même filet que serve.py : machine vierge (binaire llama.cpp ou modèle
     # manquant — ex. tout supprimé via /remove-model) -> installeur guidé dans ce
     # terminal au lieu d'une stacktrace ValueError « aucun modèle » au boot.
+    # remote_ok : un modèle DISTANT ([[remote_models]] ou store UI) suffit pour
+    # discuter -> boot « remote-only » sans installeur ; le moteur local reste
+    # optionnel et démarrera à la demande une fois un modèle local installé.
     from loom.runtime.serve import maybe_bootstrap
 
-    code = maybe_bootstrap()
+    code = maybe_bootstrap(remote_ok=True)
     if code is not None:
         raise SystemExit(code)
     cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)

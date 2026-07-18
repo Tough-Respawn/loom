@@ -193,6 +193,11 @@ class RuntimeConfig:
         for m in self.models:
             if m.id == model_id:
                 return m
+        if not self.models:
+            # Boot remote-only (parc local vide) : cfg.model / model_by_id n'ont pas de
+            # sens sans modèle local — erreur claire plutôt qu'un IndexError chez un
+            # consommateur (serve.py est censé avoir vérifié avant).
+            raise ValueError(f"aucun modèle local (demandé : {model_id!r})")
         return self.models[0]
 
     @property
@@ -238,6 +243,13 @@ def _discover_models(models_root: Path) -> list[ModelConfig]:
         m.dir = str(folder)
         out.append(m)
     return out
+
+
+def remote_store_path(history_path: str | Path) -> Path:
+    """Chemin du store MACHINE-OWNED des modèles distants ajoutés via l'UI
+    (remote_models.json, à côté de l'historique de conversation — var/ par défaut).
+    Dérivation UNIQUE, partagée par load_config, build_app et le check de bootstrap."""
+    return Path(history_path).resolve().parent / "remote_models.json"
 
 
 def remote_model_from_dict(d: dict) -> RemoteModelConfig:
@@ -369,13 +381,33 @@ def load_config(
     models.sort(key=lambda m: m.id)
     if not models:
         models = [_parse_model(rm) for rm in data.get("models", [])]
-    if not models:
+    remote_models = [_parse_remote_model(rm) for rm in data.get("remote_models", [])]
+    # Modèles distants ajoutés via l'UI : store machine-owned (var/remote_models.json),
+    # fusionné ICI (et plus dans build_app) pour que cfg.remote_models soit LA liste
+    # complète pour tous les consommateurs (routes, sélecteur, décision remote-only).
+    # Les entrées gérées par l'UI l'emportent par id sur celles de local.toml.
+    from loom.runtime import model_store
+
+    for md in model_store.load(remote_store_path(chat.history_path)):
+        rc = _parse_remote_model(md)
+        remote_models = [rm for rm in remote_models if rm.id != rc.id]
+        remote_models.append(rc)
+    # Boot « remote-only » : aucun modèle local mais au moins un distant -> models=[]
+    # est toléré (loom.web sait discuter via l'API distante ; le serveur llama.cpp
+    # local ne sert que les locaux et démarre à la demande). On ne lève que si NI
+    # local NI distant — machine vierge, c'est maybe_bootstrap qui guide l'installeur.
+    if not models and not remote_models:
         raise ValueError(
             f"aucun modèle : crée <racine>\\local\\text\\<id>\\model.toml sous une des "
-            f"racines {[str(r) for r in models_roots]} (ou un bloc [[models]])"
+            f"racines {[str(r) for r in models_roots]} (ou un bloc [[models]], ou un "
+            f"modèle distant [[remote_models]] dans config/local.toml)"
         )
-    remote_models = [_parse_remote_model(rm) for rm in data.get("remote_models", [])]
-    default_model = ch.get("default_model") or models[0].id
+    default_model = ch.get("default_model") or (models[0].id if models else "")
+    if not models:
+        # Remote-only : un default_model configuré qui pointe un local disparu
+        # enverrait la session dans le vide -> retombe sur le premier distant.
+        if default_model not in {rm.id for rm in remote_models}:
+            default_model = remote_models[0].id
     return RuntimeConfig(
         models=models,
         default_model=default_model,
