@@ -23,7 +23,7 @@ def test_commands_catalogue_de_la_palette(web):
     data = web.get("/commands").get_json()
     cmds = data["commands"]
     names = {c["name"] for c in cmds}
-    assert {"/add-model", "/goal", "/init", "/cancel"} <= names
+    assert {"/add-model", "/remove-model", "/goal", "/init", "/cancel"} <= names
     assert all(c["usage"] and c["description"] for c in cmds)
 
 

@@ -60,6 +60,9 @@ def _fake_deps(monkeypatch, hits=(), files=()):
         recommend=lambda fs: [dict(f, fits=True, recommended=True) for f in fs],
         derive_id=lambda repo: "nouveau-modele",
         list_remote_models=lambda base_url, key: None,  # provider muet -> saisie libre
+        removable_models=lambda: [
+            {"id": "glm-test", "kind": "remote", "label": "glm-test — distant"}
+        ],
     )
     monkeypatch.setattr(routes, "_wizard_deps", lambda S: deps)
 
@@ -99,6 +102,27 @@ def test_add_model_distant_persiste_le_store(env, monkeypatch):
     stored = json.loads((env.tmp / "remote_models.json").read_text(encoding="utf-8"))
     assert stored[0]["id"] == "glm-test"
     assert stored[0]["base_url"] == "https://api.exemple/v4"
+
+
+def test_remove_model_distant_vide_le_store(env, monkeypatch):
+    _fake_deps(monkeypatch)
+    # ajoute d'abord un distant (flux complet), puis le supprime via /remove-model
+    for msg in [
+        "/add-model",
+        "2",
+        "glm-test",
+        "https://api.exemple/v4",
+        "aucune",
+        "glm-test-model",
+        "non",
+    ]:
+        env.web.post("/chat", data={"message": msg})
+    env.web.post("/chat", data={"message": "/remove-model"})
+    env.web.post("/chat", data={"message": "1"})
+    r = env.web.post("/chat", data={"message": "oui"})
+    assert "retiré" in _sse_texts(r.data)
+    stored = json.loads((env.tmp / "remote_models.json").read_text(encoding="utf-8"))
+    assert stored == []
 
 
 def test_add_model_local_installe(env, monkeypatch):
