@@ -77,6 +77,99 @@ def test_etat_inconnu_annule_proprement():
     assert r.state is None
 
 
+# ---------- flux image/vidéo ----------
+
+
+def test_flux_image_complet_avec_chemin():
+    d = deps()
+    r = wizard.step({"step": "i_id", "ikind": "image"}, "mon-modele", d)
+    assert r.state["step"] == "i_dims" and "1024x1024" in r.reply
+    r = wizard.step(r.state, "ok", d)
+    assert r.state["step"] == "i_desc"
+    r = wizard.step(r.state, "mon générateur", d)
+    assert r.state["step"] == "i_workflow"
+    r = wizard.step(r.state, "C:/tmp/wf_api.json", d)
+    assert r.state is None
+    assert r.action == {
+        "kind": "install_image",
+        "model_id": "mon-modele",
+        "model_kind": "image",
+        "width": 1024,
+        "height": 1024,
+        "description": "mon générateur",
+        "workflow_path": "C:/tmp/wf_api.json",
+    }
+
+
+def test_flux_video_defauts_et_plus_tard():
+    d = deps()
+    r = wizard.step({"step": "i_id", "ikind": "video"}, "mon-clip", d)
+    assert "832x480" in r.reply
+    r = wizard.step(r.state, "640x360", d)
+    r = wizard.step(r.state, "non", d)  # description vide
+    r = wizard.step(r.state, "plus tard", d)
+    assert r.state is None and r.action["workflow_path"] is None
+    assert r.action["width"] == 640 and r.action["description"] == ""
+    assert r.action["model_kind"] == "video"
+
+
+def test_i_id_refuse_doublon_et_invalide():
+    d = deps(existing={"pris"})
+    r = wizard.step({"step": "i_id", "ikind": "image"}, "pris", d)
+    assert r.state["step"] == "i_id"
+    r = wizard.step({"step": "i_id", "ikind": "image"}, "a b", d)
+    assert r.state["step"] == "i_id"
+
+
+def test_i_id_dossier_complet_propose_le_montage():
+    d = deps()
+    d.image_dir_state = lambda k, m: "complete"
+    r = wizard.step({"step": "i_id", "ikind": "image"}, "deja-pret", d)
+    assert r.state is None
+    assert r.action == {"kind": "mount_image", "id": "deja-pret", "model_kind": "image"}
+
+
+def test_i_id_dossier_partiel_saute_a_la_recette():
+    d = deps()
+    d.image_dir_state = lambda k, m: "partial"
+    r = wizard.step({"step": "i_id", "ikind": "image"}, "en-cours", d)
+    assert r.state["step"] == "i_workflow" and r.state.get("resume") is True
+
+
+def test_i_workflow_chemin_invalide_redemande():
+    d = deps()
+    d.check_workflow = lambda p: {"ok": False, "error": "introuvable", "warnings": []}
+    st = {
+        "step": "i_workflow",
+        "ikind": "image",
+        "id": "x",
+        "width": 1024,
+        "height": 1024,
+        "description": "",
+    }
+    r = wizard.step(st, "C:/nexiste/pas.json", d)
+    assert r.state["step"] == "i_workflow" and "introuvable" in r.reply
+
+
+def test_i_workflow_warning_placeholder_transmis():
+    d = deps()
+    d.check_workflow = lambda p: {
+        "ok": True,
+        "error": None,
+        "warnings": ["{PROMPT} absent"],
+    }
+    st = {
+        "step": "i_workflow",
+        "ikind": "image",
+        "id": "x",
+        "width": 1024,
+        "height": 1024,
+        "description": "",
+    }
+    r = wizard.step(st, "C:/tmp/wf.json", d)
+    assert r.action["kind"] == "install_image" and "{PROMPT} absent" in r.reply
+
+
 # ---------- flux distant ----------
 
 
