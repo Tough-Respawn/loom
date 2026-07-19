@@ -43,6 +43,7 @@ from loom.web.app import (
     _detect_workspace,
     _infer_title,
     _init_message,
+    _should_adopt,
     _sse,
 )
 
@@ -2850,7 +2851,10 @@ def _register_chat_routes(app, S):
         if detected:
             sess = _session(S)
 
-            if detected != sess.workspace:
+            # Un chemin INTERNE au projet courant n'est pas un changement de contexte :
+            # adopter casserait le cache KV (re-prefill intégral) pour rien — cf.
+            # _should_adopt (vécu 2026-07-19 : var/sessions/<id> cité comme simple info).
+            if detected != sess.workspace and _should_adopt(sess.workspace, detected):
                 sess.workspace = detected
 
                 S.session_store.save(sess)
