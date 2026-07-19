@@ -36,9 +36,21 @@ def start(arg: str, deps) -> WizardResult:
             "[add-model 1/2] Quel type de modèle ?\n"
             "  1. local — GGUF téléchargé depuis Hugging Face, servi sur la machine\n"
             "  2. distant — API OpenAI-compatible (URL + clé)\n"
-            "(réponds 1 ou 2 — /cancel pour annuler)",
+            "  3. image — générateur ComfyUI (recette workflow.json)\n"
+            "  4. vidéo — générateur ComfyUI (recette workflow.json)\n"
+            "(réponds 1-4 — /cancel pour annuler)",
         )
     low = a.lower()
+    # Raccourcis par type : « /add-model image|video » saute le menu, comme « distant ».
+    if low in ("image", "video", "vidéo"):
+        return _start_image("video" if low.startswith("vid") else "image", deps)
+    if low == "local":
+        return WizardResult(
+            {"step": "l_query"},
+            "[add-model 1/4] Que cherches-tu sur Hugging Face ? (ex. « qwen3 30b »)",
+        )
+    if low.startswith("local "):
+        return _search(a.split(None, 1)[1], deps)
     # « /add-model distant [url] » ou une URL brute -> flux DISTANT direct. Une URL
     # n'est JAMAIS une recherche Hugging Face (vécu : URL + clé collées partaient en
     # recherche locale, incompréhensible).
@@ -92,18 +104,25 @@ def step(state: dict, text: str, deps) -> WizardResult:
 
 
 def _step_kind(state, t, deps):
-    if t == "1" or t.lower().startswith("local"):
+    low = t.lower()
+    if t == "1" or low.startswith("local"):
         return WizardResult(
             {"step": "l_query"},
             "[add-model 1/4] Que cherches-tu sur Hugging Face ? (ex. « qwen3 30b »)",
         )
-    if t == "2" or t.lower().startswith("dist"):
+    if t == "2" or low.startswith("dist"):
         return WizardResult(
             {"step": "r_id"},
             "[add-model — distant 1/5] Choisis un id court pour ce modèle "
             "(ex. « glm-5-flash ») :",
         )
-    return WizardResult(state, "Réponds 1 (local) ou 2 (distant), ou /cancel.")
+    if t == "3" or low == "image":
+        return _start_image("image", deps)
+    if t == "4" or low in ("video", "vidéo"):
+        return _start_image("video", deps)
+    return WizardResult(
+        state, "Réponds 1 (local), 2 (distant), 3 (image) ou 4 (vidéo), ou /cancel."
+    )
 
 
 # ---------- flux distant ----------
@@ -266,6 +285,18 @@ def _step_d_confirm(state, t, deps):
         None,
         f"Suppression de « {it['id']} »…",
         {"kind": "remove", "id": it["id"], "model_kind": it["kind"]},
+    )
+
+
+# ---------- flux image/vidéo (ComfyUI) ----------
+
+
+def _start_image(ikind: str, deps) -> WizardResult:
+    lab = "image" if ikind == "image" else "vidéo"
+    return WizardResult(
+        {"step": "i_id", "ikind": ikind},
+        f"[add-model — {lab} 1/4] Id du modèle (nom du dossier + sélecteur UI, "
+        "ex. « z-image-turbo ») :",
     )
 
 
