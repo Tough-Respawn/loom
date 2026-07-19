@@ -51,7 +51,13 @@ def _detect_workspace(message: str, root: str | None = None) -> str | None:
 
     sous-dossier direct de `root` (ex. « ... pour energy-data-platform » sans le chemin
 
-    complet). Match EXACT sur un sous-dossier réel -> pas de faux positif sur un mot courant.
+    complet) — mais SEULEMENT si ce nom est un slug (contient -, _ ou .) : un dossier au
+
+    nom de mot courant (« cas », « games »…) est indistinguable de la prose, et le mot
+
+    « cas » d'un message collé a réellement basculé le workspace sur un dossier personnel
+
+    (2026-07-19). Nom simple -> chemin absolu ou sélecteur UI, jamais l'adoption par nom.
 
     """
 
@@ -78,7 +84,7 @@ def _detect_workspace(message: str, root: str | None = None) -> str | None:
             subdirs = {
                 e.name.lower(): os.path.join(root, e.name)
                 for e in os.scandir(root)
-                if e.is_dir()
+                if e.is_dir() and any(c in e.name for c in "-_.")
             }
 
         except OSError:
