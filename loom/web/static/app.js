@@ -1925,8 +1925,10 @@ function openTabMenu(e, sid) {
     m.appendChild(b);
   };
   const full = state.panes.length >= 4;
-  add("Ouvrir à droite", () => splitWith(sid, "row"), full);
-  add("Ouvrir en dessous", () => splitWith(sid, "col"), full);
+  // Une seule entrée : le split par défaut ouvre à droite, la DISPOSITION se règle
+  // ensuite au glissé-déposé (bandeau/onglet -> zones directionnelles) — plus simple
+  // que de choisir une direction dans un menu (retour user 2026-07-19).
+  add("Ouvrir en parallèle", () => splitWith(sid, "row"), full);
   const sep = document.createElement("div");
   sep.className = "ctx-sep";
   m.appendChild(sep);
