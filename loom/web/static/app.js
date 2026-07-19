@@ -794,12 +794,20 @@ async function sendChat(sid, text, images) {
     }
     const quiet = Date.now() - lastEvtAt > 2500;
     const elapsed = Math.round((Date.now() - sentAt) / 1000);
+    // Avant le 1er token, DEUX phases distinctes (observation 2026-07-19 : 56 s de
+    // chargement étiquetées « prefill » = illisible) : tant que le chip machine dit
+    // « chargement… », c'est le CHARGEMENT du modèle, pas le prefill.
+    const chipTxt =
+      (document.getElementById("machine-chip") || {}).textContent || "";
+    const phase = chipTxt.includes("chargement")
+      ? "chargement du modèle"
+      : "préparation du contexte (prefill)";
     setActivityFor(
       sid,
       t.streaming && quiet
         ? sawToken
           ? "le modèle travaille"
-          : `préparation du contexte (prefill) · ${elapsed} s`
+          : `${phase} · ${elapsed} s`
         : null,
     );
   }, 500);
