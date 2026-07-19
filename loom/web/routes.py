@@ -2345,24 +2345,32 @@ def _register_model_routes(app, S):
 
         S.session_store.set_default_model(model)
 
-        # Cycle de vie du modèle SUR LA MACHINE. Sélectionner un modèle LOCAL le CHARGE
-        # (warmup : llama-swap charge à la 1re requête, et swap l'ancien si besoin) ;
-        # passer à un modèle DISTANT (API) DÉCHARGE le local pour LIBÉRER LA VRAM. Les deux
-        # en tâche de fond (best-effort) : la réponse UI reste instantanée, l'indicateur
-        # d'état (/machine_state) reflète ensuite le résultat réel via llama-swap.
+        # Cycle de vie du modèle SUR LA MACHINE — invariant multi-onglets (2026-07-19) :
+        # au plus UN local chargé (llama-swap le garantit), les distants n'imposent
+        # AUCUNE limite. Sélectionner un DISTANT ne décharge donc PLUS le local : une
+        # autre session l'utilise peut-être (voire génère dessus — l'unload la tuait).
+        # Libérer la VRAM reste possible via les boutons « décharger / éteindre ».
         if model in S.remote_model_ids:
-            threading.Thread(
-                target=S.client.unload_local, daemon=True, name="loom-unload"
-            ).start()
+            pass
         elif model in S.image_model_ids:
             # Modèle IMAGE : libérer la VRAM du LLM et préchauffer ComfyUI en fond
             # (équivalent du warmup local : la 1re image n'attend pas le démarrage).
+            # SAUF si une génération LOCALE tourne (autre session) : on ne lui vole ni
+            # la VRAM ni le modèle — generate_image sérialisera au moment de générer.
             def _prep_image(m=model):
-                S.client.unload_local()
+                if not S.local_gen_lock.acquire(blocking=False):
+                    print(
+                        "[loom] préchauffage image sauté : génération locale en cours",
+                        flush=True,
+                    )
+                    return
                 try:
+                    S.client.unload_local()
                     _engine_for(S, S.image_by_id[m]).ensure_up()
                 except ComfyError as exc:
                     print(f"[loom] préchauffage ComfyUI : {exc}", flush=True)
+                finally:
+                    S.local_gen_lock.release()
 
             threading.Thread(
                 target=_prep_image, daemon=True, name="loom-image-warmup"
