@@ -445,6 +445,32 @@ def _scan_repeat(buf: str, counts: dict[str, int]) -> tuple[str, str | None]:
     return rest, None
 
 
+def _turn_timing_fields(tim: dict, first_byte_ms: float | None) -> dict:
+    """Champs de la ligne `turn.timing` depuis l'extension `timings` de llama-server :
+    prefill et génération MESURÉS côté serveur ; `chargement_s` = attente avant le
+    1er octet MOINS le prefill (= chargement du modèle / file llama-swap devant).
+    Pure (testable) ; les providers distants n'émettent pas `timings` -> pas de ligne."""
+    pp_ms = float(tim.get("prompt_ms") or 0.0)
+    pp_n = int(tim.get("prompt_n") or 0)
+    tg_ms = float(tim.get("predicted_ms") or 0.0)
+    tg_n = int(tim.get("predicted_n") or 0)
+    out = {
+        # Tokens RÉUTILISÉS du cache KV : 0 = prefill entier repayé (préfixe qui a
+        # glissé ?), élevé = cache au travail — le diagnostic re-prefill en un chiffre.
+        "cache_tok": int(tim.get("cache_n") or 0),
+        "prefill_s": round(pp_ms / 1000, 1),
+        "prefill_tok": pp_n,
+        "prefill_tps": round(pp_n / (pp_ms / 1000), 1) if pp_ms > 0 else 0.0,
+        "generation_s": round(tg_ms / 1000, 1),
+        "generation_tok": tg_n,
+        "generation_tps": round(tg_n / (tg_ms / 1000), 1) if tg_ms > 0 else 0.0,
+        "total_s": round((pp_ms + tg_ms) / 1000, 1),
+    }
+    if first_byte_ms is not None:
+        out["chargement_s"] = round(max(0.0, first_byte_ms - pp_ms) / 1000, 1)
+    return out
+
+
 def _iter_turn(stream: Any, collector: dict) -> Iterator[tuple[str, str]]:
     """Yield ('reasoning'|'content', txt) ET accumule les tool_calls streamés.
 
@@ -464,6 +490,12 @@ def _iter_turn(stream: Any, collector: dict) -> Iterator[tuple[str, str]]:
         usage = getattr(chunk, "usage", None)
         if usage is not None:
             yield ("usage", _usage_dict(usage))
+        # Extension llama-server : le chunk FINAL porte `timings` (prompt_ms/predicted_ms
+        # mesurés serveur) -> décomposition chiffrée du tour (turn.timing). Les providers
+        # distants ne l'émettent pas (champ absent, sans effet).
+        _tim = getattr(chunk, "timings", None)
+        if isinstance(_tim, dict) and _tim:
+            collector["timings"] = _tim
         # Chunk final d'include_usage : `choices == []`, rien d'autre à lire.
         if not chunk.choices:
             continue
@@ -1034,15 +1066,14 @@ def _stream_model_turn(
         thinking=thinking,
     )
     _t_req = time.monotonic()
+    _first_ms: float | None = None
     stream = oai.chat.completions.create(**kwargs)
     try:
         for kind, chunk in _iter_turn(stream, collector):
             if _first_byte:
                 _first_byte = False
-                log_event(
-                    "stream.first_byte",
-                    ms=round((time.monotonic() - _t_req) * 1000),
-                )
+                _first_ms = (time.monotonic() - _t_req) * 1000
+                log_event("stream.first_byte", ms=round(_first_ms))
             if kind == "content":
                 text += chunk
             elif kind == "reasoning":
@@ -1058,6 +1089,12 @@ def _stream_model_turn(
             yield (kind, chunk)
     finally:
         _close(stream)
+    # Décomposition CHIFFRÉE du tour (llama-server local seulement — `timings` absent
+    # chez les providers distants) : chargement / prefill / génération, chacun avec sa
+    # durée et son débit. Demande user 2026-07-19 : plus d'attente opaque.
+    _tim = collector.get("timings")
+    if isinstance(_tim, dict) and _tim:
+        log_event("turn.timing", **_turn_timing_fields(_tim, _first_ms))
     if not saw_usage:
         # Provider sans include_usage : estimation pour garder ↑/↓ vivants.
         yield (

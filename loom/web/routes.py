@@ -20,7 +20,7 @@ from pathlib import Path
 from flask import Response, render_template, request
 
 from loom.agent import context
-from loom.agent.client import _msg_chars, set_debug_log_path
+from loom.agent.client import _msg_chars, log_event, set_debug_log_path
 from loom.extend.skills import (
     collect_skills,
     effective_skills,
@@ -3118,12 +3118,20 @@ def _register_chat_routes(app, S):
                         "notice",
                         text="serveur modèle éteint — démarrage de la stack en cours…",
                     )
+                    _t_srv = time.monotonic()
                     S.server_manager.start()
                     _deadline = time.monotonic() + 90.0
                     while time.monotonic() < _deadline and not cancel_event.is_set():
                         time.sleep(0.7)
                         _reachable, _running_txt = S.client.running_local(timeout=2.0)
                         if _reachable:
+                            # Étape TRACÉE (console debug) : chaque phase du tour porte
+                            # sa durée — plus jamais un « 1min52 » opaque (2026-07-19).
+                            log_event(
+                                "turn.step",
+                                etape="demarrage_serveur",
+                                s=round(time.monotonic() - _t_srv, 1),
+                            )
                             yield _sse("notice", text="serveur modèle démarré.")
                             break
                     if not _reachable and not cancel_event.is_set():
