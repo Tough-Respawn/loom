@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -147,11 +148,20 @@ class ServerProbe:
         if self.kill is not None:
             self.kill(proc)
             return
-        subprocess.run(
-            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-            capture_output=True,
-            timeout=30,
-        )
+        if sys.platform == "win32":
+            # taskkill /T : llama-server n'a pas d'enfants, mais /T ne coûte rien.
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=30,
+            )
+            return
+        # POSIX : process unique lancé en direct — terminate propre, kill en secours.
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
     def _tokens_of(self, text: str) -> int:
         """Compte de tokens par LE serveur qui tourne (/tokenize) — agnostique au
