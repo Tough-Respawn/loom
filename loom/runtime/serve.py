@@ -129,6 +129,8 @@ def build_launch(
         cpu_moe=cfg.model.cpu_moe,
         n_cpu_moe=cfg.model.n_cpu_moe,
         slot_save_dir=slots_dir(),
+        ubatch=cfg.model.ubatch,
+        batch=cfg.model.batch,
     )
 
 
