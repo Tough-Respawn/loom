@@ -988,11 +988,19 @@ function activateTab(sid) {
   // Ligne d'activité : propre à l'onglet quitté — le timer du flux de CET onglet la
   // repeindra dans les 500 ms s'il est en silence, sinon elle doit disparaître.
   setGenActivity(null);
-  // Le serveur suit ce focus (pour /model, /tools, /reset, /pick-folder qui opèrent sur _cur).
-  postForm("/session/activate", { id: sid }).catch(() => {});
+  // Le serveur suit ce focus (pour /model, /tools, /reset, /pick-folder qui opèrent
+  // sur _cur). La rafale /machine_state part APRÈS la réponse : un tick immédiat
+  // lirait l'ANCIENNE session active côté serveur et re-basculerait le moniteur
+  // avec un état périmé (course vécue au switch d'onglet).
+  postForm("/session/activate", { id: sid })
+    .then(() => scheduleMachineRefresh())
+    .catch(() => {});
   // Synchronise les contrôles de la sidebar/topbar à cet onglet.
   const sel = document.getElementById("model-select");
   if (sel && t.model) sel.value = t.model;
+  // Teinte du sélecteur ET visibilité du moniteur système suivent l'onglet ACTIF
+  // immédiatement (un distant n'a pas besoin du moniteur).
+  paintModelSelect();
   const think = document.getElementById("thinking-cb");
   if (think) think.checked = !!t.thinking;
   const lo = document.getElementById("local-only-cb");
@@ -3127,6 +3135,10 @@ function paintModelSelect() {
   const opt = sel.options[sel.selectedIndex] || sel.options[0];
   const m = opt.className.match(/opt-(\w+)/);
   sel.className = m && m[1] !== "home" ? "sel-" + m[1] : "";
+  // Moniteur système : utile quand la MACHINE travaille (local/image/vidéo),
+  // superflu sur un distant — bascule immédiate, /machine_state confirme après.
+  if (typeof setSysmonVisible === "function")
+    setSysmonVisible(!(m && m[1] === "remote"));
 }
 document.addEventListener("change", (e) => {
   if (e.target && e.target.id === "model-select") paintModelSelect();
