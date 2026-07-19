@@ -2029,19 +2029,28 @@ class LoomClient:
         # cascade qui feraient traîner la fin du tour). On retombe alors sur le repli message.
         fast = oai.with_options(max_retries=0, timeout=20)
         for extra in attempts:
-            try:
-                resp = fast.chat.completions.create(**base, **extra)
-                txt = (resp.choices[0].message.content or "").strip()
-                txt = txt.strip('"').strip("'").strip()
-                if txt:
-                    return txt.splitlines()[0][:60].strip()
-            except (APIConnectionError, APITimeoutError):
-                # Backend down/lent : inutile de tenter les autres variantes de param (elles
-                # échoueront pareil) -> on abandonne vite, l'appelant fait le repli message.
-                break
-            except Exception as e:  # noqa: BLE001 - param rejeté par ce backend : variante suivante
-                _debug("TITLE_ERR", str(e))
-                continue
+            payload = {**base, **extra}
+            # 2e passe SANS temperature : certains providers la FIGENT par modèle/mode
+            # (Kimi/Moonshot : 400 « only 0.6/1 is allowed ») — la nôtre est cosmétique.
+            for drop_temp in (False, True):
+                if drop_temp:
+                    payload = {k: v for k, v in payload.items() if k != "temperature"}
+                try:
+                    resp = fast.chat.completions.create(**payload)
+                    txt = (resp.choices[0].message.content or "").strip()
+                    txt = txt.strip('"').strip("'").strip()
+                    if txt:
+                        return txt.splitlines()[0][:60].strip()
+                    break  # réponse vide : cette variante ne donnera rien -> suivante
+                except (APIConnectionError, APITimeoutError):
+                    # Backend down/lent : inutile de tenter les autres variantes de param
+                    # (elles échoueront pareil) -> abandon, l'appelant fait le repli message.
+                    return ""
+                except Exception as e:  # noqa: BLE001 - param rejeté par ce backend
+                    _debug("TITLE_ERR", str(e))
+                    if not drop_temp and "temperature" in str(e).lower():
+                        continue  # même variante, sans imposer notre température
+                    break  # variante suivante
         return ""
 
     def describe_image(self, data_uri: str, question: str, model: str) -> str:
