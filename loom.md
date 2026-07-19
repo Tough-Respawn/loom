@@ -11,7 +11,7 @@ Le pari architectural : pas d'orchestrateur déterministe, pas de rail de réfle
 ## Stack
 
 - **Python 3.12+**, gestionnaire `uv`, build `hatchling`.
-- **Runtime LLM** : `llama.cpp` (`llama-server`), API OpenAI-compatible sur `:8080` ; `llama-swap` pour le hot-swap multi-modèles. MoE 24B+ rendus jouables sur 6 Go de VRAM par offload des experts en RAM (`--cpu-moe`).
+- **Runtime LLM** : `llama.cpp` (`llama-server`), API OpenAI-compatible sur `:8080` ; `llama-swap` pour le hot-swap multi-modèles. MoE 24B+ rendus jouables même sur petite VRAM par offload des experts en RAM (`--cpu-moe`).
 - **Web/UI** : Flask + Preact/htm (zéro build, libs vendorées en `loom/web/static/`), streaming SSE, markdown, MathJax (LaTeX offline). Multi-onglets (une session par onglet, génération concurrente pour les distants), console de configuration (édition des TOML à chaud), gestionnaire de modèles (locaux + distants, ajout/édition sans redémarrer), compteur tokens/cache + jauge de remplissage du contexte, moniteur système (CPU/RAM/GPU) pour les modèles locaux.
 - **SDK** : `openai` (client API), `httpx`, `huggingface-hub` (téléchargement des GGUF).
 - **Ingestion docs** : `pypdf`, `openpyxl`, `python-docx`, `trafilatura`.
@@ -53,7 +53,7 @@ from-claude-to-local-haranessed-llm/
 │   ├── plugins/               # store de plugins installés (gitignoré) + marketplaces/
 │   └── web/                   # Flask + SSE (app.py, __main__.py) + templates/ + static/ (Preact, htm, marked, MathJax, DOMPurify — vendorés)
 ├── config/                    # defaults.toml (versionné) + local.toml (surcharge machine, gitignored) + local.example.toml
-├── docs/                      # adr/ (llamacpp-vs-ollama), superpowers/ (specs/plans), install-windows.md, install-linux.md, perf-gpu.md, bench-llama.md
+├── docs/                      # adr/ (llamacpp-vs-ollama), superpowers/ (specs/plans), install-windows.md, install-linux.md, glossaire.md
 ├── evals/                     # harnais d'éval des prompts (cases.py, run_eval.py) + éval du skill code-review (review_cases.py, run_review_eval.py)
 ├── var/                       # état machine (gitignored) : identity/, memory/, sessions/, skills_learned/, logs/, cache/
 ├── pyproject.toml             # dépendances + build hatchling
@@ -105,6 +105,6 @@ uv run python -m evals.run_review_eval           # éval du skill code-review
 - **Pas de LICENSE** détectée à la racine.
 - **Banc d'éval complet** (juge LLM, métriques) : design figé (`docs/superpowers/specs/`), construction différée.
 - **Éval** : `default_model` de config est un distant → forcer `--model qwen…` pour évaluer le local (seul à révéler une régression du prompt). Le jeu de cas **n'exerce pas `dispatch_agent`** → le prompt sous-agent n'est pas encore testé par l'A/B.
-- **Machine de dev** : RTX 2060 (6 Go VRAM) + **~32 Go RAM** (pas 64 — barrette non installée/détectée) : contraint la taille des modèles chargeables.
+- **Agnostique machine** : la taille des modèles chargeables et le contexte local sont bornés par le matériel hôte (VRAM/RAM), mesurés à la calibration — aucune spec de machine n'est une constante du projet. Les analyses liées à une machine (bancs, perf, sondes) restent en local (`docs/local/`, `var/`, `config/local.toml` — gitignorés) ; le versionné ne porte que mécaniques et principes.
 - **Tranches plugins à venir** : hooks (PostToolUse, exécute du code tiers → porte de confiance) et agents (personas dispatchables).
 - **Avant de proposer une piste** (orchestrateur, gating d'outils, édition par ligne, speculative decoding, sweeps batch…) : lire « Déjà essayé, rejeté » dans `ETAT_PROJET.md`. Plusieurs bonnes idées générales ont déjà été testées et falsifiées ici.

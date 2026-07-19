@@ -29,7 +29,7 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   offload réglé selon la VRAM libre via `nvidia-smi`), `--jinja` + `--mmproj` inclus.
 - **Modèles découverts par dossier** `loom/models/<id>/` (`model.toml` + `profile.md` + GGUF) ;
   1 modèle → `llama-server` direct, 2+ → `llama-swap`. Template : `loom/models/_TEMPLATE/`.
-- **MoE 24B+ sur 6 Go** : offload des experts en RAM (`--cpu-moe` / `--n-cpu-moe`,
+- **MoE 24B+ sur petite VRAM** : offload des experts en RAM (`--cpu-moe` / `--n-cpu-moe`,
   attention/dense sur GPU). Par défaut `gemma4-26b-a4b-uncensored` ;
   `qwen3.6-35b-a3b-abliterated` (vision) dispo. Les tout-petits 4B ont été abandonnés.
 - Décision runtime : [docs/adr/0001-llamacpp-vs-ollama.md](docs/adr/0001-llamacpp-vs-ollama.md).
@@ -130,9 +130,8 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   Deux chargements réels → coût mémoire/token ; échelle de vitesse en profondeur → on n'écrit
   que du **vérifié**. Décision tracée (mécanisme dans `[bench]` + `model.toml` du modèle benché,
   la vérité est PAR MODÈLE), budgets déterministes (totaux, pas la dispo du moment), fail-loud
-  au boot sur repli neutre. Fixture « machine dorée » (sondes réelles 2060/Ornith du 18/07) ;
-  validé live en aveugle : `moe_hybride`, pente 7,6 Ko/token, 131072 tokens à 10 t/s.
-  Rapport : `docs/bench-contexte-2026-07-18.md`.
+  au boot sur repli neutre. Fixture « machine dorée » (sondes réelles figées dans
+  `tests/test_topology.py`) ; validé live en aveugle sur le poste de banc de l'époque.
 
 ### Sécurité
 - **Mode permission** (`loom/permissions.py`) : `evaluate()` pur + `DEFAULT_DENY` (regex
@@ -164,9 +163,9 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   ré-injectée aux tours suivants d'une session saturée ; ré-armée sur dérapage
   (repeat_stop/loop_degenerate) ou quand la pression retombe. ⚠ Re-passer
   le cas context_squeeze en éval à la prochaine fenêtre machine libre.
-- **Machine de dev** : 6 Go VRAM (RTX 2060) + **64 Go RAM** (upgrade installé et détecté le
-  2026-07-08) : marge d'offload MoE élargie (quants Q5/Q6 du 35B envisageables) et
-  cohabitation RAM confortable LLM + moteur image.
+- **Agnostique machine** : les capacités locales (offload MoE, quants envisageables,
+  cohabitation LLM + moteur image) dépendent de la VRAM/RAM du poste hôte — mesurées à la
+  calibration, jamais supposées ; aucune spec de machine n'est une constante du projet.
 - **Plus de tout-petit modèle** (4B abandonnés) → on peut se fier aux schémas d'outils (le
   modèle les lit), d'où la délégation prompt → schéma. EXCEPTION assumée : le **refiner
   image** `gemma4-e4b-heretic` (E4B décensuré) — pas un cerveau d'agent, un traducteur
@@ -208,10 +207,11 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 - **Speculative decoding** (drafter MTP) : testé puis retiré. Gain tg réel médiocre, build
   régressait, incompatible MoE/multimodal.
 - **Sweeps `n_batch`/`ubatch`** : testés, aucun gain utile. Build llama.cpp b9888 : rejeté
-  (régression). Les gains runtime pinnés = `--no-mmap` (+21 % prefill Gemma / +89 % Qwen) et
-  QAT `n_cpu_moe=40` (+15 % prefill).
-- **Contexte local > 24576** : borné par les 6 Go de VRAM malgré KV q8_0 + flash-attn.
-  Ce n'est pas de la prudence, c'est la limite physique.
+  (régression). Les gains runtime retenus = `--no-mmap` et la calibration `n_cpu_moe`
+  (chiffres propres à chaque machine : à re-mesurer, jamais recopier).
+- **Pousser le contexte local au-delà de la borne calibrée** : la limite vient de la VRAM
+  du poste, malgré KV q8_0 + flash-attn. Ce n'est pas de la prudence, c'est physique — la
+  borne se recalibre par machine (`loom-setup`), jamais par copie d'une valeur d'ailleurs.
 - **Dé-emphaser les règles critiques du prompt** (ex. PowerShell) : régression mesurée
   (qwen 0/3 ; retour à 3/3 en rétablissant l'emphase). Un modèle local a besoin d'impératifs
   fermes, même si la doc frontière conseille l'inverse.
@@ -223,23 +223,19 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   actée : read_image = le modèle EN COURS, jamais un autre ; pas de repli ; un modèle sans
   vision le dit franchement. Les modèles locaux qui doivent voir portent leur mmproj.
 - **Outil `generate_image` (le LLM déclenche la diffusion)** : codé puis ABANDONNÉ le jour
-  même (2026-07-08, jamais mergé). Sur 6 Go de VRAM, chaque image appelée par le LLM = le
-  décharger, diffuser, puis RELIRE 20-35 Go de GGUF depuis le disque (`--no-mmap`) — un
+  même (2026-07-08, jamais mergé). Quand le GPU ne tient pas LLM + diffusion ensemble,
+  chaque image appelée par le LLM = le décharger, diffuser, puis RELIRE des dizaines de
+  Go de GGUF depuis le disque (`--no-mmap`) — un
   aller-retour par image, inacceptable en usage réel. La **sélection du modèle image dans
   l'UI** (mergée, validée E2E) couvre le besoin : quand on veut de l'image, on sélectionne
   de l'image. Patron à ne réévaluer que si le GPU tient LLM + diffusion ensemble.
 
-### Perf locale — leçons mesurées (2026-07-10, banc ornith q8)
-- **RÈGLE Q8 sur 6 Go : `n_cpu_moe = n_layers`** (aucune couche d'experts Q8 sur GPU).
-  L'héritage du réglage Q4 (`n_cpu_moe = 35`, 5 couches sur GPU) faisait déborder la VRAM
-  en mémoire partagée : prefill 26 t/s, décode 4 t/s. À 40/40 : **prefill 142 t/s (×5,5),
-  décode 14,4 t/s (×3,6)**, VRAM 3,3/6 Go. Références Q4 (moe=35) : 234-244 t/s / 20 t/s —
-  le Q8 coûte ×1,6 en prefill, structurel (experts 2× plus lourds à streamer depuis la RAM).
-- **Le chargement GGUF (`--no-mmap`) est CPU-bound, pas disque** : Q8 34 Go = 58 s depuis
-  NVMe, 51 s depuis cache RAM ; Q4 20 Go = 46 s depuis T7 USB. Déménager un GGUF sur NVMe
-  ne gagne que ~5-10 s. E2E réel (loom.web + Playwright, serveur froid, réflexion active,
-  prompt 9,3k tokens) : première réponse en 2 min 43 — démarrage+chargement ~55 s,
-  prefill ~65 s, le reste = réflexion/génération.
+### Runtime local — leçons structurelles (les chiffres se recalibrent par machine)
+- **`n_cpu_moe` mal réglé fait déborder la VRAM en mémoire partagée** (spill silencieux,
+  perfs effondrées) : la valeur sûre dépend du quant et du poste — c'est la cible de la
+  calibration auto (story n°7), jamais une constante à recopier.
+- **Le chargement GGUF (`--no-mmap`) est CPU-bound, pas disque** : déménager un GGUF sur
+  un disque plus rapide ne gagne presque rien.
 - **GOTCHA** : loom.web ne régénère PAS `var/cache/llama-swap.yaml` au démarrage — après
   édition d'un `model.toml`, forcer `regenerate_swap_yaml()` (ou passer par la console).
 - **Cache KV local = ressource UNIQUE, protégée depuis le 2026-07-10** : reflect/titre/ping

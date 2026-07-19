@@ -1,7 +1,7 @@
 # Glossaire
 
-**Partie 1** : inférence locale et matériel (les chiffres s'appuient sur le poste réel :
-Dell G7, RTX 2060 6 Go, 64 Go DDR4 ; ornith Q8 35B MoE calibré `n_cpu_moe = 40`).
+**Partie 1** : inférence locale et matériel (les chiffres cités sont des ordres de grandeur
+mesurés sur un poste de banc ; à recalibrer sur ta machine).
 **Partie 2** : concepts généraux LLM/agents, alignés sur les 5 domaines de la certification
 **Anthropic CCA-F** (Claude Certified Architect – Foundations), définitions FR + EN.
 
@@ -29,7 +29,7 @@ Dell G7, RTX 2060 6 Go, 64 Go DDR4 ; ornith Q8 35B MoE calibré `n_cpu_moe = 40`
 
 **GGUF** : le format de fichier des modèles quantizés pour llama.cpp. L'`ornith-q8.gguf` de `C:/loom-models`.
 
-**Contexte** : tout ce que le modèle « voit » en entrée (fenêtre maximale de tokens). Ornith est configuré à 24 576.
+**Contexte** : tout ce que le modèle « voit » en entrée (fenêtre maximale de tokens). En local, la fenêtre se calibre par machine (`loom-setup`), jamais recopiée d'ailleurs.
 
 **KV cache** : la mémoire de travail de la conversation. Pendant le prefill, le modèle calcule pour chaque token des vecteurs Key/Value ; les garder évite de tout recalculer au message suivant. Perdre ce cache = re-prefill complet = le « re-prefill interminable » qu'on a fixé. Le save/restore de slots, le warm_context : tout ça protège ce cache.
 
