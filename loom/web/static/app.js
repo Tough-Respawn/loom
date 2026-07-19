@@ -1185,11 +1185,18 @@ function createPane() {
 
 function applyPaneLayout() {
   if (!panesEl) return;
+  const multi = state.panes.length > 1;
   panesEl.className =
     "panes layout-" +
     state.panes.length +
-    (state.panes.length > 1 ? " multi" : "") +
+    (multi ? " multi" : "") +
     (state.panes.length === 2 && splitDir === "rows" ? " rows" : "");
+  // Panneau étroit : le placeholder complet passe sur 2 lignes et la 2e est coupée
+  // par le min-height du textarea -> version courte en split, complète en vue simple.
+  const ph = multi
+    ? "Écris une demande… (« / » commandes)"
+    : "Écris une demande — Loom agit avec ses outils… (« / » pour les commandes)";
+  state.panes.forEach((p) => (p.input.placeholder = ph));
   savePanesLayout();
 }
 
