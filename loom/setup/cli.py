@@ -584,8 +584,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     # ── Contexte : calibration TOPOLOGIQUE (topology.py) — pente MESURÉE entre
     # deux chargements + échelle de vitesse en profondeur, avec les flags EXACTS
     # de l'exécutant. Remplace l'ex-formule « KV théorique vs RAM », fausse d'un
-    # facteur 2 (q8_0 vs f16) à 5 (sliding-window) sur le parc réel — audit et
-    # sondes du 2026-07-18, docs/bench-contexte-2026-07-18.md.
+    # facteur 2 (q8_0 vs f16) à 5 (sliding-window) sur le parc réel (audit et
+    # sondes du 2026-07-18).
     import psutil
 
     vram_total = deps.gpu_vram_total_mb()

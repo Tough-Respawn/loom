@@ -2,7 +2,7 @@
 """Calibration AGNOSTIQUE du contexte : découverte de topologie + pente MESURÉE.
 
 Remplace la formule « KV théorique vs RAM » de bench.py, fausse deux fois sur le
-parc réel (audit + sondes du 2026-07-18, docs/bench-contexte-2026-07-18.md) :
+parc réel (audit + sondes du 2026-07-18) :
 - elle supposait le KV en f16 alors que l'exécutant tourne en q8_0 (×1,9) ;
 - elle ignorait l'attention à fenêtre glissante (qwen35moe : ~9 Ko/token RÉELS
   contre 43,5 théoriques, ×5) ;

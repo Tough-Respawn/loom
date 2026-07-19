@@ -1,7 +1,7 @@
 # Gabarit de surcharge MACHINE. Copie-le en config/local.toml (gitignored) et adapte :
 #   cp config/local.example.toml config/local.toml
 # Surcharge defaults.toml avec ce qui est propre à TA machine (binaires, offload GPU, racine
-# des projets) + tes SECRETS. Valeurs ci-dessous : RTX 2060.
+# des projets) + tes SECRETS. Valeurs ci-dessous : purement illustratives, à adapter.
 
 # ============================ Serveur (llama.cpp) ============================
 [server]
@@ -13,7 +13,7 @@ swap_bin = "C:/tools/llama/llama-swap.exe"
 # ============================ Override GPU / CPU =============================
 [override]
 
-# Offload complet -ngl 99 (RTX 2060 : VRAM ~4 Go/6, pas de spill). cf. docs/perf-gpu.md
+# Offload complet -ngl 99 si le modèle tient dans ta VRAM (sinon spill).
 n_gpu_layers = 99
 
 # ================================= Outils ===================================

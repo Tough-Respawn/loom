@@ -109,7 +109,7 @@ def build_launch(
     )
     # En mode GPU, threads = cœurs PHYSIQUES (≈ logiques/2 si HyperThreading) : au-delà,
     # la contention HT ralentit la passe CPU (PLE de Gemma 3n). En CPU-only, tous les
-    # threads. cf. benchmark docs/perf-gpu.md.
+    # threads.
     if cfg.override_threads:
         threads = cfg.override_threads
     elif profile.has_gpu:

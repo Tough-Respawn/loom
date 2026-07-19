@@ -59,10 +59,10 @@ def build_server_args(
     elif cpu_moe:
         args.append("--cpu-moe")
     if gpu_tuning:
-        # Réglages GPU prouvés au benchmark (RTX 2060) : Flash-Attention (attention
-        # plus rapide + cache KV ~÷2), cache KV quantifié q8_0, gros batch de prompt,
-        # priorité process. Couplé au continuous batching (n_parallel auto) : ~+47%
-        # en single-stream et ~×3 en parallèle. Cf. docs/perf-gpu.md.
+        # Réglages GPU prouvés au banc : Flash-Attention (attention plus rapide +
+        # cache KV ~÷2), cache KV quantifié q8_0, gros batch de prompt, priorité
+        # process. Couplé au continuous batching (n_parallel auto), gain net en
+        # single-stream comme en parallèle.
         args += [
             "-fa",
             "on",
@@ -77,9 +77,8 @@ def build_server_args(
             "--prio",
             "2",
             # Poids CPU (experts MoE) chargés en mémoire hôte PINNÉE CUDA au lieu de mmap :
-            # les uploads vers le GPU passent en DMA -> +21% de prefill (gemma), +89% (qwen)
-            # au bench 2026-07-06. Contrepartie : chargement plus long et RAM non-paginable
-            # (~taille du modèle). cf. docs/bench-llama.md.
+            # les uploads vers le GPU passent en DMA -> gain de prefill net, mesuré au banc.
+            # Contrepartie : chargement plus long et RAM non-paginable (~taille du modèle).
             "--no-mmap",
         ]
     if mmproj_path:

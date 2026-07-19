@@ -1,7 +1,7 @@
 # tests/test_topology.py
 """Calibration agnostique (topology.py) : pente mesurée, capacité, échelle de
-vitesse, décision tracée. Fixture « MACHINE DORÉE » = les sondes RÉELLES du
-2026-07-18 (RTX 2060 6 Go + Ornith 35B MoE, docs/bench-contexte-2026-07-18.md) :
+vitesse, décision tracée. Fixture « MACHINE DORÉE » = des sondes RÉELLES figées
+(GPU 6 Go + modèle 35B MoE, relevé du 2026-07-18) :
 le recommandeur doit retrouver la zone validée à la main PAR LE BON MÉCANISME —
 un chiffre juste au mauvais mécanisme est un échec (leçon du cap qui maquillait).
 """
