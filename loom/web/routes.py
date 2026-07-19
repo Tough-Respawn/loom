@@ -1789,7 +1789,13 @@ def _register_session_routes(app, S):
         user_index = int(request.form.get("user_index", "-1"))
         ui_text = (request.form.get("text") or "").strip()
 
-        conv, save = _ctx(S)
+        # Cible la session de l'ONGLET appelant (session_id), pas la session focus
+        # globale : avec la split view, le bouton « repartir » existe dans des panneaux
+        # non-focus, et la resynchro du focus (/session/activate) COURT contre ce POST —
+        # sans session_id, /fork pouvait tronquer une AUTRE session que celle affichée.
+        req_sid = (request.form.get("session_id") or "").strip()
+        sess = (_get_session(S, req_sid) if req_sid else None) or _session(S)
+        conv, save = sess.conversation, (lambda: S.session_store.save(sess))
 
         msgs = conv.messages
 

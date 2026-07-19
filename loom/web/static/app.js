@@ -129,6 +129,11 @@ function renderMsgNav() {
   const nav = document.getElementById("msg-nav");
   if (!nav) return;
   const texts = _userMsgTexts();
+  // Ne reconstruit que si la LISTE change (session ou nb de messages user) : sinon le
+  // streaming la rebâtissait ~60 fois/s et effaçait le surlignage actif à chaque frame.
+  const sig = (state.active || "") + "|" + texts.length;
+  if (nav._sig === sig) return;
+  nav._sig = sig;
   if (texts.length < 2) {
     // inutile pour 0-1 message : on cache
     nav.hidden = true;
@@ -321,12 +326,19 @@ function PermAsk({ it, sid }) {
 function WizChoices({ it, sid }) {
   const pick = (label) => {
     if (it.decided) return;
-    opsFor(sid).patch(it.id, { decided: true, picked: label });
-    // Envoie la réponse DEPUIS le panneau qui montre cette session (sinon le focus).
-    const pane = paneShowing(sid) || focusedPane();
+    // STRICTEMENT le panneau qui montre cette session : jamais de reroutage vers le
+    // focus (un « oui » de wizard posté dans une autre session serait un message chat).
+    const pane = paneShowing(sid);
     if (!pane) return;
+    opsFor(sid).patch(it.id, { decided: true, picked: label });
+    // La réponse wizard part SEULE : les images en attente du composer ne s'invitent
+    // pas dans un « oui » — elles restent pour le prochain vrai message.
+    const staged = pane.pendingImages;
+    pane.pendingImages = [];
     pane.input.value = label;
     submitPane(pane);
+    pane.pendingImages = staged;
+    renderPreviews(pane);
   };
   return html`<div class=${"wiz-choices" + (it.decided ? " decided" : "")}>
     ${it.options.map(
@@ -354,6 +366,9 @@ function UserMsg({ it, userIndex, sid }) {
           .trim()
       : String(it.content || "").trim();
     fd.append("text", itText);
+    // Cible la session de CE panneau : sans session_id, le serveur tronque la session
+    // focus (_cur) — qui peut être un AUTRE panneau (course avec /session/activate).
+    fd.append("session_id", sid);
     const t = tab(sid);
     try {
       const r = await fetch("/fork", { method: "POST", body: fd });
@@ -373,8 +388,9 @@ function UserMsg({ it, userIndex, sid }) {
         const idx = t.timeline.indexOf(it);
         if (idx >= 0) t.timeline = t.timeline.slice(0, idx + 1);
       }
-      // Pre-remplit la saisie du panneau qui montre cette session
-      const pane = paneShowing(sid) || focusedPane();
+      // Pre-remplit la saisie du panneau qui montre cette session — JAMAIS un autre
+      // panneau (le texte forké de A ne doit pas atterrir dans le composer de B).
+      const pane = paneShowing(sid);
       if (pane) {
         pane.input.value = j.text || "";
         pane.input.focus();
@@ -756,6 +772,9 @@ async function sendChat(sid, text, images) {
   // L'indicateur d'activité vit DANS chaque panneau qui montre cet onglet (les flux
   // d'arrière-plan sans panneau n'affichent rien) ; nettoyé au finally.
   const gaTimer = setInterval(() => {
+    // Aucun panneau ne montre ce flux : rien à peindre (N flux d'arrière-plan ne
+    // doivent pas scanner les panneaux toutes les 500 ms pour rien).
+    if (!panesFor(sid).length) return;
     // Label FORCÉ (compaction…) prioritaire sur la détection de silence.
     if (t.forcedActivity) {
       setActivityFor(sid, t.forcedActivity);
@@ -808,8 +827,21 @@ async function sendChat(sid, text, images) {
 // ----------------------------------------------------------------------------
 const tabbarEl = document.getElementById("tabbar");
 
+// Bandeaux des panneaux : chaque fenêtre porte le NOM de sa session + le point de
+// génération (sinon impossible de savoir quel panneau est quel onglet). Rafraîchis
+// avec renderTabs — mêmes déclencheurs (titre inféré, flux démarré/fini, focus, drop).
+function renderPaneHeads() {
+  for (const p of state.panes) {
+    if (!p.headTitle) continue;
+    const t = state.tabs[p.sid];
+    p.headTitle.textContent = t ? t.title || "session" : "—";
+    p.headDot.className = "pane-dot " + (t && t.streaming ? "gen" : "idle");
+  }
+}
+
 function renderTabs() {
   if (!tabbarEl) return;
+  renderPaneHeads();
   tabbarEl.hidden = state.order.length === 0;
   tabbarEl.innerHTML = "";
   for (const sid of state.order) {
@@ -973,34 +1005,43 @@ async function _loadDisplay(t, sid, hasTimeline, messages) {
 
 // Charge un onglet (état + affichage) SANS l'activer — partagé par openTab et la split
 // view (restauration de disposition, « ouvrir à droite » d'une session non ouverte).
-async function ensureTab(sid) {
-  if (state.tabs[sid]) return state.tabs[sid];
-  let d;
-  try {
-    d = await (await fetch("/session_state?id=" + encodeURIComponent(sid))).json();
-  } catch {
-    return null;
-  }
-  const t = {
-    sid,
-    title: d.title || "session",
-    timeline: [],
-    streaming: false,
-    abort: null,
-    model: d.model || "",
-    thinking: d.thinking !== false,
-    localOnly: !!d.local_only,
-    workspace: d.workspace || "",
-    meter: d.usage_totals || null,
-    metrics: null,
-    draft: "",
-    history: _userTexts(d.messages),
-    histIdx: -1,
-  };
-  await _loadDisplay(t, sid, d.has_timeline, d.messages);
-  state.tabs[sid] = t;
-  state.order.push(sid);
-  return t;
+// Dédup des chargements EN VOL : la restauration au boot et un clic sidebar simultanés
+// sur le même sid ne doivent produire QU'UN onglet (sinon double entrée dans la barre).
+const _tabLoads = {};
+function ensureTab(sid) {
+  if (state.tabs[sid]) return Promise.resolve(state.tabs[sid]);
+  if (_tabLoads[sid]) return _tabLoads[sid];
+  const load = (async () => {
+    let d;
+    try {
+      d = await (await fetch("/session_state?id=" + encodeURIComponent(sid))).json();
+    } catch {
+      return null;
+    }
+    const t = {
+      sid,
+      title: d.title || "session",
+      timeline: [],
+      streaming: false,
+      abort: null,
+      model: d.model || "",
+      thinking: d.thinking !== false,
+      localOnly: !!d.local_only,
+      workspace: d.workspace || "",
+      meter: d.usage_totals || null,
+      metrics: null,
+      draft: "",
+      history: _userTexts(d.messages),
+      histIdx: -1,
+    };
+    await _loadDisplay(t, sid, d.has_timeline, d.messages);
+    if (state.tabs[sid]) return state.tabs[sid]; // course perdue : le 1er arrivé fait foi
+    state.tabs[sid] = t;
+    state.order.push(sid);
+    return t;
+  })().finally(() => delete _tabLoads[sid]);
+  _tabLoads[sid] = load;
+  return load;
 }
 
 async function openTab(sid) {
@@ -1025,7 +1066,10 @@ function setPaneSid(pane, sid) {
   setPaneActivity(pane, null);
   syncComposer(pane);
   renderPane(pane);
-  if (pane === focusedPane()) state.active = sid;
+  // state.active n'est PAS écrit ici : focusSingletonsFor est le SEUL écrivain du
+  // focus. Pré-écrire ici faisait croire à focusPane que rien n'avait changé -> la
+  // resynchro serveur/topbar (/session/activate) était sautée (bug du drop sur le
+  // panneau focus, même famille que 000d094).
 }
 
 // Synchronise les singletons (topbar, sélecteur modèle, moniteur, sidebar) sur l'onglet
@@ -1115,14 +1159,14 @@ function closeTab(sid) {
     showing.forEach((p) => removePane(p));
   } else if (showing.length) {
     // Vue simple : on bascule sur le dernier onglet restant (comportement historique).
+    // Via setPaneSid (pas de mutation à la main) : palette fermée, activité effacée,
+    // composer resynchronisé — le chemin manuel oubliait tout ça (bouton figé sur Stop).
     const pane = showing[0];
-    pane.sid = null;
+    setPaneSid(pane, null);
     const next = state.order[state.order.length - 1] || null;
     if (next) activateTab(next);
     else {
       state.active = null;
-      pane.input.value = "";
-      renderPane(pane);
       renderTabs();
     }
   } else {
@@ -1140,15 +1184,6 @@ const panesEl = document.getElementById("panes");
 const paneTpl = document.getElementById("pane-tpl");
 const MAX_IMAGES = 6;
 let splitDir = "cols"; // orientation d'un split à 2 panneaux (à droite vs en dessous)
-// Disposition sauvegardée, capturée AVANT l'hydratation : le premier applyPaneLayout()
-// (1 panneau) réécrit localStorage — sans cette capture, la restauration lirait du vide.
-const SAVED_PANES = (() => {
-  try {
-    return JSON.parse(localStorage.loomPanes || "null");
-  } catch (e) {
-    return null;
-  }
-})();
 let CMDS = []; // commandes « / » (source de vérité serveur), partagées par les palettes
 fetch("/commands")
   .then((r) => r.json())
@@ -1163,6 +1198,8 @@ function createPane() {
   const pane = {
     sid: null,
     el,
+    headTitle: q(".pane-title"),
+    headDot: q(".pane-dot"),
     wrap: q(".messages-wrap"),
     root: q(".messages"),
     form: q(".chat-form"),
@@ -1183,21 +1220,24 @@ function createPane() {
   return pane;
 }
 
+// Peint UNIQUEMENT (classes de grille + placeholders) — la persistance est l'affaire
+// des COMMANDES utilisateur (savePanesLayout), jamais du rendu : coupler les deux
+// écrasait la disposition sauvegardée au boot, avant que la restauration ne la lise.
 function applyPaneLayout() {
   if (!panesEl) return;
-  const multi = state.panes.length > 1;
+  const n = state.panes.length;
+  const rows2 = n === 2 && splitDir === "rows";
   panesEl.className =
-    "panes layout-" +
-    state.panes.length +
-    (multi ? " multi" : "") +
-    (state.panes.length === 2 && splitDir === "rows" ? " rows" : "");
-  // Panneau étroit : le placeholder complet passe sur 2 lignes et la 2e est coupée
-  // par le min-height du textarea -> version courte en split, complète en vue simple.
-  const ph = multi
+    "panes layout-" + n + (n > 1 ? " multi" : "") + (rows2 ? " rows" : "");
+  // Placeholder selon la LARGEUR réelle (pas le mode) : en colonnes étroites le texte
+  // complet passe sur 2 lignes dont la 2e est coupée par le min-height du textarea ;
+  // un split en lignes garde des panneaux pleine largeur -> version complète.
+  // Source unique : le template n'embarque aucun placeholder, c'est ici qu'il se pose.
+  const narrow = n > 1 && !rows2;
+  const ph = narrow
     ? "Écris une demande… (« / » commandes)"
     : "Écris une demande — Loom agit avec ses outils… (« / » pour les commandes)";
   state.panes.forEach((p) => (p.input.placeholder = ph));
-  savePanesLayout();
 }
 
 function savePanesLayout() {
@@ -1226,23 +1266,27 @@ function addPane(sid, dir) {
   state.panes.push(pane);
   panesEl.appendChild(pane.el);
   if (sid && state.tabs[sid]) setPaneSid(pane, sid);
+  else renderPane(pane); // panneau vide : peindre l'état « écris une demande »
   applyPaneLayout();
-  focusPane(state.panes.length - 1);
-  renderPane(pane);
-  renderTabs();
+  focusPane(state.panes.length - 1); // focusPane fait déjà le renderTabs
   return pane;
 }
 
 function removePane(pane) {
   const i = state.panes.indexOf(pane);
   if (i < 0 || state.panes.length <= 1) return;
+  // Le focus suit l'IDENTITÉ du panneau focus, pas son index : retirer un panneau
+  // situé AVANT lui décalait tout et basculait focus + _cur serveur sur la mauvaise
+  // session (repro : A|B|C focus B, fermer A -> focus sautait sur C).
+  const keep = focusedPane();
   // Brouillon sauvé avant de perdre le panneau (l'onglet reste ouvert dans la barre).
   const t = state.tabs[pane.sid];
   if (t) t.draft = pane.input.value;
   state.panes.splice(i, 1);
   pane.el.remove();
-  if (state.focusedIdx >= state.panes.length)
-    state.focusedIdx = state.panes.length - 1;
+  const ki = state.panes.indexOf(keep);
+  state.focusedIdx =
+    ki >= 0 ? ki : Math.min(state.focusedIdx, state.panes.length - 1);
   applyPaneLayout();
   focusPane(state.focusedIdx);
   renderTabs();
@@ -1431,7 +1475,17 @@ function submitPane(pane) {
   autosize(pane); // revient à 1 ligne après envoi
   clearImages(pane);
   // Envoi sur l'onglet du panneau (flux concurrent) ; le bouton passe à Stop.
-  sendChat(sid, text, imgs).finally(() => pane.input.focus());
+  sendChat(sid, text, imgs).finally(() => {
+    // Ne re-focus que si l'utilisateur n'est pas parti taper AILLEURS : la fin d'un
+    // flux (parfois minutes plus tard) ne doit jamais voler le clavier d'un autre
+    // panneau — sinon la suite de sa phrase partait dans la mauvaise session.
+    const ae = document.activeElement;
+    if (
+      focusedPane() === pane &&
+      (!ae || ae === document.body || pane.el.contains(ae))
+    )
+      pane.input.focus();
+  });
   syncComposer(pane);
 }
 
@@ -1447,14 +1501,14 @@ function stopPane(pane) {
 function wirePane(pane) {
   const input = pane.input;
   // Focus du panneau au premier geste dedans (split view) — capture, avant les boutons.
-  pane.el.addEventListener(
-    "pointerdown",
-    () => {
-      const i = state.panes.indexOf(pane);
-      if (i >= 0 && i !== state.focusedIdx) focusPane(i);
-    },
-    true,
-  );
+  const takeFocus = () => {
+    const i = state.panes.indexOf(pane);
+    if (i >= 0 && i !== state.focusedIdx) focusPane(i);
+  };
+  pane.el.addEventListener("pointerdown", takeFocus, true);
+  // Le focus panneau SUIT aussi le focus CLAVIER (Tab entre panneaux) : sinon coller
+  // une image ou les singletons topbar ciblaient un autre panneau que celui où on tape.
+  pane.el.addEventListener("focusin", takeFocus);
   // Scroll collant : on suit le bas seulement si l'utilisateur y est déjà.
   pane.wrap.addEventListener(
     "scroll",
@@ -1546,6 +1600,12 @@ function wirePane(pane) {
     pane.fileInput.value = ""; // permet de re-sélectionner le même fichier ensuite
   });
   pane.fileBtn.addEventListener("click", () => pane.fileInput.click());
+  // ✕ du bandeau : ferme le PANNEAU (l'onglet et la session restent dans la barre).
+  pane.el.querySelector(".pane-x")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    removePane(pane);
+    savePanesLayout();
+  });
   // Déposer un ONGLET (glissé depuis la barre) sur ce panneau : la session s'y affiche
   // (échange si elle était déjà dans un autre panneau — jamais de doublon).
   pane.el.addEventListener("dragover", (e) => {
@@ -1571,6 +1631,11 @@ function wirePane(pane) {
 // ----------------------------------------------------------------------------
 function dropTabOnPane(sid, pane) {
   if (pane.sid === sid) return;
+  // Sauve d'abord le brouillon VIVANT du panneau cible : dans l'échange ci-dessous,
+  // setPaneSid(other, mine) relit t.draft AVANT que setPaneSid(pane, sid) ne l'ait
+  // sauvé — sans cette ligne, le texte tapé non envoyé disparaissait de l'écran.
+  const mineTab = state.tabs[pane.sid];
+  if (mineTab) mineTab.draft = pane.input.value;
   const other = paneShowing(sid);
   if (other) {
     // Déplacer = ÉCHANGER les onglets des deux panneaux (pas de double affichage).
@@ -1667,7 +1732,9 @@ window.addEventListener("keydown", (e) => {
   } else if (e.ctrlKey && e.shiftKey && backslash) {
     e.preventDefault();
     singleView();
-  } else if (e.altKey && /^Digit[1-4]$/.test(e.code)) {
+  } else if (e.altKey && !e.ctrlKey && /^Digit[1-4]$/.test(e.code)) {
+    // !ctrlKey : AltGr (Windows) allume ctrl+alt à la fois — sans ce garde, taper
+    // ~ # { (AltGr+2/3/4 en AZERTY) volait le focus au lieu d'écrire le caractère.
     const i = +e.code.slice(5) - 1;
     if (state.panes[i]) {
       e.preventDefault();
@@ -1774,22 +1841,31 @@ scheduleRender();
 // sessions qui existent encore (INIT.sessions fait foi), en fond — la page reste
 // utilisable pendant le chargement des onglets.
 (async () => {
-  const saved = SAVED_PANES;
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.loomPanes || "null");
+  } catch (e) {
+    saved = null;
+  }
   if (!saved || !Array.isArray(saved.sids) || saved.sids.length < 2) return;
   const known = new Set((INIT.sessions || []).map((s) => s.id));
   const sids = saved.sids.filter((s) => known.has(s));
   if (sids.length < 2) return;
   splitDir = saved.dir === "rows" ? "rows" : "cols";
+  // Chargements en PARALLÈLE : 4 panneaux = le max des aller-retours, pas leur somme.
+  await Promise.all(sids.map(ensureTab));
   const first = state.panes[0];
-  if (first && first.sid !== sids[0] && (await ensureTab(sids[0]))) {
-    if (!paneShowing(sids[0])) setPaneSid(first, sids[0]);
-  }
+  if (first && first.sid !== sids[0] && state.tabs[sids[0]] && !paneShowing(sids[0]))
+    setPaneSid(first, sids[0]);
   for (const sid of sids.slice(1)) {
     if (state.panes.length >= 4) break;
-    if (paneShowing(sid)) continue;
-    if (await ensureTab(sid)) addPane(sid);
+    if (paneShowing(sid) || !state.tabs[sid]) continue;
+    addPane(sid);
   }
   focusPane(0);
+  // focusPane peut court-circuiter (focusedIdx inchangé) alors que le panneau 0 vient
+  // de CHANGER de session : force la resynchro serveur/topbar sur ce qu'il montre.
+  if (state.panes[0] && state.panes[0].sid) focusSingletonsFor(state.panes[0].sid);
   renderTabs();
   savePanesLayout();
 })();
@@ -2207,7 +2283,8 @@ if (resetBtn) {
       updateUsageMeter({});
       setMetrics(null, null, null);
     }
-    scheduleRender();
+    // Seuls les panneaux montrant CETTE session repeignent (pas les 3 autres du split).
+    scheduleRenderFor(state.active);
   });
 }
 
