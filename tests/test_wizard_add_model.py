@@ -77,6 +77,39 @@ def test_etat_inconnu_annule_proprement():
     assert r.state is None
 
 
+# ---------- /remove-model : confirmations par kind ----------
+
+
+def test_remove_liste_avec_rappel_et_confirmations_par_kind():
+    items = [
+        {"id": "loc", "kind": "local", "label": "loc — local, 1.0 Go sur disque"},
+        {
+            "id": "cfg",
+            "kind": "remote_config",
+            "label": "cfg — distant (m, config/local.toml)",
+            "is_default": True,
+        },
+        {
+            "id": "img",
+            "kind": "image",
+            "label": "img — image (ComfyUI), définition seule",
+        },
+    ]
+    r = wizard.start_remove(deps(removable=items))
+    assert "config/local.toml" in r.reply and "poids ComfyUI" in r.reply
+    # local : message disque inchangé
+    c = wizard.step(r.state, "1", deps(removable=items))
+    assert "SUPPRIMÉS du disque" in c.reply
+    # remote_config : retrait du fichier + avertissement default_model
+    c = wizard.step(r.state, "2", deps(removable=items))
+    assert "config/local.toml" in c.reply and "défaut" in c.reply
+    # image : définition seule, poids non touchés
+    c = wizard.step(r.state, "3", deps(removable=items))
+    assert "workflow.json" in c.reply and "PAS touchés" in c.reply
+    ok = wizard.step(c.state, "oui", deps(removable=items))
+    assert ok.action == {"kind": "remove", "id": "img", "model_kind": "image"}
+
+
 # ---------- flux image/vidéo ----------
 
 
