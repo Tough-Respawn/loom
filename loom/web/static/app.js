@@ -1826,15 +1826,19 @@ function wirePane(pane) {
   // seulement quand elle change — dragover tire à la cadence de la souris.
   let dragRect = null;
   let lastZone = null;
+  let dragDepth = 0; // enter/leave comptés : les enfants traversés émettent des
+  // dragleave intermédiaires qui tuaient l'overlay en plein panneau (« il faut
+  // forcer pour qu'il propose », vécu 2026-07-19)
   const zoneAt = (e) => {
     const r = dragRect || pane.el.getBoundingClientRect();
     const x = (e.clientX - r.left) / r.width;
     const y = (e.clientY - r.top) / r.height;
-    if (x < 0.2) return "left";
-    if (x > 0.8) return "right";
-    if (y < 0.25) return "top";
-    if (y > 0.75) return "bottom";
-    return "center";
+    // Centre = seulement le CŒUR du panneau (40 % médians) ; partout ailleurs, le
+    // bord le PLUS PROCHE est proposé directement — plus besoin d'aller chercher
+    // l'extrême bord pour obtenir un split.
+    if (x > 0.3 && x < 0.7 && y > 0.3 && y < 0.7) return "center";
+    const d = { left: x, right: 1 - x, top: y, bottom: 1 - y };
+    return Object.keys(d).reduce((a, b) => (d[a] < d[b] ? a : b));
   };
   const ZONE_GEO = {
     center: [0, 0, 100, 100],
@@ -1847,11 +1851,15 @@ function wirePane(pane) {
     overlay.hidden = true;
     dragRect = null;
     lastZone = null;
+    dragDepth = 0;
   };
   pane.el.addEventListener("dragenter", (e) => {
     if (![...e.dataTransfer.types].includes(SID_MIME)) return;
-    dragRect = pane.el.getBoundingClientRect();
-    lastZone = null;
+    dragDepth++;
+    if (!dragRect) {
+      dragRect = pane.el.getBoundingClientRect();
+      lastZone = null;
+    }
   });
   pane.el.addEventListener("dragover", (e) => {
     if (!dragRect) return; // pas un drag d'onglet/panneau
@@ -1867,7 +1875,12 @@ function wirePane(pane) {
     overlay.style.width = g[2] + "%";
     overlay.style.height = g[3] + "%";
   });
-  pane.el.addEventListener("dragleave", endDrag);
+  // Ne clore le drag QUE quand on quitte vraiment le panneau (compteur à zéro) —
+  // pas à chaque frontière d'enfant traversée.
+  pane.el.addEventListener("dragleave", () => {
+    if (dragDepth > 0) dragDepth--;
+    if (dragDepth === 0) endDrag();
+  });
   pane.el.addEventListener("drop", (e) => {
     const z = zoneAt(e);
     endDrag();
