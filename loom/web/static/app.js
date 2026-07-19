@@ -47,8 +47,6 @@ const md = (raw) => {
   const out = DOMPurify.sanitize(marked.parse(text));
   return out.replace(/@@MATH(\d+)@@/g, (_, i) => _escHtml(maths[+i] || ""));
 };
-const esc = (s) => (s || "").replace(/</g, "&lt;");
-const fmtSecs = (ms) => (ms / 1000).toFixed(1) + "s";
 
 const INIT = JSON.parse(
   document.getElementById("loom-init")?.textContent || "{}",
@@ -67,7 +65,9 @@ const state = {
   order: [], // ordre des onglets ouverts
   panes: [], // Pane[] (créés par createPane : élément cloné de #pane-tpl + refs + état)
   focusedIdx: 0, // index du panneau focus dans panes
-  active: null, // sid du panneau focus (maintenu par focusPane/activateTab/setPaneSid)
+  active: null, // sid du panneau focus (écrit par focusSingletonsFor ; null si panneau vide)
+  layoutRoot: null, // arbre de disposition (nœuds split dir/ratio, feuilles pane)
+  maximized: null, // panneau en plein écran (bascule ⛶) ou null
 };
 let _seq = 0;
 const uid = () => "i" + ++_seq;
@@ -102,9 +102,6 @@ function renderPane(pane) {
 function scheduleRenderFor(sid) {
   panesFor(sid).forEach(renderPane);
 }
-function scheduleRender() {
-  state.panes.forEach(renderPane);
-}
 
 // --- Navigateur de prompts : liste les messages UTILISATEUR de l'onglet actif à droite.
 // Survol = texte complet (title + panneau élargi), clic = saut vers le message. ---
@@ -136,12 +133,15 @@ function renderMsgNav() {
     nav._sig = "";
     return;
   }
-  const texts = _userMsgTexts();
-  // Ne reconstruit que si la LISTE change (session ou nb de messages user) : sinon le
-  // streaming la rebâtissait ~60 fois/s et effaçait le surlignage actif à chaque frame.
-  const sig = (state.active || "") + "|" + texts.length;
+  // Signature AVANT toute extraction (session + nb de messages user) : appelé à chaque
+  // frame du streaming, il ne doit pas extraire les textes tant que rien ne change.
+  const t = activeTab();
+  let count = 0;
+  if (t) for (const it of t.timeline) if (it.kind === "user") count++;
+  const sig = (state.active || "") + "|" + count;
   if (nav._sig === sig) return;
   nav._sig = sig;
+  const texts = _userMsgTexts();
   if (texts.length < 2) {
     // inutile pour 0-1 message : on cache
     nav.hidden = true;
@@ -854,7 +854,6 @@ function modelType(modelId) {
 // Rafraîchis avec renderTabs — mêmes déclencheurs (titre, flux, focus, drop, /model).
 function renderPaneHeads() {
   for (const p of state.panes) {
-    if (!p.headTitle) continue;
     const t = state.tabs[p.sid];
     p.headTitle.textContent = t ? t.title || "session" : "—";
     p.headDot.className = "pane-dot " + (t && t.streaming ? "gen" : "idle");
@@ -887,11 +886,7 @@ function renderTabs() {
     // Split view : clic droit = menu (ouvrir à droite/en dessous…), glisser = déplacer
     // l'onglet vers un panneau.
     el.addEventListener("contextmenu", (e) => openTabMenu(e, sid));
-    el.draggable = true;
-    el.addEventListener("dragstart", (ev) => {
-      ev.dataTransfer.setData("text/loom-sid", sid);
-      ev.dataTransfer.effectAllowed = "move";
-    });
+    wireSidDrag(el, () => sid);
     const dot = document.createElement("span");
     dot.className = "tab-dot " + (t.streaming ? "gen" : "idle");
     const title = document.createElement("span");
@@ -1098,13 +1093,18 @@ function setPaneSid(pane, sid) {
   syncComposer(pane);
   renderPane(pane);
   // state.active n'est PAS écrit ici : focusSingletonsFor est le SEUL écrivain du
-  // focus. Pré-écrire ici faisait croire à focusPane que rien n'avait changé -> la
-  // resynchro serveur/topbar (/session/activate) était sautée (bug du drop sur le
-  // panneau focus, même famille que 000d094).
+  // focus (bug du drop sur le panneau focus, même famille que 000d094).
+  // La disposition persistée porte les sids des feuilles : tout changement d'onglet
+  // affiché se sauve ici, LE point de mutation (idempotent, gestes utilisateur only).
+  savePanesLayout();
 }
 
 // Synchronise les singletons (topbar, sélecteur modèle, moniteur, sidebar) sur l'onglet
-// qui prend le FOCUS, et informe le serveur (session focus _cur).
+// qui prend le FOCUS, et informe le serveur (session focus _cur). IDEMPOTENT : le POST
+// /session/activate est dédupliqué ICI (dernier sid annoncé) — les appelants n'ont
+// jamais à deviner s'il faut resynchroniser (la famille de bugs 000d094 venait de
+// gardes « changed » posées aux call sites).
+let _lastActivated = null;
 function focusSingletonsFor(sid) {
   const t = state.tabs[sid];
   state.active = sid;
@@ -1113,9 +1113,12 @@ function focusSingletonsFor(sid) {
   // sur _cur). La rafale /machine_state part APRÈS la réponse : un tick immédiat
   // lirait l'ANCIENNE session active côté serveur et re-basculerait le moniteur
   // avec un état périmé (course vécue au switch d'onglet).
-  postForm("/session/activate", { id: sid })
-    .then(() => scheduleMachineRefresh())
-    .catch(() => {});
+  if (_lastActivated !== sid) {
+    _lastActivated = sid;
+    postForm("/session/activate", { id: sid })
+      .then(() => scheduleMachineRefresh())
+      .catch(() => {});
+  }
   // Synchronise les contrôles de la sidebar/topbar à cet onglet.
   const sel = document.getElementById("model-select");
   if (sel && t.model) sel.value = t.model;
@@ -1150,14 +1153,15 @@ function focusSingletonsFor(sid) {
   renderMsgNav();
 }
 
-// Donne le focus au panneau i : liseré, singletons, serveur — sans changer son onglet.
-function focusPane(i) {
+// Donne le focus à un panneau (objet Pane ou index) : liseré, singletons, serveur,
+// barre d'onglets — sans changer son onglet. Toujours COMPLET (la dédup du POST vit
+// dans focusSingletonsFor) : aucun appelant n'a de resynchro à rajouter derrière.
+function focusPane(target) {
+  const i = typeof target === "number" ? target : state.panes.indexOf(target);
   const pane = state.panes[i];
   if (!pane) return;
-  const changed = state.focusedIdx !== i || state.active !== pane.sid;
   state.focusedIdx = i;
   state.panes.forEach((p, k) => p.el.classList.toggle("focused", k === i));
-  if (!changed) return;
   if (pane.sid) focusSingletonsFor(pane.sid);
   else state.active = null;
   renderTabs();
@@ -1169,14 +1173,13 @@ function activateTab(sid) {
   // Déjà affiché dans un panneau -> on FOCUS ce panneau (pas de double affichage).
   const shown = paneShowing(sid);
   if (shown) {
-    focusPane(state.panes.indexOf(shown));
+    focusPane(shown);
     return;
   }
   const pane = focusedPane();
   if (!pane) return;
   setPaneSid(pane, sid);
-  focusSingletonsFor(sid);
-  renderTabs();
+  focusPane(pane);
 }
 
 function closeTab(sid) {
@@ -1193,17 +1196,16 @@ function closeTab(sid) {
     // Via setPaneSid (pas de mutation à la main) : palette fermée, activité effacée,
     // composer resynchronisé — le chemin manuel oubliait tout ça (bouton figé sur Stop).
     const pane = showing[0];
-    setPaneSid(pane, null);
     const next = state.order[state.order.length - 1] || null;
     if (next) activateTab(next);
     else {
+      setPaneSid(pane, null);
       state.active = null;
       renderTabs();
     }
   } else {
     renderTabs();
   }
-  savePanesLayout();
 }
 
 // ----------------------------------------------------------------------------
@@ -1264,18 +1266,36 @@ function leafOf(pane, node, parent, key) {
   );
 }
 
-// Scinde la feuille du panneau CIBLE : le nouveau panneau prend la moitié, côté b.
-function splitPaneNode(target, dir, newPane) {
+// Scinde la feuille du panneau CIBLE : le nouveau panneau prend la moitié — côté b
+// (droite/bas) par défaut, côté a (gauche/haut) si `before`. LA règle de placement
+// unique : menu, drop directionnel et déplacement de panneau passent tous ici.
+function splitPaneNode(target, dir, newPane, before) {
   const loc = leafOf(target);
   const leaf = { type: "pane", pane: newPane };
   if (!loc) {
     state.layoutRoot = leaf;
     return;
   }
-  const split = { type: "split", dir, ratio: 0.5, a: loc.node, b: leaf };
+  const split = {
+    type: "split",
+    dir,
+    ratio: 0.5,
+    a: before ? leaf : loc.node,
+    b: before ? loc.node : leaf,
+  };
   if (loc.parent) loc.parent[loc.key] = split;
   else state.layoutRoot = split;
 }
+
+// Retire une feuille de l'arbre : son split parent DEVIENT l'autre enfant (mutation
+// en place — pas besoin du grand-parent). Partagé par removePane et movePaneToEdge.
+function detachLeaf(loc) {
+  const sibling = loc.key === "a" ? loc.parent.b : loc.parent.a;
+  for (const k of Object.keys(loc.parent)) delete loc.parent[k];
+  Object.assign(loc.parent, sibling);
+}
+
+const clampRatio = (r) => Math.min(0.85, Math.max(0.15, r));
 
 // Peint l'arbre : boîtes imbriquées + séparateurs, les .pane existants sont DÉPLACÉS
 // dedans (leurs listeners, saisies et rendus Preact survivent au déplacement).
@@ -1327,7 +1347,7 @@ function makeSash(node, aEl, bEl) {
       const frac = vertical
         ? (ev.clientX - r.left) / r.width
         : (ev.clientY - r.top) / r.height;
-      node.ratio = Math.min(0.85, Math.max(0.15, frac));
+      node.ratio = clampRatio(frac);
       aEl.style.flex = `${node.ratio} 1 0`;
       bEl.style.flex = `${1 - node.ratio} 1 0`;
     };
@@ -1348,18 +1368,30 @@ function makeSash(node, aEl, bEl) {
 
 // Placeholder selon la LARGEUR RÉELLE du panneau (le texte complet coupé sur 2 lignes
 // faisait « cassé ») — source unique, le template n'embarque aucun placeholder.
+// Lectures groupées AVANT les écritures (sinon reflow forcé par panneau), écriture
+// seulement au changement de palier.
 function updatePlaceholders() {
-  for (const p of state.panes) {
-    const w = p.el.clientWidth;
-    p.input.placeholder =
+  const widths = state.panes.map((p) => p.el.clientWidth);
+  state.panes.forEach((p, i) => {
+    const w = widths[i];
+    const ph =
       w > 0 && w < 340
         ? "Écris une demande…"
         : w > 0 && w < 560
           ? "Écris une demande… (« / » commandes)"
           : "Écris une demande — Loom agit avec ses outils… (« / » pour les commandes)";
-  }
+    if (p.input.placeholder !== ph) p.input.placeholder = ph;
+  });
 }
-window.addEventListener("resize", updatePlaceholders);
+let _phRaf = false; // resize continu (drag de fenêtre) -> au plus un recalcul par frame
+window.addEventListener("resize", () => {
+  if (_phRaf) return;
+  _phRaf = true;
+  requestAnimationFrame(() => {
+    _phRaf = false;
+    updatePlaceholders();
+  });
+});
 
 // Déplace un PANNEAU existant sur un bord d'un autre (saisi par son bandeau) : sa
 // feuille est retirée de l'arbre (le parent s'effondre sur le frère) puis regreffée
@@ -1368,24 +1400,10 @@ function movePaneToEdge(src, target, dir, before) {
   if (src === target) return;
   const loc = leafOf(src);
   if (!loc || !loc.parent) return; // src est la racine seule : rien à déplacer
-  const sibling = loc.key === "a" ? loc.parent.b : loc.parent.a;
-  for (const k of Object.keys(loc.parent)) delete loc.parent[k];
-  Object.assign(loc.parent, sibling);
-  const leaf = { type: "pane", pane: src };
-  const tloc = leafOf(target);
-  if (!tloc) return;
-  const split = {
-    type: "split",
-    dir,
-    ratio: 0.5,
-    a: before ? leaf : tloc.node,
-    b: before ? tloc.node : leaf,
-  };
-  if (tloc.parent) tloc.parent[tloc.key] = split;
-  else state.layoutRoot = split;
+  detachLeaf(loc);
+  splitPaneNode(target, dir, src, before);
   renderLayout();
-  focusPane(state.panes.indexOf(src));
-  renderTabs();
+  focusPane(src);
   savePanesLayout();
 }
 
@@ -1394,8 +1412,7 @@ function movePaneToEdge(src, target, dir, before) {
 function toggleMaximize(pane) {
   state.maximized = state.maximized === pane ? null : pane;
   renderLayout();
-  focusPane(state.panes.indexOf(pane));
-  renderTabs();
+  focusPane(pane);
 }
 
 function savePanesLayout() {
@@ -1412,24 +1429,25 @@ function savePanesLayout() {
   }
 }
 
-function addPane(sid, dir, target) {
+function addPane(sid, dir, target, before) {
   if (state.panes.length >= 4) {
     showToast("4 panneaux maximum");
     return null;
   }
   const shown = sid && paneShowing(sid);
   if (shown) {
-    focusPane(state.panes.indexOf(shown));
+    focusPane(shown);
     return null;
   }
   const pane = createPane();
   state.panes.push(pane);
-  splitPaneNode(target || focusedPane(), dir || "row", pane);
+  splitPaneNode(target || focusedPane(), dir || "row", pane, before);
   if (sid && state.tabs[sid]) setPaneSid(pane, sid);
   else renderPane(pane); // panneau vide : peindre l'état « écris une demande »
   state.maximized = null;
   renderLayout();
-  focusPane(state.panes.length - 1); // focusPane fait déjà le renderTabs
+  focusPane(pane);
+  savePanesLayout();
   return pane;
 }
 
@@ -1443,24 +1461,14 @@ function removePane(pane) {
   // Brouillon sauvé avant de perdre le panneau (l'onglet reste ouvert dans la barre).
   const t = state.tabs[pane.sid];
   if (t) t.draft = pane.input.value;
-  // Chirurgie de l'arbre : le split parent DEVIENT son autre enfant (mutation en
-  // place — pas besoin de connaître le grand-parent).
   const loc = leafOf(pane);
-  if (loc && loc.parent) {
-    const sibling = loc.key === "a" ? loc.parent.b : loc.parent.a;
-    for (const k of Object.keys(loc.parent)) delete loc.parent[k];
-    Object.assign(loc.parent, sibling);
-  } else if (loc) {
-    state.layoutRoot = null; // dernière feuille (ne doit pas arriver : garde length>1)
-  }
+  if (loc && loc.parent) detachLeaf(loc);
   state.panes.splice(i, 1);
   pane.el.remove();
   const ki = state.panes.indexOf(keep);
-  state.focusedIdx =
-    ki >= 0 ? ki : Math.min(state.focusedIdx, state.panes.length - 1);
   renderLayout();
-  focusPane(state.focusedIdx);
-  renderTabs();
+  focusPane(ki >= 0 ? ki : Math.min(state.focusedIdx, state.panes.length - 1));
+  savePanesLayout();
 }
 
 // ---- Indicateur d'activité (silences du flux) : par panneau ----
@@ -1496,13 +1504,31 @@ function autosize(pane) {
 }
 
 // ---- images jointes (par panneau, jusqu'à MAX_IMAGES) ----
+// Une URL blob par fichier, RÉVOQUÉE au retrait : l'ancien code en mintait une neuve à
+// chaque re-render sans jamais révoquer -> chaque File restait épinglé en mémoire.
+const _thumbUrls = new Map(); // File -> blob URL
+function _thumbUrl(file) {
+  let u = _thumbUrls.get(file);
+  if (!u) {
+    u = URL.createObjectURL(file);
+    _thumbUrls.set(file, u);
+  }
+  return u;
+}
+function _dropThumb(file) {
+  const u = _thumbUrls.get(file);
+  if (u) {
+    URL.revokeObjectURL(u);
+    _thumbUrls.delete(file);
+  }
+}
 function renderPreviews(pane) {
   pane.previewWrap.innerHTML = "";
   pane.pendingImages.forEach((file, i) => {
     const wrap = document.createElement("div");
     wrap.className = "thumb";
     const img = document.createElement("img");
-    img.src = URL.createObjectURL(file);
+    img.src = _thumbUrl(file);
     img.alt = file.name || "image";
     const rm = document.createElement("button");
     rm.type = "button";
@@ -1523,10 +1549,12 @@ function addImages(pane, files) {
   renderPreviews(pane);
 }
 function removeImage(pane, i) {
-  pane.pendingImages.splice(i, 1);
+  const [f] = pane.pendingImages.splice(i, 1);
+  if (f) _dropThumb(f);
   renderPreviews(pane);
 }
 function clearImages(pane) {
+  pane.pendingImages.forEach(_dropThumb);
   pane.pendingImages = [];
   renderPreviews(pane);
 }
@@ -1673,8 +1701,7 @@ function wirePane(pane) {
   const input = pane.input;
   // Focus du panneau au premier geste dedans (split view) — capture, avant les boutons.
   const takeFocus = () => {
-    const i = state.panes.indexOf(pane);
-    if (i >= 0 && i !== state.focusedIdx) focusPane(i);
+    if (state.panes[state.focusedIdx] !== pane) focusPane(pane);
   };
   pane.el.addEventListener("pointerdown", takeFocus, true);
   // Le focus panneau SUIT aussi le focus CLAVIER (Tab entre panneaux) : sinon coller
@@ -1775,7 +1802,6 @@ function wirePane(pane) {
   pane.el.querySelector(".pane-x")?.addEventListener("click", (e) => {
     e.stopPropagation();
     removePane(pane);
-    savePanesLayout();
   });
   // ⛶ / double-clic sur le bandeau : bascule plein écran de CE panneau.
   pane.el.querySelector(".pane-max")?.addEventListener("click", (e) => {
@@ -1790,22 +1816,18 @@ function wirePane(pane) {
     });
     // Le bandeau est la POIGNÉE du panneau : le saisir-glisser déplace la zone de
     // chat entière vers les zones directionnelles d'un autre panneau.
-    head.draggable = true;
-    head.addEventListener("dragstart", (ev) => {
-      if (!pane.sid) {
-        ev.preventDefault();
-        return;
-      }
-      ev.dataTransfer.setData("text/loom-sid", pane.sid);
-      ev.dataTransfer.effectAllowed = "move";
-    });
+    wireSidDrag(head, () => pane.sid);
   }
-  // Déposer un ONGLET (glissé depuis la barre) : zones DIRECTIONNELLES à la VS Code.
-  // L'overlay montre où il atterrit : centre = remplacer/échanger, bord = scinder de
-  // ce côté. Jamais de double affichage d'une même session.
+  // Déposer un ONGLET (glissé depuis la barre) ou un PANNEAU (par son bandeau) :
+  // zones DIRECTIONNELLES à la VS Code. L'overlay montre où il atterrit : centre =
+  // remplacer/échanger, bord = scinder de ce côté. Jamais de double affichage.
   const overlay = pane.el.querySelector(".pane-overlay");
+  // Rect capturé à l'ENTRÉE du drag (il ne bouge pas pendant), zone repeinte
+  // seulement quand elle change — dragover tire à la cadence de la souris.
+  let dragRect = null;
+  let lastZone = null;
   const zoneAt = (e) => {
-    const r = pane.el.getBoundingClientRect();
+    const r = dragRect || pane.el.getBoundingClientRect();
     const x = (e.clientX - r.left) / r.width;
     const y = (e.clientY - r.top) / r.height;
     if (x < 0.2) return "left";
@@ -1821,85 +1843,89 @@ function wirePane(pane) {
     top: [0, 0, 100, 50],
     bottom: [0, 50, 100, 50],
   };
+  const endDrag = () => {
+    overlay.hidden = true;
+    dragRect = null;
+    lastZone = null;
+  };
+  pane.el.addEventListener("dragenter", (e) => {
+    if (![...e.dataTransfer.types].includes(SID_MIME)) return;
+    dragRect = pane.el.getBoundingClientRect();
+    lastZone = null;
+  });
   pane.el.addEventListener("dragover", (e) => {
-    if (![...e.dataTransfer.types].includes("text/loom-sid")) return;
+    if (!dragRect) return; // pas un drag d'onglet/panneau
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    const g = ZONE_GEO[zoneAt(e)];
+    const z = zoneAt(e);
+    if (z === lastZone) return;
+    lastZone = z;
+    const g = ZONE_GEO[z];
     overlay.hidden = false;
     overlay.style.left = g[0] + "%";
     overlay.style.top = g[1] + "%";
     overlay.style.width = g[2] + "%";
     overlay.style.height = g[3] + "%";
   });
-  pane.el.addEventListener("dragleave", () => (overlay.hidden = true));
+  pane.el.addEventListener("dragleave", endDrag);
   pane.el.addEventListener("drop", (e) => {
-    overlay.hidden = true;
-    const sid = e.dataTransfer.getData("text/loom-sid");
+    const z = zoneAt(e);
+    endDrag();
+    const sid = e.dataTransfer.getData(SID_MIME);
     if (!sid || !state.tabs[sid]) return;
     e.preventDefault();
-    const z = zoneAt(e);
     const src = paneShowing(sid); // panneau existant glissé (par bandeau ou onglet)
     if (src === pane) return; // déposé sur lui-même
     if (z === "center") {
-      dropTabOnPane(sid, pane); // centre : remplacer / échanger
+      dropTabOnPane(sid, pane, src); // centre : remplacer / échanger
       return;
     }
     const dir = z === "left" || z === "right" ? "row" : "col";
     const before = z === "left" || z === "top";
-    if (src) {
-      // Un PANNEAU existant déposé sur un bord : restructuration de l'arbre.
-      movePaneToEdge(src, pane, dir, before);
-      return;
-    }
-    // Onglet d'arrière-plan : nouveau panneau de ce côté.
-    const p2 = addPane(sid, dir, pane);
-    if (p2 && before) {
-      // Le nouveau panneau va AVANT la cible : échange a/b du split créé.
-      const loc = leafOf(p2);
-      if (loc && loc.parent) {
-        const tmp = loc.parent.a;
-        loc.parent.a = loc.parent.b;
-        loc.parent.b = tmp;
-        renderLayout();
-      }
-    }
-    savePanesLayout();
+    if (src) movePaneToEdge(src, pane, dir, before); // panneau : regreffe de ce côté
+    else addPane(sid, dir, pane, before); // onglet d'arrière-plan : nouveau panneau
   });
 }
 
 // ----------------------------------------------------------------------------
 // Split view : commandes (menu contextuel d'onglet, glisser-déposer, raccourcis).
 // ----------------------------------------------------------------------------
-function dropTabOnPane(sid, pane) {
-  if (pane.sid === sid) return;
+const SID_MIME = "text/loom-sid"; // payload du drag d'onglet ET de bandeau de panneau
+
+// Rend `el` source de drag d'une session (onglet de la barre, bandeau de panneau).
+function wireSidDrag(el, getSid) {
+  el.draggable = true;
+  el.addEventListener("dragstart", (ev) => {
+    const sid = getSid();
+    if (!sid) {
+      ev.preventDefault();
+      return;
+    }
+    ev.dataTransfer.setData(SID_MIME, sid);
+    ev.dataTransfer.effectAllowed = "move";
+  });
+}
+
+// Dépose la session `sid` DANS `pane` (zone centre) : échange si elle était affichée
+// dans un autre panneau (`other`, calculé par l'appelant), sinon simple remplacement.
+function dropTabOnPane(sid, pane, other) {
   // Sauve d'abord le brouillon VIVANT du panneau cible : dans l'échange ci-dessous,
   // setPaneSid(other, mine) relit t.draft AVANT que setPaneSid(pane, sid) ne l'ait
   // sauvé — sans cette ligne, le texte tapé non envoyé disparaissait de l'écran.
   const mineTab = state.tabs[pane.sid];
   if (mineTab) mineTab.draft = pane.input.value;
-  const other = paneShowing(sid);
-  if (other) {
-    // Déplacer = ÉCHANGER les onglets des deux panneaux (pas de double affichage).
-    const mine = pane.sid;
-    setPaneSid(other, mine);
-    setPaneSid(pane, sid);
-  } else {
-    setPaneSid(pane, sid);
-  }
-  focusPane(state.panes.indexOf(pane));
-  savePanesLayout();
-  renderTabs();
+  if (other) setPaneSid(other, pane.sid);
+  setPaneSid(pane, sid);
+  focusPane(pane);
 }
 
-// « Ouvrir à droite / en dessous » : l'onglet visé s'affiche dans un NOUVEAU panneau.
-// S'il est déjà affiché, le nouveau panneau prend le plus récent onglet NON affiché
-// (scinder n'a de sens qu'avec deux contenus différents — pas de doublon).
-async function splitWith(sid, dir) {
+// « Ouvrir en parallèle » : l'onglet visé s'affiche dans un NOUVEAU panneau (à droite ;
+// la disposition se règle ensuite au glissé-déposé). S'il est déjà affiché, le nouveau
+// panneau prend le plus récent onglet NON affiché (pas de double affichage).
+async function splitWith(sid) {
   if (!sid || !(await ensureTab(sid))) return;
   if (!paneShowing(sid)) {
-    addPane(sid, dir);
-    savePanesLayout();
+    addPane(sid, "row");
     return;
   }
   const free = state.order.filter((s) => !paneShowing(s));
@@ -1907,8 +1933,7 @@ async function splitWith(sid, dir) {
     showToast("rien à scinder : ouvre un autre onglet d'abord");
     return;
   }
-  addPane(free[free.length - 1], dir);
-  savePanesLayout();
+  addPane(free[free.length - 1], "row");
 }
 
 // Vue simple : ne garde que le panneau FOCUS (les onglets restent dans la barre).
@@ -1918,7 +1943,6 @@ function singleView() {
   [...state.panes].forEach((p) => {
     if (p !== keep) removePane(p);
   });
-  savePanesLayout();
 }
 
 // ---- menu contextuel d'onglet (clic droit) ----
@@ -1951,7 +1975,7 @@ function openTabMenu(e, sid) {
   // Une seule entrée : le split par défaut ouvre à droite, la DISPOSITION se règle
   // ensuite au glissé-déposé (bandeau/onglet -> zones directionnelles) — plus simple
   // que de choisir une direction dans un menu (retour user 2026-07-19).
-  add("Ouvrir en parallèle", () => splitWith(sid, "row"), full);
+  add("Ouvrir en parallèle", () => splitWith(sid), full);
   const sep = document.createElement("div");
   sep.className = "ctx-sep";
   m.appendChild(sep);
@@ -1972,7 +1996,7 @@ window.addEventListener("keydown", (e) => {
   const backslash = e.code === "Backslash" || e.code === "IntlBackslash";
   if (e.ctrlKey && !e.shiftKey && backslash) {
     e.preventDefault();
-    splitWith(state.active, "row");
+    splitWith(state.active);
   } else if (e.ctrlKey && e.shiftKey && backslash) {
     e.preventDefault();
     singleView();
@@ -2080,7 +2104,7 @@ function addSidebarSession(d) {
   pane.input.focus(); // l'ancien autofocus du textarea unique est mort avec lui
 }
 renderTabs();
-scheduleRender();
+renderPane(state.panes[0]);
 
 // Restaure la DISPOSITION de la dernière fois (ARBRE complet : structure + ratios) :
 // uniquement des sessions qui existent encore (INIT.sessions fait foi), en fond — la
@@ -2117,7 +2141,7 @@ scheduleRender();
         return {
           type: "split",
           dir: n.dir === "col" ? "col" : "row",
-          ratio: Math.min(0.85, Math.max(0.15, +n.ratio || 0.5)),
+          ratio: clampRatio(+n.ratio || 0.5),
           a,
           b,
         };
@@ -2139,11 +2163,7 @@ scheduleRender();
   if (!root) return;
   state.layoutRoot = root;
   renderLayout();
-  focusPane(0);
-  // focusPane peut court-circuiter (focusedIdx inchangé) alors que le panneau 0 vient
-  // de CHANGER de session : force la resynchro serveur/topbar sur ce qu'il montre.
-  if (state.panes[0] && state.panes[0].sid) focusSingletonsFor(state.panes[0].sid);
-  renderTabs();
+  focusPane(0); // complet par contrat : resynchronise serveur/topbar + renderTabs
   savePanesLayout();
 })();
 
