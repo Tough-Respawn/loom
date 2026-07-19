@@ -524,8 +524,11 @@ def _list_remote_models(base_url: str, api_key: str) -> list[str] | None:
 
 
 def _removable_models(S) -> list[dict]:
-    """Modèles supprimables via /remove-model : locaux (avec taille/dossier) et
-    distants GÉRÉS par l'UI (ceux de config/local.toml s'éditent là-bas)."""
+    """Modèles supprimables via /remove-model : TOUT ce que le sélecteur affiche.
+    kind ∈ {local, remote (store UI), remote_config (config/local.toml), image, video}
+    — le wizard adapte son message de confirmation au kind (wizard._step_d_pick)."""
+    import tomllib
+
     items = []
     for m in S.local_model_specs:
         size = (m.get("size_mb") or 0) / 1024
@@ -536,8 +539,10 @@ def _removable_models(S) -> list[dict]:
                 "label": f"{m['id']} — local, {size:.1f} Go sur disque",
             }
         )
+    managed = set()
     if S.remote_store_path:
         for r in model_store.load(S.remote_store_path):
+            managed.add(r["id"])
             items.append(
                 {
                     "id": r["id"],
@@ -545,6 +550,36 @@ def _removable_models(S) -> list[dict]:
                     "label": f"{r['id']} — distant ({r.get('model', '?')})",
                 }
             )
+    # Distants déclarés dans config/local.toml : supprimables AUSSI (tomlkit) — si
+    # c'est le default_model, la confirmation avertit (repli boot sur le 1er modèle).
+    default_model = ""
+    if S.config_local_path and Path(S.config_local_path).exists():
+        try:
+            cfg = tomllib.loads(Path(S.config_local_path).read_text(encoding="utf-8"))
+            default_model = str(cfg.get("chat", {}).get("default_model") or "")
+        except (OSError, tomllib.TOMLDecodeError):
+            pass
+    for mid in sorted(S.remote_model_ids - managed):
+        items.append(
+            {
+                "id": mid,
+                "kind": "remote_config",
+                "is_default": mid == default_model,
+                "label": f"{mid} — distant "
+                f"({S.remote_model_names.get(mid, '?')}, config/local.toml)",
+            }
+        )
+    # Image/vidéo (ComfyUI) : seule la DÉFINITION Loom (model.toml + workflow.json)
+    # est supprimable — les poids vivent côté ComfyUI, partagés entre modèles.
+    for im in sorted(S.image_by_id.values(), key=lambda m: m.id):
+        kind = "video" if im.id in S.video_model_ids else "image"
+        items.append(
+            {
+                "id": im.id,
+                "kind": kind,
+                "label": f"{im.id} — {kind} (ComfyUI), définition seule",
+            }
+        )
     return items
 
 
@@ -582,6 +617,8 @@ def _wizard_deps(S):
         existing_ids=set(S.models),
         list_remote_models=_list_remote_models,
         removable_models=lambda: _removable_models(S),
+        image_dir_state=lambda ikind, mid: _image_dir_state(S, ikind, mid),
+        check_workflow=_check_workflow,
     )
 
 
@@ -600,6 +637,84 @@ def _mount_local(S, mid, mdir, size_mb, vision=False):
     if vision:
         S.vision_models.add(mid)
     _regen_swap_yaml(S)
+
+
+def _image_base_dir(S, ikind: str) -> Path:
+    """Dossier local/{image,video} où vivent les modèles de ce type : la racine qui
+    en héberge déjà, sinon celle d'un modèle image existant, sinon à côté de
+    models_dir (<root>/local/text -> <root>/local/<ikind>)."""
+    for im in S.image_by_id.values():
+        d = Path(im.dir).parent
+        if d.name == ikind:
+            return d
+    if S.image_by_id:
+        any_dir = Path(next(iter(S.image_by_id.values())).dir)
+        return any_dir.parent.parent / ikind
+    return Path(S.models_dir).parent / ikind
+
+
+def _image_dir_state(S, ikind: str, mid: str) -> str | None:
+    """État du dossier d'un modèle image/vidéo : None (absent), "partial" (scaffold
+    sans recette) ou "complete" (montable). Sert au wizard pour la reprise."""
+    d = _image_base_dir(S, ikind) / mid
+    if not d.is_dir():
+        return None
+    return (
+        "complete"
+        if (d / "model.toml").is_file() and (d / "workflow.json").is_file()
+        else "partial"
+    )
+
+
+def _check_workflow(path: str) -> dict:
+    """Validation légère d'un export ComfyUI « format API » : JSON parsable +
+    placeholder {PROMPT} (warning si absent, jamais bloquant — recette exotique)."""
+    import json as _json
+
+    p = Path(path)
+    if not p.is_file():
+        return {"ok": False, "error": f"fichier introuvable ({path})", "warnings": []}
+    try:
+        raw = p.read_text(encoding="utf-8")
+        _json.loads(raw)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": f"JSON invalide : {exc}", "warnings": []}
+    warnings = []
+    if "{PROMPT}" not in raw:
+        warnings.append(
+            "placeholder {PROMPT} absent — le prompt du chat ne sera pas injecté"
+        )
+    return {"ok": True, "error": None, "warnings": warnings}
+
+
+def _mount_image(S, ikind: str, mid: str):
+    """(Re)découvre <root>/local/{image,video}/<mid> via le parseur officiel et le
+    monte À CHAUD dans tous les registres du sélecteur. None si absent/incomplet."""
+    from loom.runtime.image_models import discover_image_models
+
+    root = _image_base_dir(S, ikind).parent.parent
+    im = next((m for m in discover_image_models([root]) if m.id == mid), None)
+    if im is None:
+        return None
+    S.image_by_id[mid] = im
+    S.image_model_ids.add(mid)
+    if im.kind == "video":
+        S.video_model_ids.add(mid)
+    if mid not in S.models:
+        S.models.append(mid)
+    if im.description:
+        S.model_descriptions[mid] = im.description
+    return im
+
+
+def _forget_image(S, mid: str) -> None:
+    """Démonte un modèle image/vidéo de tous les registres du sélecteur."""
+    S.image_by_id.pop(mid, None)
+    S.image_model_ids.discard(mid)
+    S.video_model_ids.discard(mid)
+    S.model_descriptions.pop(mid, None)
+    if mid in S.models:
+        S.models.remove(mid)
 
 
 def _persist_wizard_exchange(S, sess, conv, save, message, reply):
@@ -687,7 +802,6 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
     shown = message
     if prev_step == "r_key" and message.strip().lower() not in ("aucune", "none", "-"):
         shown = "•••••••• (clé masquée)"
-    _persist_wizard_exchange(S, sess, conv, save, shown, res.reply)
 
     job = None
     extra_reply = ""
@@ -704,13 +818,35 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             extra_reply = "\n(store des modèles indisponible : ajout NON persisté)"
     elif res.action and res.action["kind"] == "remove":
         a = res.action
-        if a["model_kind"] == "remote":
-            if S.remote_store_path:
+        if a["model_kind"] in ("remote", "remote_config"):
+            # UI (store JSON) ou config/local.toml (tomlkit) : même démontage à chaud.
+            if a["model_kind"] == "remote":
+                if S.remote_store_path:
+                    with S.toml_lock:
+                        model_store.delete(S.remote_store_path, a["id"])
+                where = "store"
+            else:
                 with S.toml_lock:
-                    model_store.delete(S.remote_store_path, a["id"])
+                    model_store.delete_remote_in_toml(S.config_local_path, a["id"])
+                where = "config/local.toml"
             _forget_remote(S, a["id"])
-            extra_reply = f"\n✅ « {a['id']} » retiré (store + sélecteur)."
+            extra_reply = f"\n✅ « {a['id']} » retiré ({where} + sélecteur)."
             models_changed = True
+        elif a["model_kind"] in ("image", "video"):
+            import shutil
+
+            im = S.image_by_id.get(a["id"])
+            try:
+                if im is not None:
+                    shutil.rmtree(im.dir)
+                _forget_image(S, a["id"])
+                extra_reply = (
+                    f"\n✅ Définition de « {a['id']} » supprimée (sélecteur compris) ; "
+                    "les poids ComfyUI partagés ne sont PAS touchés."
+                )
+                models_changed = True
+            except OSError as exc:
+                extra_reply = f"\n❌ Suppression impossible : {exc}"
         else:
             import shutil
 
@@ -741,6 +877,61 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                 )
             except OSError as exc:
                 extra_reply = f"\n❌ Suppression impossible : {exc}"
+    elif res.action and res.action["kind"] == "mount_image":
+        a = res.action
+        im = _mount_image(S, a["model_kind"], a["id"])
+        extra_reply = (
+            f"\n✅ « {a['id']} » monté — disponible dans le sélecteur."
+            if im is not None
+            else f"\n❌ Dossier de « {a['id']} » introuvable ou incomplet — "
+            "relance /add-model."
+        )
+        models_changed = im is not None
+    elif res.action and res.action["kind"] == "install_image":
+        a = res.action
+        base = _image_base_dir(S, a["model_kind"])
+        mdir = base / a["model_id"]
+        try:
+            mdir.mkdir(parents=True, exist_ok=True)
+            if not (mdir / "model.toml").is_file():  # reprise : ne pas écraser
+                desc = a["description"].replace('"', "'")
+                tmpl = next(iter(S.image_by_id.values()), None)
+                comfy_dir = tmpl.comfy_dir if tmpl else "C:/tools/ComfyUI"
+                comfy_port = tmpl.comfy_port if tmpl else 8188
+                refiner = tmpl.refiner if tmpl else ""
+                timeout = 3600 if a["model_kind"] == "video" else 600
+                (mdir / "model.toml").write_text(
+                    f'label = "{a["model_id"]}"\n'
+                    f"width = {a['width']}\nheight = {a['height']}\n"
+                    f'comfy_dir = "{comfy_dir}"\ncomfy_port = {comfy_port}\n'
+                    f'refiner = "{refiner}"\ntimeout = {timeout}\n'
+                    f'description = "{desc}"\n',
+                    encoding="utf-8",
+                )
+            if a["workflow_path"]:
+                import shutil
+
+                shutil.copyfile(a["workflow_path"], mdir / "workflow.json")
+                im = _mount_image(S, a["model_kind"], a["model_id"])
+                extra_reply = (
+                    f"\n✅ « {a['model_id']} » créé et monté — disponible dans le "
+                    "sélecteur. (Les poids ComfyUI ne sont pas gérés par Loom : la "
+                    "recette doit référencer des checkpoints déjà présents côté "
+                    "ComfyUI.)"
+                    if im is not None
+                    else f"\n❌ Recette copiée mais montage impossible — vérifie {mdir}."
+                )
+                models_changed = im is not None
+            else:
+                extra_reply = (
+                    f"\n📁 Dossier préparé : {mdir}\nDépose ton export ComfyUI "
+                    "(format API) sous le nom workflow.json, puis relance "
+                    f"/add-model {a['model_kind']} avec le même id "
+                    f"« {a['model_id']} » pour le monter (sinon il sera découvert "
+                    "au prochain démarrage)."
+                )
+        except OSError as exc:
+            extra_reply = f"\n❌ Création impossible : {exc}"
     elif res.action and res.action["kind"] == "install":
         a = res.action
         if not S.models_dir:
@@ -768,6 +959,11 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                     S, sess, chat_lock, a["model_id"], mdir, j
                 ),
             )
+
+    # Persistance APRÈS les actions : le résultat (✅/❌ d'extra_reply) fait partie
+    # de l'échange — sinon il n'existait qu'en SSE et disparaissait au rechargement
+    # du fil (vécu : « Suppression de … » sans verdict après F5).
+    _persist_wizard_exchange(S, sess, conv, save, shown, res.reply + extra_reply)
 
     chat_lock.release()
 
