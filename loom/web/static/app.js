@@ -779,6 +779,10 @@ async function sendChat(sid, text, images) {
 
   // L'indicateur d'activité vit DANS chaque panneau qui montre cet onglet (les flux
   // d'arrière-plan sans panneau n'affichent rien) ; nettoyé au finally.
+  // Minuteur : le prefill (et un éventuel démarrage à froid devant lui) peut durer
+  // de 20 s à 2 min — les secondes écoulées rendent l'attente lisible (retour user
+  // 2026-07-19 : « 1min52 » vécu à l'aveugle, c'était chargement 60 s + prefill 27 s).
+  const sentAt = Date.now();
   const gaTimer = setInterval(() => {
     // Aucun panneau ne montre ce flux : rien à peindre (N flux d'arrière-plan ne
     // doivent pas scanner les panneaux toutes les 500 ms pour rien).
@@ -789,12 +793,13 @@ async function sendChat(sid, text, images) {
       return;
     }
     const quiet = Date.now() - lastEvtAt > 2500;
+    const elapsed = Math.round((Date.now() - sentAt) / 1000);
     setActivityFor(
       sid,
       t.streaming && quiet
         ? sawToken
           ? "le modèle travaille"
-          : "préparation du contexte (prefill)"
+          : `préparation du contexte (prefill) · ${elapsed} s`
         : null,
     );
   }, 500);
