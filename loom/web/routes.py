@@ -421,6 +421,13 @@ CHAT_COMMANDS = [
         "disque) ou distant géré par l'UI — liste numérotée + confirmation.",
     },
     {
+        "name": "/rebench",
+        "usage": "/rebench · /rebench <id modèle local>",
+        "description": "Recalibrer un modèle LOCAL texte tel que configuré "
+        "(contexte par pente mesurée + vitesse en profondeur) — verdict comparé "
+        "à l'actuel, application sur confirmation.",
+    },
+    {
         "name": "/goal",
         "usage": "/goal <condition> · /goal (statut) · /goal clear",
         "description": "Poser un objectif vérifiable pour la session, le consulter, "
@@ -619,6 +626,8 @@ def _wizard_deps(S):
         removable_models=lambda: _removable_models(S),
         image_dir_state=lambda ikind, mid: _image_dir_state(S, ikind, mid),
         check_workflow=_check_workflow,
+        rebenchable_models=lambda: _rebenchable_models(S),
+        model_kind=lambda mid: _model_kind(S, mid),
     )
 
 
@@ -717,6 +726,145 @@ def _forget_image(S, mid: str) -> None:
         S.models.remove(mid)
 
 
+# ---- /rebench : recalibration topologique d'un LOCAL TEXTE (loom.setup réutilisé) ----
+
+# Un seul rebench à la fois : la mesure sature CPU/GPU et exige la VRAM libre.
+_REBENCH = {"job": None}
+
+
+def _model_kind(S, mid: str) -> str | None:
+    if mid in S.remote_model_ids:
+        return "remote"
+    if mid in S.video_model_ids:
+        return "video"
+    if mid in S.image_model_ids:
+        return "image"
+    if any(m.get("id") == mid for m in S.local_model_specs):
+        return "local"
+    return None
+
+
+def _rebenchable_models(S) -> list[dict]:
+    """Modèles calibrables par /rebench : les LOCAUX TEXTE uniquement."""
+    return [
+        {
+            "id": m["id"],
+            "label": f"{m['id']} — contexte actuel {m.get('context', '?')}, "
+            f"{(m.get('size_mb') or 0) / 1024:.1f} Go",
+        }
+        for m in S.local_model_specs
+    ]
+
+
+def _run_calibration(S, spec, progress):
+    """Cœur de mesure (préconditions + topologie + calibrate), avec les flags EXACTS
+    du modèle. Lève RuntimeError actionnable si la machine n'est pas prête.
+    Isolé pour être stubbable dans les tests (aucun subprocess en CI)."""
+    import tomllib
+
+    import psutil
+
+    from loom.runtime.gguf_meta import read_gguf_meta
+    from loom.setup import bench as bench_mod
+    from loom.setup import topology as topo_mod
+    from loom.setup.steps import read_raw_config, resolve_bin, server_bin_status
+    from loom.web.__main__ import CONFIG_PATH, PERSONAL_CONFIG_PATH
+
+    raw = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
+    tbl = raw.get("bench") or {}
+    if not tbl.get("threads"):
+        raise RuntimeError(
+            "machine pas encore calibrée — lance « uv run loom-setup » d'abord"
+        )
+    _, bin_name = server_bin_status(raw)
+    server_bin = resolve_bin(bin_name)
+    if server_bin is None:
+        raise RuntimeError("binaire llama-server introuvable")
+    mdir = Path(spec["dir"])
+    mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
+    gguf = mdir / mt["filename"]
+    if not gguf.is_file():
+        raise RuntimeError(f"GGUF introuvable ({gguf})")
+    meta = read_gguf_meta(gguf)
+    is_moe = bool(meta.get("expert_count"))
+    vram = topo_mod.gpu_vram_total_mb()
+    topo = topo_mod.discover_topology(meta, bench_mod.has_gpu_backend(server_bin), vram)
+    headroom = int((raw.get("server") or {}).get("gpu_kv_headroom_mb", 640) or 640)
+    ram = int(psutil.virtual_memory().total // (1024 * 1024))
+    budget = topo_mod.memory_budget_mb(topo, vram, ram, headroom)
+    mmproj = mt.get("mmproj_filename")
+    probe = topo_mod.ServerProbe(
+        server_bin=str(server_bin),
+        model_path=str(gguf),
+        threads=tbl["threads"],
+        # Doctrine mesurée du parc : MoE + GPU = attention sur GPU, experts en RAM.
+        ngl=99 if (is_moe and topo != topo_mod.TOPO_RAM) else tbl.get("ngl", 0),
+        topology=topo,
+        mmproj_path=str(mdir / mmproj) if mmproj else None,
+        cpu_moe=bool(mt.get("cpu_moe", is_moe)),
+        n_cpu_moe=mt.get("n_cpu_moe"),
+    )
+    progress(f"topologie {topo}, budget {budget} Mo")
+    calib = topo_mod.calibrate(
+        probe, meta, topology=topo, budget_mb=budget, progress=progress
+    )
+    return calib, gguf
+
+
+def _rebench_worker(S, sess, chat_lock, mid, job):
+    """Thread du job : mesure, verdict comparé, message PERSISTÉ + état b_apply si
+    une application a du sens. `job.done` posé EN DERNIER (le stream lit final)."""
+    spec = next((m for m in S.local_model_specs if m.get("id") == mid), None)
+    try:
+        calib, _gguf = _run_calibration(
+            S, spec, lambda m: setattr(job, "label", f"calibration : {m}")
+        )
+        current = int(spec.get("context") or S.context_window or 0)
+        new = calib["context"]
+        if new == current:
+            msg = (
+                f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
+                f"mesuré {new} ({calib['mecanisme']}). Rien à changer."
+            )
+            wiz = None
+        else:
+            sens = (
+                "amélioration"
+                if new > current
+                else "RÉDUCTION (l'actuel déborde le budget mesuré)"
+            )
+            msg = (
+                f"Verdict pour « {mid} » : {sens} — contexte {current} → {new} "
+                f"(pente {calib['slope_kb_tok']} Ko/token, vitesse validée "
+                f"jusqu'à {calib['valide_jusqua']} tokens).\n"
+                f"mécanisme : {calib['mecanisme']}\n"
+                "Tape « oui » pour appliquer — toute autre réponse laisse tout "
+                "en l'état."
+            )
+            wiz = {
+                "step": "b_apply",
+                "id": mid,
+                "context": new,
+                "mecanisme": calib["mecanisme"],
+            }
+    except (RuntimeError, ValueError) as exc:
+        msg = f"❌ Recalibration de « {mid} » échouée : {exc} — config inchangée."
+        wiz = None
+    got = chat_lock.acquire(timeout=2)
+    try:
+        conv = sess.conversation
+        conv.add("assistant", msg)
+        if wiz is not None:
+            conv.set_wizard(wiz)
+        S.session_store.append_event(sess.id, "text", {"text": msg})
+        S.session_store.save(sess)
+    finally:
+        if got:
+            chat_lock.release()
+    job.final = msg
+    job.done = True
+
+
 def _persist_wizard_exchange(S, sess, conv, save, message, reply):
     """Chaque étape du wizard est un VRAI échange du fil : persistée dans la
     conversation ET le journal (ré-affichage au rechargement) — exigence spec."""
@@ -777,7 +925,8 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
     active = bool(conv.wizard)
     is_cmd = message == "/add-model" or message.startswith("/add-model ")
     is_rm = message == "/remove-model" or message.startswith("/remove-model ")
-    if not (active or is_cmd or is_rm):
+    is_rb = message == "/rebench" or message.startswith("/rebench ")
+    if not (active or is_cmd or is_rm or is_rb):
         return message, None
 
     # Étape AVANT transition : si c'était la saisie de la clé (r_key), le message
@@ -786,7 +935,9 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
     try:
         deps = _wizard_deps(S)
-        if is_rm:
+        if is_rb:
+            res = _wizard.start_rebench(message[len("/rebench") :].strip(), deps)
+        elif is_rm:
             res = _wizard.start_remove(deps)
         elif is_cmd:
             res = _wizard.start(message[len("/add-model") :].strip(), deps)
@@ -804,9 +955,50 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
         shown = "•••••••• (clé masquée)"
 
     job = None
+    rb_job = None
     extra_reply = ""
     models_changed = False
-    if res.action and res.action["kind"] == "upsert_remote":
+    if res.action and res.action["kind"] == "rebench":
+        cur = _REBENCH["job"]
+        if cur is not None and not cur.done:
+            extra_reply = (
+                "\n⏳ Une calibration est déjà en cours — attends sa fin "
+                "(le verdict s'affichera dans son fil)."
+            )
+        else:
+            from types import SimpleNamespace
+
+            # Le banc charge le modèle lui-même : il lui faut la VRAM -> serveur off.
+            S.server_manager.stop()
+            rb_job = SimpleNamespace(done=False, label="", final=None)
+            _REBENCH["job"] = rb_job
+            threading.Thread(
+                target=_rebench_worker,
+                args=(S, sess, chat_lock, res.action["id"], rb_job),
+                daemon=True,
+                name="loom-rebench",
+            ).start()
+    elif res.action and res.action["kind"] == "rebench_apply":
+        a = res.action
+        spec = next((m for m in S.local_model_specs if m.get("id") == a["id"]), None)
+        if spec is None:
+            extra_reply = f"\n❌ Modèle « {a['id']} » introuvable — rien d'appliqué."
+        else:
+            import tomllib
+
+            from loom.setup.cli import _set_model_context
+
+            mdir = Path(spec["dir"])
+            mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
+            _set_model_context(mdir / mt["filename"], a["context"], a["mecanisme"])
+            spec["context"] = a["context"]
+            S.model_contexts[a["id"]] = a["context"]
+            _regen_swap_yaml(S)
+            extra_reply = (
+                f"\n✅ contexte {a['context']} écrit dans le model.toml de "
+                f"« {a['id']} » — effet au prochain chargement du modèle."
+            )
+    elif res.action and res.action["kind"] == "upsert_remote":
         rec = {k: v for k, v in res.action["record"].items() if v is not None}
         if S.remote_store_path:
             with S.toml_lock:
@@ -973,6 +1165,15 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
         # sélecteur (vécu : « disponible dans le sélecteur »… qui ne l'affichait pas).
         if models_changed:
             yield _sse("models")
+        if rb_job is not None:
+            # Calibration en fond : progression live, verdict déjà PERSISTÉ par le
+            # worker (visible même si ce flux est coupé/onglet fermé).
+            while not rb_job.done:
+                yield _sse("status", label=rb_job.label or "calibration en cours…")
+                time.sleep(2)
+            yield _sse("status", label="")
+            if rb_job.final:
+                yield _sse("text", text="\n" + rb_job.final)
         if job is not None:
             while not job.done:
                 yield _sse(
