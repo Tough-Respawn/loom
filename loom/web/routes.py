@@ -1793,8 +1793,15 @@ def _register_session_routes(app, S):
         # globale : avec la split view, le bouton « repartir » existe dans des panneaux
         # non-focus, et la resynchro du focus (/session/activate) COURT contre ce POST —
         # sans session_id, /fork pouvait tronquer une AUTRE session que celle affichée.
+        # Un session_id fourni mais INCONNU est une erreur franche : surtout pas de
+        # repli silencieux sur la session focus (ce serait re-tronquer la mauvaise).
         req_sid = (request.form.get("session_id") or "").strip()
-        sess = (_get_session(S, req_sid) if req_sid else None) or _session(S)
+        if req_sid:
+            sess = _get_session(S, req_sid)
+            if sess is None:
+                return Response("session inconnue", status=404)
+        else:
+            sess = _session(S)
         conv, save = sess.conversation, (lambda: S.session_store.save(sess))
 
         msgs = conv.messages
