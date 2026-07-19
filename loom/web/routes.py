@@ -2300,6 +2300,9 @@ _LOCAL_EDITABLE = {
     "n_gpu_layers": "int",
     "cpu_moe": "bool",
     "n_cpu_moe": "int",
+    # Microbatch/batch de prefill (banc 2026-07-19 : levier x2,9 sur MoE offloadé).
+    "ubatch": "int",
+    "batch": "int",
 }
 
 

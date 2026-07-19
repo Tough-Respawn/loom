@@ -17,6 +17,8 @@ def build_server_args(
     cpu_moe: bool = False,
     n_cpu_moe: int | None = None,
     slot_save_dir: str | None = None,
+    ubatch: int | None = None,
+    batch: int | None = None,
 ) -> list[str]:
     """Liste d'arguments pour lancer llama-server en API OpenAI-compatible local.
 
@@ -63,13 +65,17 @@ def build_server_args(
         # cache KV ~÷2), cache KV quantifié q8_0, gros batch de prompt, priorité
         # process. Couplé au continuous batching (n_parallel auto), gain net en
         # single-stream comme en parallèle.
+        # `ubatch`/`batch` PAR MODÈLE (model.toml) : sur un MoE offloadé, le prefill
+        # est borné par l'amortissement des passes d'experts CPU sur la taille du
+        # microbatch — un -ub plus gros le multiplie (mesuré au banc), au prix de
+        # buffers VRAM plus gros (à valider par modèle vs sa marge). Défauts inchangés.
         args += [
             "-fa",
             "on",
             "-b",
-            "2048",
+            str(batch or 2048),
             "-ub",
-            "512",
+            str(ubatch or 512),
             "-ctk",
             "q8_0",
             "-ctv",
