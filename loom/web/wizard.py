@@ -289,6 +289,11 @@ def _step_d_confirm(state, t, deps):
 
 
 # ---------- flux image/vidéo (ComfyUI) ----------
+# Un modèle image/vidéo = dossier local/{image,video}/<id>/ avec model.toml (généré
+# ici) + workflow.json (export ComfyUI « format API » fourni par l'utilisateur — le
+# wizard ne peut PAS l'inventer). Les poids ComfyUI ne sont jamais gérés par Loom.
+
+_IMG_DEFAULT_DIMS = {"image": (1024, 1024), "video": (832, 480)}
 
 
 def _start_image(ikind: str, deps) -> WizardResult:
@@ -298,6 +303,88 @@ def _start_image(ikind: str, deps) -> WizardResult:
         f"[add-model — {lab} 1/4] Id du modèle (nom du dossier + sélecteur UI, "
         "ex. « z-image-turbo ») :",
     )
+
+
+def _step_i_id(state, t, deps):
+    ikind = state["ikind"]
+    if not _valid_id(t):
+        return WizardResult(
+            state, f"Id invalide « {t} » (lettres/chiffres/-_.). Réessaie :"
+        )
+    if t in deps.existing_ids:
+        return WizardResult(state, f"« {t} » existe déjà. Choisis un autre id :")
+    found = deps.image_dir_state(ikind, t)
+    if found == "complete":  # dossier « plus tard » complété -> montage direct
+        return WizardResult(
+            None,
+            f"Le dossier de « {t} » existe déjà avec sa recette — montage direct.",
+            {"kind": "mount_image", "id": t, "model_kind": ikind},
+        )
+    if found == "partial":  # dossier scaffoldé sans recette -> il ne manque qu'elle
+        return WizardResult(
+            {"step": "i_workflow", "ikind": ikind, "id": t, "resume": True},
+            f"Le dossier de « {t} » existe mais il manque workflow.json. "
+            "Colle le chemin de ton export ComfyUI (format API), ou « plus tard » :",
+        )
+    w, h = _IMG_DEFAULT_DIMS[ikind]
+    return WizardResult(
+        {"step": "i_dims", "ikind": ikind, "id": t},
+        f"[add-model — 2/4] Dimensions de génération — « ok » pour {w}x{h}, "
+        "ou tape LxH (ex. 1280x720) :",
+    )
+
+
+def _step_i_dims(state, t, deps):
+    w, h = _IMG_DEFAULT_DIMS[state["ikind"]]
+    if t.lower() not in ("ok", "oui"):
+        parts = t.lower().replace("×", "x").split("x")
+        if len(parts) != 2 or not all(p.strip().isdigit() for p in parts):
+            return WizardResult(
+                state, "Format attendu : LxH (ex. 1024x1024), ou « ok ». Réessaie :"
+            )
+        w, h = int(parts[0]), int(parts[1])
+    return WizardResult(
+        dict(state, step="i_desc", width=w, height=h),
+        "[add-model — 3/4] Description en une ligne (infobulle du sélecteur) — "
+        "ou « non » :",
+    )
+
+
+def _step_i_desc(state, t, deps):
+    desc = "" if t.lower() in ("non", "no", "aucune", "-") else t
+    return WizardResult(
+        dict(state, step="i_workflow", description=desc),
+        "[add-model — 4/4] La recette ComfyUI : colle le chemin de ton export "
+        "« format API » (ex. C:\\Users\\toi\\Downloads\\workflow_api.json), "
+        "ou « plus tard » pour préparer le dossier :",
+    )
+
+
+def _step_i_workflow(state, t, deps):
+    ikind = state["ikind"]
+    later = t.lower() in ("plus tard", "later", "non")
+    path = None if later else t.strip().strip('"').strip("'")
+    warn = ""
+    if path:
+        chk = deps.check_workflow(path)
+        if not chk["ok"]:
+            return WizardResult(
+                state,
+                f"Recette illisible : {chk['error']}. "
+                "Colle un autre chemin, ou « plus tard » :",
+            )
+        if chk["warnings"]:
+            warn = "\n⚠️ " + " ; ".join(chk["warnings"])
+    action = {
+        "kind": "install_image",
+        "model_id": state["id"],
+        "model_kind": ikind,
+        "width": state.get("width", _IMG_DEFAULT_DIMS[ikind][0]),
+        "height": state.get("height", _IMG_DEFAULT_DIMS[ikind][1]),
+        "description": state.get("description", ""),
+        "workflow_path": path,
+    }
+    return WizardResult(None, f"Création de « {state['id']} »…" + warn, action)
 
 
 # ---------- flux local ----------
@@ -417,6 +504,10 @@ def _step_l_id(state, t, deps):
 
 _STEPS = {
     "kind": _step_kind,
+    "i_id": _step_i_id,
+    "i_dims": _step_i_dims,
+    "i_desc": _step_i_desc,
+    "i_workflow": _step_i_workflow,
     "l_query": _step_l_query,
     "l_repo": _step_l_repo,
     "l_quant": _step_l_quant,
