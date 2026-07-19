@@ -128,6 +128,14 @@ function _userMsgTexts() {
 function renderMsgNav() {
   const nav = document.getElementById("msg-nav");
   if (!nav) return;
+  // En split, ce navigateur GLOBAL (fixé au bord droit de la fenêtre) se superpose au
+  // panneau de droite et intercepte les clics sur son bandeau (⛶/✕ inaccessibles,
+  // vécu 2026-07-19) : il n'a de sens qu'en vue simple.
+  if (state.panes.length > 1) {
+    nav.hidden = true;
+    nav._sig = "";
+    return;
+  }
   const texts = _userMsgTexts();
   // Ne reconstruit que si la LISTE change (session ou nb de messages user) : sinon le
   // streaming la rebâtissait ~60 fois/s et effaçait le surlignage actif à chaque frame.
@@ -1276,6 +1284,7 @@ function renderLayout() {
   };
   panesEl.replaceChildren(build(state.layoutRoot));
   requestAnimationFrame(updatePlaceholders);
+  renderMsgNav(); // suit le nb de panneaux (masqué en split, restauré en vue simple)
 }
 
 // Séparateur redimensionnable : le ratio du nœud suit le pointeur (borné 15-85 %),
@@ -1328,6 +1337,34 @@ function updatePlaceholders() {
   }
 }
 window.addEventListener("resize", updatePlaceholders);
+
+// Déplace un PANNEAU existant sur un bord d'un autre (saisi par son bandeau) : sa
+// feuille est retirée de l'arbre (le parent s'effondre sur le frère) puis regreffée
+// en split du côté visé de la cible — restructuration, pas un échange.
+function movePaneToEdge(src, target, dir, before) {
+  if (src === target) return;
+  const loc = leafOf(src);
+  if (!loc || !loc.parent) return; // src est la racine seule : rien à déplacer
+  const sibling = loc.key === "a" ? loc.parent.b : loc.parent.a;
+  for (const k of Object.keys(loc.parent)) delete loc.parent[k];
+  Object.assign(loc.parent, sibling);
+  const leaf = { type: "pane", pane: src };
+  const tloc = leafOf(target);
+  if (!tloc) return;
+  const split = {
+    type: "split",
+    dir,
+    ratio: 0.5,
+    a: before ? leaf : tloc.node,
+    b: before ? tloc.node : leaf,
+  };
+  if (tloc.parent) tloc.parent[tloc.key] = split;
+  else state.layoutRoot = split;
+  renderLayout();
+  focusPane(state.panes.indexOf(src));
+  renderTabs();
+  savePanesLayout();
+}
 
 // Bascule plein écran d'un panneau (⛶ ou double-clic bandeau) : l'arbre et les flux
 // des autres panneaux continuent en fond, seule la GÉOMÉTRIE change.
@@ -1722,10 +1759,24 @@ function wirePane(pane) {
     e.stopPropagation();
     toggleMaximize(pane);
   });
-  pane.el.querySelector(".pane-head")?.addEventListener("dblclick", (e) => {
-    if (e.target.closest("button")) return;
-    toggleMaximize(pane);
-  });
+  const head = pane.el.querySelector(".pane-head");
+  if (head) {
+    head.addEventListener("dblclick", (e) => {
+      if (e.target.closest("button")) return;
+      toggleMaximize(pane);
+    });
+    // Le bandeau est la POIGNÉE du panneau : le saisir-glisser déplace la zone de
+    // chat entière vers les zones directionnelles d'un autre panneau.
+    head.draggable = true;
+    head.addEventListener("dragstart", (ev) => {
+      if (!pane.sid) {
+        ev.preventDefault();
+        return;
+      }
+      ev.dataTransfer.setData("text/loom-sid", pane.sid);
+      ev.dataTransfer.effectAllowed = "move";
+    });
+  }
   // Déposer un ONGLET (glissé depuis la barre) : zones DIRECTIONNELLES à la VS Code.
   // L'overlay montre où il atterrit : centre = remplacer/échanger, bord = scinder de
   // ce côté. Jamais de double affichage d'une même session.
@@ -1765,15 +1816,22 @@ function wirePane(pane) {
     if (!sid || !state.tabs[sid]) return;
     e.preventDefault();
     const z = zoneAt(e);
-    // Session déjà affichée ailleurs, ou visée au centre : déplacer/échanger.
-    if (z === "center" || paneShowing(sid)) {
-      dropTabOnPane(sid, pane);
+    const src = paneShowing(sid); // panneau existant glissé (par bandeau ou onglet)
+    if (src === pane) return; // déposé sur lui-même
+    if (z === "center") {
+      dropTabOnPane(sid, pane); // centre : remplacer / échanger
       return;
     }
-    // Bord : scinder CE panneau du côté visé avec l'onglet glissé.
     const dir = z === "left" || z === "right" ? "row" : "col";
+    const before = z === "left" || z === "top";
+    if (src) {
+      // Un PANNEAU existant déposé sur un bord : restructuration de l'arbre.
+      movePaneToEdge(src, pane, dir, before);
+      return;
+    }
+    // Onglet d'arrière-plan : nouveau panneau de ce côté.
     const p2 = addPane(sid, dir, pane);
-    if (p2 && (z === "left" || z === "top")) {
+    if (p2 && before) {
       // Le nouveau panneau va AVANT la cible : échange a/b du split créé.
       const loc = leafOf(p2);
       if (loc && loc.parent) {
