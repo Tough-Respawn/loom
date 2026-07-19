@@ -835,15 +835,31 @@ async function sendChat(sid, text, images) {
 // ----------------------------------------------------------------------------
 const tabbarEl = document.getElementById("tabbar");
 
+// Type d'un modèle (home/remote/image/video) : lu depuis les classes opt-<type> du
+// sélecteur — la source de vérité serveur, maintenue à chaud par rebuildModelSelect.
+// "" = la session suit le modèle par défaut de la config (pas de teinte).
+function modelType(modelId) {
+  if (!modelId) return "";
+  const opt = document.querySelector(
+    `#model-select option[value="${CSS.escape(modelId)}"]`,
+  );
+  const m = opt && opt.className.match(/opt-(\w+)/);
+  return m ? m[1] : "";
+}
+
 // Bandeaux des panneaux : chaque fenêtre porte le NOM de sa session + le point de
-// génération (sinon impossible de savoir quel panneau est quel onglet). Rafraîchis
-// avec renderTabs — mêmes déclencheurs (titre inféré, flux démarré/fini, focus, drop).
+// génération (sinon impossible de savoir quel panneau est quel onglet), teintés par
+// TYPE de modèle (local vert / distant bleu / image ambre / vidéo violet — mêmes
+// couleurs que le sélecteur : d'un coup d'œil, qui est local et qui est distant).
+// Rafraîchis avec renderTabs — mêmes déclencheurs (titre, flux, focus, drop, /model).
 function renderPaneHeads() {
   for (const p of state.panes) {
     if (!p.headTitle) continue;
     const t = state.tabs[p.sid];
     p.headTitle.textContent = t ? t.title || "session" : "—";
     p.headDot.className = "pane-dot " + (t && t.streaming ? "gen" : "idle");
+    const mt = t ? modelType(t.model) : "";
+    p.headTitle.parentElement.className = "pane-head" + (mt ? " mdl-" + mt : "");
   }
 }
 
@@ -856,11 +872,14 @@ function renderTabs() {
     const t = state.tabs[sid];
     if (!t) continue;
     const el = document.createElement("div");
+    const mt = modelType(t.model);
     el.className =
       "tab" +
       (sid === state.active ? " active" : "") +
-      (sid !== state.active && paneShowing(sid) ? " shown" : "");
-    el.title = t.title || "session";
+      (sid !== state.active && paneShowing(sid) ? " shown" : "") +
+      (mt ? " mdl-" + mt : "");
+    el.title =
+      (t.title || "session") + (t.model ? " — " + t.model : " — modèle par défaut");
     // Split view : clic droit = menu (ouvrir à droite/en dessous…), glisser = déplacer
     // l'onglet vers un panneau.
     el.addEventListener("contextmenu", (e) => openTabMenu(e, sid));
@@ -2582,6 +2601,7 @@ document.addEventListener("change", (e) => {
     if (activeTab()) activeTab().model = t.value;
     machineUnloaded = false; // re-sélection = warmup relancé côté serveur
     scheduleMachineRefresh();
+    renderTabs(); // la teinte local/distant de l'onglet suit le nouveau modèle
   }
 });
 syncSkillsMaster();
