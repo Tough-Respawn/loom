@@ -1,21 +1,22 @@
-{# Sélecteur GROUPÉ par type (machine / distant / image / vidéo) : optgroup + couleur
-   mutée par type (CSS #model-select). Le select FERMÉ est teinté selon le type choisi
-   (classe sel-<type> posée par paintModelSelect, app.js). Même regroupement côté JS :
-   rebuildModelSelect reconstruit à chaud — garder les deux EN PHASE. #}
-{% set homes = [] %}{% set remotes = [] %}{% set images = [] %}{% set videos = [] %}
+{# Sélecteur en DEUX blocs : « machine » (texte + image + vidéo — tout tourne ici) et
+   « distant · api ». La couleur par TYPE reste (classe opt-<type>, CSS #model-select) ;
+   le select FERMÉ est teinté selon le type choisi (paintModelSelect, app.js). Même
+   regroupement côté JS : rebuildModelSelect reconstruit à chaud — garder EN PHASE. #}
+{% set texts = [] %}{% set images = [] %}{% set videos = [] %}{% set remotes = [] %}
 {% for mid in models %}
-  {% if mid in remote_model_ids %}{% set _ = remotes.append(mid) %}
-  {% elif video_model_ids and mid in video_model_ids %}{% set _ = videos.append(mid) %}
-  {% elif image_model_ids and mid in image_model_ids %}{% set _ = images.append(mid) %}
-  {% else %}{% set _ = homes.append(mid) %}{% endif %}
+  {% if mid in remote_model_ids %}{% set _ = remotes.append((mid, "remote")) %}
+  {% elif video_model_ids and mid in video_model_ids %}{% set _ = videos.append((mid, "video")) %}
+  {% elif image_model_ids and mid in image_model_ids %}{% set _ = images.append((mid, "image")) %}
+  {% else %}{% set _ = texts.append((mid, "home")) %}{% endif %}
 {% endfor %}
+{# Bloc home ordonné par type (texte, image, vidéo) : les couleurs restent contiguës. #}
+{% set machine = texts + images + videos %}
 <select id="model-select" name="model" hx-post="/model" hx-target="#model-select"
         hx-swap="outerHTML">
-  {% for label, cls, ids in (("machine", "home", homes), ("distant · api", "remote", remotes),
-                             ("image · comfyui", "image", images), ("vidéo · comfyui", "video", videos)) %}
-    {% if ids %}
+  {% for label, items in (("home", machine), ("distant · api", remotes)) %}
+    {% if items %}
     <optgroup label="{{ label }}">
-      {% for mid in ids %}
+      {% for mid, cls in items %}
       <option class="opt-{{ cls }}" value="{{ mid }}"{% if mid == current_model %} selected{% endif %}{% if model_descriptions and model_descriptions.get(mid) %} title="{{ model_descriptions.get(mid) }}"{% endif %}>{{ mid }}</option>
       {% endfor %}
     </optgroup>
