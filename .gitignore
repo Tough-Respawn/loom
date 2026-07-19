@@ -21,6 +21,12 @@ node_modules/
 # Traces de playwright-mcp (debug UI)
 .playwright-mcp/
 
+# Analyses liées à UNE machine (rapports de banc, perf GPU, sondes) : jamais versionnées —
+# Loom est agnostique machine. Elles restent en local sous docs/local/ (ou var/).
+docs/local/
+docs/bench-*.md
+docs/perf-*.md
+
 # Sorties des runs d'éval (transcripts, report.json, logs) — pas le harnais lui-même.
 # EXCEPTION : les baselines épinglées par commit (out/history/) sont VERSIONNÉES —
 # c'est elles qui mesurent la dérive entre commits (résumés compacts, pas de transcripts).
@@ -30,3 +36,4 @@ evals/out_review/
 # Claude Code config
 .claude/
 .coverage
+CLAUDE.md

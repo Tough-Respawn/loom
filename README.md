@@ -82,7 +82,7 @@ Navigateur ──HTTP──► Loom (Flask :8000) ──OpenAI API──► llam
   [docs/adr/0001-llamacpp-vs-ollama.md](docs/adr/0001-llamacpp-vs-ollama.md).
 - **Lanceur auto-adaptatif** : `loom/runtime/serve.py` détecte le GPU (sinon CPU) et règle l'offload
   selon la VRAM libre (`nvidia-smi`). Inclut `--jinja` (appels d'outils) et `--mmproj` (vision).
-- **Modèles** : des **MoE 24B+** rendus jouables sur 6 Go de VRAM par **offload des experts en
+- **Modèles** : des **MoE 24B+** rendus jouables même sur petite VRAM par **offload des experts en
   RAM** (`--cpu-moe` / `--n-cpu-moe` ; attention/dense sur GPU, experts routés en RAM). Par
   défaut `gemma4-26b-a4b-uncensored` ; `qwen3.6-35b-a3b-abliterated` dispo (avec vision).
   Chacun branche les siens — voir [loom/models/README.md](loom/models/README.md) et
@@ -159,7 +159,7 @@ En clair : `ask` par défaut, et si tu veux l'autonomie `allow`, fais-le dans un
 Tout est dans [config/defaults.toml](config/defaults.toml) (`default_model`, contexte, ports,
 outils armés, permissions). Les réglages spécifiques à une machine (chemin du binaire, override
 GPU) vont dans [config/local.toml](config/local.toml) — gitignoré, à copier depuis
-`config/local.example.toml` et adapter à ta machine (les valeurs livrées sont celles d'une RTX 2060).
+`config/local.example.toml` et adapter à ta machine (les valeurs livrées sont un exemple, pas une référence).
 
 ### Calibration machine : mesurée, jamais supposée
 
@@ -172,7 +172,7 @@ bench de `loom-setup` (étape 4), qui **mesure au lieu de calculer** :
   exacts de l'exécutant — `server_args.py`) donnent le coût mémoire *réel* par token, puis une
   échelle de **vitesse en profondeur** valide barreau par barreau. On n'écrit que du vérifié :
   aucune formule de header GGUF ne survit aux architectures modernes (attention à fenêtre
-  glissante : facteur ×5 constaté entre la formule et la mesure — [le rapport](docs/bench-contexte-2026-07-18.md)).
+  glissante : facteur ×5 constaté entre la formule et la mesure).
 - **Décision tracée** : `local.toml [bench]` garde le *mécanisme* (`context_mecanisme`,
   `context_pente_kb_tok`, `context_valide_jusqua`) — on sait toujours d'où sort un chiffre.
   Le contexte calibré s'écrit aussi dans le `model.toml` du modèle benché : la vérité est
