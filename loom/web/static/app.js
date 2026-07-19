@@ -816,8 +816,19 @@ function renderTabs() {
     const t = state.tabs[sid];
     if (!t) continue;
     const el = document.createElement("div");
-    el.className = "tab" + (sid === state.active ? " active" : "");
+    el.className =
+      "tab" +
+      (sid === state.active ? " active" : "") +
+      (sid !== state.active && paneShowing(sid) ? " shown" : "");
     el.title = t.title || "session";
+    // Split view : clic droit = menu (ouvrir à droite/en dessous…), glisser = déplacer
+    // l'onglet vers un panneau.
+    el.addEventListener("contextmenu", (e) => openTabMenu(e, sid));
+    el.draggable = true;
+    el.addEventListener("dragstart", (ev) => {
+      ev.dataTransfer.setData("text/loom-sid", sid);
+      ev.dataTransfer.effectAllowed = "move";
+    });
     const dot = document.createElement("span");
     dot.className = "tab-dot " + (t.streaming ? "gen" : "idle");
     const title = document.createElement("span");
@@ -960,34 +971,40 @@ async function _loadDisplay(t, sid, hasTimeline, messages) {
   _hydrateTimeline(t, messages);
 }
 
-async function openTab(sid) {
-  if (!state.tabs[sid]) {
-    let d;
-    try {
-      d = await (await fetch("/session_state?id=" + encodeURIComponent(sid))).json();
-    } catch {
-      return;
-    }
-    const t = {
-      sid,
-      title: d.title || "session",
-      timeline: [],
-      streaming: false,
-      abort: null,
-      model: d.model || "",
-      thinking: d.thinking !== false,
-      localOnly: !!d.local_only,
-      workspace: d.workspace || "",
-      meter: d.usage_totals || null,
-      metrics: null,
-      draft: "",
-      history: _userTexts(d.messages),
-      histIdx: -1,
-    };
-    await _loadDisplay(t, sid, d.has_timeline, d.messages);
-    state.tabs[sid] = t;
-    state.order.push(sid);
+// Charge un onglet (état + affichage) SANS l'activer — partagé par openTab et la split
+// view (restauration de disposition, « ouvrir à droite » d'une session non ouverte).
+async function ensureTab(sid) {
+  if (state.tabs[sid]) return state.tabs[sid];
+  let d;
+  try {
+    d = await (await fetch("/session_state?id=" + encodeURIComponent(sid))).json();
+  } catch {
+    return null;
   }
+  const t = {
+    sid,
+    title: d.title || "session",
+    timeline: [],
+    streaming: false,
+    abort: null,
+    model: d.model || "",
+    thinking: d.thinking !== false,
+    localOnly: !!d.local_only,
+    workspace: d.workspace || "",
+    meter: d.usage_totals || null,
+    metrics: null,
+    draft: "",
+    history: _userTexts(d.messages),
+    histIdx: -1,
+  };
+  await _loadDisplay(t, sid, d.has_timeline, d.messages);
+  state.tabs[sid] = t;
+  state.order.push(sid);
+  return t;
+}
+
+async function openTab(sid) {
+  if (!(await ensureTab(sid))) return;
   activateTab(sid);
 }
 
@@ -1123,6 +1140,15 @@ const panesEl = document.getElementById("panes");
 const paneTpl = document.getElementById("pane-tpl");
 const MAX_IMAGES = 6;
 let splitDir = "cols"; // orientation d'un split à 2 panneaux (à droite vs en dessous)
+// Disposition sauvegardée, capturée AVANT l'hydratation : le premier applyPaneLayout()
+// (1 panneau) réécrit localStorage — sans cette capture, la restauration lirait du vide.
+const SAVED_PANES = (() => {
+  try {
+    return JSON.parse(localStorage.loomPanes || "null");
+  } catch (e) {
+    return null;
+  }
+})();
 let CMDS = []; // commandes « / » (source de vérité serveur), partagées par les palettes
 fetch("/commands")
   .then((r) => r.json())
@@ -1513,7 +1539,136 @@ function wirePane(pane) {
     pane.fileInput.value = ""; // permet de re-sélectionner le même fichier ensuite
   });
   pane.fileBtn.addEventListener("click", () => pane.fileInput.click());
+  // Déposer un ONGLET (glissé depuis la barre) sur ce panneau : la session s'y affiche
+  // (échange si elle était déjà dans un autre panneau — jamais de doublon).
+  pane.el.addEventListener("dragover", (e) => {
+    if (![...e.dataTransfer.types].includes("text/loom-sid")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    pane.el.classList.add("pane-drop");
+  });
+  pane.el.addEventListener("dragleave", () =>
+    pane.el.classList.remove("pane-drop"),
+  );
+  pane.el.addEventListener("drop", (e) => {
+    pane.el.classList.remove("pane-drop");
+    const sid = e.dataTransfer.getData("text/loom-sid");
+    if (!sid || !state.tabs[sid]) return;
+    e.preventDefault();
+    dropTabOnPane(sid, pane);
+  });
 }
+
+// ----------------------------------------------------------------------------
+// Split view : commandes (menu contextuel d'onglet, glisser-déposer, raccourcis).
+// ----------------------------------------------------------------------------
+function dropTabOnPane(sid, pane) {
+  if (pane.sid === sid) return;
+  const other = paneShowing(sid);
+  if (other) {
+    // Déplacer = ÉCHANGER les onglets des deux panneaux (pas de double affichage).
+    const mine = pane.sid;
+    setPaneSid(other, mine);
+    setPaneSid(pane, sid);
+  } else {
+    setPaneSid(pane, sid);
+  }
+  focusPane(state.panes.indexOf(pane));
+  savePanesLayout();
+  renderTabs();
+}
+
+// « Ouvrir à droite / en dessous » : l'onglet visé s'affiche dans un NOUVEAU panneau.
+// S'il est déjà affiché, le nouveau panneau prend le plus récent onglet NON affiché
+// (scinder n'a de sens qu'avec deux contenus différents — pas de doublon).
+async function splitWith(sid, dir) {
+  if (!sid || !(await ensureTab(sid))) return;
+  if (!paneShowing(sid)) {
+    addPane(sid, dir);
+    savePanesLayout();
+    return;
+  }
+  const free = state.order.filter((s) => !paneShowing(s));
+  if (!free.length) {
+    showToast("rien à scinder : ouvre un autre onglet d'abord");
+    return;
+  }
+  addPane(free[free.length - 1], dir);
+  savePanesLayout();
+}
+
+// Vue simple : ne garde que le panneau FOCUS (les onglets restent dans la barre).
+function singleView() {
+  if (state.panes.length <= 1) return;
+  const keep = focusedPane();
+  [...state.panes].forEach((p) => {
+    if (p !== keep) removePane(p);
+  });
+  savePanesLayout();
+}
+
+// ---- menu contextuel d'onglet (clic droit) ----
+let _ctxCloser = null;
+function closeTabMenu() {
+  document.getElementById("tab-ctx")?.remove();
+  if (_ctxCloser) {
+    document.removeEventListener("click", _ctxCloser, true);
+    _ctxCloser = null;
+  }
+}
+function openTabMenu(e, sid) {
+  e.preventDefault();
+  closeTabMenu();
+  const m = document.createElement("div");
+  m.className = "ctx-menu";
+  m.id = "tab-ctx";
+  const add = (label, fn, disabled) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.disabled = !!disabled;
+    b.addEventListener("click", () => {
+      closeTabMenu();
+      fn();
+    });
+    m.appendChild(b);
+  };
+  const full = state.panes.length >= 4;
+  add("Ouvrir à droite", () => splitWith(sid, "cols"), full);
+  add("Ouvrir en dessous", () => splitWith(sid, "rows"), full);
+  const sep = document.createElement("div");
+  sep.className = "ctx-sep";
+  m.appendChild(sep);
+  add("Remettre en vue simple", () => singleView(), state.panes.length <= 1);
+  document.body.appendChild(m);
+  m.style.left = Math.min(e.clientX, window.innerWidth - m.offsetWidth - 6) + "px";
+  m.style.top = Math.min(e.clientY, window.innerHeight - m.offsetHeight - 6) + "px";
+  _ctxCloser = (ev) => {
+    if (!ev.target.closest("#tab-ctx")) closeTabMenu();
+  };
+  setTimeout(() => document.addEventListener("click", _ctxCloser, true), 0);
+}
+
+// ---- raccourcis : Ctrl+\ scinder, Ctrl+Maj+\ vue simple, Alt+1..4 focus panneau.
+// e.code (position physique) plutôt que e.key : indépendant de la disposition AZERTY.
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeTabMenu();
+  const backslash = e.code === "Backslash" || e.code === "IntlBackslash";
+  if (e.ctrlKey && !e.shiftKey && backslash) {
+    e.preventDefault();
+    splitWith(state.active, "cols");
+  } else if (e.ctrlKey && e.shiftKey && backslash) {
+    e.preventDefault();
+    singleView();
+  } else if (e.altKey && /^Digit[1-4]$/.test(e.code)) {
+    const i = +e.code.slice(5) - 1;
+    if (state.panes[i]) {
+      e.preventDefault();
+      focusPane(i);
+      state.panes[i].input.focus();
+    }
+  }
+});
 
 async function newSessionTab() {
   const wd = document.getElementById("workdir-path");
@@ -1607,6 +1762,30 @@ function addSidebarSession(d) {
 }
 renderTabs();
 scheduleRender();
+
+// Restaure la DISPOSITION de la dernière fois (split 2-4 panneaux) : uniquement des
+// sessions qui existent encore (INIT.sessions fait foi), en fond — la page reste
+// utilisable pendant le chargement des onglets.
+(async () => {
+  const saved = SAVED_PANES;
+  if (!saved || !Array.isArray(saved.sids) || saved.sids.length < 2) return;
+  const known = new Set((INIT.sessions || []).map((s) => s.id));
+  const sids = saved.sids.filter((s) => known.has(s));
+  if (sids.length < 2) return;
+  splitDir = saved.dir === "rows" ? "rows" : "cols";
+  const first = state.panes[0];
+  if (first && first.sid !== sids[0] && (await ensureTab(sids[0]))) {
+    if (!paneShowing(sids[0])) setPaneSid(first, sids[0]);
+  }
+  for (const sid of sids.slice(1)) {
+    if (state.panes.length >= 4) break;
+    if (paneShowing(sid)) continue;
+    if (await ensureTab(sid)) addPane(sid);
+  }
+  focusPane(0);
+  renderTabs();
+  savePanesLayout();
+})();
 
 // MathJax charge en async : re-typeset les bulles déjà rendues (historique) une fois prêt.
 function _typesetAll() {
