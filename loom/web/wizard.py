@@ -96,7 +96,8 @@ def start(arg: str, deps) -> WizardResult:
 def step(state: dict, text: str, deps) -> WizardResult:
     t = (text or "").strip()
     if t.lower() in CANCEL_WORDS:
-        return WizardResult(None, "Ajout de modèle annulé.")
+        # Message NEUTRE : ce step sert /add-model, /remove-model ET /rebench.
+        return WizardResult(None, "Commande annulée — rien n'a été touché.")
     fn = _STEPS.get(state.get("step"))
     if fn is None:  # état d'une vieille version : on sort proprement
         return WizardResult(
