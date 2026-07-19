@@ -108,6 +108,29 @@ def _detect_workspace(message: str, root: str | None = None) -> str | None:
         return None
 
 
+def _should_adopt(current_ws: str | None, candidate: str) -> bool:
+    """Faut-il adopter `candidate` comme nouveau dossier de travail ?
+
+    Un chemin cité À L'INTÉRIEUR du projet courant n'est PAS un changement de
+    contexte : les outils l'atteignent déjà, et l'adoption modifie le system prompt
+    en tête de préfixe -> cache KV invalidé -> re-prefill INTÉGRAL (~9,2k tokens,
+    52 s vécus le 2026-07-19 en citant var/sessions/<id> au modèle). On n'adopte un
+    sous-chemin du workspace que si celui-ci n'est pas une racine de projet (.git /
+    loom.md) — ex. ~/Documents -> focus d'un projet cité par nom, toujours voulu."""
+    if not current_ws:
+        return True
+    try:
+        cur = Path(current_ws).resolve()
+        cand = Path(candidate).resolve()
+    except OSError:
+        return True
+    if cand == cur:
+        return False  # déjà dessus : rien à changer, cache préservé
+    if cur not in cand.parents:
+        return True  # hors du workspace = vrai changement de contexte
+    return not any((cur / m).exists() for m in (".git", "loom.md"))
+
+
 def _sse(event_type: str, **fields) -> str:
     """Sérialise un événement Server-Sent Events (UTF-8, accents préservés)."""
 

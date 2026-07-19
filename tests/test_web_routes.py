@@ -262,6 +262,33 @@ def test_detect_workspace_nom_nu(tmp_env):
     assert d2 and d2.endswith("cas")
 
 
+def test_should_adopt_pas_de_sous_chemin_dun_projet(tmp_env):
+    # Citer un chemin INTERNE au projet courant n'est pas un changement de contexte :
+    # l'adoption cassait le cache KV (system prompt modifié -> re-prefill intégral de
+    # ~9,2k tokens, 52 s — vécu 2026-07-19 en donnant var/sessions/<id> au modèle).
+    from loom.web.app import _should_adopt
+
+    proj = tmp_env / "mon-projet"
+    (proj / ".git").mkdir(parents=True)
+    sub = proj / "var" / "sessions" / "abc"
+    sub.mkdir(parents=True)
+    # Sous-chemin d'une racine de projet (.git) -> PAS d'adoption.
+    assert _should_adopt(str(proj), str(sub)) is False
+    # Même dossier -> pas d'adoption (rien ne change).
+    assert _should_adopt(str(proj), str(proj)) is False
+    # Chemin HORS du workspace -> vrai changement de contexte, adoption.
+    autre = tmp_env / "autre-projet"
+    autre.mkdir()
+    assert _should_adopt(str(proj), str(autre)) is True
+    # Workspace générique (pas une racine de projet) -> focus d'un sous-projet OK.
+    assert _should_adopt(str(tmp_env), str(proj)) is True
+    # loom.md marque aussi une racine de projet.
+    proj2 = tmp_env / "proj-fiche"
+    proj2.mkdir()
+    (proj2 / "loom.md").write_text("fiche", encoding="utf-8")
+    assert _should_adopt(str(proj2), str(proj2 / "sub")) is False
+
+
 def test_init_message_pure():
     from loom.web.app import _init_message
 
