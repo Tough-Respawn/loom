@@ -221,6 +221,26 @@ def _ensure_local_server(S, wait: float = 0.0) -> bool:
 # ---- Sessions : verrous, cache, contexte ---------------------------------------------
 
 
+def _local_busy_notice(S) -> str:
+    """Message de mise en file quand le verrou local est tenu : dit la VRAIE raison.
+    Un prefill d'amorçage (prime/keepwarm/maintenance) n'est PAS « une autre session
+    qui génère » — la notice mentait dans ce cas (retour user 2026-07-19)."""
+    reason = (getattr(S, "local_busy", None) or {}).get("reason") or ""
+    if reason in ("prime", "keepwarm", "maintenance"):
+        return (
+            "modèle local en préparation de contexte (prefill d'amorçage) — "
+            "ton message part dès que c'est prêt."
+        )
+    if reason == "image":
+        return (
+            "machine occupée par une génération d'image — mise en file derrière elle."
+        )
+    return (
+        "modèle local occupé : une autre session génère déjà sur la machine — "
+        "mise en file (le parallèle réel n'existe qu'avec un modèle distant)."
+    )
+
+
 def _lock_for(S, sid: str) -> threading.Lock:
     with S.gen_guard:
         return S.sess_locks.setdefault(sid, threading.Lock())
@@ -1434,6 +1454,7 @@ def _prime_async(S, sess, *, wait_server: float = 0.0, require_running: bool = F
             if not S.local_gen_lock.acquire(blocking=False):
                 print("[prime] génération en cours — amorçage sauté", flush=True)
                 return
+            S.local_busy["reason"] = "prime"
             try:
                 ok = _prime_slot(S, sess)
                 print(
@@ -1445,6 +1466,7 @@ def _prime_async(S, sess, *, wait_server: float = 0.0, require_running: bool = F
                     # Préfixe chaud : le keep-warm prend le relais pour le garder.
                     S.last_activity[0] = time.time()
             finally:
+                S.local_busy["reason"] = ""
                 S.local_gen_lock.release()
         except Exception as e:  # noqa: BLE001 - amorçage best-effort
             print(f"[prime] erreur ignorée : {e}", flush=True)
@@ -1483,6 +1505,8 @@ def _post_turn_maintenance(
 
     if is_local and not S.local_gen_lock.acquire(timeout=600):
         return
+    if is_local:
+        S.local_busy["reason"] = "maintenance"
 
     try:
         if do_reflect:
@@ -1538,6 +1562,7 @@ def _post_turn_maintenance(
 
     finally:
         if is_local:
+            S.local_busy["reason"] = ""
             S.local_gen_lock.release()
 
 
@@ -1569,6 +1594,7 @@ def _keepwarm_loop(S):
         if not S.local_gen_lock.acquire(blocking=False):
             continue  # génération locale en cours => déjà chaud
 
+        S.local_busy["reason"] = "keepwarm"
         try:
             sess = S.cur["session"]
 
@@ -1605,6 +1631,7 @@ def _keepwarm_loop(S):
             pass
 
         finally:
+            S.local_busy["reason"] = ""
             S.local_gen_lock.release()
 
 
@@ -2174,6 +2201,8 @@ def _register_skill_routes(app, S):
             return {
                 "error": "modèle local occupé — réessaie après la génération en cours"
             }, 409
+        if is_local:
+            S.local_busy["reason"] = "skill"
         try:
             # Serveur modèle éteint (bouton non cliqué, session neuve…) : on le démarre
             # comme le fait le chat, au lieu de planter en Connection refused (vécu).
@@ -2218,6 +2247,7 @@ def _register_skill_routes(app, S):
             return {"ok": True, "source": text}
         finally:
             if is_local:
+                S.local_busy["reason"] = ""
                 S.local_gen_lock.release()
 
     @app.post("/skill/delete")
@@ -2862,6 +2892,7 @@ def _register_chat_routes(app, S):
                     yield _sse("status", label="préparation du moteur image…")
                     S.local_gen_lock.acquire()
                     _img_held = True
+                    S.local_busy["reason"] = "image"
                     # Photo d'ENTRÉE (modèles d'édition, ex. Kontext) : un chemin de
                     # fichier image dans le message est détecté, vérifié sur disque,
                     # retiré du texte (le prompt ne doit porter que l'instruction) et
@@ -3025,6 +3056,7 @@ def _register_chat_routes(app, S):
                     )
                 finally:
                     if _img_held:
+                        S.local_busy["reason"] = ""
                         S.local_gen_lock.release()
                     chat_lock.release()
                     S.stay_awake.release()
@@ -3300,16 +3332,10 @@ def _register_chat_routes(app, S):
                 # pas de verrou -> cette session génère EN PARALLÈLE des autres onglets.
                 if conv.model and conv.model not in S.remote_model_ids:
                     if not S.local_gen_lock.acquire(blocking=False):
-                        yield _sse(
-                            "notice",
-                            text=(
-                                "modèle local occupé : une autre session génère déjà sur la "
-                                "machine — mise en file (le parallèle réel n'existe qu'avec un "
-                                "modèle distant)."
-                            ),
-                        )
+                        yield _sse("notice", text=_local_busy_notice(S))
                         S.local_gen_lock.acquire()
                     _local_held = True
+                    S.local_busy["reason"] = "génération"
                     # Un moteur image encore chargé tiendrait la VRAM que le LLM va
                     # réclamer : le vider d'abord (best-effort, rapide si rien à vider).
                     # Son cache RAM n'est gardé que si le LLM tient à côté (64 Go : oui ;
@@ -3645,6 +3671,7 @@ def _register_chat_routes(app, S):
                 S.last_activity[0] = time.time()  # marque l'activité pour le keep-warm
 
                 if _local_held:
+                    S.local_busy["reason"] = ""
                     S.local_gen_lock.release()
 
                 chat_lock.release()
