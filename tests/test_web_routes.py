@@ -242,6 +242,26 @@ def test_detect_workspace(tmp_env):
     assert detected and "projet-x" in detected
 
 
+def test_detect_workspace_nom_nu(tmp_env):
+    from loom.web.app import _detect_workspace
+
+    (tmp_env / "cas").mkdir()
+    (tmp_env / "energy-data-platform").mkdir()
+
+    # Un dossier au nom de mot courant ne doit JAMAIS être adopté par son seul nom :
+    # « cas » dans la prose d'un message collé basculait le workspace sur Documents/cas
+    # (hijack constaté le 2026-07-19, fuite de contenu personnel vers le modèle).
+    assert _detect_workspace("analyse ce cas limite du parseur", str(tmp_env)) is None
+
+    # Un nom de projet « slug » (séparateur -/_/.) reste adoptable par son seul nom.
+    d = _detect_workspace("travaille sur energy-data-platform stp", str(tmp_env))
+    assert d and d.endswith("energy-data-platform")
+
+    # Le chemin ABSOLU d'un dossier au nom courant marche toujours.
+    d2 = _detect_workspace(str(tmp_env / "cas"), str(tmp_env))
+    assert d2 and d2.endswith("cas")
+
+
 def test_init_message_pure():
     from loom.web.app import _init_message
 
