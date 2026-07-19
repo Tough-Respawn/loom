@@ -208,6 +208,20 @@
       font-size: 12px; font-family: inherit; cursor: pointer;
     }
     #model-select:focus { outline: none; border-color: var(--accent-dim); }
+    /* Types de modèles : groupes (optgroup) + une couleur MUTÉE par type, cohérente
+       avec la palette d'accents. home = neutre ; distant/image/vidéo = teintés.
+       Le select FERMÉ reprend la couleur du type sélectionné (classe sel-<type>). */
+    #model-select optgroup {
+      color: var(--text-faint); font-style: normal;
+      font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+    }
+    #model-select option {
+      color: var(--text); font-size: 12px;
+      text-transform: none; letter-spacing: normal;
+    }
+    #model-select option.opt-remote, #model-select.sel-remote { color: #6ba3d6; }
+    #model-select option.opt-image,  #model-select.sel-image  { color: #d6a868; }
+    #model-select option.opt-video,  #model-select.sel-video  { color: #a78bda; }
     /* Indicateur d'état du modèle SUR LA MACHINE (chargé / en cours / libre / serveur off) */
     .machine-chip {
       display: flex; align-items: center; gap: 6px; margin-top: 6px; padding: 0 2px;
