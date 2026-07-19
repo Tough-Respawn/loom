@@ -760,6 +760,7 @@ def _run_calibration(S, spec, progress):
     """Cœur de mesure (préconditions + topologie + calibrate), avec les flags EXACTS
     du modèle. Lève RuntimeError actionnable si la machine n'est pas prête.
     Isolé pour être stubbable dans les tests (aucun subprocess en CI)."""
+    import os
     import tomllib
 
     import psutil
@@ -771,11 +772,6 @@ def _run_calibration(S, spec, progress):
     from loom.web.__main__ import CONFIG_PATH, PERSONAL_CONFIG_PATH
 
     raw = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
-    tbl = raw.get("bench") or {}
-    if not tbl.get("threads"):
-        raise RuntimeError(
-            "machine pas encore calibrée — lance « uv run loom-setup » d'abord"
-        )
     _, bin_name = server_bin_status(raw)
     server_bin = resolve_bin(bin_name)
     if server_bin is None:
@@ -792,13 +788,29 @@ def _run_calibration(S, spec, progress):
     headroom = int((raw.get("server") or {}).get("gpu_kv_headroom_mb", 640) or 640)
     ram = int(psutil.virtual_memory().total // (1024 * 1024))
     budget = topo_mod.memory_budget_mb(topo, vram, ram, headroom)
+    over = raw.get("override") or {}
+    # Threads : même résolution que l'exécutant (serve.py) — override machine,
+    # sinon cœurs physiques (≈ logiques/2) en GPU, tous les threads en CPU pur.
+    logical = os.cpu_count() or 4
+    threads = int(
+        over.get("threads")
+        or (logical if topo == topo_mod.TOPO_RAM else max(1, logical // 2))
+    )
+    # ngl : la borne PAR MODÈLE (model.toml n_gpu_layers) PRIME — c'est elle qui
+    # évite le spill (ex. gemma4 à 36/42 couches). Sinon doctrine MoE (99, experts
+    # en RAM), sinon l'override machine.
+    if mt.get("n_gpu_layers") is not None:
+        ngl = int(mt["n_gpu_layers"])
+    elif is_moe and topo != topo_mod.TOPO_RAM:
+        ngl = 99
+    else:
+        ngl = int(over.get("n_gpu_layers", 99 if topo != topo_mod.TOPO_RAM else 0))
     mmproj = mt.get("mmproj_filename")
     probe = topo_mod.ServerProbe(
         server_bin=str(server_bin),
         model_path=str(gguf),
-        threads=tbl["threads"],
-        # Doctrine mesurée du parc : MoE + GPU = attention sur GPU, experts en RAM.
-        ngl=99 if (is_moe and topo != topo_mod.TOPO_RAM) else tbl.get("ngl", 0),
+        threads=threads,
+        ngl=ngl,
         topology=topo,
         mmproj_path=str(mdir / mmproj) if mmproj else None,
         cpu_moe=bool(mt.get("cpu_moe", is_moe)),
