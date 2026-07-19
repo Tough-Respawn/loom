@@ -133,3 +133,24 @@ def upsert_remote_in_toml(local_path: str | Path, record: dict) -> None:
             if record.get(k) is not None:
                 target[k] = record[k]
     p.write_text(tomlkit.dumps(doc), encoding="utf-8")
+
+
+def delete_remote_in_toml(local_path: str | Path, model_id: str) -> bool:
+    """Retire un [[remote_models]] de local.toml par id (tomlkit : commentaires et
+    structure PRÉSERVÉS). Pendant de upsert_remote_in_toml pour /remove-model sur un
+    distant déclaré en config. Renvoie False si fichier ou entrée absents (no-op)."""
+    import tomlkit
+
+    p = Path(local_path)
+    if not p.exists():
+        return False
+    doc = tomlkit.parse(p.read_text(encoding="utf-8"))
+    arr = doc.get("remote_models")
+    if arr is None:
+        return False
+    idx = next((i for i, t in enumerate(arr) if t.get("id") == model_id), None)
+    if idx is None:
+        return False
+    del arr[idx]
+    p.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    return True
