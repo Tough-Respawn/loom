@@ -256,7 +256,9 @@ def start_remove(deps) -> WizardResult:
         {"step": "d_pick", "items": items},
         "[remove-model 1/2] Quel modèle supprimer ?\n"
         + "\n".join(lines)
-        + "\n(réponds par un numéro — /cancel pour annuler)",
+        + "\n(réponds par un numéro — /cancel pour annuler ; un distant de "
+        "config/local.toml sera retiré du fichier ; image/vidéo : définition "
+        "seule, les poids ComfyUI partagés ne sont pas touchés)",
     )
 
 
@@ -265,11 +267,21 @@ def _step_d_pick(state, t, deps):
     if not (t.isdigit() and 1 <= int(t) <= len(items)):
         return WizardResult(state, "Réponds par le numéro du modèle (ou /cancel).")
     it = items[int(t) - 1]
-    warn = (
-        "son DOSSIER et ses fichiers (GGUF compris) seront SUPPRIMÉS du disque"
-        if it["kind"] == "local"
-        else "il sera retiré du store (sa clé avec) et démonté"
-    )
+    warns = {
+        "local": "son DOSSIER et ses fichiers (GGUF compris) seront SUPPRIMÉS du disque",
+        "remote": "il sera retiré du store (sa clé avec) et démonté",
+        "remote_config": "il sera retiré de config/local.toml (sa clé avec) et démonté",
+        "image": "sa définition Loom (model.toml + workflow.json) sera supprimée ; "
+        "les poids ComfyUI partagés ne sont PAS touchés",
+        "video": "sa définition Loom (model.toml + workflow.json) sera supprimée ; "
+        "les poids ComfyUI partagés ne sont PAS touchés",
+    }
+    warn = warns[it["kind"]]
+    if it.get("is_default"):
+        warn += (
+            " ⚠️ c'est le modèle par défaut de local.toml : au prochain boot, "
+            "repli sur le premier modèle installé"
+        )
     return WizardResult(
         {"step": "d_confirm", "item": it},
         f"[remove-model 2/2] Supprimer « {it['id']} » ? {warn}.\n"
