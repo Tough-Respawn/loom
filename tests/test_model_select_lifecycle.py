@@ -60,3 +60,15 @@ def test_selection_distant_ne_decharge_jamais_le_local(env):
     assert r.status_code == 200
     time.sleep(0.3)  # l'ancien déchargement partait dans un thread de fond
     assert env.calls == []  # le local d'une autre session reste chargé
+
+
+def test_notice_file_dattente_dit_la_vraie_raison():
+    # Le prefill d'amorçage n'est PAS « une autre session qui génère ».
+    from loom.web import routes
+
+    S = SimpleNamespace(local_busy={"reason": "prime"})
+    assert "prefill" in routes._local_busy_notice(S)
+    S.local_busy["reason"] = "génération"
+    assert "une autre session génère" in routes._local_busy_notice(S)
+    S.local_busy["reason"] = "image"
+    assert "image" in routes._local_busy_notice(S)

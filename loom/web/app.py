@@ -568,6 +568,10 @@ def create_app(
         sess_locks={},
         sess_cancel={},
         local_gen_lock=threading.Lock(),
+        # QUI tient local_gen_lock (« prime », « génération », « keepwarm »,
+        # « maintenance », « image », « skill ») : sert au message de mise en file —
+        # dire « une autre session génère » quand c'est un prefill d'amorçage est faux.
+        local_busy={"reason": ""},
         stay_awake=StayAwake(),
         confirm_local=threading.local(),
         notes=NotesQueue(),
