@@ -283,10 +283,7 @@ def build_registry(
     # make_read_image (proposer un modèle VISION), pas un « outil inconnu » trompeur
     # (vécu 2026-07-19 : glm-flash annonçait « je peux lire les images » puis échouait).
     if "read_image" in enabled and not active_is_vision:
-        registry.mark_unavailable(
-            "read_image",
-            "ce modèle N'A PAS la vision : il ne peut pas lire d'image. "
-            "Dis-le franchement à l'utilisateur et propose-lui de basculer sur "
-            "un modèle marqué VISION dans le sélecteur (infobulle au survol).",
-        )
+        from loom.tools.read import VISION_UNAVAILABLE
+
+        registry.mark_unavailable("read_image", VISION_UNAVAILABLE)
     return registry

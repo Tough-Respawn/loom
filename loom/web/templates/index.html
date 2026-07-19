@@ -848,6 +848,20 @@
     .panes.multi .messages { padding: 0 14px; }
     .panes.multi .composer-wrap { padding: 6px 12px 10px; }
     .pane-drop { outline: 2px dashed var(--accent-dim); outline-offset: -4px; }
+    /* Bandeau de panneau : titre de SA session. Caché en vue simple (la barre d'onglets
+       suffit), affiché dès qu'il y a 2+ panneaux. */
+    .pane-head { display: none; }
+    .panes.multi .pane-head {
+      display: flex; align-items: center; gap: 7px; flex: none; min-width: 0;
+      padding: 5px 10px; border-bottom: 1px solid var(--border-soft);
+      font-size: 11.5px; color: var(--text-dim); background: var(--bg-panel);
+    }
+    .pane.focused .pane-head { color: var(--text); border-bottom-color: var(--accent-dim); }
+    .pane-head .pane-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pane-head .pane-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); flex: none; }
+    .pane-head .pane-dot.gen { background: var(--accent); animation: gmpulse 1s ease-in-out infinite; }
+    .pane-head .pane-x { background: none; border: none; color: var(--text-faint); cursor: pointer; padding: 0 3px; font-size: 11px; font-family: inherit; }
+    .pane-head .pane-x:hover { color: var(--err); }
     /* Menu contextuel d'onglet (clic droit) */
     .ctx-menu { position: fixed; z-index: 200; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.35); min-width: 190px; padding: 4px; }
     .ctx-menu button { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); font-family: inherit; font-size: 12px; padding: 7px 10px; border-radius: 5px; cursor: pointer; }
@@ -1218,6 +1232,13 @@
        instanciable N fois — les ids uniques d'antan sont morts avec la split view). -->
   <template id="pane-tpl">
     <section class="pane">
+      <!-- Bandeau du panneau : NOM de sa session (sinon impossible de savoir quel
+           panneau est quel onglet) + point de génération + fermer. Visible en split. -->
+      <div class="pane-head">
+        <span class="pane-dot idle"></span>
+        <span class="pane-title"></span>
+        <button type="button" class="pane-x" title="Fermer le panneau (l'onglet et la session restent)">✕</button>
+      </div>
       <div class="messages-wrap"><div class="messages"></div></div>
       <div class="composer-wrap">
         <div class="composer-inner">
@@ -1231,7 +1252,9 @@
           <div class="cmd-palette" hidden role="listbox" aria-label="Commandes"></div>
           <form class="chat-form">
             <div class="composer">
-              <textarea rows="1" placeholder="Écris une demande — Loom agit avec ses outils… (« / » pour les commandes)"></textarea>
+              <!-- placeholder posé par app.js (applyPaneLayout) : source unique, adapté
+                   à la largeur du panneau -->
+              <textarea rows="1"></textarea>
               <input type="file" accept="image/*" multiple style="display:none">
               <button type="button" class="file-btn" title="Joindre une image" aria-label="Joindre une image">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-4.5-4.5L5 21"/></svg>

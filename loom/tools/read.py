@@ -16,6 +16,15 @@ from loom.agent.inline_image import wrap_image
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.trust import untrusted
 
+# Message UNIQUE du « modèle sans vision » : servi par make_read_image (describer absent)
+# ET par build_registry (outil gaté hors du schéma, cf. mark_unavailable) — une seule
+# source, sinon les deux copies dérivent et l'une raconte une UI qui n'existe plus.
+VISION_UNAVAILABLE = (
+    "ce modèle N'A PAS la vision : il ne peut pas lire d'image. "
+    "Dis-le franchement à l'utilisateur et propose-lui de basculer sur "
+    "un modèle marqué VISION dans le sélecteur (infobulle au survol)."
+)
+
 # Images servies au modèle multimodal (mmproj). MIME par extension.
 _IMAGE_MIME = {
     ".png": "image/png",
@@ -375,11 +384,7 @@ def make_read_image(
         # cours, jamais un détour vers un autre modèle — loom.web passe describer=None).
         if not active_is_vision:
             if describer is None:
-                raise ToolError(
-                    "ce modèle N'A PAS la vision : il ne peut pas lire d'image. "
-                    "Dis-le franchement à l'utilisateur et propose-lui de basculer sur "
-                    "un modèle marqué VISION dans le sélecteur (infobulle au survol)."
-                )
+                raise ToolError(VISION_UNAVAILABLE)
             desc = describer(data_uri, (args.get("question") or "").strip())
             return untrusted(desc, f"image {rel} (décrite par le modèle vision)")
         return wrap_image(data_uri, rel)
