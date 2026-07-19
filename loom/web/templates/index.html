@@ -832,10 +832,30 @@
     .mn-item:hover { background: var(--bg-elev); }
     .mn-item.active .mn-text { color: var(--accent); }
     .mn-flash { box-shadow: 0 0 0 2px var(--accent-dim); border-radius: 8px; transition: box-shadow .2s; }
-    #messages {
+    .messages {
       max-width: 860px; margin: 0 auto; padding: 0 24px;
       display: flex; flex-direction: column; gap: 2px;
     }
+    /* ---- PANNEAUX (split view) : grille 1-4 chats complets ---- */
+    .panes { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr; gap: 0; }
+    .panes.layout-2 { grid-template-columns: 1fr 1fr; }
+    .panes.layout-2.rows { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+    .panes.layout-3, .panes.layout-4 { grid-template-columns: 1fr 1fr; }
+    .panes.layout-3 .pane:nth-child(3) { grid-column: 1 / -1; }
+    .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid transparent; }
+    .panes.multi .pane { border-color: var(--border-soft); }
+    .panes.multi .pane.focused { border-color: var(--accent-dim); }
+    .panes.multi .messages { padding: 0 14px; }
+    .panes.multi .composer-wrap { padding: 6px 12px 10px; }
+    .pane-drop { outline: 2px dashed var(--accent-dim); outline-offset: -4px; }
+    /* Menu contextuel d'onglet (clic droit) */
+    .ctx-menu { position: fixed; z-index: 200; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.35); min-width: 190px; padding: 4px; }
+    .ctx-menu button { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); font-family: inherit; font-size: 12px; padding: 7px 10px; border-radius: 5px; cursor: pointer; }
+    .ctx-menu button:hover:not(:disabled) { background: var(--bg-elev); }
+    .ctx-menu button:disabled { color: var(--text-faint); cursor: default; }
+    .ctx-menu .ctx-sep { height: 1px; background: var(--border-soft); margin: 4px 6px; }
+    /* Onglet visible dans un panneau (autre que le focus) : soulignement discret */
+    .tab.shown .tab-title { text-decoration: underline dotted; text-underline-offset: 3px; }
     .empty-state {
       align-self: center; margin: auto; padding: 80px 20px; text-align: center;
       color: var(--text-faint); font-size: 13px; line-height: 1.8;
@@ -978,28 +998,28 @@
     .cmd-name { font-family: var(--mono, monospace); font-size: 12.5px; color: var(--accent, var(--text)); font-weight: 600; }
     .cmd-usage { font-family: var(--mono, monospace); font-size: 11px; color: var(--text-faint); }
     .cmd-desc { font-size: 11.5px; color: var(--text-dim); line-height: 1.45; }
-    #previewWrap { display: none; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .preview-wrap { display: none; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
     .thumb { position: relative; display: inline-flex; }
     .thumb img { max-height: 50px; border-radius: 4px; display: block; }
     .thumb button { position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; line-height: 14px; padding: 0; border-radius: 50%; background: var(--bg-elev); color: var(--text-dim); border: 1px solid var(--border); font-size: 10px; cursor: pointer; }
     .composer { display: flex; align-items: flex-end; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); transition: border-color .2s; overflow: hidden; }
     .composer:focus-within { border-color: var(--accent-dim); }
-    textarea#input { flex: 1; resize: none; border: 0; background: transparent; color: var(--text); padding: 10px 12px; min-height: 40px; max-height: 200px; overflow-y: auto; font-family: inherit; font-size: 13px; line-height: 1.6; }
-    textarea#input::placeholder { color: var(--text-faint); }
-    textarea#input:focus { outline: none; }
-    #fileBtn { display: flex; align-items: center; justify-content: center; background: transparent; color: var(--text-faint); padding: 0 10px; border: none; cursor: pointer; transition: .12s; }
-    #fileBtn svg { width: 16px; height: 16px; }
-    #fileBtn:hover { color: var(--accent); }
-    #sendBtn { background: var(--accent-dim); color: #fff; border: none; cursor: pointer; padding: 10px 18px; font-size: 12px; font-weight: 600; border-radius: 0; font-family: inherit; transition: .12s; white-space: nowrap; }
-    #sendBtn:hover:not(:disabled) { background: var(--accent); }
-    #sendBtn:disabled { opacity: 0.4; cursor: default; }
+    .composer textarea { flex: 1; resize: none; border: 0; background: transparent; color: var(--text); padding: 10px 12px; min-height: 40px; max-height: 200px; overflow-y: auto; font-family: inherit; font-size: 13px; line-height: 1.6; }
+    .composer textarea::placeholder { color: var(--text-faint); }
+    .composer textarea:focus { outline: none; }
+    .file-btn { display: flex; align-items: center; justify-content: center; background: transparent; color: var(--text-faint); padding: 0 10px; border: none; cursor: pointer; transition: .12s; }
+    .file-btn svg { width: 16px; height: 16px; }
+    .file-btn:hover { color: var(--accent); }
+    .send-btn { background: var(--accent-dim); color: #fff; border: none; cursor: pointer; padding: 10px 18px; font-size: 12px; font-weight: 600; border-radius: 0; font-family: inherit; transition: .12s; white-space: nowrap; }
+    .send-btn:hover:not(:disabled) { background: var(--accent); }
+    .send-btn:disabled { opacity: 0.4; cursor: default; }
     .muted { color: var(--text-faint); font-size: 11px; }
 
     @media (max-width: 768px) {
       .sidebar { position: fixed; left: 0; top: 0; z-index: 100; transform: translateX(-100%); transition: transform .2s; }
       .sidebar.open { transform: translateX(0); }
       .sidebar-toggle { display: block; }
-      #messages { padding: 0 12px; }
+      .messages { padding: 0 12px; }
       .composer-wrap { padding: 8px 12px 12px; }
     }
   </style>
@@ -1186,34 +1206,43 @@
       </span>
     </div>
     <div class="tabbar" id="tabbar" hidden></div>
-    <div class="messages-wrap" id="messages-wrap">
-      <div id="messages"></div>
-    </div>
-    <!-- Navigateur de prompts : liste des messages user (survol = texte, clic = saut) -->
+    <!-- PANNEAUX (split view) : 1 à 4 chats complets côte à côte, construits par app.js
+         en clonant #pane-tpl. La vue simple est le cas à 1 panneau. -->
+    <div class="panes" id="panes"></div>
+    <!-- Navigateur de prompts : liste des messages user (survol = texte, clic = saut) ;
+         global, suit le panneau FOCUS. -->
     <nav class="msg-nav" id="msg-nav" hidden aria-label="Navigateur de prompts"></nav>
-    <div class="composer-wrap">
-      <div class="composer-inner">
-        <!-- Indicateur d'activité pendant les SILENCES du flux (prefill post-compaction,
-             chargement modèle, longue réflexion sans deltas) : le serveur travaille sans
-             rien émettre, on le DIT au lieu de laisser croire à un plantage. -->
-        <div id="gen-activity" class="gen-activity" hidden>
-          <span class="ga-dot"></span><span id="ga-label"></span><span class="ga-dots"></span>
-        </div>
-        <div id="previewWrap"></div>
-        <div class="cmd-palette" id="cmdPalette" hidden role="listbox" aria-label="Commandes"></div>
-        <form id="chat">
-          <div class="composer">
-            <textarea id="input" rows="1" placeholder="Écris une demande — Loom agit avec ses outils… (« / » pour les commandes)" autofocus></textarea>
-            <input type="file" id="file" accept="image/*" multiple style="display:none">
-            <button type="button" id="fileBtn" title="Joindre une image" aria-label="Joindre une image">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-4.5-4.5L5 21"/></svg>
-            </button>
-            <button id="sendBtn" type="submit">Envoyer</button>
-          </div>
-        </form>
-      </div>
-    </div>
   </div>
+
+  <!-- Gabarit d'un panneau : timeline + composer complets (tous sélecteurs en CLASSES,
+       instanciable N fois — les ids uniques d'antan sont morts avec la split view). -->
+  <template id="pane-tpl">
+    <section class="pane">
+      <div class="messages-wrap"><div class="messages"></div></div>
+      <div class="composer-wrap">
+        <div class="composer-inner">
+          <!-- Indicateur d'activité pendant les SILENCES du flux (prefill post-compaction,
+               chargement modèle, longue réflexion sans deltas) : le serveur travaille sans
+               rien émettre, on le DIT au lieu de laisser croire à un plantage. -->
+          <div class="gen-activity" hidden>
+            <span class="ga-dot"></span><span class="ga-label"></span><span class="ga-dots"></span>
+          </div>
+          <div class="preview-wrap"></div>
+          <div class="cmd-palette" hidden role="listbox" aria-label="Commandes"></div>
+          <form class="chat-form">
+            <div class="composer">
+              <textarea rows="1" placeholder="Écris une demande — Loom agit avec ses outils… (« / » pour les commandes)"></textarea>
+              <input type="file" accept="image/*" multiple style="display:none">
+              <button type="button" class="file-btn" title="Joindre une image" aria-label="Joindre une image">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-4.5-4.5L5 21"/></svg>
+              </button>
+              <button type="submit" class="send-btn">Envoyer</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+  </template>
 
   <!-- Moniteur système live (CPU/RAM/GPU) : visible seulement pour un modèle LOCAL -->
   <div id="sysmon" hidden aria-label="Moniteur système">

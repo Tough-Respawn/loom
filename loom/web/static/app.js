@@ -57,14 +57,17 @@ const INIT = JSON.parse(
 // ----------------------------------------------------------------------------
 // État + rendu
 // ----------------------------------------------------------------------------
-// Multi-ONGLETS : chaque session ouverte = un onglet avec SA timeline, SA génération (flux
-// concurrent), SON Stop et SON compteur. La sidebar garde TOUTES les sessions ; fermer un
-// onglet ne supprime pas la session. `state.active` = onglet affiché.
+// Multi-ONGLETS + PANNEAUX (split view) : chaque session ouverte = un onglet avec SA
+// timeline, SA génération (flux concurrent), SON Stop et SON compteur. L'AFFICHAGE passe
+// par 1 à 4 panneaux (state.panes), chacun un chat complet (timeline + saisie) lié à un
+// onglet — la vue simple est le cas à 1 panneau. `state.active` = sid du panneau FOCUS :
+// les singletons (topbar, msg-nav, sélecteur modèle, moniteur) suivent ce focus.
 const state = {
   tabs: {}, // sid -> { sid, title, timeline:[], streaming, abort, model, thinking, workspace, meter, metrics }
   order: [], // ordre des onglets ouverts
-  active: null, // sid de l'onglet affiché
-  pin: true, // auto-scroll collant
+  panes: [], // Pane[] (créés par createPane : élément cloné de #pane-tpl + refs + état)
+  focusedIdx: 0, // index du panneau focus dans panes
+  active: null, // sid du panneau focus (maintenu par focusPane/activateTab/setPaneSid)
 };
 let _seq = 0;
 const uid = () => "i" + ++_seq;
@@ -74,20 +77,33 @@ function tab(sid) {
 function activeTab() {
   return state.tabs[state.active] || null;
 }
+function focusedPane() {
+  return state.panes[state.focusedIdx] || state.panes[0] || null;
+}
+function panesFor(sid) {
+  return state.panes.filter((p) => p.sid === sid);
+}
+function paneShowing(sid) {
+  return state.panes.find((p) => p.sid === sid) || null;
+}
 
-const root = document.getElementById("messages");
-const scrollWrap = document.getElementById("messages-wrap");
-let _raf = false;
-function scheduleRender() {
-  if (_raf) return;
-  _raf = true;
+// Rendu PAR PANNEAU (rAF coalescé par panneau) : seuls les panneaux qui montrent la
+// timeline mutée redessinent — les onglets d'arrière-plan génèrent sans toucher l'écran.
+function renderPane(pane) {
+  if (!pane || pane._raf) return;
+  pane._raf = true;
   requestAnimationFrame(() => {
-    _raf = false;
-    render(html`<${App} />`, root);
-    if (state.pin && scrollWrap)
-      scrollWrap.scrollTop = scrollWrap.scrollHeight;
-    renderMsgNav(); // navigateur de prompts (liste des messages user de l'onglet actif)
+    pane._raf = false;
+    render(html`<${App} sid=${pane.sid} />`, pane.root);
+    if (pane.pin) pane.wrap.scrollTop = pane.wrap.scrollHeight;
+    if (pane === focusedPane()) renderMsgNav(); // navigateur de prompts (panneau focus)
   });
+}
+function scheduleRenderFor(sid) {
+  panesFor(sid).forEach(renderPane);
+}
+function scheduleRender() {
+  state.panes.forEach(renderPane);
 }
 
 // --- Navigateur de prompts : liste les messages UTILISATEUR de l'onglet actif à droite.
@@ -135,7 +151,8 @@ function renderMsgNav() {
     dot.className = "mn-dot";
     b.append(span, dot);
     b.addEventListener("click", () => {
-      const el = document.querySelectorAll("#messages .msg.user")[i];
+      const fp = focusedPane();
+      const el = fp && fp.root.querySelectorAll(".msg.user")[i];
       if (!el) return;
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       nav.querySelectorAll(".mn-item.active").forEach((x) => x.classList.remove("active"));
@@ -147,32 +164,28 @@ function renderMsgNav() {
   });
 }
 
-// Mutations liées à la timeline d'un ONGLET précis. Un re-render n'a lieu que si cet onglet
-// est actif (les onglets en arrière-plan génèrent sans redessiner l'écran). Deux flux
-// concurrents mutent chacun SA timeline sans se marcher dessus.
+// Mutations liées à la timeline d'un ONGLET précis. Un re-render n'a lieu que dans les
+// panneaux qui MONTRENT cet onglet (les flux d'arrière-plan génèrent sans redessiner).
+// Deux flux concurrents mutent chacun SA timeline sans se marcher dessus.
 function opsFor(sid) {
   const tl = () => (state.tabs[sid] ? state.tabs[sid].timeline : []);
   const get = (id) => tl().find((i) => i.id === id);
   const push = (item) => {
     item.id = item.id || uid();
     tl().push(item);
-    if (sid === state.active) scheduleRender();
+    scheduleRenderFor(sid);
     return item;
   };
   const patch = (id, fields) => {
     const it = get(id);
     if (it) {
       Object.assign(it, fields);
-      if (sid === state.active) scheduleRender();
+      scheduleRenderFor(sid);
     }
     return it;
   };
   return { get, push, patch };
 }
-// Ops de l'onglet ACTIF (hydratation, rendu direct).
-const push = (item) => opsFor(state.active).push(item);
-const get = (id) => opsFor(state.active).get(id);
-const patch = (id, fields) => opsFor(state.active).patch(id, fields);
 
 // ----------------------------------------------------------------------------
 // Composants
@@ -275,13 +288,13 @@ function ParallelArena({ lanes }) {
   </div>`;
 }
 
-function PermAsk({ it }) {
+function PermAsk({ it, sid }) {
   const decide = (approve) => {
     const fd = new FormData();
     fd.append("id", it.callId);
     fd.append("approve", approve ? "1" : "0");
     fetch("/tool_decision", { method: "POST", body: fd });
-    patch(it.id, { decided: true, approved: approve });
+    opsFor(sid).patch(it.id, { decided: true, approved: approve });
   };
   return html`<div class=${"perm-ask" + (it.decided ? " decided" : "")}>
     <div>
@@ -305,12 +318,15 @@ function PermAsk({ it }) {
 // Boutons de réponse d'un wizard (/add-model, /remove-model, /rebench) : purs
 // raccourcis de frappe — le clic envoie le libellé comme un message tapé. Non
 // persistés : au rechargement on répond au clavier (l'état wizard est côté serveur).
-function WizChoices({ it }) {
+function WizChoices({ it, sid }) {
   const pick = (label) => {
     if (it.decided) return;
-    patch(it.id, { decided: true, picked: label });
-    input.value = label;
-    submitChat();
+    opsFor(sid).patch(it.id, { decided: true, picked: label });
+    // Envoie la réponse DEPUIS le panneau qui montre cette session (sinon le focus).
+    const pane = paneShowing(sid) || focusedPane();
+    if (!pane) return;
+    pane.input.value = label;
+    submitPane(pane);
   };
   return html`<div class=${"wiz-choices" + (it.decided ? " decided" : "")}>
     ${it.options.map(
@@ -320,7 +336,7 @@ function WizChoices({ it }) {
   </div>`;
 }
 
-function UserMsg({ it, userIndex }) {
+function UserMsg({ it, userIndex, sid }) {
   // Bouton "repartir de la" : tronque la conversation apres ce message et
   // pre-remplit l'input pour re-editer. Comme l'edition de message ChatGPT/Claude.
   const doFork = async (e) => {
@@ -338,33 +354,32 @@ function UserMsg({ it, userIndex }) {
           .trim()
       : String(it.content || "").trim();
     fd.append("text", itText);
+    const t = tab(sid);
     try {
       const r = await fetch("/fork", { method: "POST", body: fd });
       if (!r.ok) {
-        const at = activeTab();
-        if (at) {
-          at.timeline.push({
+        if (t) {
+          t.timeline.push({
             kind: "error",
             message: (await r.text()) || "repartir impossible",
           });
-          scheduleRender();
+          scheduleRenderFor(sid);
         }
         return;
       }
       const j = await r.json();
-      // Tronque la timeline de l'onglet actif : garde jusqu'a CET item user (inclus)
-      const at = activeTab();
-      if (at) {
-        const idx = at.timeline.indexOf(it);
-        if (idx >= 0) at.timeline = at.timeline.slice(0, idx + 1);
+      // Tronque la timeline de CET onglet : garde jusqu'a CET item user (inclus)
+      if (t) {
+        const idx = t.timeline.indexOf(it);
+        if (idx >= 0) t.timeline = t.timeline.slice(0, idx + 1);
       }
-      // Pre-remplit l'input
-      const inp = document.getElementById("input");
-      if (inp) {
-        inp.value = j.text || "";
-        inp.focus();
+      // Pre-remplit la saisie du panneau qui montre cette session
+      const pane = paneShowing(sid) || focusedPane();
+      if (pane) {
+        pane.input.value = j.text || "";
+        pane.input.focus();
       }
-      scheduleRender();
+      scheduleRenderFor(sid);
     } catch (err) {
       /* best-effort */
     }
@@ -439,10 +454,10 @@ function enhance(el, raw) {
   }
 }
 
-function Item({ it, userIndex }) {
+function Item({ it, userIndex, sid }) {
   switch (it.kind) {
     case "user":
-      return html`<${UserMsg} it=${it} userIndex=${userIndex} />`;
+      return html`<${UserMsg} it=${it} userIndex=${userIndex} sid=${sid} />`;
     case "assistant":
       return html`<${Assistant} it=${it} />`;
     case "think":
@@ -450,9 +465,9 @@ function Item({ it, userIndex }) {
     case "tool":
       return html`<${ToolPill} it=${it} />`;
     case "perm":
-      return html`<${PermAsk} it=${it} />`;
+      return html`<${PermAsk} it=${it} sid=${sid} />`;
     case "choices":
-      return html`<${WizChoices} it=${it} />`;
+      return html`<${WizChoices} it=${it} sid=${sid} />`;
     case "error":
       return html`<div class="msg assistant err">${it.message}</div>`;
     case "phase":
@@ -464,8 +479,8 @@ function Item({ it, userIndex }) {
   }
 }
 
-function App() {
-  const t = activeTab();
+function App({ sid }) {
+  const t = tab(sid);
   if (!t || !t.timeline.length) {
     return html`<div class="empty-state">
       Écris une demande. Loom agit avec ses outils (lire, écrire, exécuter, chercher).
@@ -494,7 +509,7 @@ function App() {
     if (consumed.has(it.id)) continue; // carte d'agent : déjà dans son bloc
     let userIndex = null;
     if (it.kind === "user") userIndex = _ui++;
-    out.push(html`<${Item} key=${it.id} it=${it} userIndex=${userIndex} />`);
+    out.push(html`<${Item} key=${it.id} it=${it} userIndex=${userIndex} sid=${sid} />`);
   }
   return out;
 }
@@ -534,14 +549,14 @@ async function streamSSE(url, fd, onEvent, signal) {
 async function sendChat(sid, text, images) {
   const t = tab(sid);
   if (!t) return;
-  state.pin = true;
+  panesFor(sid).forEach((p) => (p.pin = true));
   // Interrompt UNIQUEMENT la génération de CET onglet (les autres continuent).
   if (t.abort) t.abort.abort();
   const ac = new AbortController();
   t.abort = ac;
   t.streaming = true;
   renderTabs();
-  if (sid === state.active) syncComposer();
+  syncComposersFor(sid);
 
   // Ops liées à la timeline de CET onglet (les events du flux mutent SA timeline, même s'il
   // n'est pas à l'écran).
@@ -720,7 +735,7 @@ async function sendChat(sid, text, images) {
         // sur la détection de silence du timer, affiché comme « le modèle tourne ». Effacé
         // par un label vide, ou dès que le vrai flux reprend (content/reasoning/tool_result).
         t.forcedActivity = evt.label || null;
-        if (sid === state.active) setGenActivity(t.forcedActivity);
+        setActivityFor(sid, t.forcedActivity);
         break;
       case "models":
         // Un modèle vient d'être ajouté/monté (wizard /add-model) : recharge le
@@ -738,17 +753,17 @@ async function sendChat(sid, text, images) {
     }
   };
 
-  // N'écrit l'indicateur QUE pour l'onglet affiché (les flux d'arrière-plan ne le
-  // pilotent pas) ; nettoyé au finally et à l'activation d'un autre onglet.
+  // L'indicateur d'activité vit DANS chaque panneau qui montre cet onglet (les flux
+  // d'arrière-plan sans panneau n'affichent rien) ; nettoyé au finally.
   const gaTimer = setInterval(() => {
-    if (sid !== state.active) return;
     // Label FORCÉ (compaction…) prioritaire sur la détection de silence.
     if (t.forcedActivity) {
-      setGenActivity(t.forcedActivity);
+      setActivityFor(sid, t.forcedActivity);
       return;
     }
     const quiet = Date.now() - lastEvtAt > 2500;
-    setGenActivity(
+    setActivityFor(
+      sid,
       t.streaming && quiet
         ? sawToken
           ? "le modèle travaille"
@@ -771,7 +786,7 @@ async function sendChat(sid, text, images) {
     // État machine re-sondé en fin de flux : capture l'état final réel (chargé /
     // libéré) quel que soit ce que le chip racontait pendant la génération.
     scheduleMachineRefresh();
-    if (sid === state.active) setGenActivity(null);
+    setActivityFor(sid, null);
     if (thinkId) patch(thinkId, { active: false });
     // Fin de CE flux : si c'est encore le flux courant de l'onglet (pas remplacé par une
     // nouvelle soumission), on marque l'onglet non-générant et on fige son compteur.
@@ -779,9 +794,9 @@ async function sendChat(sid, text, images) {
       t.abort = null;
       t.streaming = false;
       renderTabs();
+      syncComposersFor(sid);
       if (sid === state.active) {
         setMetrics(lastSent, lastRecv, lastTokS, { done: true });
-        syncComposer();
       }
     }
   }
@@ -976,18 +991,32 @@ async function openTab(sid) {
   activateTab(sid);
 }
 
-function activateTab(sid) {
+// Change l'onglet AFFICHÉ par un panneau (brouillon sauvé/restauré, composer resynchronisé).
+function setPaneSid(pane, sid) {
+  // Brouillon PAR ONGLET : on sauve le texte NON envoyé de l'onglet qu'on quitte,
+  // on charge celui de l'onglet affiché. Sinon la zone de saisie serait partagée.
+  const prev = state.tabs[pane.sid];
+  if (prev) prev.draft = pane.input.value;
+  pane.sid = sid;
   const t = state.tabs[sid];
-  if (!t) return;
-  // Brouillon PAR ONGLET : on sauve le texte NON envoyé de l'onglet qu'on quitte, on
-  // chargera celui de l'onglet ouvert (plus bas). Sinon la zone de saisie est partagée.
-  const inputEl = document.getElementById("input");
-  const prev = state.tabs[state.active];
-  if (prev && inputEl) prev.draft = inputEl.value;
-  state.active = sid;
-  // Ligne d'activité : propre à l'onglet quitté — le timer du flux de CET onglet la
+  pane.input.value = (t && t.draft) || "";
+  autosize(pane);
+  pane.pin = true;
+  hidePal(pane);
+  // Ligne d'activité : propre à l'onglet quitté — le timer du flux du NOUVEL onglet la
   // repeindra dans les 500 ms s'il est en silence, sinon elle doit disparaître.
-  setGenActivity(null);
+  setPaneActivity(pane, null);
+  syncComposer(pane);
+  renderPane(pane);
+  if (pane === focusedPane()) state.active = sid;
+}
+
+// Synchronise les singletons (topbar, sélecteur modèle, moniteur, sidebar) sur l'onglet
+// qui prend le FOCUS, et informe le serveur (session focus _cur).
+function focusSingletonsFor(sid) {
+  const t = state.tabs[sid];
+  state.active = sid;
+  if (!t) return;
   // Le serveur suit ce focus (pour /model, /tools, /reset, /pick-folder qui opèrent
   // sur _cur). La rafale /machine_state part APRÈS la réponse : un tick immédiat
   // lirait l'ANCIENNE session active côté serveur et re-basculerait le moniteur
@@ -998,7 +1027,7 @@ function activateTab(sid) {
   // Synchronise les contrôles de la sidebar/topbar à cet onglet.
   const sel = document.getElementById("model-select");
   if (sel && t.model) sel.value = t.model;
-  // Teinte du sélecteur ET visibilité du moniteur système suivent l'onglet ACTIF
+  // Teinte du sélecteur ET visibilité du moniteur système suivent l'onglet FOCUS
   // immédiatement (un distant n'a pas besoin du moniteur).
   paintModelSelect();
   const think = document.getElementById("thinking-cb");
@@ -1026,15 +1055,36 @@ function activateTab(sid) {
     .querySelector(`.sess-pick[data-id="${sid}"]`)
     ?.closest(".session-item");
   if (li) li.classList.add("active");
-  // Charge le brouillon de l'onglet ouvert (vide s'il n'a rien tapé).
-  if (inputEl) {
-    inputEl.value = t.draft || "";
-    autosize();
-  }
-  state.pin = true;
-  scheduleRender();
+  renderMsgNav();
+}
+
+// Donne le focus au panneau i : liseré, singletons, serveur — sans changer son onglet.
+function focusPane(i) {
+  const pane = state.panes[i];
+  if (!pane) return;
+  const changed = state.focusedIdx !== i || state.active !== pane.sid;
+  state.focusedIdx = i;
+  state.panes.forEach((p, k) => p.el.classList.toggle("focused", k === i));
+  if (!changed) return;
+  if (pane.sid) focusSingletonsFor(pane.sid);
+  else state.active = null;
   renderTabs();
-  syncComposer();
+}
+
+function activateTab(sid) {
+  const t = state.tabs[sid];
+  if (!t) return;
+  // Déjà affiché dans un panneau -> on FOCUS ce panneau (pas de double affichage).
+  const shown = paneShowing(sid);
+  if (shown) {
+    focusPane(state.panes.indexOf(shown));
+    return;
+  }
+  const pane = focusedPane();
+  if (!pane) return;
+  setPaneSid(pane, sid);
+  focusSingletonsFor(sid);
+  renderTabs();
 }
 
 function closeTab(sid) {
@@ -1042,16 +1092,427 @@ function closeTab(sid) {
   if (t && t.abort) t.abort.abort(); // stoppe le flux de l'onglet fermé (la session reste)
   delete state.tabs[sid];
   state.order = state.order.filter((s) => s !== sid);
-  if (state.active === sid) {
-    state.active = state.order[state.order.length - 1] || null;
-    if (state.active) activateTab(state.active);
+  const showing = panesFor(sid);
+  if (showing.length && state.panes.length > 1) {
+    // Split : fermer l'onglet ferme son (ses) panneau(x), les autres continuent.
+    showing.forEach((p) => removePane(p));
+  } else if (showing.length) {
+    // Vue simple : on bascule sur le dernier onglet restant (comportement historique).
+    const pane = showing[0];
+    pane.sid = null;
+    const next = state.order[state.order.length - 1] || null;
+    if (next) activateTab(next);
     else {
-      scheduleRender();
+      state.active = null;
+      pane.input.value = "";
+      renderPane(pane);
       renderTabs();
     }
   } else {
     renderTabs();
   }
+  savePanesLayout();
+}
+
+// ----------------------------------------------------------------------------
+// Panneaux : fabrique d'un chat complet (timeline + composer) cloné de #pane-tpl.
+// Toute la mécanique de saisie (envoi, stop, palette « / », historique ↑/↓, images,
+// activité, scroll collant) est PAR PANNEAU — c'est ce qui rend la split view possible.
+// ----------------------------------------------------------------------------
+const panesEl = document.getElementById("panes");
+const paneTpl = document.getElementById("pane-tpl");
+const MAX_IMAGES = 6;
+let splitDir = "cols"; // orientation d'un split à 2 panneaux (à droite vs en dessous)
+let CMDS = []; // commandes « / » (source de vérité serveur), partagées par les palettes
+fetch("/commands")
+  .then((r) => r.json())
+  .then((d) => {
+    CMDS = d.commands || [];
+  })
+  .catch(() => {}); // pas de palette = pas de casse, le chat marche sans
+
+function createPane() {
+  const el = paneTpl.content.firstElementChild.cloneNode(true);
+  const q = (sel) => el.querySelector(sel);
+  const pane = {
+    sid: null,
+    el,
+    wrap: q(".messages-wrap"),
+    root: q(".messages"),
+    form: q(".chat-form"),
+    input: q("textarea"),
+    sendBtn: q(".send-btn"),
+    fileInput: q('input[type="file"]'),
+    fileBtn: q(".file-btn"),
+    previewWrap: q(".preview-wrap"),
+    activityEl: q(".gen-activity"),
+    activityLabel: q(".ga-label"),
+    palEl: q(".cmd-palette"),
+    pendingImages: [], // images jointes au prochain message (max MAX_IMAGES)
+    palIdx: 0,
+    pin: true, // auto-scroll collant
+    _raf: false,
+  };
+  wirePane(pane);
+  return pane;
+}
+
+function applyPaneLayout() {
+  if (!panesEl) return;
+  panesEl.className =
+    "panes layout-" +
+    state.panes.length +
+    (state.panes.length > 1 ? " multi" : "") +
+    (state.panes.length === 2 && splitDir === "rows" ? " rows" : "");
+  savePanesLayout();
+}
+
+function savePanesLayout() {
+  try {
+    localStorage.loomPanes = JSON.stringify({
+      sids: state.panes.map((p) => p.sid).filter(Boolean),
+      dir: splitDir,
+    });
+  } catch (e) {
+    /* localStorage indispo : la disposition ne survivra pas au rechargement */
+  }
+}
+
+function addPane(sid, dir) {
+  if (state.panes.length >= 4) {
+    showToast("4 panneaux maximum");
+    return null;
+  }
+  const shown = sid && paneShowing(sid);
+  if (shown) {
+    focusPane(state.panes.indexOf(shown));
+    return null;
+  }
+  if (dir) splitDir = dir;
+  const pane = createPane();
+  state.panes.push(pane);
+  panesEl.appendChild(pane.el);
+  if (sid && state.tabs[sid]) setPaneSid(pane, sid);
+  applyPaneLayout();
+  focusPane(state.panes.length - 1);
+  renderPane(pane);
+  renderTabs();
+  return pane;
+}
+
+function removePane(pane) {
+  const i = state.panes.indexOf(pane);
+  if (i < 0 || state.panes.length <= 1) return;
+  // Brouillon sauvé avant de perdre le panneau (l'onglet reste ouvert dans la barre).
+  const t = state.tabs[pane.sid];
+  if (t) t.draft = pane.input.value;
+  state.panes.splice(i, 1);
+  pane.el.remove();
+  if (state.focusedIdx >= state.panes.length)
+    state.focusedIdx = state.panes.length - 1;
+  applyPaneLayout();
+  focusPane(state.focusedIdx);
+  renderTabs();
+}
+
+// ---- Indicateur d'activité (silences du flux) : par panneau ----
+function setPaneActivity(pane, label) {
+  if (!pane || !pane.activityEl) return;
+  if (!label) {
+    pane.activityEl.hidden = true;
+    return;
+  }
+  pane.activityEl.hidden = false;
+  if (pane.activityLabel.textContent !== label)
+    pane.activityLabel.textContent = label;
+}
+function setActivityFor(sid, label) {
+  panesFor(sid).forEach((p) => setPaneActivity(p, label));
+}
+
+// Le bouton reflète l'état de l'onglet du panneau (Stop si SA génération tourne).
+function syncComposer(pane) {
+  if (pane && pane.sendBtn)
+    pane.sendBtn.textContent = tab(pane.sid)?.streaming ? "Stop" : "Envoyer";
+}
+function syncComposersFor(sid) {
+  panesFor(sid).forEach(syncComposer);
+}
+
+// Auto-dimensionnement du textarea : grandit avec le contenu jusqu'à max-height (CSS
+// 200px), puis scroll interne. Appelé à la frappe ET après toute écriture programmatique.
+function autosize(pane) {
+  if (!pane || !pane.input) return;
+  pane.input.style.height = "auto";
+  pane.input.style.height = Math.min(pane.input.scrollHeight, 200) + "px";
+}
+
+// ---- images jointes (par panneau, jusqu'à MAX_IMAGES) ----
+function renderPreviews(pane) {
+  pane.previewWrap.innerHTML = "";
+  pane.pendingImages.forEach((file, i) => {
+    const wrap = document.createElement("div");
+    wrap.className = "thumb";
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(file);
+    img.alt = file.name || "image";
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "✕";
+    rm.title = "Retirer";
+    rm.addEventListener("click", () => removeImage(pane, i));
+    wrap.append(img, rm);
+    pane.previewWrap.append(wrap);
+  });
+  pane.previewWrap.style.display = pane.pendingImages.length ? "flex" : "none";
+}
+function addImages(pane, files) {
+  for (const f of files) {
+    if (!f || !f.type.startsWith("image/")) continue;
+    if (pane.pendingImages.length >= MAX_IMAGES) break; // les suivantes sont ignorées
+    pane.pendingImages.push(f);
+  }
+  renderPreviews(pane);
+}
+function removeImage(pane, i) {
+  pane.pendingImages.splice(i, 1);
+  renderPreviews(pane);
+}
+function clearImages(pane) {
+  pane.pendingImages = [];
+  renderPreviews(pane);
+}
+
+// ---- Palette de commandes « / » : liste globale (CMDS), filtrage par panneau ----
+function palMatches(pane) {
+  const v = pane.input.value;
+  // Palette uniquement sur le PREMIER mot d'un message qui commence par « / » :
+  // dès qu'un espace ou un retour ligne arrive, on est dans les arguments.
+  if (!v.startsWith("/") || /[\s\n]/.test(v)) return [];
+  const tok = v.slice(1).toLowerCase();
+  return CMDS.filter((c) => c.name.slice(1).toLowerCase().startsWith(tok));
+}
+function hidePal(pane) {
+  if (pane && pane.palEl) pane.palEl.hidden = true;
+}
+function renderPal(pane) {
+  if (!pane.palEl) return;
+  const m = palMatches(pane);
+  if (!m.length) {
+    hidePal(pane);
+    return;
+  }
+  pane.palIdx = Math.min(pane.palIdx, m.length - 1);
+  pane.palEl.replaceChildren(
+    ...m.map((c, i) => {
+      const item = document.createElement("div");
+      item.className = "cmd-item" + (i === pane.palIdx ? " sel" : "");
+      item.setAttribute("role", "option");
+      const line = document.createElement("div");
+      line.className = "cmd-line";
+      const name = document.createElement("span");
+      name.className = "cmd-name";
+      name.textContent = c.name;
+      const usage = document.createElement("span");
+      usage.className = "cmd-usage";
+      usage.textContent = c.usage;
+      line.append(name, usage);
+      const desc = document.createElement("div");
+      desc.className = "cmd-desc";
+      desc.textContent = c.description;
+      item.append(line, desc);
+      // mousedown (pas click) : ne pas voler le focus du textarea avant l'insertion
+      item.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        palPick(pane, c);
+      });
+      item.addEventListener("mouseenter", () => {
+        pane.palIdx = i;
+        renderPal(pane);
+      });
+      return item;
+    }),
+  );
+  pane.palEl.hidden = false;
+}
+function palPick(pane, c) {
+  pane.input.value = c.name + " ";
+  autosize(pane);
+  hidePal(pane);
+  pane.input.focus();
+}
+
+// ---- envoi / stop (par panneau, vers l'onglet du panneau) ----
+function submitPane(pane) {
+  const sid = pane.sid;
+  const text = pane.input.value.trim();
+  if (!text || !sid) return;
+  // Ferme la palette « / » : le clear programmatique du champ n'émet pas d'événement
+  // input, elle resterait ouverte sur du vide.
+  hidePal(pane);
+  const t = tab(sid);
+  // Une réponse part (tapée OU cliquée) : les blocs de boutons en attente sont
+  // consommés — des boutons périmés ne doivent pas rester cliquables.
+  if (t)
+    for (const it of t.timeline)
+      if (it.kind === "choices" && !it.decided)
+        opsFor(sid).patch(it.id, { decided: true });
+  // Pièces jointes pendant une génération : la file /note est TEXTE-ONLY. On bloque
+  // net (rien n'est consommé) plutôt que de laisser l'image en attente partir avec
+  // le PROCHAIN message, auquel elle ne correspondrait plus.
+  if (t?.streaming && pane.pendingImages.length) {
+    showToast(
+      "images impossibles pendant une génération — retire-les pour envoyer une note texte, ou Stop d'abord",
+    );
+    return;
+  }
+  if (t) {
+    (t.history || (t.history = [])).push(text); // historique ↑/↓ de CET onglet
+    t.histIdx = -1;
+    t.draft = ""; // message parti -> brouillon vidé
+  }
+  // NOTE EN VOL (« btw » natif) : pendant une génération, un message avec du texte
+  // NE l'interrompt plus — il part en file (/note) et la boucle l'injecte au prochain
+  // point d'arrêt (la bulle apparaît à ce moment-là, à sa vraie position). Pour
+  // interrompre : bouton Stop, puis envoyer.
+  if (t?.streaming) {
+    pane.input.value = "";
+    autosize(pane);
+    postForm("/note", { session_id: sid, text })
+      .then(async (r) => {
+        if (r.ok)
+          showToast(
+            "note transmise — prise en compte au prochain point d'arrêt du modèle",
+          );
+        else {
+          const err = await r.json().catch(() => null);
+          showToast(err?.error || "note refusée (session ?)");
+        }
+      })
+      .catch(() => showToast("note perdue : loom.web injoignable"));
+    pane.input.focus();
+    return;
+  }
+  const imgs = pane.pendingImages.slice();
+  pane.input.value = "";
+  autosize(pane); // revient à 1 ligne après envoi
+  clearImages(pane);
+  // Envoi sur l'onglet du panneau (flux concurrent) ; le bouton passe à Stop.
+  sendChat(sid, text, imgs).finally(() => pane.input.focus());
+  syncComposer(pane);
+}
+
+// Stop : coupe l'affichage de cet onglet (abort) ET sa génération serveur (/cancel avec
+// son session_id). Les autres onglets ne sont pas touchés.
+function stopPane(pane) {
+  const t = tab(pane.sid);
+  if (t && t.abort) t.abort.abort();
+  if (pane.sid) postForm("/cancel", { session_id: pane.sid }).catch(() => {});
+  syncComposer(pane);
+}
+
+function wirePane(pane) {
+  const input = pane.input;
+  // Focus du panneau au premier geste dedans (split view) — capture, avant les boutons.
+  pane.el.addEventListener(
+    "pointerdown",
+    () => {
+      const i = state.panes.indexOf(pane);
+      if (i >= 0 && i !== state.focusedIdx) focusPane(i);
+    },
+    true,
+  );
+  // Scroll collant : on suit le bas seulement si l'utilisateur y est déjà.
+  pane.wrap.addEventListener(
+    "scroll",
+    () => {
+      pane.pin =
+        pane.wrap.scrollTop + pane.wrap.clientHeight >=
+        pane.wrap.scrollHeight - 120;
+    },
+    { passive: true },
+  );
+  // Si l'onglet du panneau génère, SEUL un appui explicite sur le bouton « Stop »
+  // arrête (focus sur le bouton = clic ou activation clavier DU bouton). Un
+  // Entrée depuis le champ de saisie — surtout vide — ne doit JAMAIS couper une
+  // réflexion en cours (vécu 2026-07-10 : minutes de travail perdues).
+  pane.form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (tab(pane.sid)?.streaming) {
+      if (document.activeElement === pane.sendBtn) stopPane(pane);
+      return;
+    }
+    submitPane(pane);
+  });
+  input.addEventListener("input", () => {
+    autosize(pane);
+    pane.palIdx = 0;
+    renderPal(pane);
+  });
+  input.addEventListener("blur", () => setTimeout(() => hidePal(pane), 120));
+  // historique ↑/↓ + Entrée pour envoyer — l'historique est PAR ONGLET (t.history).
+  input.addEventListener("keydown", (e) => {
+    // La palette ouverte capte la navigation AVANT l'historique et l'envoi.
+    if (pane.palEl && !pane.palEl.hidden) {
+      const m = palMatches(pane);
+      if (e.key === "ArrowDown" && m.length) {
+        e.preventDefault();
+        pane.palIdx = (pane.palIdx + 1) % m.length;
+        renderPal(pane);
+        return;
+      }
+      if (e.key === "ArrowUp" && m.length) {
+        e.preventDefault();
+        pane.palIdx = (pane.palIdx - 1 + m.length) % m.length;
+        renderPal(pane);
+        return;
+      }
+      if (e.key === "Escape") {
+        hidePal(pane);
+        return;
+      }
+      if ((e.key === "Tab" || e.key === "Enter") && m.length) {
+        const sel = m[Math.min(pane.palIdx, m.length - 1)];
+        // Entrée sur une commande DÉJÀ complète = envoi normal ; sinon on complète.
+        if (e.key === "Tab" || input.value.trim() !== sel.name) {
+          e.preventDefault();
+          palPick(pane, sel);
+          return;
+        }
+        hidePal(pane);
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submitPane(pane);
+      return;
+    }
+    const t = tab(pane.sid);
+    if (!t) return;
+    const hist = t.history || (t.history = []);
+    if (e.key === "ArrowUp" && input.selectionStart === 0 && hist.length) {
+      e.preventDefault();
+      if (t.histIdx == null || t.histIdx === -1) t.histIdx = hist.length;
+      if (t.histIdx > 0) t.histIdx--;
+      input.value = hist[t.histIdx];
+      autosize(pane);
+    } else if (e.key === "ArrowDown" && t.histIdx != null && t.histIdx !== -1) {
+      e.preventDefault();
+      if (t.histIdx < hist.length - 1) {
+        t.histIdx++;
+        input.value = hist[t.histIdx];
+      } else {
+        t.histIdx = -1;
+        input.value = "";
+      }
+      autosize(pane);
+    }
+  });
+  pane.fileInput.addEventListener("change", () => {
+    addImages(pane, [...pane.fileInput.files]);
+    pane.fileInput.value = ""; // permet de re-sélectionner le même fichier ensuite
+  });
+  pane.fileBtn.addEventListener("click", () => pane.fileInput.click());
 }
 
 async function newSessionTab() {
@@ -1095,9 +1556,15 @@ function addSidebarSession(d) {
 // ----------------------------------------------------------------------------
 // Hydratation + câblage des contrôles (formulaires, image, historique, toggles)
 // ----------------------------------------------------------------------------
-// Onglet de départ = la session active (hydratée depuis INIT). La sidebar rendue par le
-// serveur liste toutes les sessions ; on n'ouvre QUE l'active au chargement.
+// Premier PANNEAU + onglet de départ = la session active (hydratée depuis INIT). La
+// sidebar rendue par le serveur liste toutes les sessions ; on n'ouvre QUE l'active.
 {
+  const pane = createPane();
+  state.panes = [pane];
+  state.focusedIdx = 0;
+  panesEl.appendChild(pane.el);
+  pane.el.classList.add("focused");
+  applyPaneLayout();
   const sid = INIT.active_session;
   if (sid) {
     const t0 = {
@@ -1119,6 +1586,7 @@ function addSidebarSession(d) {
     _hydrateTimeline(t0, INIT.messages);
     state.tabs[sid] = t0;
     state.order.push(sid);
+    pane.sid = sid;
     state.active = sid;
     // Async : si la session active a un journal temps réel, on remplace l'affichage par le
     // REJEU (raisonnement + cartes d'outils, comme en direct) au lieu des simples bulles.
@@ -1130,11 +1598,12 @@ function addSidebarSession(d) {
         if (tl.events && tl.events.length) {
           t0.timeline = [];
           _replayTimeline(t0, tl.events);
-          if (state.active === sid) scheduleRender();
+          scheduleRenderFor(sid);
         }
       } catch {}
     })();
   }
+  pane.input.focus(); // l'ancien autofocus du textarea unique est mort avec lui
 }
 renderTabs();
 scheduleRender();
@@ -1148,13 +1617,6 @@ function _typesetAll() {
 }
 if (window.__mathjaxReady) _typesetAll();
 else document.addEventListener("mathjax-ready", _typesetAll);
-
-const input = document.getElementById("input");
-const sendBtn = document.getElementById("sendBtn");
-const fileInput = document.getElementById("file");
-let pendingImages = []; // images jointes au prochain message (max MAX_IMAGES)
-const MAX_IMAGES = 6;
-const previewWrap = document.getElementById("previewWrap");
 
 // ----------------------------------------------------------------------------
 // Dossier de travail des outils (où read/write/shell agissent), persisté
@@ -1172,21 +1634,6 @@ function reflectWorkdir() {
   if (workdirPath) workdirPath.textContent = loomWorkdir;
 }
 reflectWorkdir();
-
-// --- Ligne d'activité (silences du flux) : le serveur travaille sans émettre (prefill
-// post-compaction, chargement modèle, réflexion muette) -> label + points animés au-dessus
-// du composer, au lieu d'un silence qui ressemble à un plantage. ---
-const genActivity = document.getElementById("gen-activity");
-const gaLabel = document.getElementById("ga-label");
-function setGenActivity(label) {
-  if (!genActivity) return;
-  if (!label) {
-    genActivity.hidden = true;
-    return;
-  }
-  genActivity.hidden = false;
-  if (gaLabel && gaLabel.textContent !== label) gaLabel.textContent = label;
-}
 
 // --- Compteur live de génération (tokens réels + débit mesuré, piloté par le backend) ---
 const genMetrics = document.getElementById("gen-metrics");
@@ -1521,48 +1968,6 @@ if (pickFolderBtn) {
   });
 }
 
-function renderPreviews() {
-  previewWrap.innerHTML = "";
-  pendingImages.forEach((file, i) => {
-    const wrap = document.createElement("div");
-    wrap.className = "thumb";
-    const img = document.createElement("img");
-    img.src = URL.createObjectURL(file);
-    img.alt = file.name || "image";
-    const rm = document.createElement("button");
-    rm.type = "button";
-    rm.textContent = "✕";
-    rm.title = "Retirer";
-    rm.addEventListener("click", () => removeImage(i));
-    wrap.append(img, rm);
-    previewWrap.append(wrap);
-  });
-  previewWrap.style.display = pendingImages.length ? "flex" : "none";
-}
-function addImages(files) {
-  for (const f of files) {
-    if (!f || !f.type.startsWith("image/")) continue;
-    if (pendingImages.length >= MAX_IMAGES) break; // limite : les suivantes sont ignorées
-    pendingImages.push(f);
-  }
-  renderPreviews();
-}
-function removeImage(i) {
-  pendingImages.splice(i, 1);
-  renderPreviews();
-}
-function clearImages() {
-  pendingImages = [];
-  renderPreviews();
-}
-
-// Scroll collant : on suit le bas seulement si l'utilisateur y est déjà.
-function nearBottom() {
-  if (!scrollWrap) return true;
-  return scrollWrap.scrollTop + scrollWrap.clientHeight >= scrollWrap.scrollHeight - 120;
-}
-if (scrollWrap) scrollWrap.addEventListener("scroll", () => (state.pin = nearBottom()), { passive: true });
-
 // --- toggle sidebar mobile ---
 const sidebarToggle = document.getElementById("sidebar-toggle");
 const sidebarEl = document.getElementById("sidebar");
@@ -1570,258 +1975,14 @@ if (sidebarToggle && sidebarEl) {
   sidebarToggle.addEventListener("click", () => sidebarEl.classList.toggle("open"));
 }
 
-// --- formulaire : un seul chemin, l'agent tool-use (/chat) ---
-const chatForm = document.getElementById("chat");
-
-// Le bouton reflète l'état de l'onglet ACTIF (Stop si SA génération tourne, sinon Envoyer).
-function syncComposer() {
-  if (sendBtn) sendBtn.textContent = activeTab()?.streaming ? "Stop" : "Envoyer";
-}
-
-function submitChat() {
-  const text = input.value.trim();
-  if (!text || !state.active) return;
-  // Ferme la palette « / » : le clear programmatique du champ n'émet pas d'événement
-  // input, elle resterait ouverte sur du vide.
-  if (typeof hidePal === "function") hidePal();
-  const t = activeTab();
-  // Une réponse part (tapée OU cliquée) : les blocs de boutons en attente sont
-  // consommés — des boutons périmés ne doivent pas rester cliquables.
-  if (t)
-    for (const it of t.timeline)
-      if (it.kind === "choices" && !it.decided) patch(it.id, { decided: true });
-  // Pièces jointes pendant une génération : la file /note est TEXTE-ONLY. On bloque
-  // net (rien n'est consommé) plutôt que de laisser l'image en attente partir avec
-  // le PROCHAIN message, auquel elle ne correspondrait plus.
-  if (t?.streaming && pendingImages.length) {
-    showToast(
-      "images impossibles pendant une génération — retire-les pour envoyer une note texte, ou Stop d'abord",
-    );
-    return;
-  }
-  if (t) {
-    (t.history || (t.history = [])).push(text); // historique ↑/↓ de CET onglet
-    t.histIdx = -1;
-    t.draft = ""; // message parti -> brouillon vidé
-  }
-  // NOTE EN VOL (« btw » natif) : pendant une génération, un message avec du texte
-  // NE l'interrompt plus — il part en file (/note) et la boucle l'injecte au prochain
-  // point d'arrêt (la bulle apparaît à ce moment-là, à sa vraie position). Pour
-  // interrompre : bouton Stop, puis envoyer.
-  if (t?.streaming) {
-    input.value = "";
-    autosize();
-    postForm("/note", { session_id: state.active, text })
-      .then(async (r) => {
-        if (r.ok)
-          showToast(
-            "note transmise — prise en compte au prochain point d'arrêt du modèle",
-          );
-        else {
-          const err = await r.json().catch(() => null);
-          showToast(err?.error || "note refusée (session ?)");
-        }
-      })
-      .catch(() => showToast("note perdue : loom.web injoignable"));
-    input.focus();
-    return;
-  }
-  const imgs = pendingImages.slice();
-  input.value = "";
-  autosize(); // revient à 1 ligne après envoi
-  clearImages();
-  // Envoi sur l'onglet actif (flux concurrent) ; le bouton passe à Stop via syncComposer.
-  sendChat(state.active, text, imgs).finally(() => input.focus());
-  syncComposer();
-}
-
-// Stop : coupe l'affichage de l'onglet actif (abort) ET sa génération serveur (/cancel avec
-// son session_id). Les autres onglets ne sont pas touchés.
-function stopChat() {
-  const t = activeTab();
-  if (t && t.abort) t.abort.abort();
-  if (state.active) postForm("/cancel", { session_id: state.active }).catch(() => {});
-  syncComposer();
-}
-chatForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-  // Si l'onglet actif génère, SEUL un appui explicite sur le bouton « Stop »
-  // arrête (focus sur le bouton = clic ou activation clavier DU bouton). Un
-  // Entrée depuis le champ de saisie — surtout vide — ne doit JAMAIS couper une
-  // réflexion en cours (vécu 2026-07-10 : minutes de travail perdues). Pour
-  // interrompre-et-relancer, on soumet un NOUVEAU message (comportement inchangé).
-  if (activeTab()?.streaming) {
-    if (document.activeElement === sendBtn) stopChat();
-    return;
-  }
-  submitChat();
-});
-
-// Auto-dimensionnement du textarea : grandit avec le contenu jusqu'à max-height (CSS 200px),
-// puis scroll interne. Appelé à la frappe ET après toute écriture programmatique (brouillon
-// d'onglet, rappel d'historique, reset) pour que l'utilisateur voie/édite tout son prompt.
-function autosize() {
-  if (!input) return;
-  input.style.height = "auto";
-  input.style.height = Math.min(input.scrollHeight, 200) + "px";
-}
-input.addEventListener("input", autosize);
-
-// ---- Palette de commandes « / » ---------------------------------------------------
-// Taper « / » en tête de message ouvre la liste des commandes (GET /commands, source
-// de vérité serveur), filtrée à la frappe. ↑↓ navigue, Tab/Entrée complète, Échap
-// ferme, clic insère. Sans elle, /add-model & co sont indécouvrables.
-const cmdPal = document.getElementById("cmdPalette");
-let CMDS = [];
-let palIdx = 0;
-fetch("/commands")
-  .then((r) => r.json())
-  .then((d) => {
-    CMDS = d.commands || [];
-  })
-  .catch(() => {}); // pas de palette = pas de casse, le chat marche sans
-
-function palMatches() {
-  const v = input.value;
-  // Palette uniquement sur le PREMIER mot d'un message qui commence par « / » :
-  // dès qu'un espace ou un retour ligne arrive, on est dans les arguments.
-  if (!v.startsWith("/") || /[\s\n]/.test(v)) return [];
-  const tok = v.slice(1).toLowerCase();
-  return CMDS.filter((c) => c.name.slice(1).toLowerCase().startsWith(tok));
-}
-
-function hidePal() {
-  if (cmdPal) cmdPal.hidden = true;
-}
-
-function renderPal() {
-  if (!cmdPal) return;
-  const m = palMatches();
-  if (!m.length) {
-    hidePal();
-    return;
-  }
-  palIdx = Math.min(palIdx, m.length - 1);
-  cmdPal.replaceChildren(
-    ...m.map((c, i) => {
-      const item = document.createElement("div");
-      item.className = "cmd-item" + (i === palIdx ? " sel" : "");
-      item.setAttribute("role", "option");
-      const line = document.createElement("div");
-      line.className = "cmd-line";
-      const name = document.createElement("span");
-      name.className = "cmd-name";
-      name.textContent = c.name;
-      const usage = document.createElement("span");
-      usage.className = "cmd-usage";
-      usage.textContent = c.usage;
-      line.append(name, usage);
-      const desc = document.createElement("div");
-      desc.className = "cmd-desc";
-      desc.textContent = c.description;
-      item.append(line, desc);
-      // mousedown (pas click) : ne pas voler le focus du textarea avant l'insertion
-      item.addEventListener("mousedown", (ev) => {
-        ev.preventDefault();
-        palPick(c);
-      });
-      item.addEventListener("mouseenter", () => {
-        palIdx = i;
-        renderPal();
-      });
-      return item;
-    }),
-  );
-  cmdPal.hidden = false;
-}
-
-function palPick(c) {
-  input.value = c.name + " ";
-  autosize();
-  hidePal();
-  input.focus();
-}
-
-input.addEventListener("input", () => {
-  palIdx = 0;
-  renderPal();
-});
-input.addEventListener("blur", () => setTimeout(hidePal, 120));
-
-// historique ↑/↓ + Entrée pour envoyer — l'historique est PAR ONGLET (t.history/t.histIdx),
-// amorcé avec les prompts déjà envoyés de la conversation.
-input.addEventListener("keydown", (e) => {
-  // La palette ouverte capte la navigation AVANT l'historique et l'envoi.
-  if (cmdPal && !cmdPal.hidden) {
-    const m = palMatches();
-    if (e.key === "ArrowDown" && m.length) {
-      e.preventDefault();
-      palIdx = (palIdx + 1) % m.length;
-      renderPal();
-      return;
-    }
-    if (e.key === "ArrowUp" && m.length) {
-      e.preventDefault();
-      palIdx = (palIdx - 1 + m.length) % m.length;
-      renderPal();
-      return;
-    }
-    if (e.key === "Escape") {
-      hidePal();
-      return;
-    }
-    if ((e.key === "Tab" || e.key === "Enter") && m.length) {
-      const sel = m[Math.min(palIdx, m.length - 1)];
-      // Entrée sur une commande DÉJÀ complète = envoi normal ; sinon on complète.
-      if (e.key === "Tab" || input.value.trim() !== sel.name) {
-        e.preventDefault();
-        palPick(sel);
-        return;
-      }
-      hidePal();
-    }
-  }
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    submitChat();
-    return;
-  }
-  const t = activeTab();
-  if (!t) return;
-  const hist = t.history || (t.history = []);
-  if (e.key === "ArrowUp" && input.selectionStart === 0 && hist.length) {
-    e.preventDefault();
-    if (t.histIdx == null || t.histIdx === -1) t.histIdx = hist.length;
-    if (t.histIdx > 0) t.histIdx--;
-    input.value = hist[t.histIdx];
-    autosize();
-  } else if (e.key === "ArrowDown" && t.histIdx != null && t.histIdx !== -1) {
-    e.preventDefault();
-    if (t.histIdx < hist.length - 1) {
-      t.histIdx++;
-      input.value = hist[t.histIdx];
-    } else {
-      t.histIdx = -1;
-      input.value = "";
-    }
-    autosize();
-  }
-});
-
-// --- images (plusieurs, jusqu'à MAX_IMAGES) ---
-if (fileInput)
-  fileInput.addEventListener("change", () => {
-    addImages([...fileInput.files]);
-    fileInput.value = ""; // permet de re-sélectionner le même fichier ensuite
-  });
-const fileBtn = document.getElementById("fileBtn");
-if (fileBtn) fileBtn.addEventListener("click", () => fileInput.click());
+// --- images collées (Ctrl+V n'a pas de panneau : on cible le panneau FOCUS) ---
 window.addEventListener("paste", (e) => {
   const files = [];
   for (const item of e.clipboardData.items) {
     if (item.type.startsWith("image/")) files.push(item.getAsFile());
   }
-  if (files.length) addImages(files);
+  const fp = focusedPane();
+  if (files.length && fp) addImages(fp, files);
 });
 
 // --- toggle réflexion ---
