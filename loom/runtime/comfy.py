@@ -55,7 +55,10 @@ class ComfyEngine:
         la nôtre — même règle que le serveur modèle)."""
         if self.is_up():
             return True
-        py = self.dir / ".venv" / "Scripts" / "python.exe"
+        if sys.platform == "win32":
+            py = self.dir / ".venv" / "Scripts" / "python.exe"
+        else:
+            py = self.dir / ".venv" / "bin" / "python"
         if not py.is_file():
             raise ComfyError(
                 f"ComfyUI introuvable ({py}) — vérifie comfy_dir dans model.toml."

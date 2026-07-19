@@ -317,12 +317,20 @@ def test_fetch_page_web_search_garde_le_repli_snippet(monkeypatch):
     assert out == "RÉSUMÉ"
 
 
-def test_curl_alias_powershell_hint():
+def test_curl_alias_powershell_hint(monkeypatch):
     # `curl -s <url>` sous PowerShell 5.1 = alias d'Invoke-WebRequest -> erreur de
     # binding « paramètres obligatoires absents » (18× dans la session du 14/07).
     # La table unix-ismes ne couvrait que « commande inconnue ».
+    # Le hint n'existe que sous PowerShell : on SIMULE le shell, la suite doit
+    # passer sur n'importe quel OS hôte.
+    from types import SimpleNamespace
+
+    import loom.tools.shell as shell
     from loom.tools.shell import _unix_ism_hint
 
+    monkeypatch.setattr(
+        shell, "detect", lambda: SimpleNamespace(shell_kind="powershell")
+    )
     stderr = (
         "Invoke-WebRequest : Impossible de traiter la commande, car un ou "
         "plusieurs paramètres obligatoires sont absents : Uri."
@@ -331,11 +339,17 @@ def test_curl_alias_powershell_hint():
     assert "curl.exe" in hint
 
 
-def test_unix_ism_hint_stderr_francais():
+def test_unix_ism_hint_stderr_francais(monkeypatch):
     # Windows FR : « n'est pas reconnu » (pas « not recognized ») — le hint doit
-    # quand même se déclencher.
+    # quand même se déclencher. Shell PowerShell simulé (suite agnostique à l'OS).
+    from types import SimpleNamespace
+
+    import loom.tools.shell as shell
     from loom.tools.shell import _unix_ism_hint
 
+    monkeypatch.setattr(
+        shell, "detect", lambda: SimpleNamespace(shell_kind="powershell")
+    )
     stderr = (
         "grep : Le terme «grep» n'est pas reconnu comme nom d'applet de commande, "
         "fonction, fichier de script ou programme exécutable."

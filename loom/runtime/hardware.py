@@ -13,9 +13,10 @@ from dataclasses import dataclass
 def ram_available_mb() -> int:
     """RAM physique DISPONIBLE (Mo), 0 si indéterminable.
 
-    Windows : GlobalMemoryStatusEx (ullAvailPhys). POSIX : MemAvailable de
-    /proc/meminfo. Sert aux arbitrages de co-résidence (ex. garder le cache
-    RAM du moteur image à côté du LLM quand la machine est assez large)."""
+    Windows : GlobalMemoryStatusEx (ullAvailPhys). Linux : MemAvailable de
+    /proc/meminfo. macOS (pas de /proc) : psutil. Sert aux arbitrages de
+    co-résidence (ex. garder le cache RAM du moteur image à côté du LLM
+    quand la machine est assez large)."""
     if sys.platform == "win32":
         import ctypes
 
@@ -44,7 +45,12 @@ def ram_available_mb() -> int:
                     return int(line.split()[1]) // 1024
     except (OSError, ValueError, IndexError):
         pass
-    return 0
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().available // (1024 * 1024))
+    except Exception:  # noqa: BLE001 - jamais bloquant, 0 = indéterminé
+        return 0
 
 
 def top_ram_processes(limit: int = 8) -> list[dict]:
