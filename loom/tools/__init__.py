@@ -277,4 +277,16 @@ def build_registry(
     from loom.runtime.models_profile import load_profile
 
     profile = load_profile(active_model) if active_model else None
-    return ToolRegistry(specs, profile=profile)
+    registry = ToolRegistry(specs, profile=profile)
+    # read_image gaté hors vision : le prompt système et les consignes d'images jointes
+    # peuvent le mentionner — un appel doit recevoir l'explication FRANCHE de
+    # make_read_image (proposer un modèle VISION), pas un « outil inconnu » trompeur
+    # (vécu 2026-07-19 : glm-flash annonçait « je peux lire les images » puis échouait).
+    if "read_image" in enabled and not active_is_vision:
+        registry.mark_unavailable(
+            "read_image",
+            "ce modèle N'A PAS la vision : il ne peut pas lire d'image. "
+            "Dis-le franchement à l'utilisateur et propose-lui de basculer sur "
+            "un modèle marqué VISION dans le sélecteur (infobulle au survol).",
+        )
+    return registry

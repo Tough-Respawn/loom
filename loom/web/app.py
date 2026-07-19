@@ -137,7 +137,11 @@ def _build_user_content(message, images, *, is_vision, stash_dir) -> str | list:
 
     - Modèle TEXTE-ONLY : images ENREGISTRÉES sur disque (stash_dir) ; le message reste du
 
-      texte, avec les chemins + consigne d'inspecter via read_image (qui route vers un VLM).
+      texte, avec les chemins + le CONSTAT franc que ce modèle ne voit pas (proposer un
+
+      modèle VISION du sélecteur — read_image n'est pas exposé hors vision, et il n'y a
+
+      pas de repli automatique vers un autre modèle, décisions 2026-07-09/15).
 
 
 
@@ -186,9 +190,15 @@ def _build_user_content(message, images, *, is_vision, stash_dir) -> str | list:
 
         return parts
 
-    # TEXTE-ONLY : on enregistre sur disque et on donne les chemins ; read_image (routé vers
+    # TEXTE-ONLY : on enregistre sur disque et on donne les chemins — l'utilisateur pourra
 
-    # un VLM) décrira à la demande. Le modèle ne voit rien inline, inutile de l'embarquer.
+    # rebasculer sur un modèle VISION dans la MÊME session (read_image lira alors ces
+
+    # chemins). On ne promet RIEN au modèle courant : read_image est gaté hors vision et
+
+    # il n'y a pas de repli vers un autre modèle (l'ancienne note promettait un VLM
+
+    # inexistant -> le modèle annonçait « je peux lire les images » puis échouait).
 
     stash_dir = Path(stash_dir)
 
@@ -208,9 +218,11 @@ def _build_user_content(message, images, *, is_vision, stash_dir) -> str | list:
     listing = "\n".join(f"- {p}" for p in paths)
 
     note = (
-        f"[{len(paths)} image(s) jointe(s) à ce message, enregistrée(s) sur disque. Ton "
-        "modèle ne les voit pas directement : inspecte-les avec read_image(path[, question]) "
-        "— un modèle vision te les décrira. Chemins :\n" + listing + "]\n"
+        f"[{len(paths)} image(s) jointe(s) à ce message, enregistrée(s) sur disque. Tu es "
+        "un modèle SANS vision : tu ne peux ni les voir ni les lire — ne devine pas leur "
+        "contenu. Dis-le franchement et propose à l'utilisateur de basculer sur un modèle "
+        "marqué VISION dans le sélecteur : dans cette même session, read_image saura alors "
+        "lire ces chemins :\n" + listing + "]\n"
     )
 
     return note + message

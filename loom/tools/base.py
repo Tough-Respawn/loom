@@ -273,6 +273,15 @@ class ToolRegistry:
         self._profile = (
             profile  # loom.runtime.models_profile.Profile | None (duck-typed)
         )
+        # Outils RETIRÉS du registre avec une raison (ex. read_image gaté hors vision) :
+        # un appel renvoie cette raison au lieu d'un « outil inconnu » trompeur — le
+        # system prompt et les consignes peuvent mentionner l'outil, le modèle reçoit
+        # alors une explication actionnable, sans payer le schéma dans le contexte.
+        self._unavailable: dict[str, str] = {}
+
+    def mark_unavailable(self, name: str, reason: str) -> None:
+        """Déclare un outil connu-mais-retiré : `run(name)` renverra `reason`."""
+        self._unavailable[name] = reason
 
     def __len__(self) -> int:
         return len(self._specs)
@@ -304,6 +313,8 @@ class ToolRegistry:
     def run(self, name: str, args: dict) -> str:
         spec = self._specs.get(name)
         if spec is None:
+            if name in self._unavailable:
+                return f"erreur: {self._unavailable[name]}"
             return self._unknown_tool(name)
         try:
             args = validate_and_coerce(name, spec.parameters, args)
