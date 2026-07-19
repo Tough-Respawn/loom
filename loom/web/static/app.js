@@ -858,8 +858,12 @@ function renderPaneHeads() {
     const t = state.tabs[p.sid];
     p.headTitle.textContent = t ? t.title || "session" : "—";
     p.headDot.className = "pane-dot " + (t && t.streaming ? "gen" : "idle");
+    // La classe de type vit sur le PANNEAU : ses variables d'accent re-thèment tout
+    // l'intérieur (composer, outils, focus…), pas seulement le bandeau.
     const mt = t ? modelType(t.model) : "";
-    p.headTitle.parentElement.className = "pane-head" + (mt ? " mdl-" + mt : "");
+    for (const c of [...p.el.classList])
+      if (c.startsWith("mdl-")) p.el.classList.remove(c);
+    if (mt) p.el.classList.add("mdl-" + mt);
   }
 }
 
