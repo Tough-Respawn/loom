@@ -52,6 +52,8 @@ def _model_cmd(
         cpu_moe=model.cpu_moe,
         n_cpu_moe=model.n_cpu_moe,
         slot_save_dir=slot_save_dir,
+        ubatch=model.ubatch,
+        batch=model.batch,
     )
     return " ".join(str(a) for a in args).replace("\\", "/")
 

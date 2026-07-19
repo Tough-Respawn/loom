@@ -103,6 +103,12 @@ class ModelConfig:
     # Contexte propre au modèle (override le global). Un gros MoE = KV plus lourd -> on
     # raccourcit (ex. 16384) là où les petits tiennent 24576.
     context: int | None = None
+    # Microbatch (-ub) et batch (-b) de PREFILL propres au modèle : sur un MoE offloadé,
+    # un -ub plus gros amortit les passes d'experts CPU (banc 2026-07-19 : agents-a1
+    # -ub 2048 -b 4096 = prefill x2,9, décode intact) — contre des buffers VRAM plus
+    # gros, à valider par modèle. None = défauts serveur (512/2048).
+    ubatch: int | None = None
+    batch: int | None = None
     # Dossier du modèle (loom/models/<id>/) : porte le GGUF, le mmproj et profile.md.
     # Rempli par la découverte ; les chemins GGUF se résolvent contre lui.
     dir: str = ""
@@ -218,6 +224,8 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         cpu_moe=bool(d.get("cpu_moe", False)),
         n_cpu_moe=d.get("n_cpu_moe"),
         context=d.get("context"),
+        ubatch=d.get("ubatch"),
+        batch=d.get("batch"),
         dir=d.get("dir", ""),
         description=str(d.get("description", "") or ""),
     )
