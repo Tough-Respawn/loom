@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -85,6 +86,17 @@ class Console:
         self._input = input_fn
         self._print = print_fn
         self.color = supports_color(sys.stdout) if color is None else color
+        # Chrono de progression : la ligne se ré-affiche chaque seconde avec le
+        # temps écoulé dans l'étape courante (une sonde de calibration peut rester
+        # muette plusieurs minutes — sans chrono, ça ressemble à un gel).
+        # Ticker seulement sur un vrai terminal : les fakes de tests restent
+        # synchrones et déterministes.
+        self._prog_lock = threading.Lock()
+        self._prog_msg: str | None = None
+        self._prog_t0 = 0.0
+        self._prog_len = 0
+        self._ticker: threading.Thread | None = None
+        self._live = print_fn is print and sys.stdout.isatty()
 
     def _log(self, msg: str) -> None:
         if self.log_path is None:
@@ -97,13 +109,60 @@ class Console:
             pass
 
     def say(self, msg: str = "") -> None:
+        with self._prog_lock:
+            interrupted = self._live and self._prog_msg is not None
+        if interrupted:
+            self._print()  # clôt la ligne de progression, le chrono repart dessous
         self._print(colorize(msg) if self.color else msg)
         self._log(msg)
 
     def progress(self, msg: str) -> None:
-        self._print(f"\r  {msg}", end="", flush=True)
+        with self._prog_lock:
+            self._prog_msg = msg
+            self._prog_t0 = time.monotonic()
+        self._draw_progress()
+        if self._live:
+            self._start_ticker()
+
+    def _draw_progress(self) -> None:
+        with self._prog_lock:
+            msg = self._prog_msg
+            if msg is None:
+                return
+            secs = int(time.monotonic() - self._prog_t0)
+            if secs >= 60:
+                stamp = f" — {secs // 60} min {secs % 60:02d} s"
+            elif secs >= 5:
+                stamp = f" — {secs} s"
+            else:
+                stamp = ""
+            line = f"  {msg}{stamp}"
+            # Efface la queue de l'ancienne ligne si la nouvelle est plus courte.
+            pad = " " * max(0, self._prog_len - len(line))
+            self._prog_len = len(line)
+            self._print(f"\r{line}{pad}", end="", flush=True)
+
+    def _start_ticker(self) -> None:
+        if self._ticker is not None and self._ticker.is_alive():
+            return
+
+        def _tick() -> None:
+            while True:
+                time.sleep(1.0)
+                with self._prog_lock:
+                    if self._prog_msg is None:
+                        return
+                self._draw_progress()
+
+        self._ticker = threading.Thread(
+            target=_tick, daemon=True, name="setup-progress-chrono"
+        )
+        self._ticker.start()
 
     def progress_end(self) -> None:
+        with self._prog_lock:
+            self._prog_msg = None
+            self._prog_len = 0
         self._print()
 
     def ask(self, prompt: str, default: str = "") -> str:
@@ -666,12 +725,56 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         f"mesurée, vitesse validée jusqu'à {calib['valide_jusqua']} tokens)"
     )
     con.say(f"     mécanisme : {calib['mecanisme']}")
+    for line in _usage_verdict(best["tg_ts"], best["pp_ts"]):
+        con.say(line)
     report.add(
         "bench",
         "fait",
         f"threads={best['threads']}{gpu_txt} · ctx={context} ({topo}) · "
         f"{best['tg_ts']:.1f} t/s gén.",
     )
+
+
+def _fmt_duration(seconds: float) -> str:
+    if seconds >= 90:
+        return f"{round(seconds / 60)} min"
+    return f"{int(seconds)} s"
+
+
+def _usage_verdict(tg_ts: float, pp_ts: float) -> list[str]:
+    """Traduit les vitesses MESURÉES en verdict d'usage franc. Liste vide si RAS.
+
+    Seuils d'expérience (pas de spec machine, que du ressenti) : décode < 8 t/s =
+    sous la vitesse de lecture confortable ; prefill tel qu'un prompt de 4 000
+    tokens (démarrage de session Loom réaliste : system prompt + outils + fiche
+    projet) dépasse ~2 min = attente sensible avant le premier mot."""
+    if tg_ts <= 0 or pp_ts <= 0:
+        return []
+    warmup_s = 4000 / pp_ts
+    slow_read = tg_ts < 8
+    slow_warm = warmup_s > 120
+    if not (slow_read or slow_warm):
+        return []
+    lines = ["  ⚠ Verdict d'usage (mesuré, pas supposé) : ce sera lent."]
+    if slow_warm:
+        lines.append(
+            f"    · prefill {pp_ts:.1f} t/s → un prompt de 4 000 tokens met "
+            f"~{_fmt_duration(warmup_s)} avant le premier mot d'une session ;"
+        )
+    if slow_read:
+        lines.append(
+            f"    · génération {tg_ts:.1f} t/s → sous la vitesse de lecture "
+            f"confortable (~8 t/s)."
+        )
+    lines.append(
+        "    Précos : un quant plus léger (ex. Q4_K_M) ou un modèle plus petit "
+        "ira nettement plus vite sur ce poste ;"
+    )
+    lines.append(
+        "    garde ce modèle pour les échanges courts / le hors-ligne, et un "
+        "modèle distant ([[remote_models]]) pour les gros chantiers."
+    )
+    return lines
 
 
 # ─────────────────────────────── main ────────────────────────────────

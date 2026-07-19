@@ -87,3 +87,23 @@ def test_find_llama_bench(tmp_path):
     assert find_llama_bench(tmp_path / "llama-server.exe") is None
     (tmp_path / "llama-bench.exe").write_bytes(b"")
     assert find_llama_bench(tmp_path / "llama-server.exe").name == "llama-bench.exe"
+
+
+def test_usage_verdict_franc_quand_lent():
+    # Le cas réel du poste CPU-only (5.3 tg / 10.5 pp) : verdict + précos.
+    from loom.setup.cli import _usage_verdict
+
+    lines = _usage_verdict(tg_ts=5.3, pp_ts=10.5)
+    joined = "\n".join(lines)
+    assert "ce sera lent" in joined
+    assert "4 000 tokens" in joined and "6 min" in joined  # 4000/10.5 ≈ 381 s
+    assert "8 t/s" in joined  # décode sous la lecture confortable
+    assert "distant" in joined  # préco : distant pour les gros chantiers
+
+
+def test_usage_verdict_silencieux_quand_fluide():
+    # Machine confortable : aucun bruit post-bench.
+    from loom.setup.cli import _usage_verdict
+
+    assert _usage_verdict(tg_ts=20.0, pp_ts=240.0) == []
+    assert _usage_verdict(tg_ts=0, pp_ts=0) == []  # mesures absentes : muet
