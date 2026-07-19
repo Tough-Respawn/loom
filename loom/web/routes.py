@@ -874,6 +874,8 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
         if got:
             chat_lock.release()
     job.final = msg
+    # Boutons du verdict (l'état b_apply attend oui/annuler) — lus par le stream.
+    job.choices = ["oui", "annuler"] if wiz is not None else None
     job.done = True
 
 
@@ -1173,6 +1175,9 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
     def _stream():
         yield _sse("text", text=res.reply + extra_reply)
+        # Boutons de réponse (confort : purs raccourcis de frappe, cf. wizard.choices).
+        if res.choices:
+            yield _sse("choices", options=res.choices)
         # Un modèle vient d'être monté/retiré à chaud -> le front recharge le
         # sélecteur (vécu : « disponible dans le sélecteur »… qui ne l'affichait pas).
         if models_changed:
@@ -1186,6 +1191,8 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             yield _sse("status", label="")
             if rb_job.final:
                 yield _sse("text", text="\n" + rb_job.final)
+            if getattr(rb_job, "choices", None):
+                yield _sse("choices", options=rb_job.choices)
         if job is not None:
             while not job.done:
                 yield _sse(
