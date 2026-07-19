@@ -2520,30 +2520,33 @@ function smRestorePos() {
   if (!rmList || !rmForm || !rmAddBtn) return;
   const $ = (id) => document.getElementById(id);
 
-  // Regroupement par TYPE, EN PHASE avec le rendu serveur (_models.html) : optgroup
-  // par type + classe opt-<type> (couleur), et re-teinte du select fermé.
+  // DEUX blocs (machine vs distant), EN PHASE avec le rendu serveur (_models.html) :
+  // la couleur par type (classe opt-<type>) distingue texte/image/vidéo DANS le bloc
+  // machine ; re-teinte du select fermé après reconstruction.
   function rebuildModelSelect(payload) {
     const sel = document.getElementById("model-select");
     if (!sel || !payload) return;
     const cur = sel.value;
     const typ = (m) =>
       m.remote ? "remote" : m.video ? "video" : m.image ? "image" : "home";
+    // Bloc home ordonné par type (texte, image, vidéo) : couleurs contiguës.
+    const rank = { home: 0, image: 1, video: 2, remote: 0 };
     const groups = [
-      ["machine", "home"],
-      ["distant · api", "remote"],
-      ["image · comfyui", "image"],
-      ["vidéo · comfyui", "video"],
+      ["home", (m) => !m.remote],
+      ["distant · api", (m) => m.remote],
     ];
     sel.innerHTML = groups
-      .map(([label, cls]) => {
-        const opts = payload.filter((m) => typ(m) === cls);
+      .map(([label, keep]) => {
+        const opts = payload
+          .filter(keep)
+          .sort((a, b) => rank[typ(a)] - rank[typ(b)]);
         if (!opts.length) return "";
         return (
           '<optgroup label="' + label + '">' +
           opts
             .map(
               (m) =>
-                '<option class="opt-' + cls + '" value="' + esc(m.id) + '"' +
+                '<option class="opt-' + typ(m) + '" value="' + esc(m.id) + '"' +
                 (m.desc ? ' title="' + esc(m.desc) + '"' : "") +
                 (m.id === cur ? " selected" : "") +
                 ">" + esc(m.id) + "</option>",
