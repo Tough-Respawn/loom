@@ -1183,7 +1183,6 @@ function closeTab(sid) {
 const panesEl = document.getElementById("panes");
 const paneTpl = document.getElementById("pane-tpl");
 const MAX_IMAGES = 6;
-let splitDir = "cols"; // orientation d'un split à 2 panneaux (à droite vs en dessous)
 let CMDS = []; // commandes « / » (source de vérité serveur), partagées par les palettes
 fetch("/commands")
   .then((r) => r.json())
@@ -1220,38 +1219,140 @@ function createPane() {
   return pane;
 }
 
-// Peint UNIQUEMENT (classes de grille + placeholders) — la persistance est l'affaire
-// des COMMANDES utilisateur (savePanesLayout), jamais du rendu : coupler les deux
-// écrasait la disposition sauvegardée au boot, avant que la restauration ne la lise.
-function applyPaneLayout() {
-  if (!panesEl) return;
-  const n = state.panes.length;
-  const rows2 = n === 2 && splitDir === "rows";
-  panesEl.className =
-    "panes layout-" + n + (n > 1 ? " multi" : "") + (rows2 ? " rows" : "");
-  // Placeholder selon la LARGEUR réelle (pas le mode) : en colonnes étroites le texte
-  // complet passe sur 2 lignes dont la 2e est coupée par le min-height du textarea ;
-  // un split en lignes garde des panneaux pleine largeur -> version complète.
-  // Source unique : le template n'embarque aucun placeholder, c'est ici qu'il se pose.
-  const narrow = n > 1 && !rows2;
-  const ph = narrow
-    ? "Écris une demande… (« / » commandes)"
-    : "Écris une demande — Loom agit avec ses outils… (« / » pour les commandes)";
-  state.panes.forEach((p) => (p.input.placeholder = ph));
+// ---- ARBRE de disposition (à la VS Code) ----
+// Nœud : { type:"split", dir:"row"|"col", ratio:0..1, a, b } | { type:"pane", pane }.
+// "row" = côte à côte (séparateur vertical), "col" = empilés. La GÉOMÉTRIE vit dans
+// l'arbre (state.layoutRoot) ; state.panes reste la liste plate (focus, itérations).
+function leafOf(pane, node, parent, key) {
+  node = node || state.layoutRoot;
+  if (!node) return null;
+  if (node.type === "pane")
+    return node.pane === pane ? { node, parent, key } : null;
+  return (
+    leafOf(pane, node.a, node, "a") || leafOf(pane, node.b, node, "b")
+  );
+}
+
+// Scinde la feuille du panneau CIBLE : le nouveau panneau prend la moitié, côté b.
+function splitPaneNode(target, dir, newPane) {
+  const loc = leafOf(target);
+  const leaf = { type: "pane", pane: newPane };
+  if (!loc) {
+    state.layoutRoot = leaf;
+    return;
+  }
+  const split = { type: "split", dir, ratio: 0.5, a: loc.node, b: leaf };
+  if (loc.parent) loc.parent[loc.key] = split;
+  else state.layoutRoot = split;
+}
+
+// Peint l'arbre : boîtes imbriquées + séparateurs, les .pane existants sont DÉPLACÉS
+// dedans (leurs listeners, saisies et rendus Preact survivent au déplacement).
+// La bascule plein écran (state.maximized) montre UN panneau, l'arbre reste intact.
+function renderLayout() {
+  if (!panesEl || !state.layoutRoot) return;
+  panesEl.classList.toggle("multi", state.panes.length > 1);
+  if (state.maximized && !state.panes.includes(state.maximized))
+    state.maximized = null;
+  if (state.maximized) {
+    state.maximized.el.style.flex = "1 1 0";
+    panesEl.replaceChildren(state.maximized.el);
+    requestAnimationFrame(updatePlaceholders);
+    return;
+  }
+  const build = (node) => {
+    if (node.type === "pane") {
+      node.pane.el.style.flex = "1 1 0";
+      return node.pane.el;
+    }
+    const box = document.createElement("div");
+    box.className = "split-box " + (node.dir === "row" ? "srow" : "scol");
+    const a = build(node.a);
+    const b = build(node.b);
+    a.style.flex = `${node.ratio} 1 0`;
+    b.style.flex = `${1 - node.ratio} 1 0`;
+    box.append(a, makeSash(node, a, b), b);
+    return box;
+  };
+  panesEl.replaceChildren(build(state.layoutRoot));
+  requestAnimationFrame(updatePlaceholders);
+}
+
+// Séparateur redimensionnable : le ratio du nœud suit le pointeur (borné 15-85 %),
+// appliqué en direct via flex-grow, persisté au relâchement.
+function makeSash(node, aEl, bEl) {
+  const sash = document.createElement("div");
+  const vertical = node.dir === "row"; // colonnes côte à côte -> séparateur vertical
+  sash.className = "sash " + (vertical ? "sash-v" : "sash-h");
+  sash.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const box = sash.parentElement;
+    const r = box.getBoundingClientRect();
+    sash.classList.add("dragging");
+    sash.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const frac = vertical
+        ? (ev.clientX - r.left) / r.width
+        : (ev.clientY - r.top) / r.height;
+      node.ratio = Math.min(0.85, Math.max(0.15, frac));
+      aEl.style.flex = `${node.ratio} 1 0`;
+      bEl.style.flex = `${1 - node.ratio} 1 0`;
+    };
+    const up = () => {
+      sash.classList.remove("dragging");
+      sash.removeEventListener("pointermove", move);
+      sash.removeEventListener("pointerup", up);
+      sash.removeEventListener("lostpointercapture", up);
+      updatePlaceholders();
+      savePanesLayout();
+    };
+    sash.addEventListener("pointermove", move);
+    sash.addEventListener("pointerup", up);
+    sash.addEventListener("lostpointercapture", up);
+  });
+  return sash;
+}
+
+// Placeholder selon la LARGEUR RÉELLE du panneau (le texte complet coupé sur 2 lignes
+// faisait « cassé ») — source unique, le template n'embarque aucun placeholder.
+function updatePlaceholders() {
+  for (const p of state.panes) {
+    const w = p.el.clientWidth;
+    p.input.placeholder =
+      w > 0 && w < 340
+        ? "Écris une demande…"
+        : w > 0 && w < 560
+          ? "Écris une demande… (« / » commandes)"
+          : "Écris une demande — Loom agit avec ses outils… (« / » pour les commandes)";
+  }
+}
+window.addEventListener("resize", updatePlaceholders);
+
+// Bascule plein écran d'un panneau (⛶ ou double-clic bandeau) : l'arbre et les flux
+// des autres panneaux continuent en fond, seule la GÉOMÉTRIE change.
+function toggleMaximize(pane) {
+  state.maximized = state.maximized === pane ? null : pane;
+  renderLayout();
+  focusPane(state.panes.indexOf(pane));
+  renderTabs();
 }
 
 function savePanesLayout() {
+  const ser = (n) =>
+    n.type === "pane"
+      ? { sid: n.pane.sid }
+      : { dir: n.dir, ratio: n.ratio, a: ser(n.a), b: ser(n.b) };
   try {
-    localStorage.loomPanes = JSON.stringify({
-      sids: state.panes.map((p) => p.sid).filter(Boolean),
-      dir: splitDir,
-    });
+    localStorage.loomPanes = JSON.stringify(
+      state.layoutRoot ? { tree: ser(state.layoutRoot) } : null,
+    );
   } catch (e) {
     /* localStorage indispo : la disposition ne survivra pas au rechargement */
   }
 }
 
-function addPane(sid, dir) {
+function addPane(sid, dir, target) {
   if (state.panes.length >= 4) {
     showToast("4 panneaux maximum");
     return null;
@@ -1261,13 +1362,13 @@ function addPane(sid, dir) {
     focusPane(state.panes.indexOf(shown));
     return null;
   }
-  if (dir) splitDir = dir;
   const pane = createPane();
   state.panes.push(pane);
-  panesEl.appendChild(pane.el);
+  splitPaneNode(target || focusedPane(), dir || "row", pane);
   if (sid && state.tabs[sid]) setPaneSid(pane, sid);
   else renderPane(pane); // panneau vide : peindre l'état « écris une demande »
-  applyPaneLayout();
+  state.maximized = null;
+  renderLayout();
   focusPane(state.panes.length - 1); // focusPane fait déjà le renderTabs
   return pane;
 }
@@ -1282,12 +1383,22 @@ function removePane(pane) {
   // Brouillon sauvé avant de perdre le panneau (l'onglet reste ouvert dans la barre).
   const t = state.tabs[pane.sid];
   if (t) t.draft = pane.input.value;
+  // Chirurgie de l'arbre : le split parent DEVIENT son autre enfant (mutation en
+  // place — pas besoin de connaître le grand-parent).
+  const loc = leafOf(pane);
+  if (loc && loc.parent) {
+    const sibling = loc.key === "a" ? loc.parent.b : loc.parent.a;
+    for (const k of Object.keys(loc.parent)) delete loc.parent[k];
+    Object.assign(loc.parent, sibling);
+  } else if (loc) {
+    state.layoutRoot = null; // dernière feuille (ne doit pas arriver : garde length>1)
+  }
   state.panes.splice(i, 1);
   pane.el.remove();
   const ki = state.panes.indexOf(keep);
   state.focusedIdx =
     ki >= 0 ? ki : Math.min(state.focusedIdx, state.panes.length - 1);
-  applyPaneLayout();
+  renderLayout();
   focusPane(state.focusedIdx);
   renderTabs();
 }
@@ -1606,23 +1717,73 @@ function wirePane(pane) {
     removePane(pane);
     savePanesLayout();
   });
-  // Déposer un ONGLET (glissé depuis la barre) sur ce panneau : la session s'y affiche
-  // (échange si elle était déjà dans un autre panneau — jamais de doublon).
+  // ⛶ / double-clic sur le bandeau : bascule plein écran de CE panneau.
+  pane.el.querySelector(".pane-max")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleMaximize(pane);
+  });
+  pane.el.querySelector(".pane-head")?.addEventListener("dblclick", (e) => {
+    if (e.target.closest("button")) return;
+    toggleMaximize(pane);
+  });
+  // Déposer un ONGLET (glissé depuis la barre) : zones DIRECTIONNELLES à la VS Code.
+  // L'overlay montre où il atterrit : centre = remplacer/échanger, bord = scinder de
+  // ce côté. Jamais de double affichage d'une même session.
+  const overlay = pane.el.querySelector(".pane-overlay");
+  const zoneAt = (e) => {
+    const r = pane.el.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width;
+    const y = (e.clientY - r.top) / r.height;
+    if (x < 0.2) return "left";
+    if (x > 0.8) return "right";
+    if (y < 0.25) return "top";
+    if (y > 0.75) return "bottom";
+    return "center";
+  };
+  const ZONE_GEO = {
+    center: [0, 0, 100, 100],
+    left: [0, 0, 50, 100],
+    right: [50, 0, 50, 100],
+    top: [0, 0, 100, 50],
+    bottom: [0, 50, 100, 50],
+  };
   pane.el.addEventListener("dragover", (e) => {
     if (![...e.dataTransfer.types].includes("text/loom-sid")) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    pane.el.classList.add("pane-drop");
+    const g = ZONE_GEO[zoneAt(e)];
+    overlay.hidden = false;
+    overlay.style.left = g[0] + "%";
+    overlay.style.top = g[1] + "%";
+    overlay.style.width = g[2] + "%";
+    overlay.style.height = g[3] + "%";
   });
-  pane.el.addEventListener("dragleave", () =>
-    pane.el.classList.remove("pane-drop"),
-  );
+  pane.el.addEventListener("dragleave", () => (overlay.hidden = true));
   pane.el.addEventListener("drop", (e) => {
-    pane.el.classList.remove("pane-drop");
+    overlay.hidden = true;
     const sid = e.dataTransfer.getData("text/loom-sid");
     if (!sid || !state.tabs[sid]) return;
     e.preventDefault();
-    dropTabOnPane(sid, pane);
+    const z = zoneAt(e);
+    // Session déjà affichée ailleurs, ou visée au centre : déplacer/échanger.
+    if (z === "center" || paneShowing(sid)) {
+      dropTabOnPane(sid, pane);
+      return;
+    }
+    // Bord : scinder CE panneau du côté visé avec l'onglet glissé.
+    const dir = z === "left" || z === "right" ? "row" : "col";
+    const p2 = addPane(sid, dir, pane);
+    if (p2 && (z === "left" || z === "top")) {
+      // Le nouveau panneau va AVANT la cible : échange a/b du split créé.
+      const loc = leafOf(p2);
+      if (loc && loc.parent) {
+        const tmp = loc.parent.a;
+        loc.parent.a = loc.parent.b;
+        loc.parent.b = tmp;
+        renderLayout();
+      }
+    }
+    savePanesLayout();
   });
 }
 
@@ -1706,8 +1867,8 @@ function openTabMenu(e, sid) {
     m.appendChild(b);
   };
   const full = state.panes.length >= 4;
-  add("Ouvrir à droite", () => splitWith(sid, "cols"), full);
-  add("Ouvrir en dessous", () => splitWith(sid, "rows"), full);
+  add("Ouvrir à droite", () => splitWith(sid, "row"), full);
+  add("Ouvrir en dessous", () => splitWith(sid, "col"), full);
   const sep = document.createElement("div");
   sep.className = "ctx-sep";
   m.appendChild(sep);
@@ -1728,7 +1889,7 @@ window.addEventListener("keydown", (e) => {
   const backslash = e.code === "Backslash" || e.code === "IntlBackslash";
   if (e.ctrlKey && !e.shiftKey && backslash) {
     e.preventDefault();
-    splitWith(state.active, "cols");
+    splitWith(state.active, "row");
   } else if (e.ctrlKey && e.shiftKey && backslash) {
     e.preventDefault();
     singleView();
@@ -1791,9 +1952,10 @@ function addSidebarSession(d) {
   const pane = createPane();
   state.panes = [pane];
   state.focusedIdx = 0;
-  panesEl.appendChild(pane.el);
+  state.maximized = null;
+  state.layoutRoot = { type: "pane", pane };
   pane.el.classList.add("focused");
-  applyPaneLayout();
+  renderLayout();
   const sid = INIT.active_session;
   if (sid) {
     const t0 = {
@@ -1837,9 +1999,10 @@ function addSidebarSession(d) {
 renderTabs();
 scheduleRender();
 
-// Restaure la DISPOSITION de la dernière fois (split 2-4 panneaux) : uniquement des
-// sessions qui existent encore (INIT.sessions fait foi), en fond — la page reste
-// utilisable pendant le chargement des onglets.
+// Restaure la DISPOSITION de la dernière fois (ARBRE complet : structure + ratios) :
+// uniquement des sessions qui existent encore (INIT.sessions fait foi), en fond — la
+// page reste utilisable pendant le chargement des onglets. Une feuille invalide
+// s'effondre sur son frère (l'arbre reste cohérent).
 (async () => {
   let saved = null;
   try {
@@ -1847,21 +2010,52 @@ scheduleRender();
   } catch (e) {
     saved = null;
   }
-  if (!saved || !Array.isArray(saved.sids) || saved.sids.length < 2) return;
+  const tree = saved && saved.tree;
+  if (!tree || !tree.dir) return; // rien de sauvegardé, ou vue simple
   const known = new Set((INIT.sessions || []).map((s) => s.id));
-  const sids = saved.sids.filter((s) => known.has(s));
+  const sids = [];
+  (function collect(n) {
+    if (!n) return;
+    if (n.dir) {
+      collect(n.a);
+      collect(n.b);
+    } else if (n.sid && known.has(n.sid) && !sids.includes(n.sid)) sids.push(n.sid);
+  })(tree);
   if (sids.length < 2) return;
-  splitDir = saved.dir === "rows" ? "rows" : "cols";
   // Chargements en PARALLÈLE : 4 panneaux = le max des aller-retours, pas leur somme.
-  await Promise.all(sids.map(ensureTab));
-  const first = state.panes[0];
-  if (first && first.sid !== sids[0] && state.tabs[sids[0]] && !paneShowing(sids[0]))
-    setPaneSid(first, sids[0]);
-  for (const sid of sids.slice(1)) {
-    if (state.panes.length >= 4) break;
-    if (paneShowing(sid) || !state.tabs[sid]) continue;
-    addPane(sid);
-  }
+  await Promise.all(sids.slice(0, 4).map(ensureTab));
+  const seen = new Set();
+  let reuse = state.panes[0]; // le panneau du boot est recyclé pour la 1re feuille
+  const build = (n) => {
+    if (n.dir) {
+      const a = build(n.a);
+      const b = build(n.b);
+      if (a && b)
+        return {
+          type: "split",
+          dir: n.dir === "col" ? "col" : "row",
+          ratio: Math.min(0.85, Math.max(0.15, +n.ratio || 0.5)),
+          a,
+          b,
+        };
+      return a || b;
+    }
+    if (!n.sid || !state.tabs[n.sid] || seen.has(n.sid) || seen.size >= 4)
+      return null;
+    seen.add(n.sid);
+    let pane = reuse;
+    reuse = null;
+    if (!pane) {
+      pane = createPane();
+      state.panes.push(pane);
+    }
+    setPaneSid(pane, n.sid);
+    return { type: "pane", pane };
+  };
+  const root = build(tree);
+  if (!root) return;
+  state.layoutRoot = root;
+  renderLayout();
   focusPane(0);
   // focusPane peut court-circuiter (focusedIdx inchangé) alors que le panneau 0 vient
   // de CHANGER de session : force la resynchro serveur/topbar sur ce qu'il montre.
