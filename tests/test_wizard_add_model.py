@@ -19,6 +19,9 @@ def deps(existing=(), hits=None, files=None, remote_models=None, removable=None)
         # Flux image/vidéo : dossier inexistant + recette valide par défaut
         image_dir_state=lambda ikind, mid: None,
         check_workflow=lambda p: {"ok": True, "error": None, "warnings": []},
+        # Flux /rebench : rien de calibrable par défaut
+        rebenchable_models=lambda: [],
+        model_kind=lambda mid: None,
     )
 
 
@@ -75,6 +78,54 @@ def test_cancel_a_toute_etape():
 def test_etat_inconnu_annule_proprement():
     r = wizard.step({"step": "n-existe-pas"}, "x", deps())
     assert r.state is None
+
+
+# ---------- /rebench ----------
+
+
+def test_rebench_liste_et_confirmation():
+    items = [{"id": "orn", "label": "orn — contexte actuel 49152, 34.4 Go"}]
+    d = deps()
+    d.rebenchable_models = lambda: items
+    r = wizard.start_rebench("", d)
+    assert "orn" in r.reply and r.state["step"] == "b_pick"
+    r = wizard.step(r.state, "1", d)
+    assert r.state["step"] == "b_confirm" and "éteint" in r.reply
+    r = wizard.step(r.state, "oui", d)
+    assert r.state is None and r.action == {"kind": "rebench", "id": "orn"}
+
+
+def test_rebench_id_direct_et_refus_par_type():
+    items = [{"id": "orn", "label": "orn — contexte actuel 49152, 34.4 Go"}]
+    d = deps()
+    d.rebenchable_models = lambda: items
+    d.model_kind = lambda m: {"glm": "remote", "chroma": "image"}.get(m)
+    r = wizard.start_rebench("orn", d)
+    assert r.state["step"] == "b_confirm"
+    r = wizard.start_rebench("glm", d)
+    assert r.state is None and "texte" in r.reply
+    r = wizard.start_rebench("chroma", d)
+    assert r.state is None and "texte" in r.reply
+    r = wizard.start_rebench("inconnu", d)
+    assert r.state is None and "inconnu" in r.reply
+
+
+def test_rebench_confirm_non_annule():
+    r = wizard.step({"step": "b_confirm", "id": "orn"}, "non", deps())
+    assert r.state is None and r.action is None
+
+
+def test_rebench_apply_oui_et_annulation():
+    st = {"step": "b_apply", "id": "orn", "context": 65536, "mecanisme": "pente x"}
+    r = wizard.step(st, "oui", deps())
+    assert r.action == {
+        "kind": "rebench_apply",
+        "id": "orn",
+        "context": 65536,
+        "mecanisme": "pente x",
+    }
+    r = wizard.step(st, "non", deps())
+    assert r.state is None and r.action is None and "inchangé" in r.reply
 
 
 # ---------- /remove-model : confirmations par kind ----------

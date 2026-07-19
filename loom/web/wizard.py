@@ -300,6 +300,85 @@ def _step_d_confirm(state, t, deps):
     )
 
 
+# ---------- flux /rebench (recalibration d'un LOCAL TEXTE, tel que configuré) ----------
+# La mesure elle-même (topologie + pente + vitesse) vit dans routes.py / loom.setup ;
+# ici seulement le dialogue. L'état b_apply est POSÉ PAR ROUTES à la fin du job.
+
+
+def start_rebench(arg: str, deps) -> WizardResult:
+    items = deps.rebenchable_models()
+    a = (arg or "").strip()
+    if a:
+        it = next((i for i in items if i["id"] == a), None)
+        if it is None:
+            kind = deps.model_kind(a)
+            if kind in ("remote", "image", "video"):
+                return WizardResult(
+                    None,
+                    f"« {a} » n'est pas calibrable : seuls les modèles LOCAUX "
+                    "texte-à-texte se mesurent (image/vidéo = ComfyUI, distant = "
+                    "la fenêtre du provider).",
+                )
+            return WizardResult(
+                None,
+                f"Modèle « {a} » inconnu. /rebench sans argument liste les "
+                "modèles calibrables.",
+            )
+        return _rebench_confirm(it)
+    if not items:
+        return WizardResult(None, "Aucun modèle local texte à calibrer.")
+    lines = [f"  {i + 1}. {it['label']}" for i, it in enumerate(items)]
+    return WizardResult(
+        {"step": "b_pick", "items": items},
+        "[rebench 1/2] Quel modèle recalibrer ?\n"
+        + "\n".join(lines)
+        + "\n(réponds par un numéro — /cancel pour annuler)",
+    )
+
+
+def _rebench_confirm(it) -> WizardResult:
+    return WizardResult(
+        {"step": "b_confirm", "id": it["id"]},
+        f"[rebench 2/2] Recalibrer « {it['id']} » tel qu'il est configuré ? "
+        "Durée ~5-20 min : le serveur modèle local sera éteint et les modèles "
+        "locaux indisponibles pendant la mesure (les distants restent "
+        "utilisables). La progression s'affiche ici.\n"
+        "Tape « oui » pour lancer — toute autre réponse annule.",
+    )
+
+
+def _step_b_pick(state, t, deps):
+    items = state["items"]
+    if not (t.isdigit() and 1 <= int(t) <= len(items)):
+        return WizardResult(state, "Réponds par le numéro du modèle (ou /cancel).")
+    return _rebench_confirm(items[int(t) - 1])
+
+
+def _step_b_confirm(state, t, deps):
+    if t.lower() not in ("oui", "o", "yes"):
+        return WizardResult(None, "Recalibration annulée.")
+    return WizardResult(
+        None,
+        f"Recalibration de « {state['id']} » lancée…",
+        {"kind": "rebench", "id": state["id"]},
+    )
+
+
+def _step_b_apply(state, t, deps):
+    if t.lower() not in ("oui", "o", "yes"):
+        return WizardResult(None, "Config inchangée — rien n'a été touché.")
+    return WizardResult(
+        None,
+        f"Application du contexte {state['context']} à « {state['id']} »…",
+        {
+            "kind": "rebench_apply",
+            "id": state["id"],
+            "context": state["context"],
+            "mecanisme": state["mecanisme"],
+        },
+    )
+
+
 # ---------- flux image/vidéo (ComfyUI) ----------
 # Un modèle image/vidéo = dossier local/{image,video}/<id>/ avec model.toml (généré
 # ici) + workflow.json (export ComfyUI « format API » fourni par l'utilisateur — le
@@ -516,6 +595,9 @@ def _step_l_id(state, t, deps):
 
 _STEPS = {
     "kind": _step_kind,
+    "b_pick": _step_b_pick,
+    "b_confirm": _step_b_confirm,
+    "b_apply": _step_b_apply,
     "i_id": _step_i_id,
     "i_dims": _step_i_dims,
     "i_desc": _step_i_desc,
