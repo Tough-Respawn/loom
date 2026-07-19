@@ -2520,30 +2520,40 @@ function smRestorePos() {
   if (!rmList || !rmForm || !rmAddBtn) return;
   const $ = (id) => document.getElementById(id);
 
+  // Regroupement par TYPE, EN PHASE avec le rendu serveur (_models.html) : optgroup
+  // par type + classe opt-<type> (couleur), et re-teinte du select fermé.
   function rebuildModelSelect(payload) {
     const sel = document.getElementById("model-select");
     if (!sel || !payload) return;
     const cur = sel.value;
-    sel.innerHTML = payload
-      .map(
-        (m) =>
-          '<option value="' +
-          m.id +
-          '"' +
-          (m.desc ? ' title="' + m.desc.replace(/"/g, "&quot;") + '"' : "") +
-          (m.id === cur ? " selected" : "") +
-          ">" +
-          (m.remote
-            ? "remote · "
-            : m.video
-              ? "video · "
-              : m.image
-                ? "image · "
-                : "home · ") +
-          m.id +
-          "</option>",
-      )
+    const typ = (m) =>
+      m.remote ? "remote" : m.video ? "video" : m.image ? "image" : "home";
+    const groups = [
+      ["machine", "home"],
+      ["distant · api", "remote"],
+      ["image · comfyui", "image"],
+      ["vidéo · comfyui", "video"],
+    ];
+    sel.innerHTML = groups
+      .map(([label, cls]) => {
+        const opts = payload.filter((m) => typ(m) === cls);
+        if (!opts.length) return "";
+        return (
+          '<optgroup label="' + label + '">' +
+          opts
+            .map(
+              (m) =>
+                '<option class="opt-' + cls + '" value="' + esc(m.id) + '"' +
+                (m.desc ? ' title="' + esc(m.desc) + '"' : "") +
+                (m.id === cur ? " selected" : "") +
+                ">" + esc(m.id) + "</option>",
+            )
+            .join("") +
+          "</optgroup>"
+        );
+      })
       .join("");
+    paintModelSelect();
   }
 
   function setMsg(txt, kind) {
@@ -3074,3 +3084,21 @@ function smRestorePos() {
   load();
 })();
 
+
+// --- Teinte du sélecteur de modèle FERMÉ : les optgroups/couleurs ne sont visibles
+// que dans le popup ouvert -> le select fermé reprend la couleur du TYPE sélectionné
+// (classe sel-<type>, lue sur l'option choisie ; home = neutre, pas de classe). ---
+function paintModelSelect() {
+  const sel = document.getElementById("model-select");
+  if (!sel || !sel.options.length) return;
+  const opt = sel.options[sel.selectedIndex] || sel.options[0];
+  const m = opt.className.match(/opt-(\w+)/);
+  sel.className = m && m[1] !== "home" ? "sel-" + m[1] : "";
+}
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.id === "model-select") paintModelSelect();
+});
+// Le POST /model (htmx) REMPLACE le <select> (hx-swap outerHTML) : re-teinter après
+// chaque swap — l'écouteur ci-dessus survit (délégué au document), pas les classes.
+document.body.addEventListener("htmx:afterSwap", () => paintModelSelect());
+paintModelSelect();
