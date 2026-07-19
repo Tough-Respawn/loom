@@ -9,11 +9,19 @@ soumission)."""
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+
+
+def default_comfy_dir() -> str:
+    """Emplacement par défaut d'une install ComfyUI quand model.toml ne le dit pas."""
+    if sys.platform == "win32":
+        return "C:/tools/ComfyUI"
+    return str(Path.home() / "tools" / "ComfyUI")
 
 
 @dataclass(frozen=True)
@@ -82,7 +90,7 @@ def discover_image_models(
                 dir=str(d),
                 width=int(data.get("width") or 1024),
                 height=int(data.get("height") or 1024),
-                comfy_dir=str(data.get("comfy_dir") or "C:/tools/ComfyUI"),
+                comfy_dir=str(data.get("comfy_dir") or default_comfy_dir()),
                 comfy_port=int(data.get("comfy_port") or 8188),
                 workflow_path=str(wf_p),
                 refiner=str(data.get("refiner") or ""),

@@ -398,7 +398,7 @@ def load_config(
     # local NI distant — machine vierge, c'est maybe_bootstrap qui guide l'installeur.
     if not models and not remote_models:
         raise ValueError(
-            f"aucun modèle : crée <racine>\\local\\text\\<id>\\model.toml sous une des "
+            f"aucun modèle : crée <racine>/local/text/<id>/model.toml sous une des "
             f"racines {[str(r) for r in models_roots]} (ou un bloc [[models]], ou un "
             f"modèle distant [[remote_models]] dans config/local.toml)"
         )

@@ -1122,7 +1122,9 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             if not (mdir / "model.toml").is_file():  # reprise : ne pas écraser
                 desc = a["description"].replace('"', "'")
                 tmpl = next(iter(S.image_by_id.values()), None)
-                comfy_dir = tmpl.comfy_dir if tmpl else "C:/tools/ComfyUI"
+                from loom.runtime.image_models import default_comfy_dir
+
+                comfy_dir = tmpl.comfy_dir if tmpl else default_comfy_dir()
                 comfy_port = tmpl.comfy_port if tmpl else 8188
                 refiner = tmpl.refiner if tmpl else ""
                 timeout = 3600 if a["model_kind"] == "video" else 600
