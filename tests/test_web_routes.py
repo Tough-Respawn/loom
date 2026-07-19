@@ -276,3 +276,33 @@ def test_build_user_content_texte_sans_images(tmp_env):
         "bonjour", [], is_vision=False, stash_dir=str(tmp_env / "stash")
     )
     assert out == "bonjour"
+
+
+class _FakeUpload:
+    def __init__(self, filename, blob, mimetype="image/png"):
+        self.filename = filename
+        self.mimetype = mimetype
+        self._blob = blob
+
+    def read(self):
+        return self._blob
+
+
+def test_build_user_content_image_modele_texte_note_honnete(tmp_env):
+    # Modèle SANS vision + image jointe : la note ne promet plus read_image/un VLM
+    # (read_image est gaté hors vision, pas de repli) — elle dit franchement que le
+    # modèle ne voit pas et cape sur le sélecteur VISION. Les chemins restent listés
+    # (une bascule vision dans la même session pourra les lire).
+    from loom.web.app import _build_user_content
+
+    out = _build_user_content(
+        "ton avis ?",
+        [_FakeUpload("photo.png", b"\x89PNG fake")],
+        is_vision=False,
+        stash_dir=str(tmp_env / "stash"),
+    )
+    assert isinstance(out, str)
+    assert "read_image(path" not in out and "te les décrira" not in out
+    assert "SANS vision" in out and "VISION" in out
+    assert "photo.png" in out  # chemin stashé listé
+    assert (tmp_env / "stash").exists()

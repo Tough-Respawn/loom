@@ -281,7 +281,9 @@ def test_fetch_url_remonte_statut_http_et_url_origine(monkeypatch):
 
     import loom.tools.web as web
 
-    def fake_get(url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None):
+    def fake_get(
+        url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None
+    ):
         req = httpx.Request("GET", "https://52.222.201.14/liste.htm")  # épinglée
         return httpx.Response(403, request=req)
 
@@ -303,7 +305,9 @@ def test_fetch_page_web_search_garde_le_repli_snippet(monkeypatch):
 
     import loom.tools.web as web
 
-    def fake_get(url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None):
+    def fake_get(
+        url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None
+    ):
         req = httpx.Request("GET", url)
         return httpx.Response(403, request=req)
 
@@ -454,17 +458,28 @@ def test_read_image_absent_sans_vision():
     # autre modèle) est préservée : l'outil disparaît, il ne bascule pas.
     from loom.tools import build_registry
 
-    reg = build_registry(
-        ".", 1000, ["read_file", "read_image"], active_is_vision=False
-    )
+    reg = build_registry(".", 1000, ["read_file", "read_image"], active_is_vision=False)
     names = [t["function"]["name"] for t in reg.openai_tools()]
     assert "read_image" not in names
     assert "read_file" in names
     # Modèle vision : l'outil est là.
-    reg2 = build_registry(
-        ".", 1000, ["read_file", "read_image"], active_is_vision=True
-    )
+    reg2 = build_registry(".", 1000, ["read_file", "read_image"], active_is_vision=True)
     assert "read_image" in [t["function"]["name"] for t in reg2.openai_tools()]
+
+
+def test_read_image_gate_erreur_franche():
+    # L'outil gaté reste CONNU du registre : un appel (le system prompt le mentionne,
+    # le modèle peut le tenter) reçoit l'explication franche « pas la vision, propose
+    # un modèle VISION » — jamais un « outil inconnu » trompeur (vécu 2026-07-19 :
+    # glm-flash annonçait « je peux lire les images » puis échouait sans comprendre).
+    from loom.tools import build_registry
+
+    reg = build_registry(".", 1000, ["read_file", "read_image"], active_is_vision=False)
+    out = reg.run("read_image", {"path": "photo.jpg"})
+    assert "outil inconnu" not in out
+    assert "N'A PAS la vision" in out and "VISION" in out
+    # Un outil réellement inconnu garde l'ancien message récupérable.
+    assert "outil inconnu" in reg.run("grep", {})
 
 
 def test_x_aliases_pas_serialises_au_modele():
