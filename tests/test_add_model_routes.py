@@ -104,6 +104,18 @@ def test_add_model_distant_persiste_le_store(env, monkeypatch):
     assert stored[0]["base_url"] == "https://api.exemple/v4"
 
 
+def test_remove_model_confirmation_porte_des_boutons(env, monkeypatch):
+    _fake_deps(monkeypatch)
+    env.web.post("/chat", data={"message": "/remove-model"})
+    r = env.web.post("/chat", data={"message": "1"})
+    events = [
+        json.loads(line[6:])
+        for line in r.data.decode("utf-8").splitlines()
+        if line.startswith("data: ")
+    ]
+    assert {"type": "choices", "options": ["oui", "annuler"]} in events
+
+
 def test_remove_model_distant_vide_le_store(env, monkeypatch):
     _fake_deps(monkeypatch)
     # ajoute d'abord un distant (flux complet), puis le supprime via /remove-model

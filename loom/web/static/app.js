@@ -302,6 +302,24 @@ function PermAsk({ it }) {
   </div>`;
 }
 
+// Boutons de réponse d'un wizard (/add-model, /remove-model, /rebench) : purs
+// raccourcis de frappe — le clic envoie le libellé comme un message tapé. Non
+// persistés : au rechargement on répond au clavier (l'état wizard est côté serveur).
+function WizChoices({ it }) {
+  const pick = (label) => {
+    if (it.decided) return;
+    patch(it.id, { decided: true, picked: label });
+    input.value = label;
+    submitChat();
+  };
+  return html`<div class=${"wiz-choices" + (it.decided ? " decided" : "")}>
+    ${it.options.map(
+      (o) => html`<button key=${o} disabled=${!!it.decided}
+        class=${it.picked === o ? "picked" : ""} onClick=${() => pick(o)}>${o}</button>`,
+    )}
+  </div>`;
+}
+
 function UserMsg({ it, userIndex }) {
   // Bouton "repartir de la" : tronque la conversation apres ce message et
   // pre-remplit l'input pour re-editer. Comme l'edition de message ChatGPT/Claude.
@@ -433,6 +451,8 @@ function Item({ it, userIndex }) {
       return html`<${ToolPill} it=${it} />`;
     case "perm":
       return html`<${PermAsk} it=${it} />`;
+    case "choices":
+      return html`<${WizChoices} it=${it} />`;
     case "error":
       return html`<div class="msg assistant err">${it.message}</div>`;
     case "phase":
@@ -706,6 +726,11 @@ async function sendChat(sid, text, images) {
         // Un modèle vient d'être ajouté/monté (wizard /add-model) : recharge le
         // sélecteur et la liste du panneau engrenage sans rechargement de page.
         if (window.refreshModels) window.refreshModels();
+        break;
+      case "choices":
+        // Boutons de réponse du wizard (oui/annuler, types de modèle…) : bloc
+        // cliquable sous le dernier message — cf. WizChoices.
+        push({ kind: "choices", options: evt.options || [] });
         break;
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (connexion à loom.web perdue ?)" });
@@ -1552,6 +1577,11 @@ function submitChat() {
   // input, elle resterait ouverte sur du vide.
   if (typeof hidePal === "function") hidePal();
   const t = activeTab();
+  // Une réponse part (tapée OU cliquée) : les blocs de boutons en attente sont
+  // consommés — des boutons périmés ne doivent pas rester cliquables.
+  if (t)
+    for (const it of t.timeline)
+      if (it.kind === "choices" && !it.decided) patch(it.id, { decided: true });
   // Pièces jointes pendant une génération : la file /note est TEXTE-ONLY. On bloque
   // net (rien n'est consommé) plutôt que de laisser l'image en attente partir avec
   // le PROCHAIN message, auquel elle ne correspondrait plus.

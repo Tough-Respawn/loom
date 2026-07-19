@@ -954,6 +954,15 @@
     .perm-btns button:last-child { background: #4a2a2a; color: var(--err); }
     .perm-btns button:last-child:hover { background: #5a3434; }
     .perm-ask.decided { opacity: 0.5; }
+    /* Boutons de réponse des wizards (raccourcis de frappe — cf. WizChoices) */
+    .wiz-choices { display: flex; gap: 8px; margin: 2px 0 6px; flex-wrap: wrap; }
+    .wiz-choices button { padding: 4px 14px; font-size: 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-elev); color: var(--text); cursor: pointer; font-family: inherit; transition: .12s; }
+    .wiz-choices button:first-child { background: var(--accent-dim); border-color: transparent; color: #fff; }
+    .wiz-choices button:first-child:hover { background: var(--accent); }
+    .wiz-choices button:hover { background: var(--bg-hover); }
+    .wiz-choices.decided { opacity: .45; }
+    .wiz-choices button:disabled { cursor: default; }
+    .wiz-choices button.picked { outline: 1px solid var(--accent); }
     .phase-sep { font-size: 11px; color: var(--text-faint); letter-spacing: .2px; padding: 6px 0 2px; border-top: 1px dashed var(--border-soft); margin-top: 4px; }
 
     /* ---- COMPOSER ---- */

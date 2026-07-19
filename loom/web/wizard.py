@@ -22,6 +22,10 @@ class WizardResult:
     action: dict | None = (
         None  # {"kind": "install", ...} | {"kind": "upsert_remote", ...}
     )
+    # Boutons proposés par l'UI pour répondre à CETTE étape (purs raccourcis de
+    # frappe : le clic envoie le libellé comme un message normal). None = saisie
+    # libre. Non persisté : après un rechargement, on répond au clavier.
+    choices: list[str] | None = None
 
 
 def _valid_id(mid: str) -> bool:
@@ -39,6 +43,7 @@ def start(arg: str, deps) -> WizardResult:
             "  3. image — générateur ComfyUI (recette workflow.json)\n"
             "  4. vidéo — générateur ComfyUI (recette workflow.json)\n"
             "(réponds 1-4 — /cancel pour annuler)",
+            choices=["local", "distant", "image", "vidéo"],
         )
     low = a.lower()
     # Raccourcis par type : « /add-model image|video » saute le menu, comme « distant ».
@@ -286,6 +291,7 @@ def _step_d_pick(state, t, deps):
         {"step": "d_confirm", "item": it},
         f"[remove-model 2/2] Supprimer « {it['id']} » ? {warn}.\n"
         "Tape « oui » pour confirmer — toute autre réponse annule.",
+        choices=["oui", "annuler"],
     )
 
 
@@ -344,6 +350,7 @@ def _rebench_confirm(it) -> WizardResult:
         "locaux indisponibles pendant la mesure (les distants restent "
         "utilisables). La progression s'affiche ici.\n"
         "Tape « oui » pour lancer — toute autre réponse annule.",
+        choices=["oui", "annuler"],
     )
 
 

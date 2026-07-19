@@ -95,6 +95,32 @@ def _launch(env, monkeypatch, calib=CALIB, error=None):
     return env.web.post("/chat", data={"message": "oui"})
 
 
+def _sse_events(body: bytes) -> list[dict]:
+    return [
+        json.loads(line[6:])
+        for line in body.decode("utf-8").splitlines()
+        if line.startswith("data: ")
+    ]
+
+
+def test_rebench_confirmation_et_verdict_portent_des_boutons(env, monkeypatch):
+    from loom.web import routes
+
+    monkeypatch.setitem(routes._REBENCH, "job", None)
+    monkeypatch.setattr(
+        routes, "_run_calibration", lambda S, spec, progress: (CALIB, None)
+    )
+    r = env.web.post("/chat", data={"message": "/rebench loc-test"})
+    assert {"type": "choices", "options": ["oui", "annuler"]} in _sse_events(r.data)
+    # le flux du lancement attend le job (stub instantané) et émet le verdict + boutons
+    r = env.web.post("/chat", data={"message": "oui"})
+    events = _sse_events(r.data)
+    assert any(
+        e["type"] == "choices" and e["options"] == ["oui", "annuler"] for e in events
+    )
+    assert any("Verdict" in e.get("text", "") for e in events if e["type"] == "text")
+
+
 def test_rebench_job_poste_verdict_et_etat_apply(env, monkeypatch):
     r = _launch(env, monkeypatch)
     assert "lancée" in _sse_texts(r.data)

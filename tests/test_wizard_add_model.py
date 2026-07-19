@@ -80,6 +80,27 @@ def test_etat_inconnu_annule_proprement():
     assert r.state is None
 
 
+# ---------- boutons de confirmation (choices) ----------
+
+
+def test_choices_sur_menu_type_et_confirmations():
+    # menu de type /add-model
+    r = wizard.start("", deps())
+    assert r.choices == ["local", "distant", "image", "vidéo"]
+    # confirmation /remove-model
+    items = [{"id": "x", "kind": "local", "label": "x — local, 1.0 Go sur disque"}]
+    r = wizard.step({"step": "d_pick", "items": items}, "1", deps(removable=items))
+    assert r.choices == ["oui", "annuler"]
+    # confirmation /rebench
+    d = deps()
+    d.rebenchable_models = lambda: [{"id": "x", "label": "x — contexte actuel 4096"}]
+    r = wizard.start_rebench("x", d)
+    assert r.choices == ["oui", "annuler"]
+    # étape de saisie libre : pas de boutons
+    r = wizard.step({"step": "i_id", "ikind": "image"}, "mon-modele", deps())
+    assert r.choices is None
+
+
 # ---------- /rebench ----------
 
 
