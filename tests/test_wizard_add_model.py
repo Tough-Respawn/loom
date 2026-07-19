@@ -16,6 +16,9 @@ def deps(existing=(), hits=None, files=None, remote_models=None, removable=None)
         # None = GET /models du provider injoignable -> saisie manuelle
         list_remote_models=lambda base_url, key: remote_models,
         removable_models=lambda: list(removable or []),
+        # Flux image/vidéo : dossier inexistant + recette valide par défaut
+        image_dir_state=lambda ikind, mid: None,
+        check_workflow=lambda p: {"ok": True, "error": None, "warnings": []},
     )
 
 
@@ -26,6 +29,39 @@ def test_start_sans_arg_demande_le_type():
     r = wizard.start("", deps())
     assert r.state == {"step": "kind"}
     assert "1" in r.reply and "local" in r.reply and "distant" in r.reply
+
+
+def test_start_sans_arg_menu_a_4_types():
+    r = wizard.start("", deps())
+    for w in ("local", "distant", "image", "vidéo"):
+        assert w in r.reply
+
+
+def test_kind_3_et_4_routent_vers_le_flux_image():
+    r = wizard.step({"step": "kind"}, "3", deps())
+    assert r.state == {"step": "i_id", "ikind": "image"}
+    r = wizard.step({"step": "kind"}, "4", deps())
+    assert r.state == {"step": "i_id", "ikind": "video"}
+    r = wizard.step({"step": "kind"}, "vidéo", deps())
+    assert r.state == {"step": "i_id", "ikind": "video"}
+
+
+def test_start_raccourcis_image_video_local():
+    assert wizard.start("image", deps()).state == {"step": "i_id", "ikind": "image"}
+    assert wizard.start("video", deps()).state == {"step": "i_id", "ikind": "video"}
+    # « local <recherche> » = recherche HF directe ; « local » seul = l_query
+    assert wizard.start("local", deps()).state == {"step": "l_query"}
+    r = wizard.start(
+        "local qwen3", deps(hits=[{"repo_id": "a/b", "downloads": 1, "likes": 1}])
+    )
+    assert r.state["step"] == "l_repo"
+
+
+def test_backcompat_recherche_libre_reste_hf():
+    r = wizard.start(
+        "qwen3 0.6b", deps(hits=[{"repo_id": "a/b", "downloads": 1, "likes": 1}])
+    )
+    assert r.state["step"] == "l_repo"
 
 
 def test_cancel_a_toute_etape():
