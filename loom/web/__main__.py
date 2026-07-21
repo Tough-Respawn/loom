@@ -30,9 +30,9 @@ def build_app(cfg):
     conversation = Conversation.load(cfg.chat.history_path, cfg.chat.system_prompt)
     if not conversation.model:
         conversation.set_model(cfg.default_model)
-    # Modèles distants : local.toml + store UI (var/remote_models.json) sont déjà
-    # fusionnés par load_config dans cfg.remote_models — on ne recalcule ici que le
-    # chemin du store (routes /add-model, /remove-model).
+    # Modèles distants : config/local.toml est la source unique (un store JSON
+    # hérité est replié dedans par load_config). Le chemin du store ne sert plus
+    # qu'en filet de suppression et pour ancrer var/generated (create_app).
     from loom.config import remote_store_path as _remote_store_path
 
     remote_store = _remote_store_path(cfg.chat.history_path)
