@@ -432,3 +432,35 @@ def test_say_colorise_chaque_ligne():
     out = printed[-1]
     assert GREEN + "  [ok] Modèle x" in out
     assert DIM + "  [passé] Réglages y" in out
+
+
+def test_recherche_accepte_une_url_hf(monkeypatch, tmp_path):
+    # Coller une URL (ou un id org/repo) court-circuite la recherche : le repo
+    # part directement à l'inventaire des quants.
+    _patch_paths(monkeypatch, tmp_path)
+    from loom.setup.catalog import budget_mb, fitting_entries
+
+    libre = len(fitting_entries(budget_mb(_HW.budget_vram_mb, 24_000))) + 1
+    probed = []
+
+    def boom(q):
+        raise AssertionError("URL collée -> aucune recherche ne doit partir")
+
+    def fake_probe(repo):
+        probed.append(repo)
+        return list(_FILES)
+
+    con, printed = _console(
+        answers=["n", str(libre), "https://huggingface.co/org/Mon-Repo-GGUF", "O"]
+    )
+    report = cli.SetupReport()
+    cli.step_model(
+        con,
+        report,
+        _deps(tmp_path, search_models=boom, probe_repo=fake_probe),
+        _HW,
+        24_000,
+        {},
+    )
+    assert probed == ["org/Mon-Repo-GGUF"]
+    assert report.outcomes[-1].status == "fait"

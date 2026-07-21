@@ -62,6 +62,27 @@ def fitting_entries(budget: int, catalog: list[dict] | None = None) -> list[dict
     return sorted(fit, key=lambda e: e["min_budget_mb"], reverse=True)
 
 
+# URL HF (huggingface.co / hf.co, http(s) optionnel) -> les 2 premiers segments
+# de chemin = org/repo ; le reste (/tree/main, ?query…) est ignoré.
+_HF_URL_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?(?:huggingface\.co|hf\.co)/([^/\s]+/[^/\s?#]+)"
+)
+_REPO_ID_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+
+
+def parse_hf_repo(text: str) -> str | None:
+    """`org/repo` depuis une URL Hugging Face ou un id collé tel quel — None si
+    le texte ressemble à une recherche libre (le champ de recherche du setup
+    accepte les deux)."""
+    t = text.strip().rstrip("/")
+    m = _HF_URL_RE.match(t)
+    if m:
+        return m.group(1)
+    if _REPO_ID_RE.match(t):
+        return t
+    return None
+
+
 def probe_repo(repo: str, lister=list_gguf_files) -> list[dict] | None:
     """Fichiers GGUF réels du repo (quants + mmproj éventuel), ou None si le repo
     n'expose rien. Une erreur réseau/HF PROPAGE HfCatalogError (message montrable,
