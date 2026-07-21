@@ -13,6 +13,7 @@ def build_server_args(
     threads: int,
     mmproj_path: str | None = None,
     gpu_tuning: bool = False,
+    unified_memory: bool = False,
     n_parallel: int = 1,
     cpu_moe: bool = False,
     n_cpu_moe: int | None = None,
@@ -82,11 +83,16 @@ def build_server_args(
             "q8_0",
             "--prio",
             "2",
-            # Poids CPU (experts MoE) chargés en mémoire hôte PINNÉE CUDA au lieu de mmap :
-            # les uploads vers le GPU passent en DMA -> gain de prefill net, mesuré au banc.
-            # Contrepartie : chargement plus long et RAM non-paginable (~taille du modèle).
-            "--no-mmap",
         ]
+        # Poids CPU (experts MoE) chargés en mémoire hôte PINNÉE au lieu de mmap :
+        # uploads GPU en DMA -> gain de prefill net, mesuré au banc — mais sur les
+        # dGPU CUDA du parc UNIQUEMENT. Sur mémoire UNIFIÉE (iGPU Vulkan), c'est
+        # un bug upstream (ggml-org/llama.cpp #18317 « Cannot Run Model with
+        # mmap = 0 », #14999 --no-mmap + MoE) et un crash vécu (Ornith 35B /
+        # Radeon 860M : ErrorOutOfDeviceMemory au CHARGEMENT) : mmap, le défaut
+        # officiel llama.cpp, est conservé.
+        if not unified_memory:
+            args.append("--no-mmap")
     if mmproj_path:
         args += ["--mmproj", str(mmproj_path), "--no-mmproj-offload"]
     # Sauvegarde/restauration du cache KV du slot (API POST /slots/0?action=save|restore,

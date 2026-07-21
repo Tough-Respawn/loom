@@ -44,3 +44,15 @@ def test_model_toml_porte_ubatch_batch():
     m2 = _parse_model({k: d[k] for k in ("repo", "filename", "n_layers", "size_mb")})
     assert m2.ubatch is None and m2.batch is None
     assert isinstance(m, ModelConfig)
+
+
+def test_no_mmap_reserve_aux_gpu_discrets():
+    # --no-mmap = tuning DMA mesuré sur les dGPU CUDA du parc. Sur Vulkan/iGPU
+    # c'est un bug UPSTREAM connu (ggml-org/llama.cpp #18317 : « Cannot Run
+    # Model with mmap = 0 », #14999 : erreurs mémoire --no-mmap + MoE) et vécu
+    # ici (Ornith 35B / Radeon 860M : ErrorOutOfDeviceMemory au chargement).
+    # mmap (défaut officiel llama.cpp) conservé, le reste du profil GPU intact.
+    a = _args(unified_memory=True)
+    assert "--no-mmap" not in a
+    assert "-fa" in a and "-ctk" in a
+    assert "--no-mmap" in _args()  # défaut (dGPU discret) inchangé

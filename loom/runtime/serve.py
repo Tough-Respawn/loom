@@ -125,6 +125,7 @@ def build_launch(
         threads=threads,
         mmproj_path=mmproj_path,
         gpu_tuning=profile.has_gpu,
+        unified_memory=not profile.vram_is_discrete,
         n_parallel=cfg.n_parallel,
         cpu_moe=cfg.model.cpu_moe,
         n_cpu_moe=cfg.model.n_cpu_moe,
