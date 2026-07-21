@@ -49,6 +49,7 @@ def _model_cmd(
         threads=threads,
         mmproj_path=mmproj,
         gpu_tuning=profile.has_gpu,
+        unified_memory=not profile.vram_is_discrete,
         cpu_moe=model.cpu_moe,
         n_cpu_moe=model.n_cpu_moe,
         slot_save_dir=slot_save_dir,
