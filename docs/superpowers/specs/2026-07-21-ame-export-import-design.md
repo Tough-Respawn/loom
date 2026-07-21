@@ -48,9 +48,12 @@ identité) pendant le transport — pas des secrets, puisqu'il n'y en a pas deda
   - jauge de force en direct via zxcvbn (offline), qui détecte mots du dictionnaire,
     dates et motifs clavier, et affiche une estimation du temps de crack ;
   - seuil BLOQUANT à l'export : score zxcvbn >= 3/4, sinon bouton grisé + explication ;
-  - bouton « générer » : phrase diceware de 5 mots français aléatoires (~64 bits
-    d'entropie), facile à retaper de l'autre côté.
-  - à l'import : aucun contrôle (on retape ce qui a été choisi).
+  - bouton « générer » : phrase diceware de 5 mots aléatoires tirés d'une liste
+    fusionnée français + anglais (langue tirée mot par mot ; liste plus grande =
+    plus d'entropie, ~65 bits, et dictionnaire mono-langue inopérant) ;
+  - visibilité au choix du user : champ masqué PAR DÉFAUT, y compris juste après
+    « générer » (anti-screenshot / partage d'écran), bouton œil pour afficher/masquer ;
+  - à l'import : aucun contrôle (on retape ce qui a été choisi), même champ masqué + œil.
 - Dépendance nouvelle : zxcvbn (en plus de cryptography).
 - GCM authentifie : passphrase fausse ou fichier corrompu → échec propre AVANT toute
   écriture, message clair, rien n'est touché.
