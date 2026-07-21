@@ -757,11 +757,16 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         meta = {}
 
     threads = bench_mod.thread_candidates(os.cpu_count() or 4, deps.cpu_physical())
-    ngl = bench_mod.ngl_candidates(
+    # MoE (expert_count dans le header) : le bench mesure la config RUNTIME
+    # (denses sur GPU, experts en RAM via -ncmoe) — offloader tous les poids
+    # d'un 35B en VRAM OOMait le device (vécu Ornith Q8).
+    moe = bool(meta.get("expert_count"))
+    ngl, ncmoe = bench_mod.ngl_candidates(
         deps.has_gpu_backend(server_bin) and hw.has_gpu,
         hw.vram_free_mb,
         model_size_mb,
         meta.get("n_layers"),
+        moe=moe,
     )
     combos = len(threads) * len(ngl)
     con.say(
@@ -776,7 +781,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
 
     con.progress("bench en cours… (llama-bench, plusieurs minutes)")
     try:
-        rows = deps.run_bench(bench_bin, gguf_path, threads, ngl)
+        rows = deps.run_bench(bench_bin, gguf_path, threads, ngl, n_cpu_moe=ncmoe)
     except RuntimeError as exc:
         con.progress_end()
         con.say(f"  [échec] {exc}")
@@ -860,8 +865,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     }
     # Dès que le GPU a été TESTÉ, la mesure a le dernier mot — 0 compris (un
     # iGPU peut perdre contre le CPU) : sans l'écrire, l'auto-offload runtime
-    # (resolve_ngl) re-prendrait un GPU mesuré plus lent.
-    if len(ngl) > 1:
+    # (resolve_ngl) re-prendrait un GPU mesuré plus lent. SAUF pour un MoE :
+    # resolve_ngl (cpu_moe) ignore l'override, et un override GLOBAL issu d'une
+    # mesure MoE (999/0) polluerait les modèles denses installés ensuite.
+    if len(ngl) > 1 and not moe:
         values["override"]["n_gpu_layers"] = best["ngl"]
     set_local_values(PERSONAL_CONFIG_PATH, values)
     # Vérité PAR MODÈLE : la pente est propre à chaque architecture — le contexte

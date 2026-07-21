@@ -312,12 +312,17 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
     deps = _deps(
         tmp_path,
         ram_available_mb=lambda: 10_240,
-        run_bench=lambda b, m, t, g: rows,
+        run_bench=lambda b, m, t, g, n_cpu_moe=0: rows,
         find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
         has_gpu_backend=lambda sb: True,
         cpu_physical=lambda: 10,
         gpu_vram_total_mb=lambda: 6_144,
         make_probe=_FakeProbe,
+        # VRAM > taille modèle (15 Go) : l'offload total (99) reste un candidat
+        # faisable — c'est lui que le bench doit élire et écrire en override.
+        detect_hardware=lambda server_bin=None: HardwareProfile(
+            True, "GPU 20Go", 20_000, 16, vram_is_discrete=True
+        ),
     )
     code = run(con, deps)
     assert code == 0

@@ -85,12 +85,17 @@ def test_budget_vram_discrete_vs_unifiee():
 
 def test_ngl_candidates():
     # Sans backend GPU : CPU seul.
-    assert ngl_candidates(False, 34848, 1000, 36) == [0]
-    # VRAM couvre tout le modèle : offload total suffit, pas d'intermédiaire.
-    assert ngl_candidates(True, 34848, 1000, 36) == [0, 99]
-    # VRAM partielle : la recommandation proportionnelle est MESURÉE aussi.
-    cands = ngl_candidates(True, 6000, 16000, 48)
-    assert cands[0] == 0 and cands[-1] == 99 and len(cands) == 3
-    assert 0 < cands[1] < 48
-    # n_layers inconnu (GGUF illisible) : on garde 0/99.
-    assert ngl_candidates(True, 6000, 16000, None) == [0, 99]
+    assert ngl_candidates(False, 34848, 1000, 36) == ([0], 0)
+    # VRAM couvre tout le modèle : offload total mesurable.
+    assert ngl_candidates(True, 34848, 1000, 36) == ([0, 99], 0)
+    # Modèle plus gros que la VRAM : 99 = OOM garanti (vécu Ornith 35B Q8) ->
+    # RETIRÉ ; seule la reco proportionnelle partielle reste mesurée.
+    cands, ncmoe = ngl_candidates(True, 6000, 16000, 48)
+    assert cands[0] == 0 and len(cands) == 2 and 0 < cands[1] < 48
+    assert ncmoe == 0
+    # n_layers inconnu ET trop gros : aucun offload mesurable sans risque.
+    assert ngl_candidates(True, 6000, 16000, None) == ([0], 0)
+    # MoE : on bench la config RUNTIME (denses GPU + experts RAM via -ncmoe),
+    # jamais l'offload total des poids.
+    assert ngl_candidates(True, 34848, 35193, 48, moe=True) == ([0, 999], 48)
+    assert ngl_candidates(True, 34848, 35193, None, moe=True) == ([0, 999], 999)
