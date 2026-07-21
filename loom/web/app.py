@@ -396,6 +396,7 @@ def create_app(
     keepwarm_enabled=True,
     keepwarm_interval=150.0,
     identity_paths=None,
+    memory_db_path=None,
     identity_max_tokens=400,
     project_memory_max_tokens=600,
     learned_skills_dir=None,
@@ -571,6 +572,7 @@ def create_app(
         learned_skills_dir=learned_skills_dir,
         user_skills_dir=user_skills_dir,
         identity_paths=identity_paths,
+        memory_db_path=memory_db_path,
         reflect_stores=reflect_stores,
         reflect_model=reflect_model,
         confirm_timeout=confirm_timeout,
@@ -675,6 +677,7 @@ def create_app(
         _register_model_routes,
         _register_session_routes,
         _register_skill_routes,
+        _register_soul_routes,
     )
 
     _register_misc_routes(app, S)
@@ -682,6 +685,7 @@ def create_app(
     _register_session_routes(app, S)
     _register_skill_routes(app, S)
     _register_model_routes(app, S)
+    _register_soul_routes(app, S)
     _register_config_routes(app, S)
 
     # Thread keep-warm toujours lancé (il dort à l'idle) : ainsi activer/désactiver keep-warm
@@ -693,5 +697,10 @@ def create_app(
     # Amorce au boot : si le serveur modèle tourne déjà (restart de loom.web), le
     # préfixe de la session active est pré-préfillé sans attendre le premier message.
     _boot_prime(S)
+
+    # État partagé accessible depuis les tests (client.application.S) : vérifier
+    # les invariants d'objets en mémoire (cache sessions, verrous) sans les rejouer
+    # par des chemins HTTP détournés.
+    app.S = S
 
     return app
