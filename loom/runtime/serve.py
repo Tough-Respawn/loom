@@ -251,7 +251,9 @@ def regenerate_swap_yaml(
     Best-effort : renvoie le chemin écrit, ou None si la config est illisible."""
     try:
         cfg = load_config(defaults_path, local_path)
-        profile = detect_hardware()
+        # Profil AGNOSTIQUE : le binaire configuré fait foi (--list-devices) —
+        # sans lui, l'auto-offload de resolve_ngl ignorait tout GPU non-NVIDIA.
+        profile = detect_hardware(cfg.server_bin)
         swap = build_swap_config(
             cfg.models,
             profile,
@@ -327,7 +329,7 @@ def main() -> int:
             "lance 'uv run loom-setup' pour en installer un."
         )
         return 1
-    profile = detect_hardware()
+    profile = detect_hardware(cfg.server_bin)
     _log(f"[loom] Profil détecté : {profile}")
 
     try:
