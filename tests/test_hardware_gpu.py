@@ -95,7 +95,8 @@ def test_ngl_candidates():
     assert ncmoe == 0
     # n_layers inconnu ET trop gros : aucun offload mesurable sans risque.
     assert ngl_candidates(True, 6000, 16000, None) == ([0], 0)
-    # MoE : on bench la config RUNTIME (denses GPU + experts RAM via -ncmoe),
-    # jamais l'offload total des poids.
-    assert ngl_candidates(True, 34848, 35193, 48, moe=True) == ([0, 999], 48)
-    assert ngl_candidates(True, 34848, 35193, None, moe=True) == ([0, 999], 999)
+    # MoE : SEULE la config RUNTIME est benchée (denses GPU + experts RAM via
+    # -ncmoe) — resolve_ngl l'imposera quoi qu'il arrive, mesurer ngl=0 faisait
+    # élire et rapporter une config jamais servie (threads/verdict faux).
+    assert ngl_candidates(True, 34848, 35193, 48, moe=True) == ([999], 48)
+    assert ngl_candidates(True, 34848, 35193, None, moe=True) == ([999], 999)

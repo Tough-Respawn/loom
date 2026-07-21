@@ -72,14 +72,18 @@ def ngl_candidates(
     -> ErrorOutOfDeviceMemory et bench perdu.
 
     - Sans backend GPU : ([0], 0).
-    - MoE : on mesure la config que le RUNTIME utilisera (resolve_ngl : couches
-      denses sur GPU, experts en RAM) -> ([0, 999], n_layers) via --n-cpu-moe.
+    - MoE : on mesure UNIQUEMENT la config que le RUNTIME utilisera (resolve_ngl
+      force denses sur GPU + experts en RAM, ignore tout override) -> ([999],
+      n_layers) via --n-cpu-moe. Bencher ngl=0 en plus élisait la ligne CPU
+      (meilleur tg) et faisait rapporter threads/vitesses/verdict d'une config
+      qui ne servira JAMAIS — vécu Ornith : « prefill 15,3 t/s » affiché quand
+      la config réelle mesure 91 t/s.
     - Dense : 0, la reco proportionnelle si partielle, et 99 SEULEMENT si
       l'offload total tient (poids + marge KV <= VRAM libre)."""
     if not gpu_backend:
         return [0], 0
     if moe:
-        return [0, 999], int(n_layers or 999)
+        return [999], int(n_layers or 999)
     cands = {0}
     if model_size_mb <= max(0, vram_free_mb - headroom_mb):
         cands.add(99)
