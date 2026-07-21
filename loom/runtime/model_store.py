@@ -1,10 +1,13 @@
-"""Store MACHINE-OWNED des modèles distants ajoutés via l'UI (var/remote_models.json).
+"""Persistance des modèles distants : config/local.toml, source UNIQUE.
 
-Séparé de config/local.toml (écrit à la main, avec commentaires) : l'UI possède ce fichier
-JSON et le réécrit en entier à chaque changement, sans clobbering du TOML. Fusionné au
-démarrage avec cfg.remote_models (les entrées gérées par l'UI l'emportent par id). Objectif :
-ajouter/configurer un modèle distant sans jamais ouvrir un TOML à la main (zéro friction).
-"""
+Historique : les distants ajoutés via l'UI vivaient dans un store JSON séparé
+(var/remote_models.json) pour ne pas clobber le TOML écrit à la main. Depuis que
+upsert_remote_in_toml/delete_remote_in_toml éditent local.toml via tomlkit (commentaires
+et structure PRÉSERVÉS), cette séparation n'a plus de raison d'être : deux emplacements =
+des modèles introuvables. Unification 2026-07-21 : TOUT distant (wizard /add-model,
+panneau engrenage, édition) vit dans [[remote_models]] de config/local.toml ; un store
+JSON résiduel est replié dedans au chargement (migrate_to_toml) puis supprimé.
+Les fonctions JSON (load/save/upsert/delete) ne servent plus qu'à cette migration."""
 
 from __future__ import annotations
 
@@ -92,6 +95,28 @@ def delete(path: str | Path, model_id: str) -> list[dict]:
     models = [m for m in load(path) if m.get("id") != model_id]
     save(path, models)
     return models
+
+
+def migrate_to_toml(
+    store_path: str | Path, local_path: str | Path | None
+) -> list[dict]:
+    """Replie un store JSON hérité dans config/local.toml, puis le supprime.
+
+    Renvoie les entrées migrées (dicts KEEP) pour que load_config leur garde la
+    priorité par id sur ce chargement, sans relire le TOML. Sans local_path (tests,
+    config chargée sans surcharge machine) : lecture seule, fichier laissé en place.
+    Un JSON illisible n'est JAMAIS supprimé (load() le lit vide) — on ne détruit pas
+    ce qu'on n'a pas migré."""
+    records = load(store_path)
+    if not records or local_path is None:
+        return records
+    for rec in records:
+        upsert_remote_in_toml(local_path, rec)
+    try:
+        Path(store_path).unlink()
+    except OSError:
+        pass  # best-effort : au pire il sera re-migré (idempotent, upsert par id)
+    return records
 
 
 def upsert_remote_in_toml(local_path: str | Path, record: dict) -> None:
