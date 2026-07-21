@@ -1,13 +1,20 @@
 # loom/runtime/hardware.py
-"""Détection hardware et recommandation de réglages d'offload GPU."""
+"""Détection hardware et recommandation de réglages d'offload GPU.
+
+Détection GPU AGNOSTIQUE : la source de vérité est le binaire llama.cpp installé
+(`llama-server --list-devices`) — il liste exactement les devices que CE binaire
+sait exploiter (Vulkan AMD/Intel/NVIDIA, CUDA, Metal…). nvidia-smi ne sert que
+de repli d'AVANT-binaire (étape 1 du setup : choisir le build CUDA vs Vulkan)."""
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 
 def ram_available_mb() -> int:
@@ -119,6 +126,59 @@ class HardwareProfile:
     gpu_name: str | None
     vram_free_mb: int
     cpu_threads: int
+    # Champs remplis par la détection agnostique (--list-devices).
+    vram_total_mb: int = 0
+    backend: str | None = None
+    # Vrai quand la VRAM est prouvée DISCRÈTE (nvidia-smi / CUDA) : seul cas où
+    # l'additionner à la RAM dans un budget a un sens. Un iGPU Vulkan déclare la
+    # RAM partagée comme sa mémoire -> la sommer double-compterait.
+    vram_is_discrete: bool = False
+
+    @property
+    def budget_vram_mb(self) -> int:
+        """Contribution VRAM à un budget mémoire VRAM+RAM : 0 si non discrète."""
+        return self.vram_free_mb if self.vram_is_discrete else 0
+
+
+# «   Vulkan0: AMD Radeon(TM) 860M Graphics (36682 MiB, 34848 MiB free) »
+_DEVICE_RE = re.compile(
+    r"^\s*([A-Za-z]+)(\d+):\s+(.+?)\s+\((\d+)\s+MiB,\s+(\d+)\s+MiB free\)\s*$"
+)
+
+
+def parse_list_devices(output: str) -> list[dict]:
+    """Devices GPU de `llama-server --list-devices` : [{backend, name, total_mb,
+    free_mb}], liste vide si aucun (build CPU-only) ou sortie inattendue."""
+    devices = []
+    for line in output.splitlines():
+        m = _DEVICE_RE.match(line)
+        if m:
+            devices.append(
+                {
+                    "backend": m.group(1),
+                    "name": m.group(3),
+                    "total_mb": int(m.group(4)),
+                    "free_mb": int(m.group(5)),
+                }
+            )
+    return devices
+
+
+def _run_list_devices(server_bin) -> str | None:
+    """Sortie de `<server_bin> --list-devices`, None si le binaire ne répond pas.
+    stdout+stderr concaténés : llama.cpp logge selon les builds sur l'un ou l'autre.
+    Path() normalise les séparateurs : CreateProcess (Windows) refuse un chemin
+    relatif à slashs avant."""
+    try:
+        res = subprocess.run(
+            [str(Path(server_bin)), "--list-devices"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return (res.stdout or "") + "\n" + (res.stderr or "")
 
 
 def _run_nvidia_smi() -> str | None:
@@ -142,12 +202,35 @@ def _run_nvidia_smi() -> str | None:
         return None
 
 
-def detect_hardware() -> HardwareProfile:
-    """Détecte le meilleur profil disponible : GPU NVIDIA si présent, sinon CPU."""
+def detect_hardware(server_bin=None) -> HardwareProfile:
+    """Détecte le profil GPU/CPU. AGNOSTIQUE quand `server_bin` est fourni : le
+    binaire installé fait foi (`--list-devices`) — s'il liste un device, on le
+    prend ; s'il n'en liste aucun (build CPU-only), on n'offloadera rien même si
+    un GPU physique existe. Repli nvidia-smi si le binaire manque ou ne répond
+    pas (seul cas où il faut savoir AVANT le binaire : choisir le build CUDA)."""
     threads = os.cpu_count() or 4
+    if server_bin is not None:
+        out = _run_list_devices(server_bin)
+        if out is not None:
+            devices = parse_list_devices(out)
+            if not devices:
+                return HardwareProfile(False, None, 0, threads)
+            d = devices[0]
+            return HardwareProfile(
+                True,
+                d["name"],
+                d["free_mb"],
+                threads,
+                vram_total_mb=d["total_mb"],
+                backend=d["backend"],
+                vram_is_discrete=(
+                    d["backend"].lower() == "cuda"
+                    or shutil.which("nvidia-smi") is not None
+                ),
+            )
     raw = _run_nvidia_smi()
     parsed = parse_nvidia_smi(raw) if raw else None
     if parsed is None:
         return HardwareProfile(False, None, 0, threads)
     name, free_mb = parsed
-    return HardwareProfile(True, name, free_mb, threads)
+    return HardwareProfile(True, name, free_mb, threads, vram_is_discrete=True)

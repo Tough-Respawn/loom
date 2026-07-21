@@ -18,6 +18,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from loom.runtime.hardware import recommend_gpu_layers
+
 # Charges courtes : sur une petite machine CPU, chaque token compte — on veut un
 # CLASSEMENT fiable (quel -t gagne), pas des chiffres de communiqué de presse.
 BENCH_PROMPT = 128
@@ -54,6 +56,26 @@ def has_gpu_backend(server_bin: str | Path) -> bool:
             "libggml-cuda.so",
         )
     )
+
+
+def ngl_candidates(
+    gpu_backend: bool,
+    vram_free_mb: int,
+    model_size_mb: int,
+    n_layers: int | None,
+) -> list[int]:
+    """Candidats -ngl à bencher. Sans backend GPU : [0]. Sinon 0 (CPU pur) et 99
+    (offload total) ; si la VRAM libre ne couvre qu'une PARTIE du modèle, la
+    recommandation proportionnelle s'ajoute comme candidat intermédiaire — on la
+    MESURE au lieu de la supposer. n_layers None (GGUF illisible) : 0/99 seuls."""
+    if not gpu_backend:
+        return [0]
+    cands = {0, 99}
+    if n_layers:
+        reco = recommend_gpu_layers(vram_free_mb, model_size_mb, n_layers)
+        if 0 < reco < n_layers:
+            cands.add(reco)
+    return sorted(cands)
 
 
 def thread_candidates(logical: int, physical: int | None) -> list[int]:
