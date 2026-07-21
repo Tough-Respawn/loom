@@ -3696,7 +3696,9 @@ def _register_soul_routes(app, S):
     def _soul_paths():
         idp = S.identity_paths or {}
         identity_dir = (
-            Path(idp["soul_path"]).parent if idp.get("soul_path") else Path("var/identity")
+            Path(idp["soul_path"]).parent
+            if idp.get("soul_path")
+            else Path("var/identity")
         )
         return soul_mod.SoulPaths(
             sessions_root=Path(S.session_store.root),
@@ -3735,22 +3737,42 @@ def _register_soul_routes(app, S):
             )
         except soul_mod.SoulError as e:
             return {"error": str(e)}, 400
-        log_event("soul.export", sessions=len(ids), path=recap["path"])
+        except OSError as e:
+            # USB pleine/retirée, dossier en lecture seule : vraie cause au user,
+            # pas un 500 que l'UI traduirait en faux « échec réseau ».
+            return {"error": f"écriture impossible : {e}"}, 400
+        log_event("soul.export", sessions=recap["sessions"], path=recap["path"])
         return recap
 
     @app.post("/soul/import")
     def soul_import():
-        try:
-            report = soul_mod.import_soul(
-                _soul_paths(),
-                request.form.get("file", ""),
-                request.form.get("passphrase", ""),
-            )
-        except soul_mod.SoulError as e:
-            return {"error": str(e)}, 400
-        # Les sessions fusionnées doivent apparaître sans redémarrage : purge du
-        # cache d'objets session (rechargés depuis le disque au prochain accès).
-        S.sessions_cache.clear()
+        # Tout l'import sous gen_guard : (1) refus net si une génération est en vol
+        # (l'objet session vivant sauverait son état par-dessus les fichiers importés),
+        # (2) aucune génération ne peut DÉMARRER pendant la fusion (elle chargerait
+        # l'objet périmé du cache), (3) purge du cache + rechargement de la session
+        # focus AVANT de relâcher — sinon le prochain save de l'objet mémoire écrase
+        # silencieusement les données importées (« rien n'est jamais détruit »).
+        with S.gen_guard:
+            if any(lk.locked() for lk in S.sess_locks.values()):
+                return {
+                    "error": "génération en cours — réessaie quand les sessions "
+                    "sont au repos"
+                }, 409
+            try:
+                report = soul_mod.import_soul(
+                    _soul_paths(),
+                    request.form.get("file", ""),
+                    request.form.get("passphrase", ""),
+                )
+            except soul_mod.SoulError as e:
+                return {"error": str(e)}, 400
+            S.sessions_cache.clear()
+            cur = S.cur.get("session")
+            if cur is not None:
+                fresh = S.session_store.load(cur.id)
+                if fresh is not None:
+                    S.sessions_cache[cur.id] = fresh
+                    S.cur["session"] = fresh
         log_event(
             "soul.import",
             ajoutees=report["sessions"]["ajoutees"],
