@@ -219,6 +219,29 @@ def log_event(event: str, level: str = "DEBUG", **fields) -> None:
     _emit(line)
 
 
+def context_fingerprint(messages: list[dict]) -> str:
+    """Empreinte compacte du contexte envoyé : `rôle:longueur:md5-8` par message.
+
+    Sert à DIFFER deux tours pour localiser LA mutation de préfixe qui casse le
+    cache KV (vécu 2026-07-21 : cache_tok=0 -> re-prefill complet de 62 s au
+    milieu d'une session ; le préfixe avait rétréci de ~270 tokens entre deux
+    tours — quelle section a muté reste à identifier, c'est le rôle de ce log).
+    Le premier couple qui diffère entre deux lignes = le point de divergence."""
+    import hashlib
+
+    parts = []
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False, default=str)
+        content = content or ""
+        if m.get("tool_calls"):
+            content += json.dumps(m["tool_calls"], ensure_ascii=False, default=str)
+        h = hashlib.md5(content.encode("utf-8", "replace")).hexdigest()[:8]
+        parts.append(f"{(m.get('role') or '?')[:1]}:{len(content)}:{h}")
+    return " ".join(parts)
+
+
 def _debug_messages(model: str, messages: list[dict]) -> None:
     """Trace la requête : modèle ciblé + chaque message (rôle + contenu tronqué)."""
     if not _debug_on():
@@ -240,6 +263,9 @@ def _debug_messages(model: str, messages: list[dict]) -> None:
     # `turn.request model=… msgs=…` (log_event) suffit — le system prompt entier
     # à chaque tour rendait la console intenable.
     _debug("REQUETE -> modele", "\n".join(lines), limit=60000, terminal=False)
+    # Empreinte par message (rôle:longueur:md5-8) : diffable entre tours pour
+    # localiser une mutation de préfixe qui invalide le cache KV.
+    _debug("CTX_EMPREINTE", context_fingerprint(messages), terminal=False)
 
 
 def _sub_activity_line(kind: str, payload) -> str:
@@ -1867,8 +1893,14 @@ class LoomClient:
             return False
 
     def running_local(self, timeout: float = 5.0) -> tuple[bool, str]:
-        """(joignable, texte brut JSON) de llama-swap `GET /running`. Best-effort : le texte
-        brut suffit pour tester par sous-chaîne quel modèle est chargé, sans coupler au schéma."""
+        """(joignable, texte brut JSON) du serveur LOCAL. `GET /running` est l'API
+        de llama-swap (mode multi-modèles) ; en MONO-MODÈLE direct, llama-server
+        répond 404 dessus alors qu'il est VIVANT — l'avaler comme « injoignable »
+        faisait afficher « serveur éteint » et attendre ~90 s à CHAQUE message
+        (vécu 2026-07-21, 1re machine mono-modèle du parc). Toute réponse HTTP =
+        serveur vivant ; en direct, l'inventaire se lit sur /v1/models (le chemin
+        du GGUF contient l'id du modèle -> les tests par sous-chaîne des appelants
+        restent valides). Best-effort."""
         import urllib.error
         import urllib.request
 
@@ -1876,6 +1908,14 @@ class LoomClient:
         try:
             with urllib.request.urlopen(root + "/running", timeout=timeout) as resp:
                 return True, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError:  # réponse HTTP -> vivant, mais pas llama-swap
+            try:
+                with urllib.request.urlopen(
+                    root + "/v1/models", timeout=timeout
+                ) as resp:
+                    return True, resp.read().decode("utf-8", "replace")
+            except (urllib.error.URLError, OSError, ValueError):
+                return True, ""  # vivant (il vient de répondre en HTTP)
         except (urllib.error.URLError, OSError, ValueError):
             return False, ""
 
