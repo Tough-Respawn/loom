@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from loom.runtime.hf_catalog import HfCatalogError, list_gguf_files
+from loom.runtime.hf_catalog import list_gguf_files
 
 # Shortlist par PALIER de budget, pensée pour qui ne sait pas quoi chercher :
 # des libellés lisibles, du plus gourmand au plus léger — chaque machine a
@@ -63,13 +63,11 @@ def fitting_entries(budget: int, catalog: list[dict] | None = None) -> list[dict
 
 
 def probe_repo(repo: str, lister=list_gguf_files) -> list[dict] | None:
-    """Fichiers GGUF réels du repo (quants + mmproj éventuel), ou None si le
-    repo est injoignable (offline, renommé, retiré) — l'appelant saute l'entrée."""
-    try:
-        files = lister(repo)
-    except HfCatalogError:
-        return None
-    return files or None
+    """Fichiers GGUF réels du repo (quants + mmproj éventuel), ou None si le repo
+    n'expose rien. Une erreur réseau/HF PROPAGE HfCatalogError (message montrable,
+    diagnostic proxy inclus) — un None trompeur ferait conclure « repo disparu »
+    quand c'est la connexion qui casse."""
+    return lister(repo) or None
 
 
 # Taille en milliards dans un nom de repo : « 7B », « 1.5b », « 397B-A17B ».
@@ -111,13 +109,11 @@ def filter_by_budget(hits: list[dict], budget: int) -> tuple[list[dict], int]:
 def resolve_entry(entry: dict, searcher, budget: int) -> str | None:
     """Repo HF réel d'une entrée du catalogue : repo épinglé si présent, sinon
     résolution live (recherche de `query`, filtrée par le budget, top
-    téléchargements). None si rien de jouable (offline, famille disparue)."""
+    téléchargements). None si rien de jouable (famille disparue) ; une erreur
+    réseau/HF PROPAGE HfCatalogError — même raison que probe_repo."""
     if entry.get("repo"):
         return entry["repo"]
-    try:
-        hits = searcher(entry["query"])
-    except Exception:  # noqa: BLE001 - HfCatalogError & co -> entrée non résolue
-        return None
+    hits = searcher(entry["query"])
     kept, _ = filter_by_budget(hits, budget)
     return kept[0]["repo_id"] if kept else None
 

@@ -30,6 +30,7 @@ import httpx
 from loom.tools._net import categorize_ip
 from loom.tools.base import ToolError, ToolSpec
 from loom.tools.trust import untrusted
+from loom.utils import explain_network_error
 
 
 def _resolve_validated(url: str) -> tuple[str | None, str | None]:
@@ -385,7 +386,14 @@ def fetch_page(
                 return snippet
             return _truncate(text, cfg.max_chars_per_page)
         return snippet  # trop de redirections
-    except _network_errors():
+    except _network_errors() as exc:
+        # Échec de VÉRIFICATION TLS (proxy d'entreprise) : en mode fetch_url
+        # (raise_status), un repli silencieux sur snippet vide serait illisible
+        # pour le modèle -> erreur explicite avec le diagnostic actionnable.
+        if raise_status:
+            hint = explain_network_error(exc)
+            if hint:
+                raise ToolError(f"échec TLS sur {url} — {hint}") from exc
         return snippet
 
 

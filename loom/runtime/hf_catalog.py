@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from loom.utils import explain_network_error
+
 # Multi-parties llama.cpp : "...-00001-of-00003.gguf". On regroupe sous la 1re partie
 # (celle que charge llama-server) avec la taille CUMULÉE.
 _PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
@@ -32,10 +34,14 @@ def _api(api):
 
 def _err(what: str, exc: Exception) -> HfCatalogError:
     head = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
-    return HfCatalogError(
+    msg = (
         f"{what} impossible ({type(exc).__name__}: {head}) — vérifie la connexion, "
         "ou réessaie."
     )
+    hint = explain_network_error(exc)
+    if hint:
+        msg += f"\n{hint}"
+    return HfCatalogError(msg)
 
 
 def search_models(query: str, limit: int = 8, api=None) -> list[dict]:
