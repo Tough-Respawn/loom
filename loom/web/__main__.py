@@ -269,6 +269,7 @@ def build_app(cfg):
         project_memory_max_tokens=cfg.chat.project_memory_max_tokens,
         learned_skills_dir=cfg.chat.learned_skills_dir,
         user_skills_dir=cfg.chat.user_skills_dir,
+        memory_db_path=cfg.memory.db_path,
         reflect_stores=reflect_stores,
         reflect_enabled=cfg.chat.reflect_enabled,
         reflect_min_actions=cfg.chat.reflect_min_actions,

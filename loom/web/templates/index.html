@@ -530,6 +530,18 @@
     .rm-msg { font-size: 10.5px; color: var(--text-faint); min-height: 13px; }
     .rm-msg.ok { color: var(--accent); }
     .rm-msg.err { color: var(--err); }
+    /* --- Âme (export/import chiffré) --- */
+    .ame-block { margin: 12px 0; padding: 10px; border: 1px solid var(--border, #333); border-radius: 8px; }
+    .ame-head { font-weight: 600; margin-bottom: 6px; }
+    .ame-sub { opacity: .75; font-size: .85em; margin-bottom: 6px; }
+    .ame-sessions { max-height: 160px; overflow-y: auto; margin: 6px 0; }
+    .ame-sessions label { display: block; font-size: .9em; padding: 2px 0; }
+    .ame-sessions .ame-date { opacity: .6; font-size: .85em; margin-left: 6px; }
+    .ame-pass-row { display: flex; gap: 6px; align-items: center; }
+    .ame-pass-row .rm-in { flex: 1; }
+    .ame-gauge { font-size: .85em; min-height: 1.2em; margin: 4px 0 8px; opacity: .85; }
+    .ame-gauge.ok { color: #7dba7d; }
+    .ame-gauge.ko { color: #c98a8a; }
     .rm-actions { display: flex; gap: 6px; }
     .rm-btn {
       flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text-dim);
@@ -1177,6 +1189,7 @@
         <button type="button" class="cfg-tab" data-tab="systeme">Propre à cette machine</button>
         <button type="button" class="cfg-tab" data-tab="locaux">Modèles locaux</button>
         <button type="button" class="cfg-tab" data-tab="modeles">Modèles distants</button>
+        <button type="button" class="cfg-tab" data-tab="ame">Âme</button>
       </div>
       <div class="cfg-scroll">
         <!-- Onglet Modèles locaux (servis sur cette machine). Tuning d'offload GPU éditable. -->
@@ -1206,6 +1219,42 @@
               <button type="button" id="rm-cancel" class="rm-btn ghost">Annuler</button>
             </div>
           </form>
+        </div>
+        <!-- Onglet Âme : export/import chiffré de l'état portable (sessions, mémoire,
+             identité, skills). Aucun secret ne part : les clés API restent ici. -->
+        <div id="cfg-ame" class="cfg-panel" data-tab="ame" hidden>
+          <div class="cfg-group-sub">Emporte tes sessions, ta mémoire, ton identité et tes skills
+            dans un fichier chiffré (.soul) — clé USB, disque ou dossier cloud synchronisé.
+            Les clés API ne partent jamais. Sur l'autre machine : Importer, même passphrase, fusion sans perte.</div>
+
+          <div class="ame-block">
+            <div class="ame-head">Exporter</div>
+            <div class="ame-sub">Socle toujours inclus : mémoire, identité, skills. Sessions au choix :</div>
+            <label class="ame-all"><input type="checkbox" id="ame-all" checked> toutes les sessions</label>
+            <div id="ame-sessions" class="ame-sessions"></div>
+            <input id="ame-dest" class="rm-in" placeholder="dossier de destination (E:\ , D:\sauvegardes, dossier Drive...)">
+            <div class="ame-pass-row">
+              <input id="ame-pass" class="rm-in" type="password" placeholder="passphrase (jamais stockée)" autocomplete="new-password">
+              <button type="button" id="ame-eye" class="rm-add-btn" title="afficher/masquer">&#128065;</button>
+              <button type="button" id="ame-gen" class="rm-add-btn">générer</button>
+            </div>
+            <div class="ame-pass-row">
+              <input id="ame-pass2" class="rm-in" type="password" placeholder="confirmer la passphrase" autocomplete="new-password">
+            </div>
+            <div id="ame-gauge" class="ame-gauge"></div>
+            <button type="button" id="ame-export" class="rm-add-btn" disabled>Exporter</button>
+          </div>
+
+          <div class="ame-block">
+            <div class="ame-head">Importer</div>
+            <input id="ame-file" class="rm-in" placeholder="chemin du fichier .soul">
+            <div class="ame-pass-row">
+              <input id="ame-ipass" class="rm-in" type="password" placeholder="passphrase" autocomplete="off">
+              <button type="button" id="ame-ieye" class="rm-add-btn" title="afficher/masquer">&#128065;</button>
+            </div>
+            <button type="button" id="ame-import" class="rm-add-btn">Importer</button>
+          </div>
+          <div id="ame-msg" class="rm-msg"></div>
         </div>
         <div class="cfg-body" id="config-body"></div>
       </div>
