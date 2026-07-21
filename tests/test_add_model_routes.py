@@ -43,6 +43,7 @@ def env(tmp_path):
         user_skills_dir=str(tmp_path / "skills_user"),
         plugins_dir=str(tmp_path / "plugins"),
         remote_store_path=str(tmp_path / "remote_models.json"),
+        config_local_path=str(tmp_path / "local.toml"),
         models_dir=str(tmp_path / "models"),
     )
     web = app.test_client()
@@ -85,7 +86,7 @@ def test_add_model_cancel(env, monkeypatch):
     assert "annulé" in _sse_texts(r.data).lower()
 
 
-def test_add_model_distant_persiste_le_store(env, monkeypatch):
+def test_add_model_distant_persiste_local_toml(env, monkeypatch):
     _fake_deps(monkeypatch)
     # nouvel ordre : la CLÉ vient avant le modèle (elle sert à lister GET /models)
     for msg in [
@@ -99,9 +100,13 @@ def test_add_model_distant_persiste_le_store(env, monkeypatch):
         env.web.post("/chat", data={"message": msg})
     r = env.web.post("/chat", data={"message": "non"})
     assert "ajouté" in _sse_texts(r.data)
-    stored = json.loads((env.tmp / "remote_models.json").read_text(encoding="utf-8"))
-    assert stored[0]["id"] == "glm-test"
-    assert stored[0]["base_url"] == "https://api.exemple/v4"
+    # Source unique : config/local.toml — le store JSON n'est plus créé.
+    import tomllib
+
+    cfg = tomllib.loads((env.tmp / "local.toml").read_text(encoding="utf-8"))
+    assert cfg["remote_models"][0]["id"] == "glm-test"
+    assert cfg["remote_models"][0]["base_url"] == "https://api.exemple/v4"
+    assert not (env.tmp / "remote_models.json").exists()
 
 
 def test_remove_model_confirmation_porte_des_boutons(env, monkeypatch):
@@ -116,7 +121,7 @@ def test_remove_model_confirmation_porte_des_boutons(env, monkeypatch):
     assert {"type": "choices", "options": ["oui", "annuler"]} in events
 
 
-def test_remove_model_distant_vide_le_store(env, monkeypatch):
+def test_remove_model_distant_vide_local_toml(env, monkeypatch):
     _fake_deps(monkeypatch)
     # ajoute d'abord un distant (flux complet), puis le supprime via /remove-model
     for msg in [
@@ -133,24 +138,23 @@ def test_remove_model_distant_vide_le_store(env, monkeypatch):
     env.web.post("/chat", data={"message": "1"})
     r = env.web.post("/chat", data={"message": "oui"})
     assert "retiré" in _sse_texts(r.data)
-    stored = json.loads((env.tmp / "remote_models.json").read_text(encoding="utf-8"))
-    assert stored == []
+    import tomllib
+
+    cfg = tomllib.loads((env.tmp / "local.toml").read_text(encoding="utf-8"))
+    assert cfg.get("remote_models", []) == []
 
 
 # ---------- tous types : liste complète, image/vidéo, distant config ----------
 
 
 def test_removable_models_liste_les_4_familles(tmp_path):
-    from loom.runtime import model_store as ms
     from loom.web import routes
 
-    store_path = tmp_path / "remote_models.json"
-    ms.save(store_path, [{"id": "ui", "base_url": "https://x", "model": "m-ui"}])
     cfg = tmp_path / "local.toml"
     cfg.write_text('[chat]\ndefault_model = "cfg"\n', encoding="utf-8")
     S = SimpleNamespace(
         local_model_specs=[{"id": "loc", "size_mb": 1024}],
-        remote_store_path=str(store_path),
+        remote_store_path=str(tmp_path / "remote_models.json"),
         remote_model_ids={"ui", "cfg"},
         remote_model_names={"cfg": "m-cfg"},
         config_local_path=str(cfg),
@@ -162,10 +166,11 @@ def test_removable_models_liste_les_4_familles(tmp_path):
     )
     items = routes._removable_models(S)
     kinds = {i["id"]: i["kind"] for i in items}
+    # Tous les distants sortent en kind "remote" : config/local.toml, source unique.
     assert kinds == {
         "loc": "local",
         "ui": "remote",
-        "cfg": "remote_config",
+        "cfg": "remote",
         "img": "image",
         "vid": "video",
     }

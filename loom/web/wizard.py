@@ -239,7 +239,8 @@ def _step_r_adv(state, t, deps):
     }
     return WizardResult(
         None,
-        f"Modèle distant « {state['id']} » ajouté — disponible dans le sélecteur.",
+        f"Modèle distant « {state['id']} » ajouté (config/local.toml) — "
+        "disponible dans le sélecteur.",
         {"kind": "upsert_remote", "record": record},
     )
 
@@ -248,23 +249,19 @@ def _step_r_adv(state, t, deps):
 
 
 def start_remove(deps) -> WizardResult:
-    """Liste numérotée des modèles supprimables : locaux (dossier sur disque) et
-    distants gérés par l'UI (les distants de config/local.toml s'éditent là-bas)."""
+    """Liste numérotée des modèles supprimables : locaux (dossier sur disque),
+    distants (config/local.toml, source unique) et image/vidéo (définition)."""
     items = deps.removable_models()
     if not items:
-        return WizardResult(
-            None,
-            "Aucun modèle supprimable ici. (Un distant défini dans "
-            "config/local.toml se retire en éditant ce fichier.)",
-        )
+        return WizardResult(None, "Aucun modèle supprimable ici.")
     lines = [f"  {i + 1}. {it['label']}" for i, it in enumerate(items)]
     return WizardResult(
         {"step": "d_pick", "items": items},
         "[remove-model 1/2] Quel modèle supprimer ?\n"
         + "\n".join(lines)
-        + "\n(réponds par un numéro — /cancel pour annuler ; un distant de "
-        "config/local.toml sera retiré du fichier ; image/vidéo : définition "
-        "seule, les poids ComfyUI partagés ne sont pas touchés)",
+        + "\n(réponds par un numéro — /cancel pour annuler ; un distant sera "
+        "retiré de config/local.toml ; image/vidéo : définition seule, les "
+        "poids ComfyUI partagés ne sont pas touchés)",
     )
 
 
@@ -275,7 +272,8 @@ def _step_d_pick(state, t, deps):
     it = items[int(t) - 1]
     warns = {
         "local": "son DOSSIER et ses fichiers (GGUF compris) seront SUPPRIMÉS du disque",
-        "remote": "il sera retiré du store (sa clé avec) et démonté",
+        "remote": "il sera retiré de config/local.toml (sa clé avec) et démonté",
+        # Alias hérité : state persisté d'avant l'unification 2026-07-21 (même effet).
         "remote_config": "il sera retiré de config/local.toml (sa clé avec) et démonté",
         "image": "sa définition Loom (model.toml + workflow.json) sera supprimée ; "
         "les poids ComfyUI partagés ne sont PAS touchés",
