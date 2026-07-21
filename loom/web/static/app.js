@@ -3533,6 +3533,147 @@ function smRestorePos() {
   load();
 })();
 
+// --- Âme (panneau engrenage) : export/import chiffré de l'état portable.
+// Jauge zxcvbn côté serveur (source unique), passphrase masquée PAR DÉFAUT
+// (anti-screenshot), génération diceware bilingue. ---
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const panel = $("cfg-ame");
+  if (!panel) return;
+  const esc = (s) =>
+    String(s == null ? "" : s).replace(
+      /[&<>"]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+    );
+  const msg = (txt, kind) => {
+    const m = $("ame-msg");
+    m.textContent = txt || "";
+    m.className = "rm-msg" + (kind ? " " + kind : "");
+  };
+
+  // Liste des sessions (cases cochées par défaut = tout), rechargée à chaque
+  // ouverture de l'onglet (les sessions bougent).
+  function loadSessions() {
+    fetch("/soul/sessions")
+      .then((r) => r.json())
+      .then((d) => {
+        $("ame-sessions").innerHTML = (d.sessions || [])
+          .map(
+            (s) =>
+              '<label><input type="checkbox" class="ame-sess" value="' + esc(s.id) +
+              '" checked> ' + esc(s.title || s.id) +
+              '<span class="ame-date">' + esc((s.updated_at || "").slice(0, 10)) + "</span></label>",
+          )
+          .join("");
+      });
+  }
+  document.querySelectorAll('#cfg-tabs [data-tab="ame"]').forEach((b) =>
+    b.addEventListener("click", loadSessions),
+  );
+  $("ame-all").addEventListener("change", (e) => {
+    panel.querySelectorAll(".ame-sess").forEach((c) => (c.checked = e.target.checked));
+  });
+
+  // Jauge de force : POST débouncé vers le serveur (zxcvbn Python = source unique
+  // du verdict ; le bouton Exporter suit `ok`, et le serveur re-vérifie de toute façon).
+  let debTimer = null;
+  function gauge() {
+    clearTimeout(debTimer);
+    debTimer = setTimeout(() => {
+      const p = $("ame-pass").value;
+      if (!p) {
+        $("ame-gauge").textContent = "";
+        $("ame-export").disabled = true;
+        return;
+      }
+      fetch("/soul/passphrase/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "passphrase=" + encodeURIComponent(p),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          const g = $("ame-gauge");
+          g.className = "ame-gauge " + (d.ok ? "ok" : "ko");
+          g.textContent = d.ok
+            ? "force " + d.score + "/4 — crack estimé : " + d.crack_display
+            : "trop faible (" + d.score + "/4) — allonge ou clique générer";
+          $("ame-export").disabled = !d.ok;
+        });
+    }, 250);
+  }
+  $("ame-pass").addEventListener("input", gauge);
+
+  // Générer : remplit le champ SANS le révéler (le user décide via l'œil).
+  $("ame-gen").addEventListener("click", () => {
+    fetch("/soul/passphrase/generate", { method: "POST" })
+      .then((r) => r.json())
+      .then((d) => {
+        $("ame-pass").value = d.passphrase;
+        gauge();
+        msg("phrase générée — clique l'œil pour la lire et la mémoriser", "");
+      });
+  });
+  const eye = (inputId, btnId) =>
+    $(btnId).addEventListener("click", () => {
+      const i = $(inputId);
+      i.type = i.type === "password" ? "text" : "password";
+    });
+  eye("ame-pass", "ame-eye");
+  eye("ame-ipass", "ame-ieye");
+
+  $("ame-export").addEventListener("click", () => {
+    const ids = Array.from(panel.querySelectorAll(".ame-sess:checked")).map((c) => c.value);
+    msg("export en cours…");
+    fetch("/soul/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body:
+        "dest_dir=" + encodeURIComponent($("ame-dest").value) +
+        "&passphrase=" + encodeURIComponent($("ame-pass").value) +
+        "&session_ids=" + encodeURIComponent(ids.join(",")),
+    })
+      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) return msg(d.error || "échec de l'export", "err");
+        msg(
+          "exporté : " + d.path + " (" + Math.round(d.size / 1024) + " Ko, " +
+          d.sessions + " session(s))",
+          "ok",
+        );
+      })
+      .catch(() => msg("échec de l'export (réseau)", "err"));
+  });
+
+  $("ame-import").addEventListener("click", () => {
+    msg("import en cours…");
+    fetch("/soul/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body:
+        "file=" + encodeURIComponent($("ame-file").value) +
+        "&passphrase=" + encodeURIComponent($("ame-ipass").value),
+    })
+      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) return msg(d.error || "échec de l'import", "err");
+        const s = d.report.sessions;
+        msg(
+          "importé : " + s.ajoutees + " session(s) ajoutée(s), " + s.remplacees +
+          " remplacée(s), " + s.ignorees + " ignorée(s) ; skills +" +
+          (d.report.skills_learned.ajoutes + d.report.skills_user.ajoutes) +
+          " ; mémoire +" + d.report.memoire.ajoutes,
+          "ok",
+        );
+        // La barre des sessions est rendue par le serveur (pas de fonction de
+        // rechargement côté JS) : les sessions importées apparaissent au prochain
+        // chargement de la page. On rafraîchit la liste du panneau Âme, elle.
+        loadSessions();
+      })
+      .catch(() => msg("échec de l'import (réseau)", "err"));
+  });
+})();
+
 // --- Console de configuration (modal) : tous les paramètres réels, deux couches
 // commun/système, édition en direct des vrais fichiers TOML (commentaires préservés backend). ---
 (function () {
