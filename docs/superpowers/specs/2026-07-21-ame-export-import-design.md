@@ -40,11 +40,20 @@ identité) pendant le transport — pas des secrets, puisqu'il n'y en a pas deda
 - Contenu : archive tar.gz de l'arborescence exportée + `manifest.json` à la racine :
   `{version: 1, date, machine, sessions: [<id>...], counts: {skills, memoires}}`.
 - Chiffrement : AES-256-GCM, clé dérivée de la passphrase par scrypt
-  (sel + nonce aléatoires stockés en tête de fichier, en clair, comme d'usage).
+  (N=2^17, r=8, p=1 — memory-hard, ~100 ms/essai ; sel + nonce aléatoires stockés en
+  tête de fichier, en clair, comme d'usage).
 - La passphrase est saisie à l'export, resaisie à l'import, jamais stockée nulle part.
+- Robustesse de la passphrase (le seul maillon faible du schéma, le fichier étant
+  exposé aux attaques offline sur USB/cloud) :
+  - jauge de force en direct via zxcvbn (offline), qui détecte mots du dictionnaire,
+    dates et motifs clavier, et affiche une estimation du temps de crack ;
+  - seuil BLOQUANT à l'export : score zxcvbn >= 3/4, sinon bouton grisé + explication ;
+  - bouton « générer » : phrase diceware de 5 mots français aléatoires (~64 bits
+    d'entropie), facile à retaper de l'autre côté.
+  - à l'import : aucun contrôle (on retape ce qui a été choisi).
+- Dépendance nouvelle : zxcvbn (en plus de cryptography).
 - GCM authentifie : passphrase fausse ou fichier corrompu → échec propre AVANT toute
   écriture, message clair, rien n'est touché.
-- Dépendance nouvelle : `cryptography`.
 
 ## UX
 
@@ -56,7 +65,8 @@ Panneau engrenage, nouvelle section « Âme ».
    (titre + date), « tout sélectionner » en tête, tout coché par défaut. Le socle
    (mémoire, identité, skills) part toujours et est affiché comme tel (non décochable).
 2. Champ chemin de destination (n'importe quel dossier monté : USB, disque, dossier
-   Dropbox/Drive/OneDrive) + champ passphrase (avec confirmation).
+   Dropbox/Drive/OneDrive) + champ passphrase (avec confirmation, jauge de force
+   zxcvbn et bouton « générer » — voir Format du fichier).
 3. Écriture du fichier, puis récap : chemin, taille, inventaire.
 
 ### Import
