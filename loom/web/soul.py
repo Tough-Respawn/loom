@@ -121,16 +121,39 @@ def build_archive(paths: SoulPaths, session_ids: list[str]) -> bytes:
     d'entrée possible ici."""
     buf = io.BytesIO()
     counts = {"sessions": 0, "skills": 0, "identite": 0, "memoire": 0}
+    exported_ids: list[str] = []
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for sid in session_ids:
+            sdir = Path(paths.sessions_root) / sid
+            if not (sdir / "session.json").exists():
+                # Session disparue entre l'affichage de la liste et le clic Exporter :
+                # ne pas la compter ni la lister — un récap/manifest qui annonce une
+                # session absente ferait croire à une sauvegarde qui n'existe pas.
+                continue
             for fname in SESSION_FILES:
-                f = Path(paths.sessions_root) / sid / fname
+                f = sdir / fname
                 if f.exists():
                     tar.add(str(f), arcname=f"sessions/{sid}/{fname}", recursive=False)
+            exported_ids.append(sid)
             counts["sessions"] += 1
         db = Path(paths.memory_db)
         if db.exists():
-            tar.add(str(db), arcname="memory/memory.db", recursive=False)
+            # Snapshot via l'API backup : copie COHÉRENTE même si Loom écrit la base
+            # au même moment (une copie de fichier à chaud peut embarquer un état
+            # transactionnel incohérent qui explosera à l'import sur l'autre machine).
+            with tempfile.TemporaryDirectory() as td:
+                snap = Path(td) / "memory.db"
+                try:
+                    src_con = sqlite3.connect(db)
+                    dst_con = sqlite3.connect(snap)
+                    try:
+                        src_con.backup(dst_con)
+                    finally:
+                        dst_con.close()
+                        src_con.close()
+                except sqlite3.Error as e:
+                    raise SoulError(f"mémoire illisible ({e}) — export annulé") from e
+                tar.add(str(snap), arcname="memory/memory.db", recursive=False)
             counts["memoire"] = 1
         for fname in IDENTITY_FILES:
             f = Path(paths.identity_dir) / fname
@@ -158,7 +181,7 @@ def build_archive(paths: SoulPaths, session_ids: list[str]) -> bytes:
             "version": 1,
             "date": now_iso(),
             "machine": platform.node(),
-            "sessions": list(session_ids),
+            "sessions": exported_ids,
             "counts": counts,
         }
         mdata = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
@@ -179,9 +202,14 @@ def export_soul(
     while out.exists():
         out = dest / f"ame-loom-{day}-{n}.soul"
         n += 1
-    blob = encrypt(build_archive(paths, session_ids), passphrase)
+    ids = [
+        s
+        for s in session_ids
+        if (Path(paths.sessions_root) / s / "session.json").exists()
+    ]
+    blob = encrypt(build_archive(paths, ids), passphrase)
     out.write_bytes(blob)
-    return {"path": str(out), "size": len(blob), "sessions": len(session_ids)}
+    return {"path": str(out), "size": len(blob), "sessions": len(ids)}
 
 
 def _updated_at(session_json: Path) -> str:
@@ -199,6 +227,11 @@ def _copy_session(src_dir: Path, dst_dir: Path) -> None:
     for fname in SESSION_FILES:
         if (src_dir / fname).exists():
             shutil.copy2(src_dir / fname, dst_dir / fname)
+        elif (dst_dir / fname).exists():
+            # Remplacement intégral : un timeline.jsonl local périmé ne doit pas
+            # survivre à un session.json plus récent qui arrive sans timeline
+            # (l'UI rejouerait un historique qui ne correspond plus au contexte).
+            (dst_dir / fname).unlink()
 
 
 def _merge_sessions(src: Path, dst_root: Path) -> dict:
@@ -345,22 +378,46 @@ def import_soul(paths: SoulPaths, soul_file, passphrase: str) -> dict:
         if manifest.get("version") != 1:
             raise SoulError(f"version d'archive inconnue : {manifest.get('version')!r}")
         day = str(manifest.get("date", ""))[:10] or "inconnu"
-        return {
-            "manifest": {
-                "date": manifest.get("date", ""),
-                "machine": manifest.get("machine", ""),
-            },
-            "sessions": _merge_sessions(tdp / "sessions", Path(paths.sessions_root)),
-            "memoire": _merge_memory(
-                tdp / "memory" / "memory.db", Path(paths.memory_db)
-            ),
-            "identite": _merge_identity(
-                tdp / "identity", Path(paths.identity_dir), day
-            ),
-            "skills_learned": _merge_skills(
-                tdp / "skills_learned", Path(paths.learned_skills_dir)
-            ),
-            "skills_user": _merge_skills(
-                tdp / "skills_user", Path(paths.user_skills_dir)
-            ),
-        }
+        # Pré-validation AVANT toute écriture : une base mémoire corrompue ou d'un
+        # schéma inconnu doit annuler l'import ENTIER (« état local intact »), pas
+        # exploser en plein milieu après que les sessions ont déjà été fusionnées.
+        arc_db = tdp / "memory" / "memory.db"
+        if arc_db.exists():
+            try:
+                con = sqlite3.connect(f"file:{arc_db.as_posix()}?mode=ro", uri=True)
+                try:
+                    con.execute("SELECT ts, kind, source, text FROM episodes LIMIT 1")
+                finally:
+                    con.close()
+            except sqlite3.Error as e:
+                raise SoulError(
+                    f"mémoire de l'archive illisible ({e}) — import annulé, "
+                    "rien n'a été touché"
+                ) from e
+        try:
+            return {
+                "manifest": {
+                    "date": manifest.get("date", ""),
+                    "machine": manifest.get("machine", ""),
+                },
+                "sessions": _merge_sessions(
+                    tdp / "sessions", Path(paths.sessions_root)
+                ),
+                "memoire": _merge_memory(arc_db, Path(paths.memory_db)),
+                "identite": _merge_identity(
+                    tdp / "identity", Path(paths.identity_dir), day
+                ),
+                "skills_learned": _merge_skills(
+                    tdp / "skills_learned", Path(paths.learned_skills_dir)
+                ),
+                "skills_user": _merge_skills(
+                    tdp / "skills_user", Path(paths.user_skills_dir)
+                ),
+            }
+        except (sqlite3.Error, OSError, shutil.Error) as e:
+            # Filet résiduel (disque plein, permission...) : message honnête —
+            # la fusion a pu être partielle, on le dit au lieu d'un 500 muet.
+            raise SoulError(
+                f"fusion interrompue ({e}) — l'import peut être partiel, "
+                "relance-le une fois la cause corrigée (un ré-import est sans danger)"
+            ) from e

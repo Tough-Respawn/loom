@@ -3575,14 +3575,18 @@ function smRestorePos() {
   });
 
   // Jauge de force : POST débouncé vers le serveur (zxcvbn Python = source unique
-  // du verdict ; le bouton Exporter suit `ok`, et le serveur re-vérifie de toute façon).
+  // du verdict ; le bouton Exporter suit `ok` ET la confirmation, et le serveur
+  // re-vérifie de toute façon). La confirmation protège du champ masqué : une typo
+  // invisible rendrait l'archive indéchiffrable à jamais (GCM authentifie).
   let debTimer = null;
   function gauge() {
     clearTimeout(debTimer);
     debTimer = setTimeout(() => {
       const p = $("ame-pass").value;
+      const p2 = $("ame-pass2").value;
+      const g = $("ame-gauge");
       if (!p) {
-        $("ame-gauge").textContent = "";
+        g.textContent = "";
         $("ame-export").disabled = true;
         return;
       }
@@ -3593,23 +3597,28 @@ function smRestorePos() {
       })
         .then((r) => r.json())
         .then((d) => {
-          const g = $("ame-gauge");
-          g.className = "ame-gauge " + (d.ok ? "ok" : "ko");
-          g.textContent = d.ok
-            ? "force " + d.score + "/4 — crack estimé : " + d.crack_display
-            : "trop faible (" + d.score + "/4) — allonge ou clique générer";
-          $("ame-export").disabled = !d.ok;
+          const match = p === p2;
+          g.className = "ame-gauge " + (d.ok && match ? "ok" : "ko");
+          g.textContent = !d.ok
+            ? "trop faible (" + d.score + "/4) — allonge ou clique générer"
+            : !match
+              ? "force " + d.score + "/4 — les deux champs ne correspondent pas"
+              : "force " + d.score + "/4 — crack estimé : " + d.crack_display;
+          $("ame-export").disabled = !(d.ok && match);
         });
     }, 250);
   }
   $("ame-pass").addEventListener("input", gauge);
+  $("ame-pass2").addEventListener("input", gauge);
 
-  // Générer : remplit le champ SANS le révéler (le user décide via l'œil).
+  // Générer : remplit les DEUX champs (pas de risque de typo) SANS les révéler
+  // (le user décide via l'œil).
   $("ame-gen").addEventListener("click", () => {
     fetch("/soul/passphrase/generate", { method: "POST" })
       .then((r) => r.json())
       .then((d) => {
         $("ame-pass").value = d.passphrase;
+        $("ame-pass2").value = d.passphrase;
         gauge();
         msg("phrase générée — clique l'œil pour la lire et la mémoriser", "");
       });
