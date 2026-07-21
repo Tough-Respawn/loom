@@ -37,6 +37,7 @@ from loom.setup.catalog import (
     budget_mb,
     filter_by_budget,
     fitting_entries,
+    parse_hf_repo,
     pick_mmproj,
     probe_repo,
     resolve_entry,
@@ -534,7 +535,9 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
     con.say("  Recommandé pour ta machine :")
     for i, e in enumerate(entries, start=1):
         con.say(f"    {i}. {e['label']}")
-    con.say(f"    {len(entries) + 1}. Recherche libre Hugging Face")
+    con.say(
+        f"    {len(entries) + 1}. Recherche libre Hugging Face (nom, URL ou id de repo)"
+    )
     con.say("    0. Passer (tu pourras taper /add-model dans le chat)")
     default = "1" if entries else "0"
     choice = con.ask(f"Ton choix [{default}] :", default=default)
@@ -546,41 +549,49 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
 
     repo = None
     if choice == str(len(entries) + 1):
-        query = con.ask("Recherche Hugging Face (nom du modèle) :")
+        query = con.ask("Recherche Hugging Face (nom du modèle, ou URL/id du repo) :")
         if not query:
             report.add("modele", "ignore", "recherche vide")
             return
-        try:
-            hits = deps.search_models(query)
-        except Exception as exc:  # noqa: BLE001 - HfCatalogError au message montrable
-            con.say(f"  [échec] {exc}")
-            report.add("modele", "ignore", "recherche impossible (hors-ligne ?)")
-            return
-        # Filtre par le budget de CETTE machine : inutile de proposer un 397B à
-        # 1,6 Go de budget. Estimation depuis le nom (± large) ; la taille
-        # réelle des quants tranche après le choix.
-        hits, hidden = filter_by_budget(hits, budget)
-        if hidden:
-            con.say(
-                f"  ({hidden} résultat(s) masqué(s) : trop gros pour ton budget "
-                f"de {budget} Mo)"
-            )
-        if not hits:
-            con.say(
-                "  Aucun repo jouable sur cette machine pour cette recherche — "
-                "libère de la RAM (ferme des applis) ou vise plus petit (3-4B)."
-            )
-            report.add("modele", "ignore", "recherche sans résultat jouable")
-            return
-        for i, h in enumerate(hits, start=1):
-            est = f", ~{h['est_mb']} Mo mini" if h.get("est_mb") else ""
-            con.say(f"    {i}. {h['repo_id']} ({h['downloads']} téléchargements{est})")
-        pick = con.ask("Quel repo [1] :", default="1")
-        try:
-            repo = hits[int(pick) - 1]["repo_id"]
-        except (ValueError, IndexError):
-            report.add("modele", "ignore", "choix de repo invalide")
-            return
+        # URL huggingface.co ou id org/repo collé tel quel : on court-circuite la
+        # recherche, l'inventaire des quants (probe_repo) validera le repo.
+        repo = parse_hf_repo(query)
+        if repo is not None:
+            con.say(f"  → repo repéré : {repo}")
+        else:
+            try:
+                hits = deps.search_models(query)
+            except Exception as exc:  # noqa: BLE001 - HfCatalogError montrable
+                con.say(f"  [échec] {exc}")
+                report.add("modele", "ignore", "recherche impossible (hors-ligne ?)")
+                return
+            # Filtre par le budget de CETTE machine : inutile de proposer un 397B
+            # à 1,6 Go de budget. Estimation depuis le nom (± large) ; la taille
+            # réelle des quants tranche après le choix.
+            hits, hidden = filter_by_budget(hits, budget)
+            if hidden:
+                con.say(
+                    f"  ({hidden} résultat(s) masqué(s) : trop gros pour ton "
+                    f"budget de {budget} Mo)"
+                )
+            if not hits:
+                con.say(
+                    "  Aucun repo jouable sur cette machine pour cette recherche — "
+                    "libère de la RAM (ferme des applis) ou vise plus petit (3-4B)."
+                )
+                report.add("modele", "ignore", "recherche sans résultat jouable")
+                return
+            for i, h in enumerate(hits, start=1):
+                est = f", ~{h['est_mb']} Mo mini" if h.get("est_mb") else ""
+                con.say(
+                    f"    {i}. {h['repo_id']} ({h['downloads']} téléchargements{est})"
+                )
+            pick = con.ask("Quel repo [1] :", default="1")
+            try:
+                repo = hits[int(pick) - 1]["repo_id"]
+            except (ValueError, IndexError):
+                report.add("modele", "ignore", "choix de repo invalide")
+                return
     else:
         try:
             entry = entries[int(choice) - 1]

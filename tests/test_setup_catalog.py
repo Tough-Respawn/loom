@@ -80,3 +80,27 @@ def test_budget_et_catalogue():
         {"min_budget_mb": 4000},
     ]
     assert fitting_entries(1_600, cat) == []
+
+
+def test_parse_hf_repo():
+    from loom.setup.catalog import parse_hf_repo
+
+    # URL complète, avec ou sans chemin/slash final
+    assert (
+        parse_hf_repo("https://huggingface.co/llmfan46/Ornith-1.0-35B-GGUF")
+        == "llmfan46/Ornith-1.0-35B-GGUF"
+    )
+    assert (
+        parse_hf_repo("https://huggingface.co/org/repo-GGUF/tree/main")
+        == "org/repo-GGUF"
+    )
+    assert parse_hf_repo("hf.co/org/repo/") == "org/repo"
+    # id collé tel quel
+    assert (
+        parse_hf_repo("deepreinforce-ai/Ornith-1.0-35B")
+        == "deepreinforce-ai/Ornith-1.0-35B"
+    )
+    # recherche libre : pas un repo
+    assert parse_hf_repo("qwen 4b instruct") is None
+    assert parse_hf_repo("ornith") is None
+    assert parse_hf_repo("") is None
