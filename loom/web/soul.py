@@ -10,11 +10,15 @@ testable sans Flask. Spec : docs/superpowers/specs/2026-07-21-ame-export-import-
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import platform
 import secrets
+import shutil
+import sqlite3
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -178,3 +182,185 @@ def export_soul(
     blob = encrypt(build_archive(paths, session_ids), passphrase)
     out.write_bytes(blob)
     return {"path": str(out), "size": len(blob), "sessions": len(session_ids)}
+
+
+def _updated_at(session_json: Path) -> str:
+    # ISO 8601 en +00:00 partout (loom.utils.now_iso) : comparaison lexicale valide.
+    try:
+        return json.loads(session_json.read_text(encoding="utf-8")).get(
+            "updated_at", ""
+        )
+    except Exception:
+        return ""
+
+
+def _copy_session(src_dir: Path, dst_dir: Path) -> None:
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for fname in SESSION_FILES:
+        if (src_dir / fname).exists():
+            shutil.copy2(src_dir / fname, dst_dir / fname)
+
+
+def _merge_sessions(src: Path, dst_root: Path) -> dict:
+    rep = {"ajoutees": 0, "ignorees": 0, "remplacees": 0}
+    if not src.is_dir():
+        return rep
+    dst_root.mkdir(parents=True, exist_ok=True)
+    for sdir in sorted(p for p in src.iterdir() if p.is_dir()):
+        dst = dst_root / sdir.name
+        if not dst.exists():
+            _copy_session(sdir, dst)
+            rep["ajoutees"] += 1
+        elif _updated_at(sdir / "session.json") > _updated_at(dst / "session.json"):
+            _copy_session(
+                sdir, dst
+            )  # même session déplacée deux fois : la plus récente gagne
+            rep["remplacees"] += 1
+        else:
+            rep["ignorees"] += 1
+    return rep
+
+
+def _dir_digest(root: Path) -> str:
+    h = hashlib.sha256()
+    for f in sorted(root.rglob("*")):
+        if f.is_file():
+            h.update(f.relative_to(root).as_posix().encode("utf-8"))
+            h.update(f.read_bytes())
+    return h.hexdigest()
+
+
+def _merge_skills(src: Path, dst_root: Path) -> dict:
+    rep = {"ajoutes": 0, "ignores": 0, "renommes": 0}
+    if not src.is_dir():
+        return rep
+    dst_root.mkdir(parents=True, exist_ok=True)
+    for skill in sorted(p for p in src.iterdir() if p.is_dir()):
+        dst = dst_root / skill.name
+        if not dst.exists():
+            shutil.copytree(skill, dst)
+            rep["ajoutes"] += 1
+            continue
+        digest = _dir_digest(skill)
+        if digest == _dir_digest(dst):
+            rep["ignores"] += 1
+            continue
+        # Homonyme divergent : import sous suffixe — sauf si un import précédent
+        # IDENTIQUE existe déjà (ré-import idempotent, pas de -importe-2 en rafale).
+        alt, n = dst_root / f"{skill.name}-importe", 2
+        while alt.exists() and _dir_digest(alt) != digest:
+            alt = dst_root / f"{skill.name}-importe-{n}"
+            n += 1
+        if alt.exists():
+            rep["ignores"] += 1
+        else:
+            shutil.copytree(skill, alt)
+            rep["renommes"] += 1
+    return rep
+
+
+def _merge_memory(src_db: Path, dst_db: Path) -> dict:
+    rep = {"ajoutes": 0, "ignores": 0}
+    if not src_db.exists():
+        return rep
+    dst_db.parent.mkdir(parents=True, exist_ok=True)
+    if not dst_db.exists():
+        shutil.copy2(
+            src_db, dst_db
+        )  # cible vierge : la base arrive entière (FTS inclus)
+        con = sqlite3.connect(dst_db)
+        rep["ajoutes"] = con.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+        con.close()
+        return rep
+    src, dst = sqlite3.connect(src_db), sqlite3.connect(dst_db)
+    try:
+        for ts, kind, source, text in src.execute(
+            "SELECT ts, kind, source, text FROM episodes ORDER BY id"
+        ):
+            dup = dst.execute(
+                "SELECT 1 FROM episodes WHERE ts=? AND kind=? AND source=? AND text=? LIMIT 1",
+                (ts, kind, source, text),
+            ).fetchone()
+            if dup:
+                rep["ignores"] += 1
+            else:
+                # Les triggers episodes_ai maintiennent l'index FTS à l'insert.
+                dst.execute(
+                    "INSERT INTO episodes (ts, kind, source, text) VALUES (?, ?, ?, ?)",
+                    (ts, kind, source, text),
+                )
+                rep["ajoutes"] += 1
+        dst.commit()
+    finally:
+        src.close()
+        dst.close()
+    return rep
+
+
+def _merge_identity(src: Path, dst_dir: Path, day: str) -> dict:
+    rep = {"poses": 0, "copies_a_cote": 0}
+    if not src.is_dir():
+        return rep
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for fname in IDENTITY_FILES:
+        f = src / fname
+        if not f.exists():
+            continue
+        data = f.read_bytes()
+        dst = dst_dir / fname
+        if not dst.exists():
+            dst.write_bytes(data)
+            rep["poses"] += 1
+        elif dst.read_bytes() != data:
+            # Jamais d'écrasement silencieux d'une âme par une autre : la version
+            # importée est posée à côté, le user arbitre.
+            stem = fname.rsplit(".", 1)[0]
+            side = dst_dir / f"{stem}.imported-{day}.md"
+            if not side.exists() or side.read_bytes() != data:
+                side.write_bytes(data)
+                rep["copies_a_cote"] += 1
+    return rep
+
+
+def import_soul(paths: SoulPaths, soul_file, passphrase: str) -> dict:
+    src = Path(soul_file)
+    if not src.is_file():
+        raise SoulError(f"fichier introuvable : {src}")
+    data = decrypt(
+        src.read_bytes(), passphrase
+    )  # échec = SoulError AVANT toute écriture
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+                tar.extractall(
+                    tdp, filter="data"
+                )  # refuse chemins hors racine, liens, etc.
+        except (tarfile.TarError, OSError) as e:
+            raise SoulError(f"archive illisible : {e}") from e
+        man = tdp / "manifest.json"
+        if not man.exists():
+            raise SoulError("archive sans manifest — pas un fichier .soul")
+        manifest = json.loads(man.read_text(encoding="utf-8"))
+        if manifest.get("version") != 1:
+            raise SoulError(f"version d'archive inconnue : {manifest.get('version')!r}")
+        day = str(manifest.get("date", ""))[:10] or "inconnu"
+        return {
+            "manifest": {
+                "date": manifest.get("date", ""),
+                "machine": manifest.get("machine", ""),
+            },
+            "sessions": _merge_sessions(tdp / "sessions", Path(paths.sessions_root)),
+            "memoire": _merge_memory(
+                tdp / "memory" / "memory.db", Path(paths.memory_db)
+            ),
+            "identite": _merge_identity(
+                tdp / "identity", Path(paths.identity_dir), day
+            ),
+            "skills_learned": _merge_skills(
+                tdp / "skills_learned", Path(paths.learned_skills_dir)
+            ),
+            "skills_user": _merge_skills(
+                tdp / "skills_user", Path(paths.user_skills_dir)
+            ),
+        }
