@@ -390,13 +390,15 @@ def load_config(
     if not models:
         models = [_parse_model(rm) for rm in data.get("models", [])]
     remote_models = [_parse_remote_model(rm) for rm in data.get("remote_models", [])]
-    # Modèles distants ajoutés via l'UI : store machine-owned (var/remote_models.json),
-    # fusionné ICI (et plus dans build_app) pour que cfg.remote_models soit LA liste
-    # complète pour tous les consommateurs (routes, sélecteur, décision remote-only).
-    # Les entrées gérées par l'UI l'emportent par id sur celles de local.toml.
+    # Héritage : les distants ajoutés via l'UI vivaient dans un store JSON séparé
+    # (var/remote_models.json). Unification 2026-07-21 : config/local.toml est la
+    # source UNIQUE — un store résiduel est replié dans local.toml ici (puis
+    # supprimé) ; ses entrées gardent la priorité par id sur ce chargement.
     from loom.runtime import model_store
 
-    for md in model_store.load(remote_store_path(chat.history_path)):
+    for md in model_store.migrate_to_toml(
+        remote_store_path(chat.history_path), local_path
+    ):
         rc = _parse_remote_model(md)
         remote_models = [rm for rm in remote_models if rm.id != rc.id]
         remote_models.append(rc)

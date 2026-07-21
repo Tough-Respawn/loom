@@ -3378,23 +3378,19 @@ function smRestorePos() {
               ? ' · clé ' + esc(m.key_hint)
               : ""
             : ' · <span class="rm-nokey">sans clé</span>');
-        // config = défini dans local.toml (éditable ici aussi) ; sinon géré par l'UI.
-        const tag = m.managed ? "" : '<span class="rm-tag">config</span>';
-        // Édition pour TOUS (config inclus) ; suppression réservée aux modèles gérés par l'UI.
+        // Tous les distants vivent dans config/local.toml (source unique) :
+        // édition ET suppression pour tous, plus de distinction config/UI.
         const btns =
           '<button type="button" class="rm-ic rm-edit" data-id="' +
           esc(m.id) +
           '" title="Éditer">✎</button>' +
-          (m.managed
-            ? '<button type="button" class="rm-ic rm-del" data-id="' +
-              esc(m.id) +
-              '" title="Supprimer">✕</button>'
-            : "");
+          '<button type="button" class="rm-ic rm-del" data-id="' +
+          esc(m.id) +
+          '" title="Supprimer">✕</button>';
         return (
           '<div class="rm-item"><div class="rm-item-main"><span class="rm-id">' +
           esc(m.id) +
           "</span>" +
-          tag +
           '<div class="rm-sub">' +
           sub +
           "</div></div>" +

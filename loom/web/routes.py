@@ -553,8 +553,8 @@ def _list_remote_models(base_url: str, api_key: str) -> list[str] | None:
 
 def _removable_models(S) -> list[dict]:
     """Modèles supprimables via /remove-model : TOUT ce que le sélecteur affiche.
-    kind ∈ {local, remote (store UI), remote_config (config/local.toml), image, video}
-    — le wizard adapte son message de confirmation au kind (wizard._step_d_pick)."""
+    kind ∈ {local, remote (config/local.toml, source unique des distants), image,
+    video} — le wizard adapte son message de confirmation au kind (_step_d_pick)."""
     import tomllib
 
     items = []
@@ -567,19 +567,8 @@ def _removable_models(S) -> list[dict]:
                 "label": f"{m['id']} — local, {size:.1f} Go sur disque",
             }
         )
-    managed = set()
-    if S.remote_store_path:
-        for r in model_store.load(S.remote_store_path):
-            managed.add(r["id"])
-            items.append(
-                {
-                    "id": r["id"],
-                    "kind": "remote",
-                    "label": f"{r['id']} — distant ({r.get('model', '?')})",
-                }
-            )
-    # Distants déclarés dans config/local.toml : supprimables AUSSI (tomlkit) — si
-    # c'est le default_model, la confirmation avertit (repli boot sur le 1er modèle).
+    # Distants : tous dans config/local.toml (tomlkit) — si c'est le default_model,
+    # la confirmation avertit (repli boot sur le 1er modèle).
     default_model = ""
     if S.config_local_path and Path(S.config_local_path).exists():
         try:
@@ -587,11 +576,11 @@ def _removable_models(S) -> list[dict]:
             default_model = str(cfg.get("chat", {}).get("default_model") or "")
         except (OSError, tomllib.TOMLDecodeError):
             pass
-    for mid in sorted(S.remote_model_ids - managed):
+    for mid in sorted(S.remote_model_ids):
         items.append(
             {
                 "id": mid,
-                "kind": "remote_config",
+                "kind": "remote",
                 "is_default": mid == default_model,
                 "label": f"{mid} — distant "
                 f"({S.remote_model_names.get(mid, '?')}, config/local.toml)",
@@ -1035,29 +1024,27 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             )
     elif res.action and res.action["kind"] == "upsert_remote":
         rec = {k: v for k, v in res.action["record"].items() if v is not None}
-        if S.remote_store_path:
+        if S.config_local_path:
             with S.toml_lock:
-                model_store.upsert(S.remote_store_path, rec)
+                model_store.upsert_remote_in_toml(S.config_local_path, rec)
             if getattr(S, "client", None) is not None:
                 _mount_remote(S, rec)
             models_changed = True
         else:
-            extra_reply = "\n(store des modèles indisponible : ajout NON persisté)"
+            extra_reply = "\n(config/local.toml indisponible : ajout NON persisté)"
     elif res.action and res.action["kind"] == "remove":
         a = res.action
         if a["model_kind"] in ("remote", "remote_config"):
-            # UI (store JSON) ou config/local.toml (tomlkit) : même démontage à chaud.
-            if a["model_kind"] == "remote":
-                if S.remote_store_path:
-                    with S.toml_lock:
-                        model_store.delete(S.remote_store_path, a["id"])
-                where = "store"
-            else:
-                with S.toml_lock:
+            # Tous les distants vivent dans config/local.toml (source unique) ; le
+            # delete du store JSON reste en filet pour un vieux state pré-migration
+            # (sans jamais recréer le fichier vide).
+            with S.toml_lock:
+                if S.config_local_path:
                     model_store.delete_remote_in_toml(S.config_local_path, a["id"])
-                where = "config/local.toml"
+                if S.remote_store_path and Path(S.remote_store_path).exists():
+                    model_store.delete(S.remote_store_path, a["id"])
             _forget_remote(S, a["id"])
-            extra_reply = f"\n✅ « {a['id']} » retiré ({where} + sélecteur)."
+            extra_reply = f"\n✅ « {a['id']} » retiré (config/local.toml + sélecteur)."
             models_changed = True
         elif a["model_kind"] in ("image", "video"):
             import shutil
@@ -2323,9 +2310,8 @@ def _models_payload(S):
 
 def _remote_list(S):
     """Modèles distants montés, pour le panneau de config. Jamais la clé en clair :
-    seulement sa présence. `managed` = ajouté via l'UI (éditable/supprimable) vs déclaré
-    dans local.toml (lecture seule ici)."""
-    managed_ids = {m.get("id") for m in model_store.load(S.remote_store_path)}
+    seulement sa présence. Tous vivent dans config/local.toml (source unique) donc
+    tous éditables/supprimables — `managed` reste dans le payload pour le front."""
     out = []
     for mid in S.remote_model_ids:
         info = S.client.remote_route_info(mid)
@@ -2342,7 +2328,7 @@ def _remote_list(S):
                 # Indice masqué (4 derniers car.) : l'utilisateur voit sa propre clé de
                 # façon partielle, jamais la clé entière renvoyée au client.
                 "key_hint": ("…" + key[-4:]) if key else "",
-                "managed": mid in managed_ids,
+                "managed": True,
             }
         )
     return sorted(out, key=lambda x: x["id"])
@@ -2443,7 +2429,7 @@ def _register_model_routes(app, S):
 
     # ---- Gestionnaire de modèles (UI) : ajouter/tester/supprimer un modèle DISTANT à chaud,
     # sans redémarrer. Un distant = URL + clé (rien en VRAM) -> l'ajout monte une route et met
-    # à jour les registres partagés en place. Persisté dans le store JSON (remote_store_path).
+    # à jour les registres partagés en place. Persisté dans config/local.toml (source unique).
     @app.get("/commands")
     def commands():
         """Catalogue des commandes slash — consommé par la palette « / » du composer."""
@@ -2460,9 +2446,8 @@ def _register_model_routes(app, S):
         model = (b.get("model") or "").strip()
         mid = (b.get("id") or "").strip()
         key = (b.get("api_key") or "").strip()
-        if not key and mid:  # édition sans re-saisir la clé -> réutilise la stockée
-            stored = {m["id"]: m for m in model_store.load(S.remote_store_path)}
-            key = stored.get(mid, {}).get("api_key", "")
+        if not key and mid:  # édition sans re-saisir la clé -> celle de la route montée
+            key = S.client.remote_api_key(mid)
         if not (base_url and model):
             return {"ok": False, "message": "base_url et model requis"}, 400
         ok, msg = S.client.ping_remote(base_url, key, model)
@@ -2470,8 +2455,8 @@ def _register_model_routes(app, S):
 
     @app.post("/models/remote")
     def models_remote_upsert():
-        if not S.remote_store_path:
-            return {"error": "store des modèles indisponible"}, 500
+        if not S.config_local_path:
+            return {"error": "config/local.toml indisponible"}, 500
         b = request.get_json(silent=True) or {}
         mid = (b.get("id") or "").strip()
         base_url = (b.get("base_url") or "").strip().rstrip("/")
@@ -2480,14 +2465,8 @@ def _register_model_routes(app, S):
             return {"error": "id, base_url et model sont requis"}, 400
         if mid in S.models and mid not in S.remote_model_ids:
             return {"error": f"'{mid}' est déjà un modèle local"}, 400
-        stored = {m["id"]: m for m in model_store.load(S.remote_store_path)}
-        # Clé : si vide, on garde l'existante — soit du store géré, soit de la route montée
-        # (cas d'un modèle défini en config qu'on édite sans re-saisir la clé).
-        key = (
-            (b.get("api_key") or "").strip()
-            or stored.get(mid, {}).get("api_key", "")
-            or S.client.remote_api_key(mid)
-        )
+        # Clé : si vide, on garde celle de la route montée (édition sans re-saisir).
+        key = (b.get("api_key") or "").strip() or S.client.remote_api_key(mid)
         rec = {
             "id": mid,
             "base_url": base_url,
@@ -2497,26 +2476,24 @@ def _register_model_routes(app, S):
             "max_tokens": int(b["max_tokens"]) if b.get("max_tokens") else None,
             "vision": bool(b.get("vision")),
         }
-        # Un modèle DÉFINI EN CONFIG (monté mais absent du store géré) reste dans local.toml :
-        # on l'y édite en place (tomlkit, commentaires préservés). Sinon store JSON géré par l'UI.
-        is_config = mid in S.remote_model_ids and mid not in stored
+        # config/local.toml, source unique : édition en place par id (tomlkit,
+        # commentaires préservés) — seuls les champs non-None sont posés.
         with S.toml_lock:
-            if is_config and S.config_local_path:
-                model_store.upsert_remote_in_toml(S.config_local_path, rec)
-            else:
-                model_store.upsert(S.remote_store_path, rec)
+            model_store.upsert_remote_in_toml(S.config_local_path, rec)
         _mount_remote(S, rec)
         return {"ok": True, "models": _models_payload(S), "remotes": _remote_list(S)}
 
     @app.delete("/models/remote/<mid>")
     def models_remote_delete(mid):
-        if not S.remote_store_path:
-            return {"error": "store des modèles indisponible"}, 500
-        managed = {m.get("id") for m in model_store.load(S.remote_store_path)}
-        if mid not in managed:
-            return {"error": "modèle non géré par l'UI (défini dans local.toml)"}, 400
+        if not S.config_local_path:
+            return {"error": "config/local.toml indisponible"}, 500
+        if mid not in S.remote_model_ids:
+            return {"error": f"modèle distant '{mid}' inconnu"}, 404
         with S.toml_lock:
-            model_store.delete(S.remote_store_path, mid)
+            model_store.delete_remote_in_toml(S.config_local_path, mid)
+            # Filet : store JSON hérité pré-migration (sans le recréer vide)
+            if S.remote_store_path and Path(S.remote_store_path).exists():
+                model_store.delete(S.remote_store_path, mid)
         _forget_remote(S, mid)
         return {"ok": True, "models": _models_payload(S), "remotes": _remote_list(S)}
 
