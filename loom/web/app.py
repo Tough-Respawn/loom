@@ -698,4 +698,9 @@ def create_app(
     # préfixe de la session active est pré-préfillé sans attendre le premier message.
     _boot_prime(S)
 
+    # État partagé accessible depuis les tests (client.application.S) : vérifier
+    # les invariants d'objets en mémoire (cache sessions, verrous) sans les rejouer
+    # par des chemins HTTP détournés.
+    app.S = S
+
     return app

@@ -225,3 +225,94 @@ def test_import_erreurs_sans_degats(soul_file, tmp_path):
     assert list((cible / "sessions").iterdir()) == []  # rien touché
     with pytest.raises(soul.SoulError, match="introuvable"):
         soul.import_soul(_paths(cible), tmp_path / "absent.soul", "p")
+
+
+# ---------- correctifs revue 2026-07-21 ----------
+
+
+def test_export_session_inexistante_ni_comptee_ni_au_manifest(var, tmp_path):
+    # Session supprimée entre l'affichage de la liste et le clic Exporter : le récap
+    # et le manifest ne doivent pas annoncer une sauvegarde qui n'existe pas.
+    dest = tmp_path / "usb"
+    dest.mkdir()
+    recap = soul.export_soul(_paths(var), ["zzz999", "aaa111"], dest, "p")
+    assert recap["sessions"] == 1
+    data = soul.decrypt(Path(recap["path"]).read_bytes(), "p")
+    with _tarfile.open(fileobj=_io.BytesIO(data), mode="r:gz") as tar:
+        manifest = _json.load(tar.extractfile("manifest.json"))
+    assert manifest["sessions"] == ["aaa111"]
+
+
+def test_export_memoire_corrompue_erreur_propre(var, tmp_path):
+    (var / "memory" / "memory.db").write_bytes(b"PAS UNE BASE SQLITE")
+    dest = tmp_path / "usb"
+    dest.mkdir()
+    with pytest.raises(soul.SoulError, match="[Mm]émoire"):
+        soul.export_soul(_paths(var), [], dest, "p")
+
+
+def test_remplacement_purge_la_timeline_perimee(tmp_path):
+    # Source plus récente SANS timeline (reset côté source) : le timeline local
+    # périmé ne doit pas survivre au session.json remplacé.
+    src = tmp_path / "src" / "aaa"
+    src.mkdir(parents=True)
+    (src / "session.json").write_text(
+        _json.dumps({"id": "aaa", "updated_at": "2026-07-22T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+    dst_root = tmp_path / "dst"
+    d = dst_root / "aaa"
+    d.mkdir(parents=True)
+    (d / "session.json").write_text(
+        _json.dumps({"id": "aaa", "updated_at": "2026-07-01T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+    (d / "timeline.jsonl").write_text("VIEUX EVENEMENT LOCAL", encoding="utf-8")
+    rep = soul._merge_sessions(tmp_path / "src", dst_root)
+    assert rep["remplacees"] == 1
+    assert not (d / "timeline.jsonl").exists()
+
+
+def _soul_avec_memoire_corrompue(tmp_path, phrase):
+    buf = _io.BytesIO()
+    with _tarfile.open(fileobj=buf, mode="w:gz") as tar:
+
+        def _add(name, data):
+            info = _tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, _io.BytesIO(data))
+
+        _add(
+            "manifest.json",
+            _json.dumps(
+                {
+                    "version": 1,
+                    "date": "2026-07-21T00:00:00+00:00",
+                    "machine": "x",
+                    "sessions": ["s1"],
+                    "counts": {},
+                }
+            ).encode("utf-8"),
+        )
+        _add(
+            "sessions/s1/session.json",
+            _json.dumps(
+                {"id": "s1", "updated_at": "2026-07-21T00:00:00+00:00"}
+            ).encode("utf-8"),
+        )
+        _add("memory/memory.db", b"PAS UNE BASE SQLITE")
+    p = tmp_path / "corrompu.soul"
+    p.write_bytes(soul.encrypt(buf.getvalue(), phrase))
+    return p
+
+
+def test_import_memoire_corrompue_annule_TOUT(tmp_path):
+    # Pré-validation : la base corrompue est détectée AVANT toute fusion — même les
+    # sessions (fusionnées en premier) ne doivent pas avoir été écrites.
+    f = _soul_avec_memoire_corrompue(tmp_path, "p")
+    cible = tmp_path / "cible"
+    for d in ("sessions", "skills_learned", "skills_user"):
+        (cible / d).mkdir(parents=True)
+    with pytest.raises(soul.SoulError, match="import annulé"):
+        soul.import_soul(_paths(cible), f, "p")
+    assert list((cible / "sessions").iterdir()) == []
