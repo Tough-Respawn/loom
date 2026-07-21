@@ -1917,7 +1917,7 @@ class LoomClient:
         payload = json.dumps({"filename": name}).encode()
         paths = [f"/upstream/{model}/slots/0?action={action}"] if model else []
         paths.append(f"/slots/0?action={action}")
-        for path in paths:
+        for i, path in enumerate(paths):
             req = urllib.request.Request(
                 root + path,
                 data=payload,
@@ -1971,7 +1971,14 @@ class LoomClient:
                         flush=True,
                     )
                     return False
-                _debug(f"SLOT_{action.upper()}_ERR", f"{path} : {e}", terminal=False)
+                # Échec d'un chemin INTERMÉDIAIRE (ex. route swap /upstream/… en
+                # mono-modèle direct -> 404 ATTENDU avant le repli /slots) :
+                # silencieux — un repli nominal loggé en ERR fait croire à un bug
+                # (vécu 2026-07-21). ERR seulement si le DERNIER chemin échoue.
+                if i == len(paths) - 1:
+                    _debug(
+                        f"SLOT_{action.upper()}_ERR", f"{path} : {e}", terminal=False
+                    )
         return False
 
     def save_slot(self, model: str | None, name: str) -> bool:
