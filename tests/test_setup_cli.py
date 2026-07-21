@@ -93,7 +93,7 @@ def _deps(tmp_path, **over):
 
     base = dict(
         detect_platform=lambda: _PLAT,
-        detect_hardware=lambda: _HW,
+        detect_hardware=lambda server_bin=None: _HW,
         ram_available_mb=lambda: 24_000,
         fetch_release=lambda: _RELEASE,
         download_and_extract=fake_download,
@@ -221,7 +221,7 @@ def test_recherche_filtree_par_budget_petite_machine(monkeypatch, tmp_path):
     con, printed = _console(answers=["n", "2", "qwen q4", "1", "o"])
     deps = _deps(
         tmp_path,
-        detect_hardware=lambda: petite,
+        detect_hardware=lambda server_bin=None: petite,
         ram_available_mb=lambda: 5_700,
         search_models=lambda q: hits,
         probe_repo=lambda repo: small_files,
@@ -257,7 +257,7 @@ def test_liberer_ram_avant_le_choix(monkeypatch, tmp_path):
     con, printed = _console(answers=["", "", "c", "0"])
     deps = _deps(
         tmp_path,
-        detect_hardware=lambda: HardwareProfile(False, None, 0, 8),
+        detect_hardware=lambda server_bin=None: HardwareProfile(False, None, 0, 8),
         ram_available_mb=fake_ram,
     )
     code = run(con, deps)

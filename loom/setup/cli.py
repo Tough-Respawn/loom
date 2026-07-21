@@ -253,7 +253,14 @@ def step_detection(con: Console, report: SetupReport, deps: Deps):
     plat = deps.detect_platform()
     hw = deps.detect_hardware()
     ram = deps.ram_available_mb()
-    gpu = f"{hw.gpu_name} ({hw.vram_free_mb} Mo VRAM libre)" if hw.has_gpu else "aucun"
+    # Avant le binaire, seule la sonde NVIDIA existe (elle décide du build CUDA à
+    # l'étape 2). Les autres GPU (AMD/Intel — Vulkan) sont confirmés juste après,
+    # par le binaire lui-même (--list-devices) : affichage honnête, pas « aucun ».
+    gpu = (
+        f"{hw.gpu_name} ({hw.vram_free_mb} Mo VRAM libre)"
+        if hw.has_gpu
+        else "pas de NVIDIA — détection complète après l'étape binaire"
+    )
     con.say(f"  OS  : {plat.label}")
     con.say(f"  GPU : {gpu}")
     con.say(f"  RAM : {ram} Mo disponibles")
@@ -348,6 +355,24 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
     )
 
 
+def _refresh_gpu(con: Console, deps: Deps, hw, raw_cfg):
+    """Re-détection AGNOSTIQUE une fois le binaire en place : `--list-devices` du
+    binaire installé est la source de vérité (Vulkan AMD/Intel/NVIDIA, CUDA…) —
+    s'il liste un device, on le prend ; s'il n'en liste aucun, ce build ne sait
+    pas offloader et le profil devient CPU. Sans binaire : profil étape 1 gardé."""
+    _, bin_name = server_bin_status(raw_cfg)
+    server_bin = resolve_bin(bin_name)
+    if server_bin is None:
+        return hw
+    fresh = deps.detect_hardware(server_bin)
+    if fresh.has_gpu and (not hw.has_gpu or fresh.gpu_name != hw.gpu_name):
+        con.say(
+            f"  🎮 GPU confirmé par le binaire : {fresh.gpu_name} "
+            f"({fresh.vram_free_mb} Mo libres, backend {fresh.backend or '?'})"
+        )
+    return fresh
+
+
 def _offer_free_ram(con: Console, deps: Deps, hw, ram: int) -> int:
     """Avant de choisir un modèle : montre les gros consommateurs de RAM et
     laisse l'utilisateur en FERMER lui-même (on ne tue jamais rien nous-mêmes),
@@ -355,7 +380,7 @@ def _offer_free_ram(con: Console, deps: Deps, hw, ram: int) -> int:
     chaque tour : plus de RAM = meilleur modèle proposé."""
     if con.assume_yes:  # non-interactif : personne pour fermer quoi que ce soit
         return ram
-    budget = budget_mb(hw.vram_free_mb, ram)
+    budget = budget_mb(hw.budget_vram_mb, ram)
     tight = budget < 6_000  # en dessous, on rate les ~4B/8B confortables
     hint = (
         "Ta RAM est serrée : en libérer débloquerait un meilleur modèle."
@@ -380,7 +405,7 @@ def _offer_free_ram(con: Console, deps: Deps, hw, ram: int) -> int:
             "pour re-mesurer — ou « c » pour continuer :"
         )
         ram = deps.ram_available_mb()
-        budget = budget_mb(hw.vram_free_mb, ram)
+        budget = budget_mb(hw.budget_vram_mb, ram)
         con.say(f"  → RAM disponible : {ram} Mo · budget : {budget} Mo")
         if ans.lower().startswith("c"):
             break
@@ -396,11 +421,14 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
         report.add("modele", "ok", f"{len(ids)} branché(s) : {', '.join(ids)}")
         return
 
-    budget = budget_mb(hw.vram_free_mb, ram)
+    budget = budget_mb(hw.budget_vram_mb, ram)
     con.say("  Aucun modèle branché (<racine>/local/text/ vide).")
-    con.say(f"  Budget estimé : {budget} Mo (VRAM libre + RAM − 4 Go de marge).")
+    con.say(
+        f"  Budget estimé : {budget} Mo (VRAM discrète libre + RAM − 4 Go de marge ; "
+        "la mémoire d'un iGPU EST la RAM, on ne la compte pas deux fois)."
+    )
     ram = _offer_free_ram(con, deps, hw, ram)
-    budget = budget_mb(hw.vram_free_mb, ram)
+    budget = budget_mb(hw.budget_vram_mb, ram)
     entries = fitting_entries(budget)
 
     con.say("  Recommandé pour ta machine :")
@@ -497,7 +525,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
         con.say(f"  ❌ Aucun GGUF exploitable dans {repo}.")
         report.add("modele", "ignore", f"aucun GGUF dans {repo}")
         return
-    annotated = recommend_quant(quants, hw.vram_free_mb, ram)
+    annotated = recommend_quant(quants, hw.budget_vram_mb, ram)
     rec = next((f for f in annotated if f["recommended"]), annotated[0])
     fit_txt = "tient dans le budget" if rec["fits"] else "NE TIENDRA PAS (trop gros)"
     if not con.confirm(
@@ -620,8 +648,21 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
 
     import os
 
+    # Profil AGNOSTIQUE (binaire = source de vérité) + métadonnées GGUF : ils
+    # dimensionnent les candidats -ngl (et servent à la topologie plus bas).
+    hw = deps.detect_hardware(server_bin)
+    try:
+        meta = read_gguf_meta(gguf_path)
+    except ValueError:
+        meta = {}
+
     threads = bench_mod.thread_candidates(os.cpu_count() or 4, deps.cpu_physical())
-    ngl = [0] + ([99] if deps.has_gpu_backend(server_bin) else [])
+    ngl = bench_mod.ngl_candidates(
+        deps.has_gpu_backend(server_bin) and hw.has_gpu,
+        hw.vram_free_mb,
+        model_size_mb,
+        meta.get("n_layers"),
+    )
     combos = len(threads) * len(ngl)
     con.say(
         f"  On mesure la vitesse réelle sur TON modèle ({gguf_path.name}) : "
@@ -647,11 +688,6 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         con.say("  ❌ Aucune mesure de génération exploitable.")
         report.add("bench", "echec", "sortie llama-bench vide")
         return
-
-    try:
-        meta = read_gguf_meta(gguf_path)
-    except ValueError:
-        meta = {}
 
     # ── Contexte : calibration TOPOLOGIQUE (topology.py) — pente MESURÉE entre
     # deux chargements + échelle de vitesse en profondeur, avec les flags EXACTS
@@ -722,7 +758,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "context_valide_jusqua": calib["valide_jusqua"],
         },
     }
-    if best["ngl"] > 0:
+    # Dès que le GPU a été TESTÉ, la mesure a le dernier mot — 0 compris (un
+    # iGPU peut perdre contre le CPU) : sans l'écrire, l'auto-offload runtime
+    # (resolve_ngl) re-prendrait un GPU mesuré plus lent.
+    if len(ngl) > 1:
         values["override"]["n_gpu_layers"] = best["ngl"]
     set_local_values(PERSONAL_CONFIG_PATH, values)
     # Vérité PAR MODÈLE : la pente est propre à chaque architecture — le contexte
@@ -802,6 +841,7 @@ def run(con: Console, deps: Deps) -> int:
         step_binary(con, report, deps, plat, hw, raw_cfg)
         # Relire la config entre chaque étape : la précédente a pu la modifier.
         raw_cfg = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
+        hw = _refresh_gpu(con, deps, hw, raw_cfg)
         step_model(con, report, deps, hw, ram, raw_cfg)
         raw_cfg = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
         step_bench(con, report, deps, raw_cfg)
