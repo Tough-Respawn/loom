@@ -31,3 +31,14 @@ try:
     TRUSTSTORE_ACTIVE = True
 except ImportError:  # dep absente (env minimal) : comportement certifi inchangé
     TRUSTSTORE_ACTIVE = False
+
+# Téléchargements Hugging Face : chemin HTTP classique, PAS le backend Xet.
+# Mesuré (2026-07-21, proxy d'entreprise) : hf-xet (pile TLS Rust, endpoints CAS
+# dédiés) se fige DÉFINITIVEMENT — gel reproductible à 11 Mo sur un GGUF de
+# 36 Go — pendant que le CDN classique tient 21-23 Mo/s sur le même fichier.
+# Débit identique des deux chemins hors blocage : on ne perd rien, on gagne la
+# robustesse. `setdefault` : l'utilisateur garde le dernier mot via son env.
+# AVANT tout import huggingface_hub (la constante est lue à l'import).
+import os as _os
+
+_os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
