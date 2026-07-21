@@ -65,3 +65,40 @@ def decrypt(blob: bytes, passphrase: str) -> bytes:
         return AESGCM(_derive_key(passphrase, salt)).decrypt(nonce, blob[head:], MAGIC)
     except InvalidTag as e:
         raise SoulError("passphrase incorrecte ou fichier corrompu") from e
+
+
+_WORDS: list[str] | None = None
+
+
+def _wordlist() -> list[str]:
+    # Fusion FR+EN (~15.5k mots) : ~13,9 bits/mot -> 5 mots ≈ 69 bits d'entropie,
+    # et un dictionnaire d'attaque mono-langue ne couvre que la moitié des mots.
+    global _WORDS
+    if _WORDS is None:
+        data = Path(__file__).parent / "data"
+        _WORDS = [
+            w
+            for name in ("diceware_fr.txt", "diceware_en.txt")
+            for w in (data / name).read_text(encoding="utf-8").split()
+        ]
+    return _WORDS
+
+
+def generate_passphrase(n_words: int = 5) -> str:
+    words = _wordlist()
+    return "-".join(secrets.choice(words) for _ in range(n_words))
+
+
+def check_passphrase(passphrase: str) -> dict:
+    if not passphrase:
+        return {"score": 0, "ok": False, "crack_display": ""}
+    from zxcvbn import zxcvbn  # import local : ~1 chargement de dictionnaires
+
+    r = zxcvbn(passphrase)
+    return {
+        "score": int(r["score"]),
+        "ok": int(r["score"]) >= 3,
+        "crack_display": str(
+            r["crack_times_display"]["offline_slow_hashing_1e4_per_second"]
+        ),
+    }
