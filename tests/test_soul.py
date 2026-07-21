@@ -26,3 +26,21 @@ def test_fichier_tronque_ou_etranger():
         soul.decrypt(blob[:20], "p")  # tronqué
     with pytest.raises(soul.SoulError):
         soul.decrypt(b"PASLOOMSOUL" + blob, "p")  # mauvais magic
+
+
+def test_generate_passphrase_diceware():
+    p = soul.generate_passphrase()
+    words = p.split("-")
+    assert len(words) == 5
+    assert all(w.isalpha() or "'" in w for w in words)
+    assert soul.generate_passphrase() != p  # aléatoire
+
+
+def test_check_passphrase_faible_vs_forte():
+    faible = soul.check_passphrase("azerty123")
+    assert faible["ok"] is False and faible["score"] < 3
+    forte = soul.check_passphrase(soul.generate_passphrase())
+    assert forte["ok"] is True and forte["score"] >= 3
+    assert forte["crack_display"]
+    vide = soul.check_passphrase("")
+    assert vide == {"score": 0, "ok": False, "crack_display": ""}
