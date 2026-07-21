@@ -180,6 +180,13 @@ class RuntimeConfig:
     # sélecteur. Vide par défaut (tout-local) ; déclarés dans config/local.toml.
     remote_models: list[RemoteModelConfig] = field(default_factory=list)
     n_parallel: int = 1
+    # Cache souverain (save/restore du slot KV par tour). À DÉSACTIVER quand le
+    # restore de llama-server est inutilisable : sur les modèles à MÉMOIRE HYBRIDE
+    # (qwen35moe/ornith), restore efface les checkpoints sans les recréer -> le
+    # tour suivant re-préfille TOUT (66 s mesurés, 2026-07-21). Le remplacement :
+    # n_parallel = 2 (les appels annexes s'isolent dans le 2e slot, le cache de la
+    # conversation survit naturellement — validé par mesure : cached 35/52).
+    slot_kv: bool = True
     # Marge VRAM (Mo) réservée hors couches offloadées : couvre le cache KV + les buffers
     # de calcul. Plus elle est BASSE, plus on offloade de couches sur GPU (perf), mais trop
     # bas -> débordement en mémoire partagée (Windows) qui écroule tout. À régler par machine.
@@ -427,6 +434,7 @@ def load_config(
         server_bin=s["bin"],
         swap_bin=s.get("swap_bin", "llama-swap"),
         n_parallel=int(s.get("n_parallel", 1)),
+        slot_kv=bool(s.get("slot_kv", True)),
         gpu_kv_headroom_mb=int(s.get("gpu_kv_headroom_mb", 1024)),
         override_n_gpu_layers=o.get("n_gpu_layers"),
         override_threads=o.get("threads"),

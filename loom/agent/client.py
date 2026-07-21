@@ -226,7 +226,11 @@ def context_fingerprint(messages: list[dict]) -> str:
     cache KV (vécu 2026-07-21 : cache_tok=0 -> re-prefill complet de 62 s au
     milieu d'une session ; le préfixe avait rétréci de ~270 tokens entre deux
     tours — quelle section a muté reste à identifier, c'est le rôle de ce log).
-    Le premier couple qui diffère entre deux lignes = le point de divergence."""
+    Le premier couple qui diffère entre deux lignes = le point de divergence.
+    `tools` : les SCHÉMAS d'outils sont rendus par le chat template EN TÊTE de
+    prompt — une variation (ordre, champ dynamique) casse le préfixe au token ~0
+    en laissant les messages byte-identiques (signature : sim élevée côté
+    serveur, cached_tokens=0). Ils font donc partie de l'empreinte."""
     import hashlib
 
     parts = []
@@ -240,6 +244,17 @@ def context_fingerprint(messages: list[dict]) -> str:
         h = hashlib.md5(content.encode("utf-8", "replace")).hexdigest()[:8]
         parts.append(f"{(m.get('role') or '?')[:1]}:{len(content)}:{h}")
     return " ".join(parts)
+
+
+def tools_fingerprint(tools: list | None) -> str:
+    """Empreinte des schémas d'outils tels qu'envoyés (ordre PRÉSERVÉ : c'est
+    l'ordre rendu par le template, donc l'ordre qui compte pour le cache)."""
+    import hashlib
+
+    if not tools:
+        return "T:0:-"
+    blob = json.dumps(tools, ensure_ascii=False, default=str)
+    return f"T:{len(tools)}:{len(blob)}:{hashlib.md5(blob.encode()).hexdigest()[:8]}"
 
 
 def _debug_messages(model: str, messages: list[dict]) -> None:
@@ -1950,6 +1965,12 @@ class LoomClient:
 
         if self.is_remote(model):
             return False  # distant : cache géré par le provider, pas de slot local
+        # Interrupteur config ([server] slot_kv = false) : sur les modèles à
+        # mémoire hybride, le restore de llama-server répond 200 mais tue le
+        # cache (checkpoints effacés) -> on coupe le mécanisme, n_parallel = 2
+        # protège la conversation à la place (cf. config.py).
+        if not getattr(self, "slot_kv_enabled", True):
+            return False
         key = model or "(local)"
         if key in self._slot_broken:
             return False
@@ -2671,6 +2692,13 @@ class LoomClient:
                 native_extras=native,
             )
             _debug_messages(kwargs["model"], kwargs["messages"])
+            # Empreinte des OUTILS envoyés : rendus en tête de prompt par le
+            # template, toute variation entre tours casse le cache au token ~0.
+            _debug(
+                "TOOLS_EMPREINTE",
+                tools_fingerprint(kwargs.get("tools")),
+                terminal=False,
+            )
             collector: dict = {"tool_calls": [], "finish_reason": None}
             try:
                 yield from _stream_model_turn(
