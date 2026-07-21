@@ -87,6 +87,21 @@ def installed_model_ids(raw_cfg: dict, package_models: Path) -> list[str]:
     return sorted({mid for mid, _, _ in _model_folders(raw_cfg, package_models)})
 
 
+def incomplete_models(
+    raw_cfg: dict, package_models: Path
+) -> list[tuple[str, Path, dict]]:
+    """Modèles au model.toml écrit mais dont le GGUF n'est PAS sur disque
+    (téléchargement interrompu — le toml s'écrit AVANT le download) :
+    (id, dossier, data). Même critère de présence que first_model_file :
+    le fichier que llama-server chargera."""
+    out = []
+    for mid, folder, data in _model_folders(raw_cfg, package_models):
+        fn = data.get("filename")
+        if fn and not (folder / fn).is_file():
+            out.append((mid, folder, data))
+    return out
+
+
 def resolve_bin(bin_name: str) -> Path | None:
     """Chemin RÉEL du binaire configuré : fichier direct, sinon résolution PATH.
     None s'il est introuvable (le bench a besoin du dossier de la release)."""
