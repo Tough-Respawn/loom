@@ -17,6 +17,8 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from loom.utils import explain_network_error
+
 RELEASES_URL = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 
 # Matrice (os, gpu) -> regex d'assets par ordre de PRÉFÉRENCE. Clé "cudart" :
@@ -99,10 +101,14 @@ def fetch_latest_release(client) -> dict:
             follow_redirects=True,
         )
     except Exception as exc:  # noqa: BLE001 - tout devient un message actionnable
-        raise RuntimeError(
+        msg = (
             f"GitHub injoignable ({type(exc).__name__}) — vérifie la connexion, "
             "ou installe llama.cpp à la main (docs/install-windows.md)."
-        ) from exc
+        )
+        hint = explain_network_error(exc)
+        if hint:
+            msg += f"\n{hint}"
+        raise RuntimeError(msg) from exc
     if resp.status_code == 403:
         raise RuntimeError(
             "GitHub a refusé la requête (403, probable rate-limit anonyme) — "

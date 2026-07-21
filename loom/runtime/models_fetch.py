@@ -13,6 +13,8 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 from huggingface_hub.errors import HfHubHTTPError
 
+from loom.utils import explain_network_error
+
 
 class ModelUnavailable(Exception):
     """GGUF absent en local ET non téléchargeable. Porte un message prêt à montrer."""
@@ -56,6 +58,9 @@ def _missing_msg(
         # str(cause) HF est multi-lignes (aide + URL) : on ne garde que la 1re ligne utile.
         head = str(cause).strip().splitlines()[0] if str(cause).strip() else ""
         lines.append(f"     cause : {type(cause).__name__}: {head}")
+        hint = explain_network_error(cause)
+        if hint:
+            lines.append(f"     {hint}")
     return "\n".join(lines)
 
 

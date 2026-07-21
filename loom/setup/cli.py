@@ -27,6 +27,7 @@ from loom.runtime.model_install import (
     write_model_toml,
 )
 from loom.runtime.gguf_meta import read_gguf_meta
+from loom.runtime.hf_catalog import HfCatalogError
 from loom.runtime.platform_info import detect as detect_platform
 from loom.runtime.term import colorize, supports_color
 from loom.setup import bench as bench_mod
@@ -460,17 +461,29 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
             return
         # Le catalogue porte des FAMILLES (queries), pas des repos figés : le
         # repo réel se résout en live (top téléchargements qui fit le budget).
-        repo = resolve_entry(entry, deps.search_models, budget)
+        # Erreur réseau/HF distinguée de « rien de jouable » : le message HF
+        # (diagnostic proxy inclus) remplace un « famille disparue ? » trompeur.
+        try:
+            repo = resolve_entry(entry, deps.search_models, budget)
+        except HfCatalogError as exc:
+            con.say(f"  ❌ {exc}")
+            report.add("modele", "ignore", f"entrée non résolue ({entry['label']})")
+            return
         if repo is None:
             con.say(
-                f"  ❌ « {entry['label']} » introuvable sur Hugging Face (hors-ligne, "
-                "famille disparue ?) — réessaie, ou recherche libre."
+                f"  ❌ « {entry['label']} » introuvable sur Hugging Face "
+                "(famille disparue ?) — réessaie, ou recherche libre."
             )
             report.add("modele", "ignore", f"entrée non résolue ({entry['label']})")
             return
         con.say(f"  → repo retenu : {repo}")
 
-    files = deps.probe_repo(repo)
+    try:
+        files = deps.probe_repo(repo)
+    except HfCatalogError as exc:
+        con.say(f"  ❌ {exc}")
+        report.add("modele", "ignore", f"repo injoignable ({repo})")
+        return
     if files is None:
         con.say(
             f"  ❌ Repo « {repo} » injoignable (hors-ligne, renommé ?) — réessaie plus "

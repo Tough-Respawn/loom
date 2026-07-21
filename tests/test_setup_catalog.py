@@ -1,5 +1,7 @@
 # Installeur loom-setup : estimation de taille depuis le nom de repo et filtrage
 # des résultats de recherche par le budget machine — SANS réseau.
+import pytest
+
 from loom.runtime.hf_catalog import HfCatalogError
 from loom.setup.catalog import (
     budget_mb,
@@ -56,13 +58,16 @@ def test_resolve_entry_query_resolue_et_filtree():
     assert resolve_entry(entry, lambda q: hits, budget=3_000) == (
         "ok/Qwen3-4B-Instruct-GGUF"
     )
-    # rien de jouable ou recherche en erreur -> None
+    # rien de jouable -> None
     assert resolve_entry(entry, lambda q: hits[:1], budget=3_000) is None
 
+    # erreur réseau/HF -> PROPAGÉE (le CLI montre le message, diagnostic proxy
+    # inclus) au lieu d'un None trompeur « famille disparue ? »
     def offline(q):
         raise HfCatalogError("hors-ligne")
 
-    assert resolve_entry(entry, offline, budget=3_000) is None
+    with pytest.raises(HfCatalogError):
+        resolve_entry(entry, offline, budget=3_000)
 
 
 def test_budget_et_catalogue():
