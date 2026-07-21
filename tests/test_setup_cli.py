@@ -358,3 +358,77 @@ def test_aucun_asset_compatible(monkeypatch, tmp_path):
     assert code == 0  # guidage manuel n'est pas un échec
     out = "\n".join(printed)
     assert "[manuel]" in out and "config/local.toml" in out
+
+
+# ── Modèle incomplet (Ctrl+C pendant le download) : honnêteté + reprise ──────
+
+
+def _modele_incomplet(tmp_path, monkeypatch):
+    """model.toml écrit mais GGUF absent (download interrompu)."""
+    _patch_paths(monkeypatch, tmp_path)
+    mdir = tmp_path / "models" / "local" / "text" / "ornith-35b"
+    mdir.mkdir(parents=True)
+    (mdir / "model.toml").write_text(
+        'repo = "org/Ornith-35B-GGUF"\nfilename = "ornith.Q8_0.gguf"\nsize_mb = 35193\n',
+        encoding="utf-8",
+    )
+    return mdir
+
+
+def test_modele_incomplet_propose_la_reprise(monkeypatch, tmp_path):
+    mdir = _modele_incomplet(tmp_path, monkeypatch)
+    seen = {}
+
+    def fake_start(repo, filenames, dest, total_mb):
+        seen.update(repo=repo, filenames=filenames, dest=dest)
+        return _FakeJob()
+
+    con, printed = _console(answers=["o"])
+    report = cli.SetupReport()
+    cli.step_model(
+        con, report, _deps(tmp_path, start_download=fake_start), _HW, 24_000, {}
+    )
+    out = "\n".join(printed)
+    assert "[attention]" in out and "GGUF absent" in out
+    assert seen["repo"] == "org/Ornith-35B-GGUF"
+    assert seen["filenames"] == ["ornith.Q8_0.gguf"]
+    assert seen["dest"] == mdir
+    assert report.outcomes[-1].status == "fait"
+
+
+def test_modele_incomplet_reprise_refusee(monkeypatch, tmp_path):
+    _modele_incomplet(tmp_path, monkeypatch)
+    con, printed = _console(answers=["n"])
+    report = cli.SetupReport()
+    cli.step_model(con, report, _deps(tmp_path), _HW, 24_000, {})
+    out = "\n".join(printed)
+    assert "[attention]" in out and "[passé]" in out
+    assert report.outcomes[-1].status == "ignore"
+
+
+def test_bench_saute_dit_ce_qui_manque(monkeypatch, tmp_path):
+    # Binaire présent, GGUF absent : le message doit nommer le GGUF, pas
+    # l'ambigu « binaire ou modèle ».
+    _modele_incomplet(tmp_path, monkeypatch)
+    binp = tmp_path / "llama-server.exe"
+    binp.write_bytes(b"")
+    con, printed = _console()
+    report = cli.SetupReport()
+    cli.step_bench(con, report, _deps(tmp_path), {"server": {"bin": str(binp)}})
+    out = "\n".join(printed)
+    assert "GGUF" in out and "binaire" not in out
+
+
+def test_say_colorise_chaque_ligne():
+    # Le bilan arrive en UN bloc multi-lignes : chaque ligne doit être colorée
+    # (avant, seule la 1re ligne passait par les règles -> bilan tout blanc).
+    from loom.runtime.term import DIM, GREEN
+
+    printed = []
+    con = Console(
+        print_fn=lambda *a, **k: printed.append(a[0] if a else ""), color=True
+    )
+    con.say("── Bilan ──\n  [ok] Modèle x\n  [passé] Réglages y")
+    out = printed[-1]
+    assert GREEN + "  [ok] Modèle x" in out
+    assert DIM + "  [passé] Réglages y" in out

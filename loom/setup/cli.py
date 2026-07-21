@@ -45,6 +45,7 @@ from loom.setup.llama_release import local_arch, select_assets
 from loom.setup.report import SetupReport
 from loom.setup.steps import (
     first_model_file,
+    incomplete_models,
     installed_model_ids,
     models_roots,
     read_raw_config,
@@ -114,7 +115,12 @@ class Console:
             interrupted = self._live and self._prog_msg is not None
         if interrupted:
             self._print()  # clôt la ligne de progression, le chrono repart dessous
-        self._print(colorize(msg) if self.color else msg)
+        # Coloration LIGNE PAR LIGNE : le bilan arrive en un bloc multi-lignes,
+        # les règles (^…) ne matcheraient que la première sinon.
+        if self.color:
+            self._print("\n".join(colorize(line) for line in msg.split("\n")))
+        else:
+            self._print(msg)
         self._log(msg)
 
     def progress(self, msg: str) -> None:
@@ -423,9 +429,92 @@ def _offer_free_ram(con: Console, deps: Deps, hw, ram: int) -> int:
     return ram
 
 
+def _download_model(
+    con: Console,
+    report: SetupReport,
+    deps: Deps,
+    *,
+    repo: str,
+    dest: Path,
+    filename: str,
+    size_mb: int,
+    model_id: str,
+    mmproj: str | None = None,
+    part_files: list[str] | None = None,
+) -> None:
+    """Télécharge (ou REPREND) les fichiers d'un modèle, puis finalise : model.toml
+    complété depuis le header GGUF + défaut de la machine. Partagé entre
+    l'installation fraîche et la reprise d'un téléchargement interrompu."""
+    filenames = list(part_files or [filename])
+    if mmproj and not (Path(dest) / mmproj).is_file():
+        filenames.append(mmproj)
+
+    # Garde-éveil pendant le téléchargement (même filet que serve.py : un GGUF de
+    # 15+ Go sans activité utilisateur ne doit pas être coupé par la veille).
+    from loom.runtime.stay_awake import StayAwake
+
+    awake = StayAwake()
+    awake.acquire()
+    try:
+        job = deps.start_download(repo, filenames, dest, size_mb)
+        while not job.done:
+            con.progress(f"téléchargement… {job.progress_mb()}/{size_mb} Mo")
+            deps.sleep(2)
+    finally:
+        awake.release()
+    con.progress_end()
+
+    if job.error:
+        con.say(f"  [échec] {job.error}")
+        con.say(
+            "  (model.toml déjà écrit : relance loom-setup pour REPRENDRE le "
+            "téléchargement — il reprend aussi au premier serve.)"
+        )
+        report.add("modele", "echec", f"téléchargement : {job.error}")
+        return
+    meta = finalize_model_toml(dest, Path(dest) / filename)
+    # Premier modèle de CETTE machine = son défaut local (sinon defaults.toml
+    # peut pointer un modèle du parc absent d'ici -> sélecteur UI fantôme).
+    set_default_model(PERSONAL_CONFIG_PATH, model_id)
+    extra = " (MoE → cpu_moe = true)" if meta.get("expert_count") else ""
+    con.say(f"  [ok] Modèle « {model_id} » installé{extra} — défaut de cette machine.")
+    report.add("modele", "fait", f"{model_id} ({filename}, {size_mb} Mo)")
+
+
 def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
     con.say("")
     con.say("[3/4] Modèle")
+    # Un model.toml SANS son GGUF (Ctrl+C pendant le download) n'est PAS un
+    # modèle branché : le dire et proposer de finir, plutôt qu'un « rien à
+    # faire » mensonger contredit par le bench deux lignes plus bas.
+    missing = incomplete_models(raw_cfg, PACKAGE_MODELS)
+    if missing:
+        mid, folder, data = missing[0]
+        con.say(
+            f"  [attention] « {mid} » : model.toml présent mais GGUF absent — "
+            "téléchargement interrompu."
+        )
+        if con.confirm(
+            f"Reprendre le téléchargement ({data.get('size_mb', '?')} Mo) ?"
+        ):
+            _download_model(
+                con,
+                report,
+                deps,
+                repo=data.get("repo", ""),
+                dest=folder,
+                filename=data["filename"],
+                size_mb=int(data.get("size_mb", 0)),
+                model_id=mid,
+                mmproj=data.get("mmproj_filename"),
+            )
+        else:
+            con.say(
+                "  [passé] Reprise refusée — relance loom-setup quand tu veux "
+                "(le download reprend là où il s'était arrêté)."
+            )
+            report.add("modele", "ignore", f"reprise refusée ({mid})")
+        return
     ids = installed_model_ids(raw_cfg, PACKAGE_MODELS)
     if ids:
         con.say(f"  {len(ids)} modèle(s) branché(s) ({', '.join(ids)}) → rien à faire.")
@@ -555,39 +644,18 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
     write_model_toml(
         dest, repo, rec["filename"], rec["size_mb"], mmproj_filename=mmproj
     )
-    filenames = list(rec.get("part_files") or [rec["filename"]])
-    if mmproj:
-        filenames.append(mmproj)
-
-    # Garde-éveil pendant le téléchargement (même filet que serve.py : un GGUF de
-    # 15+ Go sans activité utilisateur ne doit pas être coupé par la veille).
-    from loom.runtime.stay_awake import StayAwake
-
-    awake = StayAwake()
-    awake.acquire()
-    try:
-        job = deps.start_download(repo, filenames, dest, rec["size_mb"])
-        while not job.done:
-            con.progress(f"téléchargement… {job.progress_mb()}/{rec['size_mb']} Mo")
-            deps.sleep(2)
-    finally:
-        awake.release()
-    con.progress_end()
-
-    if job.error:
-        con.say(f"  [échec] {job.error}")
-        con.say(
-            "  (model.toml déjà écrit : le téléchargement REPRENDRA au premier serve.)"
-        )
-        report.add("modele", "echec", f"téléchargement : {job.error}")
-        return
-    meta = finalize_model_toml(dest, dest / rec["filename"])
-    # Premier modèle de CETTE machine = son défaut local (sinon defaults.toml
-    # peut pointer un modèle du parc absent d'ici -> sélecteur UI fantôme).
-    set_default_model(PERSONAL_CONFIG_PATH, model_id)
-    extra = " (MoE → cpu_moe = true)" if meta.get("expert_count") else ""
-    con.say(f"  [ok] Modèle « {model_id} » installé{extra} — défaut de cette machine.")
-    report.add("modele", "fait", f"{model_id} ({rec['filename']}, {rec['size_mb']} Mo)")
+    _download_model(
+        con,
+        report,
+        deps,
+        repo=repo,
+        dest=dest,
+        filename=rec["filename"],
+        size_mb=rec["size_mb"],
+        model_id=model_id,
+        mmproj=mmproj,
+        part_files=rec.get("part_files"),
+    )
 
 
 def _read_model_toml(gguf_path: Path) -> dict:
@@ -646,8 +714,16 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     server_bin = resolve_bin(bin_name)
     model = first_model_file(raw_cfg, PACKAGE_MODELS)
     if server_bin is None or model is None:
-        con.say("  [passé] Binaire ou modèle pas encore en place — bench sauté.")
-        report.add("bench", "ignore", "binaire ou modèle manquant")
+        # Nommer CE qui manque : « binaire ou modèle » accusait le binaire même
+        # quand seul le GGUF manquait (téléchargement interrompu).
+        manque = []
+        if server_bin is None:
+            manque.append("le binaire llama-server")
+        if model is None:
+            manque.append("le GGUF du modèle (téléchargement incomplet ?)")
+        quoi = " et ".join(manque)
+        con.say(f"  [passé] Il manque {quoi} — bench sauté.")
+        report.add("bench", "ignore", f"manque {quoi}")
         return
     bench_bin = deps.find_llama_bench(server_bin)
     if bench_bin is None:
