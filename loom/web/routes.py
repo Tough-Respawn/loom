@@ -3105,7 +3105,13 @@ def _register_chat_routes(app, S):
                     )
                     _t_srv = time.monotonic()
                     S.server_manager.start()
-                    _deadline = time.monotonic() + 90.0
+                    # Attente pilotée par l'ÉTAT DU PROCESS, pas par un mur de temps :
+                    # un 35 Go à froid dépasse largement 90 s, et l'ancien message
+                    # prédisait « la génération va échouer » à tort (vécu 2026-07-21).
+                    # Stack vivante -> on attend en le disant (notice périodique) ;
+                    # stack MORTE -> vrai échec, on arrête d'attendre tout de suite.
+                    _deadline = time.monotonic() + 600.0  # garde-fou absolu
+                    _last_notice = time.monotonic()
                     while time.monotonic() < _deadline and not cancel_event.is_set():
                         time.sleep(0.7)
                         _reachable, _running_txt = S.client.running_local(timeout=2.0)
@@ -3119,14 +3125,32 @@ def _register_chat_routes(app, S):
                             )
                             yield _sse("notice", text="serveur modèle démarré.")
                             break
+                        if not S.server_manager.owns_running():
+                            break  # process mort : inutile d'attendre le garde-fou
+                        if time.monotonic() - _last_notice >= 15.0:
+                            _last_notice = time.monotonic()
+                            yield _sse(
+                                "notice",
+                                text=(
+                                    "chargement du modèle en cours… "
+                                    f"({int(time.monotonic() - _t_srv)} s — un gros "
+                                    "modèle peut prendre plusieurs minutes)"
+                                ),
+                            )
                     if not _reachable and not cancel_event.is_set():
-                        yield _sse(
-                            "notice",
-                            text=(
-                                "le serveur modèle ne répond toujours pas (détails : "
-                                "var/logs/serve.log) — la génération va échouer."
-                            ),
-                        )
+                        if S.server_manager.owns_running():
+                            _txt = (
+                                "le serveur modèle charge encore après "
+                                f"{int(time.monotonic() - _t_srv)} s — la génération "
+                                "est tentée quand même ; si elle échoue, réessaie "
+                                "dans un moment (détails : var/logs/serve.log)."
+                            )
+                        else:
+                            _txt = (
+                                "le serveur modèle s'est ARRÊTÉ pendant le démarrage "
+                                "— la génération va échouer (cause : var/logs/serve.log)."
+                            )
+                        yield _sse("notice", text=_txt)
                 if _reachable and conv.model not in _running_txt:
                     yield _sse(
                         "notice",
