@@ -1830,6 +1830,8 @@ function wirePane(pane) {
     // Le bandeau est la POIGNÉE du panneau : le saisir-glisser déplace la zone de
     // chat entière vers les zones directionnelles d'un autre panneau.
     wireSidDrag(head, () => pane.sid);
+    // Clic droit sur le bandeau : même menu que l'onglet (split, chemin réel copiable).
+    head.addEventListener("contextmenu", (ev) => openTabMenu(ev, pane.sid));
   }
   // Déposer un ONGLET (glissé depuis la barre) ou un PANNEAU (par son bandeau) :
   // zones DIRECTIONNELLES à la VS Code. L'overlay montre où il atterrit : centre =
@@ -1980,6 +1982,14 @@ function closeTabMenu() {
     _ctxCloser = null;
   }
 }
+// Dossier RÉEL d'une session sur disque (session.json, timeline.jsonl, debug.log) :
+// dérivé de la racine fournie par le serveur — ce n'est PAS le workspace.
+function sessionDirPath(sid) {
+  const root = (INIT.sessions_root || "").replace(/[\\/]+$/, "");
+  if (!root || !sid) return "";
+  return root + (root.includes("\\") ? "\\" : "/") + sid;
+}
+
 function openTabMenu(e, sid) {
   e.preventDefault();
   closeTabMenu();
@@ -2006,6 +2016,23 @@ function openTabMenu(e, sid) {
   sep.className = "ctx-sep";
   m.appendChild(sep);
   add("Remettre en vue simple", () => singleView(), state.panes.length <= 1);
+  // Chemin réel de la session (dossier logs/état) : affiché sélectionnable — cliquer
+  // dedans ne ferme PAS le menu (le closer n'agit que hors #tab-ctx) — + entrée copie.
+  const dir = sessionDirPath(sid);
+  if (dir) {
+    const sep2 = document.createElement("div");
+    sep2.className = "ctx-sep";
+    m.appendChild(sep2);
+    const p = document.createElement("div");
+    p.className = "ctx-path";
+    p.textContent = dir;
+    p.title = "Dossier réel de la session (session.json, timeline.jsonl, debug.log)";
+    m.appendChild(p);
+    add("Copier le chemin de la session", () => {
+      navigator.clipboard.writeText(dir);
+      showToast("chemin copié");
+    });
+  }
   document.body.appendChild(m);
   m.style.left = Math.min(e.clientX, window.innerWidth - m.offsetWidth - 6) + "px";
   m.style.top = Math.min(e.clientY, window.innerHeight - m.offsetHeight - 6) + "px";
