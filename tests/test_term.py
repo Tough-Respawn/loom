@@ -15,17 +15,18 @@ def _plain(s: str) -> str:
 def test_colorize_regles_loom():
     assert colorize("── Bilan ──").startswith(BOLD + CYAN)
     assert colorize("[2/3] Binaire llama-server").startswith(BOLD)
-    assert colorize("  ✅ Modèle installé").startswith(GREEN)
-    assert colorize("  ❌ Téléchargement raté").startswith(RED)
+    assert colorize("  [ok] Modèle installé").startswith(GREEN)
+    assert colorize("  [échec] Téléchargement raté").startswith(RED)
     assert colorize("[loom] ERREUR : binaire introuvable").startswith(RED)
-    assert colorize("  ⏭️ Ignoré").startswith(DIM)
+    assert colorize("  [passé] Ignoré").startswith(DIM)
+    assert colorize("  [manuel] llama-bench introuvable").startswith(term.YELLOW)
     assert colorize("  → repo retenu : x").startswith(CYAN)
     # ligne quelconque : intacte
     assert colorize("  RAM : 10156 Mo disponibles") == "  RAM : 10156 Mo disponibles"
 
 
 def test_colorize_preserve_le_texte():
-    for line in ["── Bilan ──", "  ✅ ok", "  ❌ raté", "texte neutre"]:
+    for line in ["── Bilan ──", "  [ok] ok", "  [échec] raté", "texte neutre"]:
         assert _plain(colorize(line)) == line
 
 

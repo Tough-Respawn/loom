@@ -62,15 +62,15 @@ def paint(text: str, *codes: str) -> str:
 
 
 # Règles d'auto-coloration d'une ligne, testées DANS L'ORDRE : (regex, codes).
-# Élues d'après les écrans réels de loom-setup et serve — les émojis/préfixes
-# portent déjà la sémantique, la couleur ne fait que l'amplifier.
+# Élues d'après les écrans réels de loom-setup et serve — les marqueurs TEXTE
+# ([ok], [échec]…, jamais d'emoji) portent la sémantique, la couleur l'amplifie.
 _RULES: list[tuple[re.Pattern, tuple[str, ...]]] = [
     (re.compile(r"^──"), (BOLD, CYAN)),  # bannières ── Loom setup ── / ── Bilan ──
-    (re.compile(r"^\[\d/\d\]"), (BOLD,)),  # têtes d'étape [1/3]
-    (re.compile(r"^\s*(✅|OK\b)"), (GREEN,)),
-    (re.compile(r"^\s*(❌|.*\bERREUR\b)"), (RED,)),
-    (re.compile(r"^\s*⏭️"), (DIM,)),
-    (re.compile(r"^\s*🔧"), (YELLOW,)),
+    (re.compile(r"^\[\d/\d\]"), (BOLD,)),  # têtes d'étape [1/4]
+    (re.compile(r"^\s*(\[ok\]|OK\b)"), (GREEN,)),
+    (re.compile(r"^\s*(\[échec\]|.*\bERREUR\b)"), (RED,)),
+    (re.compile(r"^\s*\[passé\]"), (DIM,)),
+    (re.compile(r"^\s*\[(manuel|attention)\]"), (YELLOW,)),
     (re.compile(r"^\s*→"), (CYAN,)),  # résultats intermédiaires (repo retenu…)
     (
         re.compile(r"^\s*\d+\.\s"),
