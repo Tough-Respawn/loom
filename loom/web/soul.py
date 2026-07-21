@@ -10,13 +10,20 @@ testable sans Flask. Spec : docs/superpowers/specs/2026-07-21-ame-export-import-
 
 from __future__ import annotations
 
+import io
+import json
+import platform
 import secrets
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+from loom.utils import now_iso
+
 
 MAGIC = b"LOOMSOUL1"
 _SALT_LEN, _NONCE_LEN = 16, 12
@@ -102,3 +109,72 @@ def check_passphrase(passphrase: str) -> dict:
             r["crack_times_display"]["offline_slow_hashing_1e4_per_second"]
         ),
     }
+
+
+def build_archive(paths: SoulPaths, session_ids: list[str]) -> bytes:
+    """tar.gz en mémoire : manifest + sessions choisies + mémoire + identité + skills.
+    Liste d'inclusion STRICTE — remote_models.json et les logs n'ont aucun chemin
+    d'entrée possible ici."""
+    buf = io.BytesIO()
+    counts = {"sessions": 0, "skills": 0, "identite": 0, "memoire": 0}
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for sid in session_ids:
+            for fname in SESSION_FILES:
+                f = Path(paths.sessions_root) / sid / fname
+                if f.exists():
+                    tar.add(str(f), arcname=f"sessions/{sid}/{fname}", recursive=False)
+            counts["sessions"] += 1
+        db = Path(paths.memory_db)
+        if db.exists():
+            tar.add(str(db), arcname="memory/memory.db", recursive=False)
+            counts["memoire"] = 1
+        for fname in IDENTITY_FILES:
+            f = Path(paths.identity_dir) / fname
+            if f.exists():
+                tar.add(str(f), arcname=f"identity/{fname}", recursive=False)
+                counts["identite"] += 1
+        for kind, root in (
+            ("skills_learned", paths.learned_skills_dir),
+            ("skills_user", paths.user_skills_dir),
+        ):
+            root = Path(root)
+            if not root.is_dir():
+                continue
+            for skill in sorted(p for p in root.iterdir() if p.is_dir()):
+                for f in sorted(skill.rglob("*")):
+                    if f.is_file():
+                        rel = f.relative_to(skill).as_posix()
+                        tar.add(
+                            str(f),
+                            arcname=f"{kind}/{skill.name}/{rel}",
+                            recursive=False,
+                        )
+                counts["skills"] += 1
+        manifest = {
+            "version": 1,
+            "date": now_iso(),
+            "machine": platform.node(),
+            "sessions": list(session_ids),
+            "counts": counts,
+        }
+        mdata = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(mdata)
+        tar.addfile(info, io.BytesIO(mdata))
+    return buf.getvalue()
+
+
+def export_soul(
+    paths: SoulPaths, session_ids: list[str], dest_dir, passphrase: str
+) -> dict:
+    dest = Path(dest_dir)
+    if not dest.is_dir():
+        raise SoulError(f"dossier de destination introuvable : {dest}")
+    day = now_iso()[:10]
+    out, n = dest / f"ame-loom-{day}.soul", 2
+    while out.exists():
+        out = dest / f"ame-loom-{day}-{n}.soul"
+        n += 1
+    blob = encrypt(build_archive(paths, session_ids), passphrase)
+    out.write_bytes(blob)
+    return {"path": str(out), "size": len(blob), "sessions": len(session_ids)}
