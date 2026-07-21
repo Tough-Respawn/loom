@@ -56,6 +56,8 @@ def build_app(cfg):
         max_retries=cfg.chat.max_retries,
         routes=routes,
     )
+    # Interrupteur du cache souverain (save/restore slot KV) — cf. config.py slot_kv.
+    client.slot_kv_enabled = cfg.slot_kv
     # Mémoire persistante : provider (store épisodique) + chemins identité (SOUL/USER/MEMORY).
     # `memory` est passé à build_registry (outils recall/remember) ; `mem_paths` sert aussi
     # à injecter le bloc identité au system prompt (create_app).
