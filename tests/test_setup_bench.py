@@ -27,7 +27,12 @@ def test_kv_bytes_per_token():
     meta = {"n_layers": 36, "head_count_kv": 8, "key_length": 128}
     assert kv_bytes_per_token(meta) == 147_456
     # head_dim dérivé de embedding/head_count si key_length absent
-    meta = {"n_layers": 36, "head_count_kv": 8, "embedding_length": 4096, "head_count": 32}
+    meta = {
+        "n_layers": 36,
+        "head_count_kv": 8,
+        "embedding_length": 4096,
+        "head_count": 32,
+    }
     assert kv_bytes_per_token(meta) == 147_456
     # champs manquants -> repli conservateur
     assert kv_bytes_per_token({}) == 150_000
@@ -60,8 +65,20 @@ def test_pick_best_tg_tranche_pp_departage():
 def test_run_llama_bench_parse_et_erreurs(tmp_path):
     payload = json.dumps(
         [
-            {"n_threads": 10, "n_gpu_layers": 0, "n_prompt": 128, "n_gen": 0, "avg_ts": 21.5},
-            {"n_threads": 10, "n_gpu_layers": 0, "n_prompt": 0, "n_gen": 16, "avg_ts": 3.4},
+            {
+                "n_threads": 10,
+                "n_gpu_layers": 0,
+                "n_prompt": 128,
+                "n_gen": 0,
+                "avg_ts": 21.5,
+            },
+            {
+                "n_threads": 10,
+                "n_gpu_layers": 0,
+                "n_prompt": 0,
+                "n_gen": 16,
+                "avg_ts": 3.4,
+            },
         ]
     )
 
@@ -107,3 +124,22 @@ def test_usage_verdict_silencieux_quand_fluide():
 
     assert _usage_verdict(tg_ts=20.0, pp_ts=240.0) == []
     assert _usage_verdict(tg_ts=0, pp_ts=0) == []  # mesures absentes : muet
+
+
+def test_run_llama_bench_passe_ncmoe():
+    # MoE : les experts restent en RAM pendant le bench (-ncmoe), comme au
+    # runtime (--cpu-moe) — sans ça, -ngl élevé OOMait le device Vulkan.
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    run_llama_bench(
+        "bench.exe", "m.gguf", [10], [0, 999], runner=fake_run, n_cpu_moe=48
+    )
+    i = seen["cmd"].index("-ncmoe")
+    assert seen["cmd"][i + 1] == "48"
+
+    run_llama_bench("bench.exe", "m.gguf", [10], [0], runner=fake_run)
+    assert "-ncmoe" not in seen["cmd"]

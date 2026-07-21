@@ -63,19 +63,31 @@ def ngl_candidates(
     vram_free_mb: int,
     model_size_mb: int,
     n_layers: int | None,
-) -> list[int]:
-    """Candidats -ngl à bencher. Sans backend GPU : [0]. Sinon 0 (CPU pur) et 99
-    (offload total) ; si la VRAM libre ne couvre qu'une PARTIE du modèle, la
-    recommandation proportionnelle s'ajoute comme candidat intermédiaire — on la
-    MESURE au lieu de la supposer. n_layers None (GGUF illisible) : 0/99 seuls."""
+    moe: bool = False,
+    headroom_mb: int = 1024,
+) -> tuple[list[int], int]:
+    """Candidats -ngl à bencher + valeur -ncmoe (0 = sans). Un candidat
+    INFAISABLE fait échouer llama-bench entier (une seule invocation croisée) :
+    vécu Ornith 35B Q8 — offload total de 35 Go dans 34,8 Go de fenêtre Vulkan
+    -> ErrorOutOfDeviceMemory et bench perdu.
+
+    - Sans backend GPU : ([0], 0).
+    - MoE : on mesure la config que le RUNTIME utilisera (resolve_ngl : couches
+      denses sur GPU, experts en RAM) -> ([0, 999], n_layers) via --n-cpu-moe.
+    - Dense : 0, la reco proportionnelle si partielle, et 99 SEULEMENT si
+      l'offload total tient (poids + marge KV <= VRAM libre)."""
     if not gpu_backend:
-        return [0]
-    cands = {0, 99}
+        return [0], 0
+    if moe:
+        return [0, 999], int(n_layers or 999)
+    cands = {0}
+    if model_size_mb <= max(0, vram_free_mb - headroom_mb):
+        cands.add(99)
     if n_layers:
-        reco = recommend_gpu_layers(vram_free_mb, model_size_mb, n_layers)
+        reco = recommend_gpu_layers(vram_free_mb, model_size_mb, n_layers, headroom_mb)
         if 0 < reco < n_layers:
             cands.add(reco)
-    return sorted(cands)
+    return sorted(cands), 0
 
 
 def thread_candidates(logical: int, physical: int | None) -> list[int]:
@@ -122,10 +134,13 @@ def run_llama_bench(
     ngl: list[int],
     runner=subprocess.run,
     timeout: int = 1200,
+    n_cpu_moe: int = 0,
 ) -> list[dict]:
     """Lance llama-bench sur toutes les combinaisons (une seule invocation :
     llama-bench croise les listes) et renvoie les lignes JSON normalisées :
-    [{threads, ngl, kind: 'pp'|'tg', ts}]. Lève RuntimeError si le bench échoue."""
+    [{threads, ngl, kind: 'pp'|'tg', ts}]. Lève RuntimeError si le bench échoue.
+    `n_cpu_moe` > 0 (MoE) : experts des n premières couches gardés en RAM
+    (-ncmoe), pour mesurer la même config que le runtime (--cpu-moe)."""
     cmd = [
         str(bench_bin),
         "-m",
@@ -143,6 +158,8 @@ def run_llama_bench(
         "-o",
         "json",
     ]
+    if n_cpu_moe > 0:
+        cmd += ["-ncmoe", str(n_cpu_moe)]
     try:
         res = runner(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
