@@ -416,6 +416,10 @@ def _index_context(S) -> dict:
                 "model": conv.model,
                 "workspace": ws,
                 "sessions": sessions,
+                # Racine des dossiers de session sur disque : le front en dérive
+                # root/<sid> (session.json, timeline.jsonl, debug.log) pour le menu
+                # contextuel d'onglet/panneau (chemin réel copiable).
+                "sessions_root": str(S.session_store.root.resolve()),
             },
             ensure_ascii=False,
         ).replace("<", "\\u003c"),
