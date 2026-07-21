@@ -39,6 +39,13 @@ def app(tmp_env):
         user_skills_dir=str(tmp_env / "skills_user"),
         plugins_dir=str(tmp_env / "plugins"),
         remote_store_path=str(tmp_env / "remote_models.json"),
+        learned_skills_dir=str(tmp_env / "skills_learned"),
+        memory_db_path=str(tmp_env / "memory" / "memory.db"),
+        identity_paths={
+            "soul_path": str(tmp_env / "identity" / "SOUL.md"),
+            "user_path": str(tmp_env / "identity" / "USER.md"),
+            "memory_md_path": str(tmp_env / "identity" / "MEMORY.md"),
+        },
     )
 
 
