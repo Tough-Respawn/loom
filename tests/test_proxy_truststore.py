@@ -19,6 +19,17 @@ def test_import_loom_injecte_truststore():
     assert ssl.SSLContext is truststore.SSLContext
 
 
+def test_import_loom_desactive_xet():
+    # hf-xet (TLS Rust, endpoints CAS) se fige derrière un proxy d'entreprise
+    # (gel reproductible, même débit que le CDN classique sinon) -> désactivé
+    # par défaut, l'env utilisateur garde la priorité (setdefault).
+    import os
+
+    import loom  # noqa: F401
+
+    assert os.environ.get("HF_HUB_DISABLE_XET") == "1"
+
+
 def test_explain_reconnait_une_cause_ssl_dans_la_chaine():
     # Cas réel : httpx.ConnectError enveloppe ssl.SSLCertVerificationError.
     cause = ssl.SSLCertVerificationError(
