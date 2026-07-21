@@ -8,7 +8,14 @@ from __future__ import annotations
 
 from loom.setup.steps import StepOutcome
 
-_ICONS = {"ok": "✅", "fait": "✅", "ignore": "⏭️", "echec": "❌", "manuel": "🔧"}
+# Marqueurs TEXTE (pas d'emoji) : la couleur (term.colorize) porte la sémantique.
+_ICONS = {
+    "ok": "[ok]",
+    "fait": "[ok]",
+    "ignore": "[passé]",
+    "echec": "[échec]",
+    "manuel": "[manuel]",
+}
 _LABELS = {
     "detection": "Détection",
     "binaire": "Binaire",
@@ -33,7 +40,7 @@ class SetupReport:
     def render(self) -> str:
         lines = ["", "── Bilan ─────────────────────────────────────────────"]
         for o in self.outcomes:
-            icon = _ICONS.get(o.status, "•")
+            icon = _ICONS.get(o.status, "[?]").ljust(8)
             label = _LABELS.get(o.name, o.name).ljust(10)
             lines.append(f"  {icon} {label} {o.detail}")
         return "\n".join(lines)

@@ -166,19 +166,30 @@ class Console:
             self._prog_len = 0
         self._print()
 
+    def _prompt(self, text: str) -> str:
+        """Question en GRAS (point d'interaction) — seulement sur un vrai terminal."""
+        from loom.runtime.term import BOLD, paint
+
+        return paint(text, BOLD) if self.color else text
+
     def ask(self, prompt: str, default: str = "") -> str:
         if self.assume_yes:
             return default
         # strip du BOM : stdin pipé depuis PowerShell préfixe la 1re ligne de
         # ﻿ — invisible mais "﻿1" != "1". Sans effet au clavier.
-        raw = self._input(f"  {prompt} ").strip().strip("﻿").strip()
+        raw = self._input(self._prompt(f"  {prompt} ")).strip().strip("﻿").strip()
         return raw or default
 
     def confirm(self, question: str, default: bool = True) -> bool:
         if self.assume_yes:
             return True
         suffix = "[O/n]" if default else "[o/N]"
-        raw = self._input(f"  {question} {suffix} ").strip().strip("﻿").strip()
+        raw = (
+            self._input(self._prompt(f"  {question} {suffix} "))
+            .strip()
+            .strip("﻿")
+            .strip()
+        )
         if not raw:
             return default
         return raw.lower() in _YES
@@ -290,14 +301,14 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
             f"Binaire déjà présent ({existing.parent.name}, {version}) — le réutiliser ?"
         ):
             set_server_bin(PERSONAL_CONFIG_PATH, existing)
-            con.say(f"  ✅ config/local.toml : [server] bin = {existing}")
+            con.say(f"  [ok] config/local.toml : [server] bin = {existing}")
             report.add("binaire", "fait", f"réutilisé ({version}) → config/local.toml")
             return
 
     try:
         release = deps.fetch_release()
     except RuntimeError as exc:
-        con.say(f"  ❌ {exc}")
+        con.say(f"  [échec] {exc}")
         report.add("binaire", "echec", str(exc))
         return
 
@@ -322,7 +333,7 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
     dest_dir = RUNTIME_DIR / plan.tag
     con.say(f"  Installation dans {dest_dir} puis écriture dans config/local.toml.")
     if not con.confirm(f"Télécharger et installer ({plan.total_mb} Mo) ?"):
-        con.say("  ⏭️ Ignoré — tu peux relancer loom-setup plus tard.")
+        con.say("  [passé] Ignoré — tu peux relancer loom-setup plus tard.")
         report.add("binaire", "ignore", "téléchargement refusé")
         return
 
@@ -333,7 +344,7 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
         extracted = deps.download_and_extract(plan, RUNTIME_DIR, _cb)
     except (RuntimeError, OSError) as exc:
         con.progress_end()
-        con.say(f"  ❌ Téléchargement/extraction : {exc}")
+        con.say(f"  [échec] Téléchargement/extraction : {exc}")
         report.add("binaire", "echec", f"téléchargement : {exc}")
         return
     con.progress_end()
@@ -342,14 +353,14 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
     version = deps.verify_binary(binary) if binary else None
     if binary is None or version is None:
         con.say(
-            "  ❌ Binaire extrait mais inutilisable (--version muet) — config/local.toml "
+            "  [échec] Binaire extrait mais inutilisable (--version muet) — config/local.toml "
             "laissé intact. Vérifie l'archive ou installe à la main."
         )
         report.add("binaire", "echec", "binaire extrait mais --version muet")
         return
     set_server_bin(PERSONAL_CONFIG_PATH, binary)
     con.say(f"  Vérification --version : OK ({version})")
-    con.say(f"  ✅ config/local.toml : [server] bin = {binary}")
+    con.say(f"  [ok] config/local.toml : [server] bin = {binary}")
     report.add(
         "binaire", "fait", f"installé ({plan.tag}, {plan.backend}) → config/local.toml"
     )
@@ -367,7 +378,7 @@ def _refresh_gpu(con: Console, deps: Deps, hw, raw_cfg):
     fresh = deps.detect_hardware(server_bin)
     if fresh.has_gpu and (not hw.has_gpu or fresh.gpu_name != hw.gpu_name):
         con.say(
-            f"  🎮 GPU confirmé par le binaire : {fresh.gpu_name} "
+            f"  → GPU confirmé par le binaire : {fresh.gpu_name} "
             f"({fresh.vram_free_mb} Mo libres, backend {fresh.backend or '?'})"
         )
     return fresh
@@ -440,7 +451,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
     choice = con.ask(f"Ton choix [{default}] :", default=default)
 
     if choice == "0":
-        con.say("  ⏭️ Passé — /add-model dans le chat quand tu veux.")
+        con.say("  [passé] Passé — /add-model dans le chat quand tu veux.")
         report.add("modele", "ignore", "reporté (/add-model dans le chat)")
         return
 
@@ -453,7 +464,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
         try:
             hits = deps.search_models(query)
         except Exception as exc:  # noqa: BLE001 - HfCatalogError au message montrable
-            con.say(f"  ❌ {exc}")
+            con.say(f"  [échec] {exc}")
             report.add("modele", "ignore", "recherche impossible (hors-ligne ?)")
             return
         # Filtre par le budget de CETTE machine : inutile de proposer un 397B à
@@ -494,12 +505,12 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
         try:
             repo = resolve_entry(entry, deps.search_models, budget)
         except HfCatalogError as exc:
-            con.say(f"  ❌ {exc}")
+            con.say(f"  [échec] {exc}")
             report.add("modele", "ignore", f"entrée non résolue ({entry['label']})")
             return
         if repo is None:
             con.say(
-                f"  ❌ « {entry['label']} » introuvable sur Hugging Face "
+                f"  [échec] « {entry['label']} » introuvable sur Hugging Face "
                 "(famille disparue ?) — réessaie, ou recherche libre."
             )
             report.add("modele", "ignore", f"entrée non résolue ({entry['label']})")
@@ -509,12 +520,12 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
     try:
         files = deps.probe_repo(repo)
     except HfCatalogError as exc:
-        con.say(f"  ❌ {exc}")
+        con.say(f"  [échec] {exc}")
         report.add("modele", "ignore", f"repo injoignable ({repo})")
         return
     if files is None:
         con.say(
-            f"  ❌ Repo « {repo} » injoignable (hors-ligne, renommé ?) — réessaie plus "
+            f"  [échec] Repo « {repo} » injoignable (hors-ligne, renommé ?) — réessaie plus "
             "tard ou passe par /add-model dans le chat."
         )
         report.add("modele", "ignore", f"repo injoignable ({repo})")
@@ -522,7 +533,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
 
     quants = [f for f in files if not f.get("is_aux", f["is_mmproj"])]
     if not quants:
-        con.say(f"  ❌ Aucun GGUF exploitable dans {repo}.")
+        con.say(f"  [échec] Aucun GGUF exploitable dans {repo}.")
         report.add("modele", "ignore", f"aucun GGUF dans {repo}")
         return
     annotated = recommend_quant(quants, hw.budget_vram_mb, ram)
@@ -532,7 +543,9 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
         f"Quant recommandé : {rec['filename']} ({rec['size_mb']} Mo) — {fit_txt}. "
         "Télécharger ?"
     ):
-        con.say("  ⏭️ Passé — /add-model dans le chat pour choisir un autre quant.")
+        con.say(
+            "  [passé] Passé — /add-model dans le chat pour choisir un autre quant."
+        )
         report.add("modele", "ignore", "quant refusé")
         return
 
@@ -562,7 +575,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
     con.progress_end()
 
     if job.error:
-        con.say(f"  ❌ {job.error}")
+        con.say(f"  [échec] {job.error}")
         con.say(
             "  (model.toml déjà écrit : le téléchargement REPRENDRA au premier serve.)"
         )
@@ -573,7 +586,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
     # peut pointer un modèle du parc absent d'ici -> sélecteur UI fantôme).
     set_default_model(PERSONAL_CONFIG_PATH, model_id)
     extra = " (MoE → cpu_moe = true)" if meta.get("expert_count") else ""
-    con.say(f"  ✅ Modèle « {model_id} » installé{extra} — défaut de cette machine.")
+    con.say(f"  [ok] Modèle « {model_id} » installé{extra} — défaut de cette machine.")
     report.add("modele", "fait", f"{model_id} ({rec['filename']}, {rec['size_mb']} Mo)")
 
 
@@ -633,13 +646,13 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     server_bin = resolve_bin(bin_name)
     model = first_model_file(raw_cfg, PACKAGE_MODELS)
     if server_bin is None or model is None:
-        con.say("  ⏭️ Binaire ou modèle pas encore en place — bench sauté.")
+        con.say("  [passé] Binaire ou modèle pas encore en place — bench sauté.")
         report.add("bench", "ignore", "binaire ou modèle manquant")
         return
     bench_bin = deps.find_llama_bench(server_bin)
     if bench_bin is None:
         con.say(
-            "  🔧 llama-bench introuvable à côté du binaire — réglages par défaut "
+            "  [manuel] llama-bench introuvable à côté du binaire — réglages par défaut "
             "conservés (réinstalle via loom-setup pour l'avoir)."
         )
         report.add("bench", "manuel", "llama-bench absent de la release")
@@ -670,7 +683,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     )
     con.say("  Durée : ~2-10 min selon la machine (CPU à fond, c'est normal).")
     if not con.confirm("Lancer le bench maintenant ?"):
-        con.say("  ⏭️ Sauté — relançable à tout moment : uv run loom-setup.")
+        con.say("  [passé] Sauté — relançable à tout moment : uv run loom-setup.")
         report.add("bench", "ignore", "refusé (relançable)")
         return
 
@@ -679,13 +692,13 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         rows = deps.run_bench(bench_bin, gguf_path, threads, ngl)
     except RuntimeError as exc:
         con.progress_end()
-        con.say(f"  ❌ {exc}")
+        con.say(f"  [échec] {exc}")
         report.add("bench", "echec", str(exc))
         return
     con.progress_end()
     best = bench_mod.pick_best(rows)
     if best is None:
-        con.say("  ❌ Aucune mesure de génération exploitable.")
+        con.say("  [échec] Aucune mesure de génération exploitable.")
         report.add("bench", "echec", "sortie llama-bench vide")
         return
 
@@ -734,7 +747,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     except (RuntimeError, ValueError) as exc:
         con.progress_end()
         con.say(
-            f"  ❌ calibration échouée ({exc}) — context inchangé, relance loom-setup."
+            f"  [échec] calibration échouée ({exc}) — context inchangé, relance loom-setup."
         )
         report.add("bench", "echec", f"calibration contexte : {exc}")
         return
@@ -773,7 +786,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         f"{best['pp_ts']:.1f} t/s (threads={best['threads']}{gpu_txt})"
     )
     con.say(
-        f"  ✅ context={context} ({topo}, pente {calib['slope_kb_tok']} Ko/token "
+        f"  [ok] context={context} ({topo}, pente {calib['slope_kb_tok']} Ko/token "
         f"mesurée, vitesse validée jusqu'à {calib['valide_jusqua']} tokens)"
     )
     con.say(f"     mécanisme : {calib['mecanisme']}")
@@ -807,7 +820,7 @@ def _usage_verdict(tg_ts: float, pp_ts: float) -> list[str]:
     slow_warm = warmup_s > 120
     if not (slow_read or slow_warm):
         return []
-    lines = ["  ⚠ Verdict d'usage (mesuré, pas supposé) : ce sera lent."]
+    lines = ["  [attention] Verdict d'usage (mesuré, pas supposé) : ce sera lent."]
     if slow_warm:
         lines.append(
             f"    · prefill {pp_ts:.1f} t/s → un prompt de 4 000 tokens met "
@@ -856,7 +869,7 @@ def run(con: Console, deps: Deps) -> int:
 
 
 def ensure_utf8_stdio() -> None:
-    """Console Windows héritée (cp1252) : nos écrans utilisent ─/✅/⏭️ — on force
+    """Console Windows héritée (cp1252) : nos écrans utilisent ─/→/accents — on force
     UTF-8 avec repli, sinon UnicodeEncodeError dès la bannière quand la sortie
     est redirigée. stdin en utf-8-sig : un pipe PowerShell préfixe la 1re ligne
     du BOM UTF-8 (0xEF 0xBB 0xBF) qu'un décodage cp1252 transforme en « ï»¿1 »

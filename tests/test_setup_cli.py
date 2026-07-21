@@ -133,7 +133,7 @@ def test_parcours_complet_machine_vierge(monkeypatch, tmp_path):
     assert raw["filename"] == "m.Q4_K_M.gguf"
     assert raw["mmproj_filename"] == "mmproj-F16.gguf"
     out = "\n".join(printed)
-    assert "── Bilan ──" in out and "❌" not in out
+    assert "── Bilan ──" in out and "[échec]" not in out
 
 
 def test_relance_idempotente(monkeypatch, tmp_path):
@@ -171,7 +171,7 @@ def test_refus_utilisateur(monkeypatch, tmp_path):
     assert code == 0  # un refus n'est PAS un échec
     assert not (tmp_path / "config" / "local.toml").exists()
     out = "\n".join(printed)
-    assert "⏭️" in out
+    assert "[passé]" in out
 
 
 def test_hors_ligne(monkeypatch, tmp_path):
@@ -357,4 +357,4 @@ def test_aucun_asset_compatible(monkeypatch, tmp_path):
     code = run(con, _deps(tmp_path, fetch_release=lambda: release))
     assert code == 0  # guidage manuel n'est pas un échec
     out = "\n".join(printed)
-    assert "🔧" in out and "config/local.toml" in out
+    assert "[manuel]" in out and "config/local.toml" in out
