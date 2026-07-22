@@ -56,3 +56,16 @@ def test_no_mmap_reserve_aux_gpu_discrets():
     assert "--no-mmap" not in a
     assert "-fa" in a and "-ctk" in a
     assert "--no-mmap" in _args()  # défaut (dGPU discret) inchangé
+
+
+def test_context_par_slot_multiplie_par_n_parallel():
+    # SÉMANTIQUE : `context` = fenêtre PAR SLOT (celle que calibre le bench et
+    # que voit l'utilisateur). llama-server répartit -c sur les slots -> on
+    # multiplie au lancement. Vécu 2026-07-22 : context=65536 posé en dur pour
+    # 2 slots avait été mesuré par /rebench comme une fenêtre mono-slot -> spill
+    # (décode 0,8 t/s) et faux verdict « réduire à 16384 ».
+    a = _args(n_parallel=2)
+    assert a[a.index("-c") + 1] == "16384"  # 8192 par slot x 2
+    assert a[a.index("--parallel") + 1] == "2"
+    b = _args()
+    assert b[b.index("-c") + 1] == "8192"  # parallel 1 : inchangé
