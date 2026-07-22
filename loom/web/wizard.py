@@ -488,6 +488,14 @@ def _step_i_workflow(state, t, deps):
 
 
 def _search(query, deps):
+    # URL huggingface.co ou id org/repo collé tel quel : on court-circuite la
+    # recherche (même contrat que loom-setup, parseur partagé) — l'inventaire
+    # des quants valide le repo.
+    from loom.setup.catalog import parse_hf_repo
+
+    repo = parse_hf_repo(query)
+    if repo is not None:
+        return _list_quants(repo, deps)
     hits = deps.search_models(query)
     if not hits:
         return WizardResult(
@@ -511,11 +519,8 @@ def _step_l_query(state, t, deps):
     return _search(t, deps)
 
 
-def _step_l_repo(state, t, deps):
-    hits = state["hits"]
-    if not (t.isdigit() and 1 <= int(t) <= len(hits)):
-        return _search(t, deps)  # texte libre = nouvelle recherche
-    repo = hits[int(t) - 1]["repo_id"]
+def _list_quants(repo, deps):
+    """Étape 3 (choix du quant) pour un repo résolu — par numéro OU par URL collée."""
     files = deps.list_gguf_files(repo)
     # is_aux exclut mmproj ET mtp (repli sur is_mmproj pour un state d'avant la clé)
     weights = [f for f in files if not f.get("is_aux", f["is_mmproj"])]
@@ -548,6 +553,13 @@ def _step_l_repo(state, t, deps):
         + extra
         + "\n(réponds par un numéro — le choix reste LIBRE, même « ne tiendra pas »)",
     )
+
+
+def _step_l_repo(state, t, deps):
+    hits = state["hits"]
+    if not (t.isdigit() and 1 <= int(t) <= len(hits)):
+        return _search(t, deps)  # texte libre = nouvelle recherche
+    return _list_quants(hits[int(t) - 1]["repo_id"], deps)
 
 
 def _step_l_quant(state, t, deps):

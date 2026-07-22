@@ -512,3 +512,33 @@ def test_local_id_deja_pris_redemande():
 def test_local_kind_1_va_a_la_recherche():
     r = wizard.step({"step": "kind"}, "1", deps())
     assert r.state == {"step": "l_query"}
+
+
+def test_l_query_url_saute_la_recherche():
+    # URL/id HF collé tel quel -> pas de recherche, direct aux quants
+    # (même contrat que loom-setup, parse_hf_repo partagé).
+    d = deps(
+        files=[
+            {
+                "filename": "m.Q4_K_M.gguf",
+                "size_mb": 18000,
+                "is_mmproj": False,
+                "is_aux": False,
+            }
+        ]
+    )
+
+    def boom(q):
+        raise AssertionError("URL collée -> aucune recherche ne doit partir")
+
+    d.search_models = boom
+    r = wizard.step(
+        {"step": "l_query"},
+        "https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+        d,
+    )
+    assert r.state["step"] == "l_quant"
+    assert r.state["repo"] == "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"
+    # id org/repo nu : pareil
+    r2 = wizard.step({"step": "l_query"}, "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF", d)
+    assert r2.state["step"] == "l_quant"
