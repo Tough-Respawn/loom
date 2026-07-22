@@ -151,6 +151,29 @@ def test_rebench_deja_au_top(env, monkeypatch):
     assert "context = 4096" in (env.mdir / "model.toml").read_text(encoding="utf-8")
 
 
+def test_rebench_applique_le_verdict_isolation(env, monkeypatch):
+    # Contexte inchangé MAIS la sonde d'isolation vient de mesurer que le cache ne
+    # survit pas -> il y a bien quelque chose à appliquer (cache_isolation = true),
+    # écrit dans le model.toml en même temps que le contexte (couple mesuré ensemble).
+    calib = dict(
+        CALIB,
+        context=4096,
+        isolation=True,
+        isolation_detail="retour 590/600 tokens retraités",
+        isolation_avant=False,
+    )
+    r = _launch(env, monkeypatch, calib=calib)
+    # Drainer le flux SSE du lancement = attendre la fin du job (comme le stream réel).
+    assert "lancée" in _sse_texts(r.data)
+    txt = _wait_verdict(env)
+    assert "cache_isolation → true" in txt and "cache PERDU" in txt
+    r = env.web.post("/chat", data={"message": "oui"})
+    assert "Application" in _sse_texts(r.data)
+    toml_txt = (env.mdir / "model.toml").read_text(encoding="utf-8")
+    assert "cache_isolation = true" in toml_txt
+    assert "context = 4096" in toml_txt
+
+
 def test_rebench_echec_calibration_message_persiste(env, monkeypatch):
     _launch(env, monkeypatch, error=RuntimeError("binaire llama-server introuvable"))
     txt = _wait_verdict(env)

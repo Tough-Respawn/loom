@@ -4,6 +4,16 @@
 from __future__ import annotations
 
 
+def resolve_parallel(n_parallel: int, cache_isolation: bool) -> int:
+    """Nombre de slots EFFECTIF pour un modèle : le global [server] n_parallel,
+    monté à 2 minimum quand le bench a mesuré que le cache du modèle ne survit
+    pas à la pollution du slot (model.toml cache_isolation = true — mémoire
+    hybride/SWA exclue du prompt-cache RAM natif). Les appels annexes s'isolent
+    alors dans le 2e slot et la conversation garde son cache."""
+    base = max(1, n_parallel)
+    return max(base, 2) if cache_isolation else base
+
+
 def build_server_args(
     server_bin: str,
     model_path: str,

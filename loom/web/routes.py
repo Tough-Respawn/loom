@@ -830,10 +830,27 @@ def _run_calibration(S, spec, progress):
         cpu_moe=bool(mt.get("cpu_moe", is_moe)),
         n_cpu_moe=mt.get("n_cpu_moe"),
     )
+    # Sonde d'isolation AVANT la calibration : si le modèle exige un 2e slot,
+    # la calibration doit mesurer avec le KV réellement doublé (même séquence
+    # que loom-setup step_bench — le conseilleur simule l'exécutant).
+    progress("sonde d'isolation du cache (A -> pollution -> A)…")
+    isolation = None
+    iso_detail = ""
+    try:
+        first, back = probe.probe_isolation()
+        isolation = topo_mod.isolation_needed(first, back)
+        iso_detail = f"retour {back}/{first} tokens retraités"
+        if isolation:
+            probe.n_parallel = 2
+    except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans verdict
+        pass
     progress(f"topologie {topo}, budget {budget} Mo")
     calib = topo_mod.calibrate(
         probe, meta, topology=topo, budget_mb=budget, progress=progress
     )
+    calib["isolation"] = isolation
+    calib["isolation_detail"] = iso_detail
+    calib["isolation_avant"] = bool(mt.get("cache_isolation", False))
     return calib, gguf
 
 
@@ -847,23 +864,46 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
         )
         current = int(spec.get("context") or S.context_window or 0)
         new = calib["context"]
-        if new == current:
+        iso = calib.get("isolation")
+        iso_change = iso is not None and iso != calib.get("isolation_avant", False)
+        if iso is None:
+            iso_line = "sonde d'isolation : illisible (réglage inchangé)."
+        elif iso:
+            iso_line = (
+                f"sonde d'isolation : cache PERDU après pollution du slot "
+                f"({calib['isolation_detail']}) -> 2 slots pour ce modèle."
+            )
+        else:
+            iso_line = (
+                f"sonde d'isolation : cache survit à la pollution "
+                f"({calib['isolation_detail']}) -> 1 slot suffit."
+            )
+        if new == current and not iso_change:
             msg = (
                 f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
-                f"mesuré {new} ({calib['mecanisme']}). Rien à changer."
+                f"mesuré {new} ({calib['mecanisme']}).\n{iso_line}\n"
+                "Rien à changer."
             )
             wiz = None
         else:
-            sens = (
-                "amélioration"
-                if new > current
-                else "RÉDUCTION (l'actuel déborde le budget mesuré)"
-            )
+            changes = []
+            if new != current:
+                sens = (
+                    "amélioration"
+                    if new > current
+                    else "RÉDUCTION (l'actuel déborde le budget mesuré)"
+                )
+                changes.append(f"contexte {current} → {new} ({sens})")
+            if iso_change:
+                changes.append(
+                    "cache_isolation → "
+                    + ("true (2 slots)" if iso else "false (1 slot)")
+                )
             msg = (
-                f"Verdict pour « {mid} » : {sens} — contexte {current} → {new} "
+                f"Verdict pour « {mid} » : " + " · ".join(changes) + "\n"
                 f"(pente {calib['slope_kb_tok']} Ko/token, vitesse validée "
-                f"jusqu'à {calib['valide_jusqua']} tokens).\n"
-                f"mécanisme : {calib['mecanisme']}\n"
+                f"jusqu'à {calib['valide_jusqua']} tokens)\n"
+                f"mécanisme : {calib['mecanisme']}\n{iso_line}\n"
                 "Tape « oui » pour appliquer — toute autre réponse laisse tout "
                 "en l'état."
             )
@@ -872,6 +912,11 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 "id": mid,
                 "context": new,
                 "mecanisme": calib["mecanisme"],
+                # Verdict d'isolation appliqué EN MÊME TEMPS que le contexte : le
+                # contexte a été mesuré avec ce nombre de slots-là — appliquer l'un
+                # sans l'autre recréerait un couple (fenêtre, KV) jamais mesuré.
+                "isolation": iso if iso_change else None,
+                "isolation_detail": calib.get("isolation_detail", ""),
             }
     except (RuntimeError, ValueError) as exc:
         msg = f"❌ Recalibration de « {mid} » échouée : {exc} — config inchangée."
@@ -1014,16 +1059,23 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
         else:
             import tomllib
 
-            from loom.setup.cli import _set_model_context
+            from loom.setup.cli import _set_model_cache_isolation, _set_model_context
 
             mdir = Path(spec["dir"])
             mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
-            _set_model_context(mdir / mt["filename"], a["context"], a["mecanisme"])
+            gguf = mdir / mt["filename"]
+            _set_model_context(gguf, a["context"], a["mecanisme"])
+            applied = f"contexte {a['context']}"
+            if a.get("isolation") is not None:
+                _set_model_cache_isolation(
+                    gguf, a["isolation"], a.get("isolation_detail", "")
+                )
+                applied += f" + cache_isolation={'true' if a['isolation'] else 'false'}"
             spec["context"] = a["context"]
             S.model_contexts[a["id"]] = a["context"]
             _regen_swap_yaml(S)
             extra_reply = (
-                f"\n✅ contexte {a['context']} écrit dans le model.toml de "
+                f"\n✅ {applied} écrit dans le model.toml de "
                 f"« {a['id']} » — effet au prochain chargement du modèle."
             )
     elif res.action and res.action["kind"] == "upsert_remote":

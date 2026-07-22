@@ -317,6 +317,11 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
     class _FakeProbe:
         def __init__(self, **kw):
             self.kw = kw
+            self.n_parallel = kw.get("n_parallel", 1)
+
+        def probe_isolation(self, ctx=4096):
+            # Cache survivant à la pollution (modèle classique) : retour ~= suffixe.
+            return 600, 4
 
         def run(self, ctx, depth):
             from loom.setup.topology import ProbeResult
@@ -360,7 +365,11 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         or "capacité" in local["bench"]["context_mecanisme"]
     )
     assert local["bench"]["tg_ts"] == 3.4
+    # Sonde d'isolation : verdict MESURÉ (survit : 4/600) écrit dans le model.toml.
+    mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
+    assert mt["cache_isolation"] is False
     out = "\n".join(printed)
+    assert "cache survit à la pollution" in out
     assert "3.4 t/s" in out.replace(",", ".") or "3,4 t/s" in out
 
     # relance : la table [bench] existe -> déjà calibré, rien ne tourne
