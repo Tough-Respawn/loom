@@ -220,6 +220,7 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         context=cfg.context,
         override_n_gpu_layers=cfg.override_n_gpu_layers,
         slot_save_dir=slots_dir(),
+        n_parallel=cfg.n_parallel,
     )
     write_swap_yaml(swap, SWAP_YAML)
     args = [
@@ -263,6 +264,7 @@ def regenerate_swap_yaml(
             context=cfg.context,
             override_n_gpu_layers=cfg.override_n_gpu_layers,
             slot_save_dir=slots_dir(),
+            n_parallel=cfg.n_parallel,
         )
         write_swap_yaml(swap, out_path)
         return Path(out_path)

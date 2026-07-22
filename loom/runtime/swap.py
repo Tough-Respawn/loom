@@ -21,6 +21,7 @@ def _model_cmd(
     context: int,
     override_n_gpu_layers: int | None = None,
     slot_save_dir: str | None = None,
+    n_parallel: int = 1,
 ) -> str:
     base = (
         model.dir or models_dir
@@ -55,6 +56,7 @@ def _model_cmd(
         slot_save_dir=slot_save_dir,
         ubatch=model.ubatch,
         batch=model.batch,
+        n_parallel=n_parallel,
     )
     return " ".join(str(a) for a in args).replace("\\", "/")
 
@@ -67,6 +69,7 @@ def build_swap_config(
     context: int,
     override_n_gpu_layers: int | None = None,
     slot_save_dir: str | None = None,
+    n_parallel: int = 1,
 ) -> dict:
     return {
         "models": {
@@ -79,6 +82,7 @@ def build_swap_config(
                     context,
                     override_n_gpu_layers,
                     slot_save_dir=slot_save_dir,
+                    n_parallel=n_parallel,
                 )
             }
             for m in models

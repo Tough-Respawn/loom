@@ -40,8 +40,13 @@ def build_server_args(
         "127.0.0.1",
         "--port",
         str(port),
+        # SÉMANTIQUE : `context` = fenêtre PAR SLOT (celle que le bench calibre
+        # et que l'utilisateur voit). llama-server répartit -c entre les slots
+        # -> on multiplie ici. Vécu 2026-07-22 : un -c doublé posé en dur dans
+        # la config avait été re-mesuré par /rebench comme une fenêtre mono-slot
+        # -> spill mémoire (0,8 t/s) et faux verdict de réduction.
         "-c",
-        str(context),
+        str(context * max(1, n_parallel)),
         "--parallel",
         str(max(1, n_parallel)),
         "-ngl",
