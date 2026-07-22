@@ -21,6 +21,8 @@ _LABELS = {
     "binaire": "Binaire",
     "modele": "Modèle",
     "bench": "Réglages",
+    "swap": "Routeur",
+    "outillage": "Outillage",
 }
 
 

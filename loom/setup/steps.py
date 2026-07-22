@@ -87,6 +87,14 @@ def installed_model_ids(raw_cfg: dict, package_models: Path) -> list[str]:
     return sorted({mid for mid, _, _ in _model_folders(raw_cfg, package_models)})
 
 
+def swap_bin_status(raw_cfg: dict) -> tuple[bool, str]:
+    """(présent, chemin/nom) du binaire llama-swap configuré — même contrat que
+    server_bin_status. Nécessaire dès 2 modèles locaux (mode routeur)."""
+    bin_name = raw_cfg.get("server", {}).get("swap_bin", "llama-swap")
+    present = Path(bin_name).is_file() or shutil.which(bin_name) is not None
+    return present, bin_name
+
+
 def incomplete_models(
     raw_cfg: dict, package_models: Path
 ) -> list[tuple[str, Path, dict]]:
@@ -186,6 +194,16 @@ def set_server_bin(local_path: str | Path, bin_path: str | Path) -> None:
     """[server] bin = <chemin absolu, slashes avant> dans config/local.toml."""
     _set_local_value(
         local_path, "server", "bin", str(Path(bin_path).resolve()).replace("\\", "/")
+    )
+
+
+def set_swap_bin(local_path: str | Path, bin_path: str | Path) -> None:
+    """[server] swap_bin = <chemin absolu, slashes avant> dans config/local.toml."""
+    _set_local_value(
+        local_path,
+        "server",
+        "swap_bin",
+        str(Path(bin_path).resolve()).replace("\\", "/"),
     )
 
 

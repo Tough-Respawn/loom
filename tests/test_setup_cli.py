@@ -46,6 +46,22 @@ _RELEASE = {
     ],
 }
 
+_SWAP_RELEASE = {
+    "tag_name": "v241",
+    "assets": [
+        {
+            "name": "llama-swap_241_linux_amd64.tar.gz",
+            "browser_download_url": "https://x/l.tar.gz",
+            "size": 8 * 1024 * 1024,
+        },
+        {
+            "name": "llama-swap_241_windows_amd64.zip",
+            "browser_download_url": "https://x/w.zip",
+            "size": 8 * 1024 * 1024,
+        },
+    ],
+}
+
 _FILES = [
     {
         "filename": "m.Q4_K_M.gguf",
@@ -88,6 +104,7 @@ def _deps(tmp_path, **over):
         dest = dest_root / plan.tag
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "llama-server.exe").write_bytes(b"")
+        (dest / "llama-swap.exe").write_bytes(b"")
         progress_cb(plan.assets[0]["name"], 1, 2)
         return dest
 
@@ -96,6 +113,7 @@ def _deps(tmp_path, **over):
         detect_hardware=lambda server_bin=None: _HW,
         ram_available_mb=lambda: 24_000,
         fetch_release=lambda: _RELEASE,
+        fetch_swap_release=lambda: _SWAP_RELEASE,
         download_and_extract=fake_download,
         verify_binary=lambda p: "b5321" if p else None,
         probe_repo=lambda repo: list(_FILES),
@@ -468,4 +486,134 @@ def test_recherche_accepte_une_url_hf(monkeypatch, tmp_path):
         {},
     )
     assert probed == ["org/Mon-Repo-GGUF"]
+    assert report.outcomes[-1].status == "fait"
+
+
+# ── Routeur multi-modèles (llama-swap) : provisionné D'OFFICE par le setup ──
+
+
+def test_step_swap_installe_et_configure(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+
+    def fake_dl(plan, dest_root, progress_cb):
+        dest = dest_root / plan.tag
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "llama-swap.exe").write_bytes(b"")
+        return dest
+
+    exe = tmp_path / "bin" / "llama-server.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"")
+    raw = {"server": {"bin": str(exe)}}
+    con, printed = _console()
+    report = cli.SetupReport()
+    cli.step_swap(
+        con,
+        report,
+        _deps(
+            tmp_path,
+            fetch_swap_release=lambda: _SWAP_RELEASE,
+            download_and_extract=fake_dl,
+        ),
+        _PLAT,
+        raw,
+    )
+    out = "\n".join(printed)
+    assert "[ok]" in out and "swap_bin" in out
+    local = tomllib.loads(
+        (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
+    )
+    assert local["server"]["swap_bin"].endswith("llama-swap.exe")
+    assert report.outcomes[-1].status == "fait"
+
+    # relance : configuré -> rien à faire (idempotent)
+    raw = {"server": {"bin": str(exe), "swap_bin": local["server"]["swap_bin"]}}
+    con2, printed2 = _console()
+    cli.step_swap(con2, report, _deps(tmp_path), _PLAT, raw)
+    assert "rien à faire" in "\n".join(printed2)
+
+
+def test_step_swap_echec_reseau_non_bloquant(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+
+    def offline():
+        raise RuntimeError("GitHub injoignable")
+
+    exe = tmp_path / "bin" / "llama-server.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"")
+    con, printed = _console()
+    report = cli.SetupReport()
+    cli.step_swap(
+        con,
+        report,
+        _deps(tmp_path, fetch_swap_release=offline),
+        _PLAT,
+        {"server": {"bin": str(exe)}},
+    )
+    out = "\n".join(printed)
+    assert "[attention]" in out and "multi-modèles" in out
+    assert report.outcomes[-1].status == "manuel"
+
+
+def test_select_swap_asset_par_plateforme():
+    from loom.setup.llama_release import select_swap_asset
+
+    plan = select_swap_asset(_SWAP_RELEASE, "windows", "x64")
+    assert plan is not None and plan.assets[0]["name"].endswith("windows_amd64.zip")
+    plan_l = select_swap_asset(_SWAP_RELEASE, "linux", "x64")
+    assert plan_l.assets[0]["name"].endswith("linux_amd64.tar.gz")
+    assert select_swap_asset(_SWAP_RELEASE, "macos", "arm64") is None
+
+
+def test_step_tooling_constate_et_conseille(tmp_path):
+    checks = [
+        {
+            "name": "rg (ripgrep)",
+            "present": False,
+            "role": "search_text",
+            "hint": "winget install ripgrep",
+            "autofix": None,
+        },
+        {
+            "name": "docker",
+            "present": True,
+            "role": "web_search",
+            "hint": "-",
+            "autofix": None,
+        },
+    ]
+    con, printed = _console()
+    report = cli.SetupReport()
+    cli.step_tooling(con, report, _deps(tmp_path, tool_checks=lambda: checks))
+    out = "\n".join(printed)
+    assert "[attention]" in out and "rg (ripgrep)" in out and "winget" in out
+    assert report.outcomes[-1].status == "manuel"
+
+
+def test_step_tooling_installe_playwright(tmp_path):
+    state = {"installed": False}
+
+    def checks():
+        return [
+            {
+                "name": "navigateur Playwright (chromium)",
+                "present": state["installed"],
+                "role": "check_page",
+                "hint": "-",
+                "autofix": "playwright",
+            }
+        ]
+
+    def install():
+        state["installed"] = True
+        return True, "chromium installé"
+
+    con, printed = _console(answers=["o"])
+    report = cli.SetupReport()
+    cli.step_tooling(
+        con, report, _deps(tmp_path, tool_checks=checks, install_playwright=install)
+    )
+    out = "\n".join(printed)
+    assert "[ok] navigateur Playwright installé" in out
     assert report.outcomes[-1].status == "fait"

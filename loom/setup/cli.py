@@ -3,8 +3,12 @@
 
 Quatre étapes, chacune sur le même contrat HITL : état constaté → proposition
 EXPLIQUÉE (quoi, où, quelle taille) → confirmation → action → résultat.
-1. Détection (OS/GPU/RAM) · 2. Binaire llama.cpp · 3. Modèle qui fit ·
-4. Bench du matériel → meilleurs réglages écrits dans config/local.toml.
+1. Détection (OS/GPU/RAM) · 2. Binaire llama.cpp + routeur llama-swap +
+   outillage agent (Playwright/rg/npx/docker — constaté, installé si possible) ·
+3. Modèle qui fit · 4. Bench du matériel → réglages écrits dans config/local.toml.
+PRINCIPE (vécu 2026-07-22, llama-swap jamais provisionné -> crash au 2e modèle) :
+tout ce dont Loom a besoin pour fonctionner est installé ou constaté ICI —
+jamais découvert par une panne.
 Tout ce qui s'affiche part aussi dans var/logs/setup.log ; le bilan final
 récapitule. Relançable : ne refait que ce qui manque."""
 
@@ -32,6 +36,7 @@ from loom.runtime.platform_info import detect as detect_platform
 from loom.runtime.term import colorize, supports_color
 from loom.setup import bench as bench_mod
 from loom.setup import llama_release
+from loom.setup import tooling as tooling_mod
 from loom.setup import topology as topo_mod
 from loom.setup.catalog import (
     budget_mb,
@@ -42,7 +47,12 @@ from loom.setup.catalog import (
     probe_repo,
     resolve_entry,
 )
-from loom.setup.llama_release import local_arch, select_assets
+from loom.setup.llama_release import (
+    find_llama_swap,
+    local_arch,
+    select_assets,
+    select_swap_asset,
+)
 from loom.setup.report import SetupReport
 from loom.setup.steps import (
     first_model_file,
@@ -55,6 +65,8 @@ from loom.setup.steps import (
     set_default_model,
     set_local_values,
     set_server_bin,
+    set_swap_bin,
+    swap_bin_status,
 )
 
 # Mêmes repères que serve.py : ce fichier vit dans loom/setup/, la racine du
@@ -211,6 +223,9 @@ class Deps:
     ram_available_mb: object = ram_available_mb
     detect_platform: object = detect_platform
     fetch_release: object = None  # () -> dict (client httpx construit ici)
+    fetch_swap_release: object = None  # () -> dict (release llama-swap)
+    tool_checks: object = tooling_mod.tool_checks
+    install_playwright: object = tooling_mod.install_playwright_browser
     download_and_extract: object = None  # (plan, dest_root, progress_cb) -> Path
     find_llama_server: object = llama_release.find_llama_server
     verify_binary: object = llama_release.verify_binary
@@ -230,6 +245,8 @@ class Deps:
     def __post_init__(self):
         if self.fetch_release is None:
             self.fetch_release = _real_fetch_release
+        if self.fetch_swap_release is None:
+            self.fetch_swap_release = _real_fetch_swap_release
         if self.download_and_extract is None:
             self.download_and_extract = _real_download_and_extract
         if self.search_models is None:
@@ -245,6 +262,15 @@ def _real_fetch_release() -> dict:
 
     with httpx.Client(timeout=30) as client:
         return llama_release.fetch_latest_release(client)
+
+
+def _real_fetch_swap_release() -> dict:
+    import httpx
+
+    with httpx.Client(timeout=30) as client:
+        return llama_release.fetch_latest_release(
+            client, url=llama_release.SWAP_RELEASES_URL
+        )
 
 
 def _real_download_and_extract(plan, dest_root, progress_cb):
@@ -389,6 +415,94 @@ def _refresh_gpu(con: Console, deps: Deps, hw, raw_cfg):
             f"({fresh.vram_free_mb} Mo libres, backend {fresh.backend or '?'})"
         )
     return fresh
+
+
+def step_swap(con: Console, report: SetupReport, deps: Deps, plat, raw_cfg):
+    """Routeur multi-modèles (llama-swap), provisionné D'OFFICE avec le binaire.
+    Vécu 2026-07-22 : jamais installé par le setup, la bascule mono->multi au
+    2e /add-model plantait le serve au démarrage suivant (« binaire llama-swap
+    introuvable »). Best-effort : un échec n'empêche pas le mono-modèle."""
+    # Pas de routeur sans serveur : si llama-server a été refusé/raté, on ne
+    # télécharge rien et on n'écrit pas de config.
+    server_present, _ = server_bin_status(raw_cfg)
+    if not server_present:
+        report.add("swap", "ignore", "reporté (llama-server absent)")
+        return
+    present, bin_name = swap_bin_status(raw_cfg)
+    if present:
+        con.say(f"  Routeur multi-modèles : {bin_name} → rien à faire.")
+        report.add("swap", "ok", f"déjà en place ({bin_name})")
+        return
+    try:
+        release = deps.fetch_swap_release()
+    except RuntimeError as exc:
+        con.say(
+            f"  [attention] llama-swap non installé ({exc}) — le multi-modèles "
+            "sera indisponible (un seul modèle local à la fois)."
+        )
+        report.add("swap", "manuel", "téléchargement impossible")
+        return
+    plan = select_swap_asset(release, plat.key, local_arch())
+    if plan is None:
+        con.say("  [attention] aucun asset llama-swap pour cette plateforme.")
+        report.add("swap", "manuel", "aucun asset compatible")
+        return
+    con.say(
+        f"  Routeur multi-modèles : installation de llama-swap ({plan.total_mb} Mo)…"
+    )
+    try:
+        extracted = deps.download_and_extract(
+            plan, RUNTIME_DIR.parent / "llama-swap", lambda *a: None
+        )
+    except (RuntimeError, OSError) as exc:
+        con.say(f"  [échec] téléchargement llama-swap : {exc}")
+        report.add("swap", "echec", f"téléchargement : {exc}")
+        return
+    binary = find_llama_swap(extracted)
+    if binary is None:
+        con.say("  [échec] archive llama-swap extraite mais binaire introuvable.")
+        report.add("swap", "echec", "binaire absent de l'archive")
+        return
+    set_swap_bin(PERSONAL_CONFIG_PATH, binary)
+    con.say(f"  [ok] config/local.toml : [server] swap_bin = {binary}")
+    report.add("swap", "fait", f"installé ({plan.tag}) → config/local.toml")
+
+
+def step_tooling(con: Console, report: SetupReport, deps: Deps):
+    """Outillage des outils de l'agent (dégradable, jamais bloquant) : constat
+    de chaque dépendance externe + installation de ce qui l'est (navigateur
+    Playwright). Même philosophie que llama-swap : tout ce dont Loom a besoin
+    est provisionné/constaté par le setup, pas découvert par une panne."""
+    checks = deps.tool_checks()
+    missing = [c for c in checks if not c["present"]]
+    if not missing:
+        con.say("  Outillage agent : complet → rien à faire.")
+        report.add("outillage", "ok", "complet")
+        return
+    for c in checks:
+        if c["present"]:
+            continue
+        if c.get("autofix") == "playwright":
+            if con.confirm(
+                "Navigateur Playwright absent (check_page/check_interactive). "
+                "L'installer (~130 Mo) ?"
+            ):
+                con.progress("playwright install chromium…")
+                ok, detail = deps.install_playwright()
+                con.progress_end()
+                if ok:
+                    con.say("  [ok] navigateur Playwright installé.")
+                    continue
+                con.say(f"  [échec] installation Playwright : {detail}")
+            else:
+                con.say("  [passé] navigateur Playwright — check_page dégradé.")
+            continue
+        con.say(f"  [attention] {c['name']} absent — {c['role']}.\n    -> {c['hint']}")
+    still = [c["name"] for c in deps.tool_checks() if not c["present"]]
+    if still:
+        report.add("outillage", "manuel", f"manquant : {', '.join(still)}")
+    else:
+        report.add("outillage", "fait", "complété")
 
 
 def _offer_free_ram(con: Console, deps: Deps, hw, ram: int) -> int:
@@ -947,6 +1061,9 @@ def run(con: Console, deps: Deps) -> int:
         raw_cfg = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
         step_binary(con, report, deps, plat, hw, raw_cfg)
         # Relire la config entre chaque étape : la précédente a pu la modifier.
+        raw_cfg = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
+        step_swap(con, report, deps, plat, raw_cfg)
+        step_tooling(con, report, deps)
         raw_cfg = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
         hw = _refresh_gpu(con, deps, hw, raw_cfg)
         step_model(con, report, deps, hw, ram, raw_cfg)
