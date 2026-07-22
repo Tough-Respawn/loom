@@ -1965,11 +1965,12 @@ class LoomClient:
 
         if self.is_remote(model):
             return False  # distant : cache géré par le provider, pas de slot local
-        # Interrupteur config ([server] slot_kv = false) : sur les modèles à
-        # mémoire hybride, le restore de llama-server répond 200 mais tue le
-        # cache (checkpoints effacés) -> on coupe le mécanisme, n_parallel = 2
-        # protège la conversation à la place (cf. config.py).
-        if not getattr(self, "slot_kv_enabled", True):
+        # Interrupteur config ([server] slot_kv, OFF par défaut depuis 2026-07-22) :
+        # sur les modèles à mémoire hybride, le restore de llama-server répond 200
+        # mais tue le cache (checkpoints effacés) ; sur les classiques le prompt-cache
+        # RAM natif rend le save inutile (0 token capturé). La conversation est
+        # protégée par le cache natif + l'isolation 2e slot (cf. config.py).
+        if not getattr(self, "slot_kv_enabled", False):
             return False
         key = model or "(local)"
         if key in self._slot_broken:

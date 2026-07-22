@@ -9,8 +9,15 @@
 # le plus grand cache KV qui tient en RAM sans swap) -> config/local.toml.
 context = 8192
 
-# Mono-flux : 1 slot llama-server = tout le pool KV
+# Mono-flux : 1 slot llama-server = tout le pool KV. Par MODÈLE, la sonde du bench
+# peut monter à 2 (model.toml cache_isolation = true : cache qui ne survit pas à la
+# pollution du slot -> les appels annexes s'isolent dans le 2e slot).
 n_parallel = 1
+
+# Cache souverain (save/restore du slot KV par tour) : OFF — nuisible (hybrides),
+# inutile (prompt-cache RAM natif) ou cassé (save qui pend) sur llama-server récent.
+# Remets true uniquement pour un vieux llama-server sans --cache-ram (cf. config.py).
+slot_kv = false
 
 # Marge VRAM hors couches GPU ; trop bas -> spill mémoire partagée (surveiller nvidia-smi)
 gpu_kv_headroom_mb = 640

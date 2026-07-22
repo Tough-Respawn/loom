@@ -20,7 +20,7 @@ from loom.runtime.hardware import (
 )
 from loom.runtime.models_fetch import ModelUnavailable, ensure_model
 from loom.runtime.ngl import resolve_ngl
-from loom.runtime.server_args import build_server_args
+from loom.runtime.server_args import build_server_args, resolve_parallel
 from loom.runtime.swap import build_swap_config, write_swap_yaml
 
 # serve.py vit dans loom/runtime/ : on remonte de DEUX niveaux pour pointer la racine
@@ -126,7 +126,7 @@ def build_launch(
         mmproj_path=mmproj_path,
         gpu_tuning=profile.has_gpu,
         unified_memory=not profile.vram_is_discrete,
-        n_parallel=cfg.n_parallel,
+        n_parallel=resolve_parallel(cfg.n_parallel, cfg.model.cache_isolation),
         cpu_moe=cfg.model.cpu_moe,
         n_cpu_moe=cfg.model.n_cpu_moe,
         slot_save_dir=slots_dir(),
