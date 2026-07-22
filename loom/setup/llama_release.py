@@ -20,6 +20,13 @@ from pathlib import Path
 from loom.utils import explain_network_error
 
 RELEASES_URL = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+# Routeur multi-modèles : provisionné D'OFFICE par le setup (vécu 2026-07-22 :
+# jamais installé, la bascule mono->multi au 2e /add-model plantait le serve).
+SWAP_RELEASES_URL = "https://api.github.com/repos/mostlygeek/llama-swap/releases/latest"
+
+# Nommage des assets llama-swap : llama-swap_<ver>_<os>_<arch>.(zip|tar.gz)
+_SWAP_OS = {"windows": "windows", "linux": "linux", "macos": "darwin"}
+_SWAP_ARCH = {"x64": "amd64", "arm64": "arm64"}
 
 # Matrice (os, gpu) -> regex d'assets par ordre de PRÉFÉRENCE. Clé "cudart" :
 # compagnon OBLIGATOIRE (DLL CUDA à poser à côté du binaire) — absent -> pas
@@ -86,14 +93,14 @@ def local_arch() -> str:
     return "arm64" if m in ("arm64", "aarch64") else "x64"
 
 
-def fetch_latest_release(client) -> dict:
+def fetch_latest_release(client, url: str = RELEASES_URL) -> dict:
     """Dernière release stable (une SEULE requête API — quota anonyme 60/h).
 
     `client` : httpx.Client injecté (fake dans les tests). Lève RuntimeError
     au message montrable sur rate-limit ou réseau coupé."""
     try:
         resp = client.get(
-            RELEASES_URL,
+            url,
             headers={
                 "Accept": "application/vnd.github+json",
                 "User-Agent": "loom-setup",
@@ -115,7 +122,7 @@ def fetch_latest_release(client) -> dict:
             "réessaie dans une heure, ou installe llama.cpp à la main."
         )
     if resp.status_code != 200:
-        raise RuntimeError(f"GitHub a répondu {resp.status_code} sur {RELEASES_URL}.")
+        raise RuntimeError(f"GitHub a répondu {resp.status_code} sur {url}.")
     return resp.json()
 
 
@@ -208,6 +215,41 @@ def _extract(archive: Path, dest: Path) -> None:
     else:
         with zipfile.ZipFile(archive) as zf:
             zf.extractall(dest)
+
+
+def select_swap_asset(release: dict, os_key: str, arch: str) -> AssetPlan | None:
+    """Plan de téléchargement du binaire llama-swap pour cette plateforme, ou None
+    si la release n'a pas d'asset correspondant (nommage _<os>_<arch>.)."""
+    want = f"_{_SWAP_OS.get(os_key, os_key)}_{_SWAP_ARCH.get(arch, arch)}."
+    tag = release.get("tag_name", "swap")
+    for a in release.get("assets", []):
+        if want in a.get("name", ""):
+            return AssetPlan(
+                tag=f"llama-swap-{tag}",
+                backend="router",
+                reason="routeur multi-modèles (2 modèles locaux et plus)",
+                assets=[
+                    {
+                        "name": a["name"],
+                        "url": a["browser_download_url"],
+                        "size_mb": max(1, int(a.get("size", 0)) // (1024 * 1024)),
+                    }
+                ],
+            )
+    return None
+
+
+def find_llama_swap(root: str | Path) -> Path | None:
+    """Cherche llama-swap(.exe) sous root — même contrat que find_llama_server."""
+    root = Path(root)
+    if not root.is_dir():
+        return None
+    for p in sorted(root.rglob("llama-swap*")):
+        if p.is_file() and p.stem == "llama-swap" and p.suffix in ("", ".exe"):
+            if p.suffix == "":
+                p.chmod(p.stat().st_mode | 0o755)
+            return p
+    return None
 
 
 def find_llama_server(root: str | Path) -> Path | None:
