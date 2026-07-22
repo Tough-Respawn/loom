@@ -109,6 +109,14 @@ class ModelConfig:
     # gros, à valider par modèle. None = défauts serveur (512/2048).
     ubatch: int | None = None
     batch: int | None = None
+    # Isolation du cache de conversation par 2e slot : True quand la sonde du bench
+    # a MESURÉ que le cache de ce modèle ne survit pas à la pollution du slot par un
+    # autre prompt (mémoire hybride/SWA, exclue du prompt-cache RAM natif de
+    # llama-server -> re-prefill total au retour). serve monte alors --parallel à 2 :
+    # les appels annexes (titre, reflect, dispatch) s'isolent dans le 2e slot par
+    # similarité de préfixe et la conversation garde son cache (validé 2026-07-21 :
+    # 74 s -> 4-6 s par tour sur ornith). Coût : cache KV x2 (-c est multiplié).
+    cache_isolation: bool = False
     # Dossier du modèle (loom/models/<id>/) : porte le GGUF, le mmproj et profile.md.
     # Rempli par la découverte ; les chemins GGUF se résolvent contre lui.
     dir: str = ""
@@ -180,13 +188,16 @@ class RuntimeConfig:
     # sélecteur. Vide par défaut (tout-local) ; déclarés dans config/local.toml.
     remote_models: list[RemoteModelConfig] = field(default_factory=list)
     n_parallel: int = 1
-    # Cache souverain (save/restore du slot KV par tour). À DÉSACTIVER quand le
-    # restore de llama-server est inutilisable : sur les modèles à MÉMOIRE HYBRIDE
-    # (qwen35moe/ornith), restore efface les checkpoints sans les recréer -> le
-    # tour suivant re-préfille TOUT (66 s mesurés, 2026-07-21). Le remplacement :
-    # n_parallel = 2 (les appels annexes s'isolent dans le 2e slot, le cache de la
-    # conversation survit naturellement — validé par mesure : cached 35/52).
-    slot_kv: bool = True
+    # Cache souverain (save/restore du slot KV par tour) — OFF par défaut depuis le
+    # 2026-07-22 : sur llama-server récent (b10075+) il est soit nuisible (mémoire
+    # HYBRIDE : restore efface les checkpoints -> re-prefill TOTAL chaque tour, 66 s
+    # mesurés), soit inutile (modèles classiques : le prompt-cache RAM natif
+    # --cache-ram protège déjà, le save capture 0 token), soit cassé (save qui PEND
+    # sur le parc CUDA, 502). La protection du cache de conversation passe par le
+    # prompt-cache natif et, pour les modèles qui y échappent, par l'isolation des
+    # appels annexes dans un 2e slot (model.toml cache_isolation, mesuré au bench).
+    # True = réactiver l'ancien mécanisme (vieux llama-server sans cache RAM natif).
+    slot_kv: bool = False
     # Marge VRAM (Mo) réservée hors couches offloadées : couvre le cache KV + les buffers
     # de calcul. Plus elle est BASSE, plus on offloade de couches sur GPU (perf), mais trop
     # bas -> débordement en mémoire partagée (Windows) qui écroule tout. À régler par machine.
@@ -233,6 +244,7 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         context=d.get("context"),
         ubatch=d.get("ubatch"),
         batch=d.get("batch"),
+        cache_isolation=bool(d.get("cache_isolation", False)),
         dir=d.get("dir", ""),
         description=str(d.get("description", "") or ""),
     )
@@ -434,7 +446,7 @@ def load_config(
         server_bin=s["bin"],
         swap_bin=s.get("swap_bin", "llama-swap"),
         n_parallel=int(s.get("n_parallel", 1)),
-        slot_kv=bool(s.get("slot_kv", True)),
+        slot_kv=bool(s.get("slot_kv", False)),
         gpu_kv_headroom_mb=int(s.get("gpu_kv_headroom_mb", 1024)),
         override_n_gpu_layers=o.get("n_gpu_layers"),
         override_threads=o.get("threads"),

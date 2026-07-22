@@ -822,6 +822,31 @@ def _set_model_context(gguf_path: Path, context: int, mecanisme: str) -> None:
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> None:
+    """Écrit le verdict MESURÉ de la sonde d'isolation dans le model.toml (vérité
+    par modèle) : true = le cache ne survit pas à la pollution du slot -> serve
+    monte --parallel à 2 pour ce modèle. false documente « sondé, pas nécessaire »
+    (différent de « jamais sondé » = ligne absente)."""
+    p = Path(gguf_path).parent / "model.toml"
+    if not p.is_file():
+        return
+    lines = p.read_text(encoding="utf-8").splitlines()
+    stamp = f"# cache_isolation sondé par le bench (A -> pollution -> A) — {detail}"
+    new_line = f"cache_isolation = {'true' if needed else 'false'}"
+    for i, line in enumerate(lines):
+        code = line.split("#")[0].strip()
+        if code.replace(" ", "").startswith("cache_isolation="):
+            lines[i] = new_line
+            if i == 0 or not lines[i - 1].strip().startswith("# cache_isolation sondé"):
+                lines.insert(i, stamp)
+            else:
+                lines[i - 1] = stamp
+            break
+    else:
+        lines += ["", stamp, new_line]
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     """[4/4] Bench du matériel avec le VRAI modèle : mesure -t (et -ngl si backend
     GPU), calcule le contexte qui tient en RAM, écrit le tout dans local.toml."""
@@ -937,6 +962,34 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         cpu_moe=bool(model_toml.get("cpu_moe", is_moe)),
         n_cpu_moe=model_toml.get("n_cpu_moe"),
     )
+    # ── Sonde d'isolation du cache AVANT la calibration : si ce modèle exige un
+    # 2e slot (cache hors du prompt-cache RAM natif -> perdu à chaque appel
+    # annexe), la calibration doit mesurer mémoire ET débits avec le KV
+    # réellement doublé — le conseilleur simule l'exécutant (P2).
+    con.progress("sonde d'isolation du cache (A -> pollution -> A)…")
+    isolation: bool | None = None
+    iso_detail = ""
+    try:
+        first, back = probe.probe_isolation()
+        isolation = topo_mod.isolation_needed(first, back)
+        iso_detail = f"retour {back}/{first} tokens retraités"
+    except Exception as exc:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
+        con.progress_end()
+        con.say(
+            f"  [attention] sonde d'isolation illisible ({exc}) — verdict non écrit."
+        )
+    else:
+        con.progress_end()
+        if isolation:
+            probe.n_parallel = 2
+            con.say(
+                f"  [attention] cache PERDU après pollution du slot ({iso_detail}) "
+                "-> isolation par 2e slot (--parallel 2 pour ce modèle, KV x2)."
+            )
+        else:
+            con.say(
+                f"  [ok] cache survit à la pollution ({iso_detail}) — 1 slot suffit."
+            )
     con.say(
         f"  Topologie découverte : {topo} (budget {budget} Mo). Calibration du "
         "contexte par PENTE MESURÉE + vitesse en profondeur (~5-15 min)…"
@@ -988,6 +1041,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     # Vérité PAR MODÈLE : la pente est propre à chaque architecture — le contexte
     # calibré s'écrit aussi dans le model.toml du modèle benché.
     _set_model_context(gguf_path, context, calib["mecanisme"])
+    if isolation is not None:
+        _set_model_cache_isolation(gguf_path, isolation, iso_detail)
     gpu_txt = f", offload GPU -ngl {best['ngl']}" if best["ngl"] > 0 else ""
     con.say(
         f"  Mesuré : génération {best['tg_ts']:.1f} t/s · prefill "

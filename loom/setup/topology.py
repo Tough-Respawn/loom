@@ -121,6 +121,10 @@ class ServerProbe:
     mmproj_path: str | None = None
     cpu_moe: bool = False
     n_cpu_moe: int | None = None
+    # Slots (--parallel) : la sonde SIMULE l'exécutant (P2) — si l'isolation par
+    # 2e slot a été jugée nécessaire, la calibration doit mesurer la mémoire et
+    # les débits avec le KV réellement doublé (build_server_args multiplie -c).
+    n_parallel: int = 1
     port: int = 8131
     health_timeout_s: int = 600
     # Injectables (tests) — défauts = implémentations réelles.
@@ -179,13 +183,15 @@ class ServerProbe:
         except Exception:  # noqa: BLE001 - repli prudent, jamais bloquant
             return max(1, len(text) // 2)
 
-    def _completion(self, prompt: str, n_predict: int) -> dict:
+    def _completion(
+        self, prompt: str, n_predict: int, cache_prompt: bool = False
+    ) -> dict:
         body = json.dumps(
             {
                 "prompt": prompt,
                 "n_predict": n_predict,
                 "temperature": 0.0,
-                "cache_prompt": False,
+                "cache_prompt": cache_prompt,
             }
         ).encode()
         req = urllib.request.Request(
@@ -196,7 +202,9 @@ class ServerProbe:
         with urllib.request.urlopen(req, timeout=3600) as r:
             return json.loads(r.read())
 
-    def run(self, ctx: int, depth_tokens: int | None) -> ProbeResult:
+    def _start(self, ctx: int):
+        """Lance llama-server avec les flags EXACTS de l'exécutant et attend /health.
+        Renvoie le process ; le tue et lève si le chargement échoue."""
         args = build_server_args(
             server_bin=self.server_bin,
             model_path=self.model_path,
@@ -206,24 +214,27 @@ class ServerProbe:
             threads=self.threads,
             mmproj_path=self.mmproj_path,
             gpu_tuning=self.topology != TOPO_RAM,
-            n_parallel=1,
+            n_parallel=self.n_parallel,
             cpu_moe=self.cpu_moe,
             n_cpu_moe=self.n_cpu_moe,
         )
         proc = self.popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < self.health_timeout_s:
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{self.port}/health", timeout=3
+                ) as r:
+                    if r.status == 200:
+                        return proc
+            except Exception:
+                time.sleep(3)
+        self._kill(proc)
+        raise RuntimeError(f"chargement KO à ctx={ctx} (health timeout)")
+
+    def run(self, ctx: int, depth_tokens: int | None) -> ProbeResult:
+        proc = self._start(ctx)
         try:
-            t0 = time.monotonic()
-            while time.monotonic() - t0 < self.health_timeout_s:
-                try:
-                    with urllib.request.urlopen(
-                        f"http://127.0.0.1:{self.port}/health", timeout=3
-                    ) as r:
-                        if r.status == 200:
-                            break
-                except Exception:
-                    time.sleep(3)
-            else:
-                raise RuntimeError(f"chargement KO à ctx={ctx} (health timeout)")
             res = ProbeResult(ctx=ctx, mem_mb=self._measure_mem(proc))
             if depth_tokens:
                 phrase = "La pente mesurée vaut mieux que la formule du header. "
@@ -248,6 +259,45 @@ class ServerProbe:
         finally:
             self._kill(proc)
             time.sleep(4)  # laisser la mémoire se libérer avant le barreau suivant
+
+    def probe_isolation(self, ctx: int = 4096) -> tuple[int, int]:
+        """Sonde d'isolation du cache : (retraités au 1er passage, retraités au
+        RETOUR). Séquence A -> B (pollution du slot) -> A, avec cache_prompt et
+        1 slot : exactement le scénario des appels annexes de Loom (titre,
+        reflect) qui écrasent le slot de la conversation.
+
+        Un modèle couvert par le prompt-cache RAM natif recycle le préfixe de A
+        au retour (retraités ~= le suffixe, quelques tokens) ; un modèle à
+        mémoire hybride/SWA (exclu du cache natif) re-préfille TOUT (retraités
+        ~= 1er passage). Verdict par isolation_needed() sur ces deux mesures —
+        timings.prompt_n = tokens réellement RETRAITÉS (sémantique vérifiée dans
+        les tests upstream de llama-server, test_slot_save.py)."""
+        phrase_a = "Le cache de conversation doit survivre aux appels annexes. "
+        phrase_b = "Un texte sans aucun préfixe commun vient occuper le slot. "
+        prompt_a = phrase_a * 60
+        proc = self._start(ctx)
+        try:
+            r1 = self._completion(prompt_a, 8, cache_prompt=True)
+            self._completion(phrase_b * 60, 8, cache_prompt=True)
+            r3 = self._completion(prompt_a + "Et maintenant ?", 8, cache_prompt=True)
+            first = int((r1.get("timings") or {}).get("prompt_n") or 0)
+            back = int((r3.get("timings") or {}).get("prompt_n") or 0)
+            return first, back
+        finally:
+            self._kill(proc)
+            time.sleep(4)
+
+
+def isolation_needed(prompt_first: int, prompt_back: int) -> bool:
+    """Verdict de la sonde d'isolation : True si le cache n'a PAS survécu à la
+    pollution (le retour a retraité l'essentiel du prompt -> il faut isoler les
+    appels annexes dans un 2e slot). En pratique la mesure est bimodale : retour
+    ~= quelques tokens (cache natif) ou ~= 100 % (hybride) — 50 % tranche net.
+    Mesure illisible (1er passage vide) -> False : on n'impose pas un doublement
+    de KV sans preuve."""
+    if prompt_first <= 0:
+        return False
+    return prompt_back >= 0.5 * prompt_first
 
 
 def calibrate(

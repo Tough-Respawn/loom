@@ -10,7 +10,7 @@ import yaml
 from loom.config import ModelConfig
 from loom.runtime.hardware import HardwareProfile
 from loom.runtime.ngl import resolve_ngl
-from loom.runtime.server_args import build_server_args
+from loom.runtime.server_args import build_server_args, resolve_parallel
 
 
 def _model_cmd(
@@ -56,7 +56,9 @@ def _model_cmd(
         slot_save_dir=slot_save_dir,
         ubatch=model.ubatch,
         batch=model.batch,
-        n_parallel=n_parallel,
+        # Isolation mesurée au bench (model.toml) : ce modèle-là monte à 2 slots,
+        # les autres gardent le réglage global — décision PAR MODÈLE, pas machine.
+        n_parallel=resolve_parallel(n_parallel, model.cache_isolation),
     )
     return " ".join(str(a) for a in args).replace("\\", "/")
 

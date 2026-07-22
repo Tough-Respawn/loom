@@ -144,6 +144,10 @@ def test_rebench_apply_oui_et_annulation():
         "id": "orn",
         "context": 65536,
         "mecanisme": "pente x",
+        # Verdict de la sonde d'isolation : absent de l'état (vieux verdict ou
+        # sonde illisible) -> None = ne pas toucher au réglage.
+        "isolation": None,
+        "isolation_detail": "",
     }
     r = wizard.step(st, "non", deps())
     assert r.state is None and r.action is None and "inchangé" in r.reply

@@ -381,6 +381,10 @@ def _step_b_apply(state, t, deps):
             "id": state["id"],
             "context": state["context"],
             "mecanisme": state["mecanisme"],
+            # Verdict d'isolation (None = pas de changement) : appliqué avec le
+            # contexte, jamais séparément — le couple a été mesuré ensemble.
+            "isolation": state.get("isolation"),
+            "isolation_detail": state.get("isolation_detail", ""),
         },
     )
 
