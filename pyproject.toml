@@ -16,6 +16,11 @@ dependencies = [
     "playwright>=1.60.0",
     # L'Âme (export/import chiffré) : AES-GCM + scrypt, et jauge de passphrase offline.
     "cryptography>=43",
+    # web_search (ddgs) : dépendance de BASE, plus un extra — un uv sync standard
+    # DÉSINSTALLE les extras (sync exact) et l'outil web_search tombait en panne
+    # (vécu 2026-07-22). La dégradation hors-ligne est gérée au runtime, pas
+    # par l'absence de la lib.
+    "ddgs>=6.0",
     "zxcvbn>=4.4",
     # ruff : utilisé au RUNTIME par l'outil format_code (formate le Python que le modèle
     # écrit). Vrai besoin de Loom, pas seulement du dev -> présent dans le venv, hors-ligne.
@@ -28,11 +33,6 @@ dependencies = [
 [project.scripts]
 # Installeur guidé : binaire llama.cpp + premier modèle. `uv run loom-setup`
 loom-setup = "loom.setup.cli:main"
-
-[project.optional-dependencies]
-web-search = [
-    "ddgs>=6.0",
-]
 
 [build-system]
 requires = ["hatchling"]
