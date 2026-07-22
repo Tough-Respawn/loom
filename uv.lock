@@ -879,6 +879,7 @@ source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "curl-cffi" },
+    { name = "ddgs" },
     { name = "flask" },
     { name = "httpx" },
     { name = "huggingface-hub" },
@@ -895,11 +896,6 @@ dependencies = [
     { name = "zxcvbn" },
 ]
 
-[package.optional-dependencies]
-web-search = [
-    { name = "ddgs" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -910,7 +906,7 @@ dev = [
 requires-dist = [
     { name = "cryptography", specifier = ">=43" },
     { name = "curl-cffi", specifier = ">=0.7" },
-    { name = "ddgs", marker = "extra == 'web-search'", specifier = ">=6.0" },
+    { name = "ddgs", specifier = ">=6.0" },
     { name = "flask", specifier = ">=3.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.25" },
@@ -926,7 +922,6 @@ requires-dist = [
     { name = "truststore", specifier = ">=0.10" },
     { name = "zxcvbn", specifier = ">=4.4" },
 ]
-provides-extras = ["web-search"]
 
 [package.metadata.requires-dev]
 dev = [
