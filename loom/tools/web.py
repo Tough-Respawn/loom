@@ -250,13 +250,14 @@ def _search_ddgs(query: str, cfg: WebSearchConfig) -> list[dict]:
     try:
         from ddgs import DDGS
     except ImportError as exc:
-        # `ddgs` est un EXTRA (pyproject [web-search]) : un venv synchronisé sans lui
-        # cassait web_search avec un « No module named 'ddgs' » cryptique en pleine
-        # session (vécu 2026-07-10). Message ACTIONNABLE pour l'humain ET le modèle.
+        # `ddgs` est une dépendance de BASE depuis le 2026-07-22 (l'ancien extra
+        # [web-search] était DÉSINSTALLÉ par tout `uv sync` standard -> panne
+        # cryptique en pleine session, vécu 2 fois). Ce filet ne devrait plus
+        # servir que sur un venv pas resynchronisé.
         raise RuntimeError(
             "web_search indisponible : la lib `ddgs` n'est pas installée. "
-            "Installe l'extra (`uv sync --extra web-search`) ou configure un backend "
-            "searxng_url / tavily_api_key dans [web_search]."
+            "Lance `uv sync` (elle est dans les dépendances de base), ou configure "
+            "un backend searxng_url / tavily_api_key dans [web_search]."
         ) from exc
 
     out = []
