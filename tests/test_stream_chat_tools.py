@@ -285,6 +285,37 @@ def test_notes_en_vol_injectees():
     )
 
 
+def test_note_au_stop_naturel_relance():
+    # Bug 2026-07-23 : une note postée PENDANT la génération finale (après le
+    # drain d'avant-appel) était laissée en file jusqu'au prochain message
+    # manuel (« ? » de relance). Elle doit maintenant être drainée au stop
+    # naturel et déclencher une relance immédiate.
+    calls = {"n": 0}
+
+    def provider():
+        calls["n"] += 1
+        # note absente au 1er drain (avant 1er appel), présente au 2e (au stop)
+        return ["regarde aussi le CHANGELOG"] if calls["n"] == 2 else []
+
+    reg = FakeRegistry({})
+    client, fake = make_client(
+        [turn_text("premiere reponse."), turn_text("ok, vu le CHANGELOG.")]
+    )
+    events, done = run(client, registry=reg, notes_provider=provider)
+    assert done["reason"] == "natural"
+    notes = only(events, "note")
+    assert notes == [
+        "[User note received mid-turn — take it into account "
+        "and continue the task] regarde aussi le CHANGELOG"
+    ]
+    # la note a provoqué un 2e appel modèle (relance), pas un « ? » de l'user
+    assert len(fake.calls) == 2
+    assert any(
+        m["role"] == "user" and "CHANGELOG" in m["content"]
+        for m in fake.calls[1]["messages"]
+    )
+
+
 def test_repeat_stop_meme_appel_repete():
     # repeat_limit=3 (défaut) : le même tool call non-vérif répété tour après tour
     # déclenche l'arrêt repeat_stop.
