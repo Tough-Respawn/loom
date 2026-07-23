@@ -9,6 +9,10 @@ CRITÈRES DE RÉTENTION (n'écris que ce qui les satisfait) :
 - Consolidation > accumulation : si ça ressemble à du déjà connu, préfère raffiner/mettre à jour plutôt qu'empiler. Ne crée pas un skill quasi-redondant : améliore l'existant.
 - Sobriété : la plupart des tours ne méritent RIEN de nouveau. Un JSON aux listes vides est une réponse normale et correcte.
 
+JAMAIS DANS LA MÉMOIRE DURABLE (memory_updates/user_updates/episodes) — ces faits périment et POLLUENT les sessions suivantes où ils n'ont aucun sens :
+- l'ÉTAT DE SESSION volatil : dossier de travail courant, fichier ouvert, chemin absolu d'un répertoire du moment, valeur transitoire d'un run. Le workspace change à chaque session — l'y graver fait agir l'agent dans un dossier qui n'existe peut-être plus (vécu : un « dossier courant = …/loom-amd » mémorisé a fait écrire un fichier dans un dossier supprimé, hors sujet). Un chemin durable = un repo git stable, pas un « où je suis là ».
+- un fait NON VÉRIFIÉ ce tour : ne grave que ce que les outils du tour ont CONFIRMÉ. Pas de « le fichier X existe dans le dossier Y » supposé (vécu : un chemin de fichier inventé écrit en mémoire, faux). Dans le doute, n'écris pas.
+
 Ne propose un skill que pour une PROCÉDURE réutilisable et non triviale (pas pour réinventer un outil existant comme read_file ou run_shell).
 
 Pour un SKILL (new_skills), trois champs, tous remplis pour de vrai (ne recopie aucun gabarit) :
