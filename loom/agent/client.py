@@ -1067,7 +1067,8 @@ def _inject_notes(notes_provider, convo: list[dict]) -> Iterator[tuple[str, obje
     # sans interrompre quoi que ce soit. L'appelant reçoit l'event 'note'
     # pour persister/afficher exactement ce qui a été injecté.
     if notes_provider is None:
-        return
+        return 0
+    count = 0
     try:
         for _raw_note in notes_provider() or []:
             _wrapped = (
@@ -1076,8 +1077,10 @@ def _inject_notes(notes_provider, convo: list[dict]) -> Iterator[tuple[str, obje
             )
             convo.append({"role": "user", "content": _wrapped})
             yield ("note", _wrapped)
+            count += 1
     except Exception as _e:  # noqa: BLE001 - notes best-effort
         _debug("NOTES_ERR", str(_e))
+    return count
 
 
 def _stream_model_turn(
@@ -1171,6 +1174,7 @@ def _dispatch_no_tool_calls(
     max_empty_retries: int,
     max_act_nudges: int,
     st: dict,
+    notes_provider=None,
 ) -> Iterator[tuple[str, object]]:
     """Fin de tour SANS appel d'outil : boucle dégénérée -> continuation 'length' ->
     réponse vide -> audit de claim / act-nudge -> stop naturel. Issue via
@@ -1315,6 +1319,16 @@ def _dispatch_no_tool_calls(
         convo.append({"role": "user", "content": nudge})
         _debug(label, nudge)
         log_event("guard", kind=label)
+        st["action"] = "continue"
+        return
+    # Note en vol arrivée PENDANT la génération finale (donc après le dernier
+    # drain d'avant-appel) : sans ce re-drain, le stop naturel la laisserait en
+    # file jusqu'au prochain message manuel — l'utilisateur devait relancer par
+    # un « ? » pour qu'elle parte (bug 2026-07-23). On la draine ICI et on
+    # reboucle pour y répondre tout de suite, au lieu de clore le tour.
+    injected = yield from _inject_notes(notes_provider, convo)
+    if injected:
+        _debug("NOTE_AU_STOP", f"{injected} note(s) au stop naturel -> relance")
         st["action"] = "continue"
         return
     yield ("done", {"reason": "natural"})
@@ -2860,6 +2874,7 @@ class LoomClient:
                     max_empty_retries,
                     max_act_nudges,
                     st,
+                    notes_provider=notes_provider,
                 )
                 if st["action"] == "done":
                     return
