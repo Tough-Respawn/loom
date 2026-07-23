@@ -132,6 +132,7 @@ def build_launch(
         slot_save_dir=slots_dir(),
         ubatch=cfg.model.ubatch,
         batch=cfg.model.batch,
+        checkpoint_min_step=cfg.model.checkpoint_min_step,
     )
 
 
