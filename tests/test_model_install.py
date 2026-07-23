@@ -24,8 +24,8 @@ def test_recommend_quant_le_plus_gros_qui_tient():
         {"filename": "q8.gguf", "size_mb": 20_000},
         {"filename": "f16.gguf", "size_mb": 40_000},
     ]
-    # budget = 6000 VRAM + 24000 RAM - 4096 marge = 25904 Mo -> q8 recommandé, f16 ne tient pas
-    out = recommend_quant(files, vram_free_mb=6000, ram_mb=24000)
+    # budget = 6000 VRAM + 24000 RAM - 6144 marge = 23856 Mo -> q8 recommandé, f16 ne tient pas
+    out = recommend_quant(files, vram_budget_mb=6000, ram_total_mb=24000)
     by = {f["filename"]: f for f in out}
     assert by["q8.gguf"]["recommended"] is True
     assert by["q4.gguf"] == dict(files[0], fits=True, recommended=False)
@@ -37,6 +37,25 @@ def test_recommend_quant_le_plus_gros_qui_tient():
 def test_recommend_quant_rien_ne_tient():
     out = recommend_quant([{"filename": "f16.gguf", "size_mb": 40_000}], 2000, 1000)
     assert out[0]["fits"] is False and out[0]["recommended"] is False
+
+
+def test_recommend_quant_machine_unifiee_64go():
+    # Régression 2026-07-23 : sur mémoire unifiée (VRAM=RAM), le budget = RAM
+    # TOTALE seule (vram_budget = 0, pas de double comptage). Machine du user :
+    # ~55,6 Go visibles -> un Q8 34 Go et un Q4 20 Go DOIVENT tenir (ornith Q8
+    # tourne pour de vrai), seul le bf16 64 Go déborde. Avant le fix, un modèle
+    # chargé rétrécissait la RAM dispo -> tout marqué « ne tiendra pas ».
+    files = [
+        {"filename": "Q4_K.gguf", "size_mb": 19_700},
+        {"filename": "Q8_0.gguf", "size_mb": 34_400},
+        {"filename": "bf16.gguf", "size_mb": 64_600},
+    ]
+    out = recommend_quant(files, vram_budget_mb=0, ram_total_mb=55_600)
+    by = {f["filename"]: f for f in out}
+    assert by["Q4_K.gguf"]["fits"] is True
+    assert by["Q8_0.gguf"]["fits"] is True  # ornith Q8 tourne -> DOIT tenir
+    assert by["Q8_0.gguf"]["recommended"] is True  # le plus gros qui tient
+    assert by["bf16.gguf"]["fits"] is False
 
 
 def test_write_model_toml(tmp_path):
