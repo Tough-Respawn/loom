@@ -58,6 +58,12 @@ def build_app(cfg):
     )
     # Interrupteur du cache souverain (save/restore slot KV) — cf. config.py slot_kv.
     client.slot_kv_enabled = cfg.slot_kv
+    # Reprise à chaud one-shot (roadmap 16) : save fin de tour + restore sur slot
+    # froid seulement. Les HYBRIDES (cache_isolation mesuré au bench) n'y ont droit
+    # que sur binaire restore-safe — cf. config.py hot_resume/restore_safe.
+    client.hot_resume_enabled = cfg.hot_resume
+    client.restore_safe = cfg.restore_safe
+    client.hybrid_models = {m.id for m in cfg.models if m.cache_isolation}
     # Mémoire persistante : provider (store épisodique) + chemins identité (SOUL/USER/MEMORY).
     # `memory` est passé à build_registry (outils recall/remember) ; `mem_paths` sert aussi
     # à injecter le bloc identité au system prompt (create_app).

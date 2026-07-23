@@ -198,6 +198,19 @@ class RuntimeConfig:
     # appels annexes dans un 2e slot (model.toml cache_isolation, mesuré au bench).
     # True = réactiver l'ancien mécanisme (vieux llama-server sans cache RAM natif).
     slot_kv: bool = False
+    # Reprise à CHAUD one-shot (roadmap 16, 2026-07-23) : save du slot en fin de
+    # tour (hors chemin critique) + restore UNIQUEMENT sur slot froid (serveur
+    # (re)démarré, modèle swappé, boot de loom.web) — jamais en rythme de
+    # croisière, contrairement à slot_kv. Évite le re-prefill de reprise
+    # (~60-85 s mesurés) pour ~0,6 s de restore.
+    hot_resume: bool = False
+    # Le restore du binaire préserve-t-il la reprise partielle des modèles à
+    # mémoire hybride/SWA ? False (défaut) = binaire officiel NON patché : les
+    # hybrides (model.toml cache_isolation=true) sont EXCLUS de la reprise à
+    # chaud (leur restore perd les checkpoints -> re-prefill total, autant ne
+    # rien faire). True = build patchée (PR ggml-org #26004) ou officiel
+    # post-merge : tous les modèles y ont droit.
+    restore_safe: bool = False
     # Marge VRAM (Mo) réservée hors couches offloadées : couvre le cache KV + les buffers
     # de calcul. Plus elle est BASSE, plus on offloade de couches sur GPU (perf), mais trop
     # bas -> débordement en mémoire partagée (Windows) qui écroule tout. À régler par machine.
@@ -447,6 +460,8 @@ def load_config(
         swap_bin=s.get("swap_bin", "llama-swap"),
         n_parallel=int(s.get("n_parallel", 1)),
         slot_kv=bool(s.get("slot_kv", False)),
+        hot_resume=bool(s.get("hot_resume", False)),
+        restore_safe=bool(s.get("restore_safe", False)),
         gpu_kv_headroom_mb=int(s.get("gpu_kv_headroom_mb", 1024)),
         override_n_gpu_layers=o.get("n_gpu_layers"),
         override_threads=o.get("threads"),
