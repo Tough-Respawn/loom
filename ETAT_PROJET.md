@@ -376,17 +376,19 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
    (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
    restart). Manque : un déclencheur de re-scan de `models/` exposé à l'UI (bouton engrenage
    ou watcher du dossier) + rafraîchissement du sélecteur sans recharger la page. Petit chantier.
-16. **Reprise à chaud CONDITIONNELLE (restore one-shot)** (design acté 2026-07-23,
-    correction user : le slot_kv actuel retrigge PAR TOUR, le mode événementiel
-    n'existe pas — à construire). Un restore n'a de sens qu'en ÉVÉNEMENT ponctuel :
-    reprendre une session après redémarrage du serveur ou swap de modèle, jamais en
-    rythme de croisière. Design : save en fin de tour inchangé (0,3-0,6 s, hors chemin
-    critique) ; restore UNIQUEMENT sur slot froid (le server manager sait quand il
-    (re)lance ou swap → flag « cold » consommé au premier message) ; gated sur binaire
-    au restore SAIN (build patchée `Work/llama.cpp/build-vulkan` ou officiel une fois
-    la PR ggml-org #26004 mergée — sur l'officiel actuel un restore d'hybride
-    empoisonne : checkpoints perdus). ~30-40 lignes client + server manager.
-    Gain : évite le re-prefill de reprise (~60-85 s, une fois par session).
+16. ~~Reprise à chaud CONDITIONNELLE (restore one-shot)~~ : LIVRÉE le 2026-07-23
+    (commit 5d02b0c, 11 tests). Save fin de tour + sidecar meta {model, session} ;
+    restore UNIQUEMENT sur slot froid ((re)démarrage serveur via _ensure_local_server,
+    swap sortant, /machine/unload, rebench, boot loom.web), intégré en tête de
+    _prime_slot (le warm_context reste repli + validation) ; un seul essai par
+    période froide. Gates : meta de la même session/modèle ; hybrides
+    (cache_isolation) exclus sauf `[server] restore_safe = true`. Activée sur cette
+    machine ([server] hot_resume = true, binaire officiel) : qwen3 en profite
+    (sonde : n_saved 149, retour 4 tokens), ornith au merge de la PR #26004.
+    Décision binaire (A/B décode) : officiel 11-12 t/s vs build maison 8 t/s
+    (-30 %, backend CPU GCC moins optimisé) -> officiel = prod, build patchée =
+    preuve/option. Vieille note « save capture 0 token sur un classique » RÉFUTÉE
+    dans le flux réel (save juste après le tour, slot encore plein).
 17. **Perf state get/set Vulkan upstream** (mesuré 2026-07-23, sondes A/B/C — détail
     en mémoire llama-slot-restore-hybrid-bug) : plancher ~8 s/tour sur hybride ×
     Vulkan = coût des opérations de checkpoint (sérialisation par-tenseur via l'API,
