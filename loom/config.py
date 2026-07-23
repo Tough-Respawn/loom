@@ -117,6 +117,13 @@ class ModelConfig:
     # similarité de préfixe et la conversation garde son cache (validé 2026-07-21 :
     # 74 s -> 4-6 s par tour sur ornith). Coût : cache KV x2 (-c est multiplié).
     cache_isolation: bool = False
+    # Espacement minimal des checkpoints de contexte (--checkpoint-min-step, tokens).
+    # Ne concerne que les modèles qui EN CRÉENT (hybrides/SWA). Le défaut serveur
+    # (8192) laisse des « déserts » : une compaction qui diverge dedans retraite
+    # jusqu'à ~8k tokens (mesuré 39 s). Resserré (ex. 2048), le retraitement est
+    # borné à ~min_step (mesuré 13,3 s, sonde v4 2026-07-23). Coût : RAM des
+    # checkpoints survivants (~1 par fenêtre ; ornith = 63 Mio pièce). None = défaut.
+    checkpoint_min_step: int | None = None
     # Dossier du modèle (loom/models/<id>/) : porte le GGUF, le mmproj et profile.md.
     # Rempli par la découverte ; les chemins GGUF se résolvent contre lui.
     dir: str = ""
@@ -258,6 +265,7 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         ubatch=d.get("ubatch"),
         batch=d.get("batch"),
         cache_isolation=bool(d.get("cache_isolation", False)),
+        checkpoint_min_step=d.get("checkpoint_min_step"),
         dir=d.get("dir", ""),
         description=str(d.get("description", "") or ""),
     )

@@ -58,6 +58,28 @@ def test_no_mmap_reserve_aux_gpu_discrets():
     assert "--no-mmap" in _args()  # défaut (dGPU discret) inchangé
 
 
+def test_checkpoint_min_step_par_modele():
+    # Maillage des checkpoints par modèle (hybrides) : borne le retraitement
+    # post-compaction (sonde v4 2026-07-23 : 39 s -> 13,3 s avec 2048).
+    a = _args(checkpoint_min_step=2048)
+    assert a[a.index("--checkpoint-min-step") + 1] == "2048"
+    assert "--checkpoint-min-step" not in _args()  # absent par défaut
+    d = {
+        "repo": "r/x",
+        "filename": "x.gguf",
+        "n_layers": 40,
+        "size_mb": 100,
+        "checkpoint_min_step": 2048,
+    }
+    assert _parse_model(d, "x").checkpoint_min_step == 2048
+    assert (
+        _parse_model(
+            {k: d[k] for k in ("repo", "filename", "n_layers", "size_mb")}
+        ).checkpoint_min_step
+        is None
+    )
+
+
 def test_context_par_slot_multiplie_par_n_parallel():
     # SÉMANTIQUE : `context` = fenêtre PAR SLOT (celle que calibre le bench et
     # que voit l'utilisateur). llama-server répartit -c sur les slots -> on
