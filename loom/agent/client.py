@@ -1951,7 +1951,9 @@ class LoomClient:
             _debug("WARMUP_ERR", str(e))
             pass
 
-    def _slot_action(self, model: str | None, action: str, name: str) -> bool:
+    def _slot_action(
+        self, model: str | None, action: str, name: str, force: bool = False
+    ) -> bool:
         """POST /slots/0?action=save|restore sur le serveur LOCAL (via la route
         llama-swap /upstream/<modèle>/, repli /slots direct pour un llama-server
         sans swap). Nécessite --slot-save-path côté serveur. Best-effort.
@@ -1965,12 +1967,17 @@ class LoomClient:
 
         if self.is_remote(model):
             return False  # distant : cache géré par le provider, pas de slot local
-        # Interrupteur config ([server] slot_kv, OFF par défaut depuis 2026-07-22) :
-        # sur les modèles à mémoire hybride, le restore de llama-server répond 200
-        # mais tue le cache (checkpoints effacés) ; sur les classiques le prompt-cache
-        # RAM natif rend le save inutile (0 token capturé). La conversation est
-        # protégée par le cache natif + l'isolation 2e slot (cf. config.py).
-        if not getattr(self, "slot_kv_enabled", False):
+        # Interrupteurs ([server] slot_kv / hot_resume, cf. config.py) :
+        # - slot_kv (legacy, OFF par défaut) autorise save ET restore par tour ;
+        # - hot_resume n'autorise que le SAVE en fin de tour — le restore n'y est
+        #   permis qu'en one-shot explicite (force=True, via try_hot_resume) ;
+        # - force court-circuite les deux (jamais le disjoncteur _slot_broken).
+        allowed = (
+            force
+            or getattr(self, "slot_kv_enabled", False)
+            or (action == "save" and getattr(self, "hot_resume_enabled", False))
+        )
+        if not allowed:
             return False
         key = model or "(local)"
         if key in self._slot_broken:
@@ -2043,16 +2050,115 @@ class LoomClient:
                     )
         return False
 
-    def save_slot(self, model: str | None, name: str) -> bool:
+    def save_slot(
+        self, model: str | None, name: str, session_id: str | None = None
+    ) -> bool:
         """Sauve le cache KV du slot local dans <slot-save-path>/<name> (~ms). À faire
         PENDANT que le slot contient la conversation, AVANT tout appel qui l'écrase
-        (titre, reflect, sous-agent). Cf. restore_slot."""
-        return self._slot_action(model, "save", name)
+        (titre, reflect, sous-agent). Cf. restore_slot.
 
-    def restore_slot(self, model: str | None, name: str) -> bool:
+        `session_id` (reprise à chaud) : écrit un sidecar <name>.meta.json
+        {model, session} à côté du fichier — try_hot_resume ne restaurera JAMAIS
+        un save d'une autre session ou d'un autre modèle (KV d'autrui = inutile
+        au mieux). Le slot est marqué CHAUD (état vivant + copie disque)."""
+        ok = self._slot_action(model, "save", name)
+        if ok and session_id and getattr(self, "hot_resume_enabled", False):
+            try:
+                meta = self._slots_meta_path(name)
+                meta.write_text(
+                    json.dumps({"model": model or "", "session": session_id}),
+                    encoding="utf-8",
+                )
+                self._warm_slots().add(model or "")
+            except OSError as e:  # meta best-effort, le save reste valide sans lui
+                _debug("HOT_RESUME_META_ERR", str(e), terminal=False)
+        return ok
+
+    def restore_slot(self, model: str | None, name: str, force: bool = False) -> bool:
         """Restaure un cache KV sauvé par save_slot (~ms au lieu de re-préfiller des
         minutes) : le prochain tour de la conversation ne préfille que son delta."""
-        return self._slot_action(model, "restore", name)
+        return self._slot_action(model, "restore", name, force=force)
+
+    # ---- Reprise à CHAUD one-shot (roadmap 16) --------------------------------
+    # Un restore n'a de sens qu'en ÉVÉNEMENT ponctuel — slot froid après un
+    # (re)démarrage du serveur, un swap de modèle ou un boot de loom.web — jamais
+    # par tour (le rythme de croisière est protégé par le prompt-cache natif +
+    # l'isolation 2e slot ; un restore par tour ajoutait un rollback par tour,
+    # mesuré 2026-07-23).
+
+    def _warm_slots(self) -> set:
+        """Modèles locaux dont le slot serveur contient (à notre connaissance) la
+        conversation vivante. Vide au boot de loom.web = tout est froid."""
+        warm = getattr(self, "_slot_warm", None)
+        if warm is None:
+            warm = self._slot_warm = set()
+        return warm
+
+    def _slots_meta_path(self, name: str):
+        """Chemin du sidecar meta d'un fichier de slot (injectable via
+        slots_dir_override pour les tests)."""
+        from pathlib import Path
+
+        override = getattr(self, "slots_dir_override", None)
+        if override is not None:
+            base = Path(override)
+        else:
+            from loom.runtime.serve import slots_dir
+
+            base = Path(slots_dir())
+        return base / f"{name}.meta.json"
+
+    def mark_all_cold(self) -> None:
+        """À appeler quand le serveur modèle s'arrête ou (re)démarre : plus aucun
+        slot n'est présumé chaud — le prochain amorçage tentera la reprise."""
+        self._warm_slots().clear()
+
+    def try_hot_resume(self, model: str | None, session_id: str) -> bool:
+        """Restore ONE-SHOT du slot d'une conversation sur slot FROID. Best-effort,
+        jamais d'exception. True = un restore a réussi (le re-prefill d'amorçage
+        qui suit ne paiera que le delta).
+
+        Gardes, dans l'ordre : feature off -> non ; modèle distant -> non ; slot
+        déjà chaud -> non (rien à faire) ; meta absent/autre session/autre modèle
+        -> non ; modèle HYBRIDE (cache_isolation mesuré au bench) sans binaire
+        restore-safe -> non (le restore y perd les checkpoints : re-prefill total
+        de toute façon, cf. PR ggml-org #26004). Un seul essai par slot froid :
+        échec -> marqué chaud quand même (le repli re-prefill prend la main,
+        pas de tempête de retries)."""
+        if not getattr(self, "hot_resume_enabled", False):
+            return False
+        if not model or self.is_remote(model):
+            return False
+        warm = self._warm_slots()
+        # Swap sortant : cibler M décharge le modèle précédent (llama-swap tue
+        # son process) -> son slot devient froid.
+        last = getattr(self, "_last_local_model", None)
+        if last not in (None, model):
+            warm.discard(last)
+        self._last_local_model = model
+        if model in warm:
+            return False
+        warm.add(model)  # un seul essai par période froide, succès ou pas
+        try:
+            meta = json.loads(
+                self._slots_meta_path("turnend.kv").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return False  # pas de save exploitable (ou illisible) : repli re-prefill
+        if meta.get("model") != model or meta.get("session") != session_id:
+            return False
+        if model in getattr(self, "hybrid_models", set()) and not getattr(
+            self, "restore_safe", False
+        ):
+            _debug(
+                "HOT_RESUME_SKIP",
+                f"{model} : hybride + binaire non restore-safe",
+                terminal=False,
+            )
+            return False
+        ok = self.restore_slot(model, "turnend.kv", force=True)
+        _debug("HOT_RESUME", {"model": model, "ok": ok}, terminal=False)
+        return ok
 
     def warm_context(
         self,

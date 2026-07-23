@@ -19,6 +19,16 @@ n_parallel = 1
 # Remets true uniquement pour un vieux llama-server sans --cache-ram (cf. config.py).
 slot_kv = false
 
+# Reprise à CHAUD one-shot : save du slot en fin de tour + restore UNIQUEMENT sur
+# slot froid (serveur (re)démarré, swap de modèle) — évite le re-prefill de reprise
+# (~60-85 s sur un 35B) pour ~0,6 s. OFF par défaut (à activer par machine).
+hot_resume = false
+
+# Le restore du binaire préserve-t-il les checkpoints des modèles hybrides/SWA ?
+# false = officiel non patché : les hybrides sont exclus de la reprise à chaud.
+# true = build avec le fix (PR ggml-org #26004) : tous les modèles y ont droit.
+restore_safe = false
+
 # Marge VRAM hors couches GPU ; trop bas -> spill mémoire partagée (surveiller nvidia-smi)
 gpu_kv_headroom_mb = 640
 

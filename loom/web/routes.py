@@ -202,6 +202,14 @@ def _local_size_mb(S, mid) -> int:
     return int(spec.get("size_mb") or 0) if spec else 0
 
 
+def _client_mark_all_cold(S) -> None:
+    """Marque tous les slots froids (reprise à chaud) — tolère un client absent ou
+    un fake de test qui n'implémente pas la méthode (duck typing des tests web)."""
+    fn = getattr(S.client, "mark_all_cold", None)
+    if fn is not None:
+        fn()
+
+
 def _ensure_local_server(S, wait: float = 0.0) -> bool:
     """Serveur modèle joignable ? Sinon DÉMARRAGE AUTO, puis attente bornée à `wait` s.
     GGUF déjà présents -> llama-swap répond en ~1-2 s ; un premier téléchargement peut
@@ -209,6 +217,9 @@ def _ensure_local_server(S, wait: float = 0.0) -> bool:
     reachable, _ = S.client.running_local(timeout=2.0)
     if reachable:
         return True
+    # Serveur injoignable -> tout slot présumé chaud ne l'est plus (reprise à
+    # chaud : le prochain amorçage repassera par try_hot_resume).
+    _client_mark_all_cold(S)
     S.server_manager.start()
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
@@ -1043,6 +1054,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
             # Le banc charge le modèle lui-même : il lui faut la VRAM -> serveur off.
             S.server_manager.stop()
+            _client_mark_all_cold(S)
             rb_job = SimpleNamespace(done=False, label="", final=None)
             _REBENCH["job"] = rb_job
             threading.Thread(
@@ -1438,6 +1450,19 @@ def _prime_slot(S, sess) -> bool:
             or model in S.video_model_ids
         ):
             return False
+        # Reprise à CHAUD one-shot AVANT le re-prefill : sur slot froid (serveur
+        # (re)démarré, swap de modèle, boot loom.web), si un save de CETTE session
+        # existe, un restore (~0,6 s) remplace le re-prefill intégral (~60-85 s
+        # mesurés sur un 35B). Best-effort : le warm_context ci-dessous reste le
+        # repli ET la validation (préfixe identique -> ne paie que le delta).
+        # getattr : les fakes de test (PrimeSpy…) n'implémentent que warm_context.
+        _thr = getattr(S.client, "try_hot_resume", None)
+        if _thr is not None and _thr(model, sess.id):
+            print(
+                "[prime] reprise à CHAUD : slot restauré depuis le save de fin de "
+                "tour (le re-prefill ci-dessous ne paie que le delta)",
+                flush=True,
+            )
         msgs = conv.to_messages()
         if not msgs:
             # Fil vide : certains templates (Qwen3-coder/Agents-A1) EXIGENT un message
@@ -2677,6 +2702,7 @@ def _register_model_routes(app, S):
         # Déchargement À LA DEMANDE (bouton UI sous le chip machine) : libère la VRAM sans
         # changer de modèle sélectionné. Synchrone : la réponse reflète le résultat réel
         # (llama-swap tue le llama-server en ~1-2 s). Rechargé à la prochaine requête.
+        _client_mark_all_cold(S)
         return {"ok": S.client.unload_local()}
 
     @app.post("/machine/server/start")
@@ -3671,7 +3697,11 @@ def _register_chat_routes(app, S):
                 # instant précis -> on le sauve MAINTENANT (~ms), avant que le titre
                 # (inline ci-dessous) et le reflect (maintenance) ne l'écrasent ; la
                 # maintenance le RESTAURERA (~ms) au lieu de re-préfiller des minutes.
-                _kv_saved = S.client.save_slot(conv.model, "turnend.kv")
+                # session_id : sidecar meta pour la reprise à CHAUD one-shot
+                # (try_hot_resume ne restaure jamais le save d'une autre session).
+                _kv_saved = S.client.save_slot(
+                    conv.model, "turnend.kv", session_id=sess.id
+                )
 
                 # Apprentissage post-tour + restauration du cache : DÉPORTÉS dans un
                 # thread (cf. _post_turn_maintenance). Avant, reflect tournait ICI,
