@@ -17,6 +17,50 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def ram_total_mb() -> int:
+    """RAM physique TOTALE (Mo), 0 si indéterminable. Sert aux budgets de
+    CAPACITÉ (« ce modèle tiendra-t-il ? ») : la mémoire d'un modèle DÉJÀ chargé
+    (déchargé par llama-swap avant le nouveau) ou de Loom/navigateur ne doit PAS
+    rétrécir le budget — sinon /add-model masque des quants qui tiennent (vécu
+    2026-07-23 : ornith Q8 34 Go tourne, mais un Q4 19 Go marqué « ne tiendra
+    pas » car mesuré sur la RAM DISPO pendant qu'ornith occupait la mémoire).
+    Même leçon P3 que topology.py (budgets sur le TOTAL, jamais la dispo)."""
+    if sys.platform == "win32":
+        import ctypes
+
+        class _Mem(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_uint32),
+                ("dwMemoryLoad", ctypes.c_uint32),
+                ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64),
+                ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64),
+                ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64),
+            ]
+
+        stat = _Mem()
+        stat.dwLength = ctypes.sizeof(stat)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return int(stat.ullTotalPhys // (1024 * 1024))
+        return 0
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().total // (1024 * 1024))
+    except Exception:  # noqa: BLE001 - jamais bloquant, 0 = indéterminé
+        return 0
+
+
 def ram_available_mb() -> int:
     """RAM physique DISPONIBLE (Mo), 0 si indéterminable.
 
