@@ -376,6 +376,25 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
    (`--watch-config`) recharge à chaud (constaté live : le modèle heretic est apparu sans
    restart). Manque : un déclencheur de re-scan de `models/` exposé à l'UI (bouton engrenage
    ou watcher du dossier) + rafraîchissement du sélecteur sans recharger la page. Petit chantier.
+16. **Reprise à chaud CONDITIONNELLE (restore one-shot)** (design acté 2026-07-23,
+    correction user : le slot_kv actuel retrigge PAR TOUR, le mode événementiel
+    n'existe pas — à construire). Un restore n'a de sens qu'en ÉVÉNEMENT ponctuel :
+    reprendre une session après redémarrage du serveur ou swap de modèle, jamais en
+    rythme de croisière. Design : save en fin de tour inchangé (0,3-0,6 s, hors chemin
+    critique) ; restore UNIQUEMENT sur slot froid (le server manager sait quand il
+    (re)lance ou swap → flag « cold » consommé au premier message) ; gated sur binaire
+    au restore SAIN (build patchée `Work/llama.cpp/build-vulkan` ou officiel une fois
+    la PR ggml-org #26004 mergée — sur l'officiel actuel un restore d'hybride
+    empoisonne : checkpoints perdus). ~30-40 lignes client + server manager.
+    Gain : évite le re-prefill de reprise (~60-85 s, une fois par session).
+17. **Perf state get/set Vulkan upstream** (mesuré 2026-07-23, sondes A/B/C — détail
+    en mémoire llama-slot-restore-hybrid-bug) : plancher ~8 s/tour sur hybride ×
+    Vulkan = coût des opérations de checkpoint (sérialisation par-tenseur via l'API,
+    ~3-4 s l'op) vs memcpy CPU (1-2 s/tour). Les checkpoints sont INDISPENSABLES
+    (sonde B : sans eux, un hybride re-préfille TOUT même en append pur) ; KV q8
+    innocenté (sonde C : f16 = même plancher). Piste : transferts groupés dans le
+    backend Vulkan (2e contribution ggml-org, banc probe_overhead.py réutilisable).
+    En attendant : qwen3 (classique) = 1-2 s/tour, ornith (hybride) = ~4-8 s accepté.
 
 ## Conventions
 - Toolchain : **`uv`** (`uv run` / `uvx`) + **`ruff`** (hook PostToolUse lint+format PEP8).
