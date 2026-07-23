@@ -30,6 +30,7 @@ def build_server_args(
     slot_save_dir: str | None = None,
     ubatch: int | None = None,
     batch: int | None = None,
+    checkpoint_min_step: int | None = None,
 ) -> list[str]:
     """Liste d'arguments pour lancer llama-server en API OpenAI-compatible local.
 
@@ -118,4 +119,10 @@ def build_server_args(
     # KV q8_0 supporté).
     if slot_save_dir:
         args += ["--slot-save-path", str(slot_save_dir)]
+    # Maillage des checkpoints de contexte PAR MODÈLE (hybrides/SWA) : borne le
+    # retraitement après une compaction au lieu du désert par défaut (8192).
+    # Mesuré (sonde v4 2026-07-23, ornith) : divergence à ~9k -> 39 s en défaut,
+    # 13,3 s avec min-step 2048.
+    if checkpoint_min_step is not None:
+        args += ["--checkpoint-min-step", str(checkpoint_min_step)]
     return args

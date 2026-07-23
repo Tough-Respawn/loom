@@ -56,6 +56,7 @@ def _model_cmd(
         slot_save_dir=slot_save_dir,
         ubatch=model.ubatch,
         batch=model.batch,
+        checkpoint_min_step=model.checkpoint_min_step,
         # Isolation mesurée au bench (model.toml) : ce modèle-là monte à 2 slots,
         # les autres gardent le réglage global — décision PAR MODÈLE, pas machine.
         n_parallel=resolve_parallel(n_parallel, model.cache_isolation),
