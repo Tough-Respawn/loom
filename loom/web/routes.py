@@ -638,12 +638,17 @@ def _wizard_deps(S):
     from loom.runtime import hardware, hf_catalog
 
     hw = hardware.detect_hardware()
-    ram = hardware.ram_available_mb()
+    # Budget de CAPACITÉ : RAM TOTALE (le modèle courant sera déchargé par
+    # llama-swap avant le nouveau), et VRAM ajoutée SEULEMENT si discrète (sur
+    # mémoire unifiée elle EST la RAM -> 0, pas de double comptage). Corrige le
+    # « ne tiendra pas » erroné du 2026-07-23 (budget mesuré sur la dispo).
+    ram_total = hardware.ram_total_mb()
+    vram_budget = hw.vram_total_mb if hw.vram_is_discrete else 0
     return SimpleNamespace(
         search_models=hf_catalog.search_models,
         list_gguf_files=hf_catalog.list_gguf_files,
         recommend=lambda files: model_install.recommend_quant(
-            files, hw.vram_free_mb, ram
+            files, vram_budget, ram_total
         ),
         derive_id=model_install.derive_model_id,
         existing_ids=set(S.models),

@@ -25,13 +25,23 @@ def derive_model_id(repo_id: str) -> str:
 
 
 def recommend_quant(
-    files: list[dict], vram_free_mb: int, ram_mb: int, margin_mb: int = 4096
+    files: list[dict], vram_budget_mb: int, ram_total_mb: int, margin_mb: int = 6144
 ) -> list[dict]:
-    """Annote chaque quant : `fits` (tient dans VRAM libre + RAM - marge système) et
-    `recommended` (le plus gros qui tient). Heuristique volontairement SIMPLE : nos
-    modèles tournent experts en RAM (--cpu-moe), donc le budget additionne VRAM et
-    RAM. L'utilisateur reste roi (il peut choisir un quant marqué « ne tiendra pas »)."""
-    budget = max(0, vram_free_mb + ram_mb - margin_mb)
+    """Annote chaque quant : `fits` (tient dans le budget mémoire) et `recommended`
+    (le plus gros qui tient). Heuristique SIMPLE : nos modèles tournent experts en
+    RAM (--cpu-moe).
+
+    Budget = `vram_budget_mb` + `ram_total_mb` − marge. DEUX invariants, appris à
+    la dure (2026-07-23) :
+    - RAM TOTALE, jamais la dispo du moment : un modèle déjà chargé (déchargé par
+      llama-swap avant le nouveau) ou Loom/navigateur ne doit pas rétrécir le
+      budget, sinon on masque des quants qui tiennent (ornith Q8 34 Go tourne,
+      mais un Q4 19 Go était marqué « ne tiendra pas ») ;
+    - `vram_budget_mb` = 0 sur mémoire UNIFIÉE (iGPU) : la VRAM y EST la RAM
+      (même LPDDR5) — l'additionner double-compterait. Seul un GPU DISCRET ajoute
+      sa VRAM propre (cf. HardwareProfile.vram_is_discrete côté appelant).
+    L'utilisateur reste roi (il peut choisir un quant marqué « ne tiendra pas »)."""
+    budget = max(0, vram_budget_mb + ram_total_mb - margin_mb)
     out = [dict(f, fits=f["size_mb"] <= budget, recommended=False) for f in files]
     fitting = [f for f in out if f["fits"]]
     if fitting:
