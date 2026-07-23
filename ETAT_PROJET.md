@@ -389,14 +389,19 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
     (-30 %, backend CPU GCC moins optimisé) -> officiel = prod, build patchée =
     preuve/option. Vieille note « save capture 0 token sur un classique » RÉFUTÉE
     dans le flux réel (save juste après le tour, slot encore plein).
-17. **Perf state get/set Vulkan upstream** (mesuré 2026-07-23, sondes A/B/C — détail
-    en mémoire llama-slot-restore-hybrid-bug) : plancher ~8 s/tour sur hybride ×
-    Vulkan = coût des opérations de checkpoint (sérialisation par-tenseur via l'API,
-    ~3-4 s l'op) vs memcpy CPU (1-2 s/tour). Les checkpoints sont INDISPENSABLES
-    (sonde B : sans eux, un hybride re-préfille TOUT même en append pur) ; KV q8
-    innocenté (sonde C : f16 = même plancher). Piste : transferts groupés dans le
-    backend Vulkan (2e contribution ggml-org, banc probe_overhead.py réutilisable).
-    En attendant : qwen3 (classique) = 1-2 s/tour, ornith (hybride) = ~4-8 s accepté.
+17. ~~Perf state get/set Vulkan~~ : RÉSOLU EN RACINE le 2026-07-23. Cause (log
+    verbeux horodaté, pas une supposition) : sur UMA, `ggml_vk_buffer_read_2d`
+    memcpy directement depuis le mapping host-visible — mémoire WRITE-COMBINED
+    non-cachée -> lectures à 19 Mo/s (écritures : 11 ms pour le même blob).
+    Chaque création de checkpoint relit 62,8 Mio -> 3,3 s, ×2 par prompt = le
+    plancher ~8 s. Fix 6 lignes (branche llama.cpp `fix/vulkan-uma-cached-readback`,
+    commit de63a6dcf, local) : raccourci memcpy seulement si HOST_CACHED, sinon
+    chemin copie-device + staging. Mesuré : checkpoint 3,3 s -> 25 ms (×130),
+    append ornith 7,4 s -> 0,67 s, décode 8,3 -> 9,2 t/s, tests slot verts.
+    Machine basculée sur la build maison (2 fixes) : premier token ~0,7 s +
+    reprise à chaud pour tous. PR n°2 EN ATTENTE du merge de #26004 (règle
+    ggml-org : 1 PR ouverte max pour un nouveau contributeur) ; concerne tous
+    les iGPU/UMA Vulkan (checkpoints, slot saves, sessions).
 
 ## Conventions
 - Toolchain : **`uv`** (`uv run` / `uvx`) + **`ruff`** (hook PostToolUse lint+format PEP8).
