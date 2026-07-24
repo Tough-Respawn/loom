@@ -73,6 +73,49 @@ def test_verbes_de_parole_exemptes():
     assert len(fake.calls) == 1
 
 
+# ---------- claim-audit ARTEFACT : resserré (2026-07-23, incident loom-amd) ----------
+
+_ABS = "C:/tmp/loom_inexistant_xyz.py"  # chemin absolu qui n'existe pas
+
+
+def test_artefact_revendique_accompli_detecte():
+    # Vraie confabulation : « j'ai créé <chemin absolu> » alors qu'il n'existe pas.
+    from loom.agent.client import _claims_missing_artifact
+
+    assert _claims_missing_artifact(f"Voilà, j'ai créé {_ABS}.", set()) == _ABS
+    assert _claims_missing_artifact(f"Le fichier {_ABS} a été généré.", set()) == _ABS
+
+
+def test_mention_illustrative_ne_declenche_pas():
+    # Le déclencheur de l'incident loom-amd : une MENTION en exemple, pas une
+    # revendication d'accomplissement -> ne doit PLUS mordre.
+    from loom.agent.client import _claims_missing_artifact
+
+    assert (
+        _claims_missing_artifact(f"Tu pourrais créer {_ABS}, par exemple.", set())
+        is None
+    )
+    assert _claims_missing_artifact(f"Voici comment créer {_ABS} :", set()) is None
+    # infinitif / conditionnel seul (aucun accomplissement affirmé)
+    assert _claims_missing_artifact(f"Il faudrait écrire {_ABS}.", set()) is None
+
+
+def test_chemin_dans_bloc_de_code_ignore():
+    # Un chemin qui n'apparaît QUE dans un bloc ``` (illustration) est ignoré,
+    # même si un verbe de création traîne à l'intérieur.
+    from loom.agent.client import _claims_missing_artifact
+
+    txt = f"Exemple d'agent :\n```python\n# j'ai cree {_ABS}\nopen('x')\n```\nÀ toi de jouer."
+    assert _claims_missing_artifact(txt, set()) is None
+
+
+def test_artefact_ecrit_ce_tour_non_flague():
+    # Revendiqué ET réellement écrit ce tour -> pas une confabulation.
+    from loom.agent.client import _claims_missing_artifact
+
+    assert _claims_missing_artifact(f"j'ai créé {_ABS}", {_ABS}) is None
+
+
 def test_strong_desactive_act_nudge():
     # Modèle fort distant : les gardes de comportement sont coupées.
     client, fake = make_client([turn_text("Je vais maintenant lire le fichier.")])
