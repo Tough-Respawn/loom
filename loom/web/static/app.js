@@ -498,6 +498,9 @@ function Item({ it, userIndex, sid }) {
       return html`<div class="phase-sep">&#9658; ${it.name}${it.detail ? " — " + it.detail : ""}</div>`;
     case "notice":
       return html`<div class="notice-line">${it.text}</div>`;
+    case "harness":
+      // 3e voix : le garde-fou Loom (ni toi ni le modèle). Forme distincte.
+      return html`<div class="harness-line"><span class="harness-tag">Loom · garde-fou${it.hkind ? " (" + it.hkind + ")" : ""}</span> ${it.text}</div>`;
     default:
       return null;
   }
@@ -639,6 +642,12 @@ async function sendChat(sid, text, images) {
         if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
         if (asstId) { patch(asstId, { done: true }); asstId = null; }
         push({ kind: "user", content: evt.text });
+        break;
+      case "harness":
+        // 3e voix : intervention du garde-fou Loom, bulle distincte.
+        if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
+        if (asstId) { patch(asstId, { done: true }); asstId = null; }
+        push({ kind: "harness", hkind: evt.kind, text: evt.text });
         break;
       case "parallel":
         // Groupe d'outils lancés EN PARALLÈLE (distant) : on clôt les bulles en cours et on
@@ -984,6 +993,11 @@ function _replayTimeline(t, events) {
         think = null;
         asst = null;
         add({ kind: "parallel", lanes: d.ids || [] });
+        break;
+      case "harness":
+        think = null;
+        asst = null;
+        add({ kind: "harness", hkind: d.kind, text: d.text });
         break;
       case "reasoning":
         if (asst) asst = null;
