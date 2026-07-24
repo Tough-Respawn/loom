@@ -1083,6 +1083,24 @@ def _inject_notes(notes_provider, convo: list[dict]) -> Iterator[tuple[str, obje
     return count
 
 
+# Le HARNAIS Loom (garde-fous, relances automatiques) parle au modèle via des
+# messages role:user — le standard OpenAI n'a pas de rôle « framework » et on n'y
+# touche pas. Mais ce n'est PAS l'utilisateur : ce préfixe le dit sans ambiguïté au
+# modèle (sinon il répond « l'utilisateur a dit… » à un garde-fou — vécu 2026-07-23,
+# incident loom-amd). Émis AUSSI en event ('harness', …) pour que l'UI le rende comme
+# une 3e voix distincte (ni toi ni le modèle). La note en vol de l'utilisateur, elle,
+# vient VRAIMENT de lui -> voix user, pas [LOOM] (cf. _inject_notes).
+_LOOM_TAG = "[LOOM — cadre d'exécution automatique, ce n'est PAS l'utilisateur]"
+
+
+def _loom_nudge(convo: list[dict], kind: str, text: str) -> tuple[str, object]:
+    """Injecte une intervention du HARNAIS dans la conversation (role:user marqué
+    [LOOM] pour le modèle) ET renvoie l'event ('harness', {kind, text}) à yielder
+    (3e voix, visible en UI). `kind` = étiquette courte (claim_audit, boucle…)."""
+    convo.append({"role": "user", "content": f"{_LOOM_TAG}\n{text}"})
+    return ("harness", {"kind": kind, "text": text})
+
+
 def _stream_model_turn(
     oai,
     api_model: str,
@@ -1201,16 +1219,12 @@ def _dispatch_no_tool_calls(
             "manage_todos pour poser le plan, OU directement le premier write_file "
             "— sans aucun texte avant. Un seul outil, tout de suite."
         )
-        convo.append({"role": "user", "content": nudge})
         _debug(
             "LOOP_BREAK",
             f"boucle détectée ({collector.get('looped')!r}), "
             f"relance {st['loop_breaks']}/{max_loop_breaks}",
         )
-        yield (
-            "tool_result",
-            {"name": "(boucle)", "ok": False, "preview": nudge},
-        )
+        yield _loom_nudge(convo, "boucle", nudge)
         st["action"] = "continue"
         return
     # CONTINUATION sur troncature : la réponse texte/raisonnement a été coupée
@@ -1237,7 +1251,7 @@ def _dispatch_no_tool_calls(
                 "DONNE ta réponse (ou émets l'appel d'outil) MAINTENANT, plus "
                 "direct."
             )
-        convo.append({"role": "user", "content": nudge})
+        yield _loom_nudge(convo, "continuation", nudge)
         _debug(
             "CONTINUATION(length)",
             f"relance {st['length_continues']}/{max_length_continues}",
@@ -1256,17 +1270,13 @@ def _dispatch_no_tool_calls(
                 "d'outil). Réponds MAINTENANT : donne le résultat demandé, "
                 "ou émets l'appel d'outil nécessaire."
             )
-            convo.append({"role": "user", "content": nudge})
             log_event(
                 "guard",
                 level="WARN",
                 kind="empty_response",
                 retry=st["empty_retries"],
             )
-            yield (
-                "tool_result",
-                {"name": "(réponse vide)", "ok": False, "preview": nudge},
-            )
+            yield _loom_nudge(convo, "réponse vide", nudge)
             st["action"] = "continue"
             return
         yield (
@@ -1316,9 +1326,9 @@ def _dispatch_no_tool_calls(
                 "terminée ET vérifiée, dis seulement le résultat constaté."
             )
             label = "ACT_NUDGE"
-        convo.append({"role": "user", "content": nudge})
         _debug(label, nudge)
         log_event("guard", kind=label)
+        yield _loom_nudge(convo, label, nudge)
         st["action"] = "continue"
         return
     # Note en vol arrivée PENDANT la génération finale (donc après le dernier
@@ -2447,7 +2457,7 @@ class LoomClient:
             )
             if refocus_note and not st["refocus_done"]:
                 st["refocus_done"] = True
-                convo.append({"role": "user", "content": _REFOCUS_NOTE})
+                yield _loom_nudge(convo, "refocus", _REFOCUS_NOTE)
             _debug(
                 "FORCE_FIT_PREVENTIF",
                 f"un résultat récent trop gros -> clip avant l'appel "
@@ -2602,7 +2612,7 @@ class LoomClient:
             _force_fit(convo, system_prompt, budget)
             if refocus_note and not st["refocus_done"]:
                 st["refocus_done"] = True
-                convo.append({"role": "user", "content": _REFOCUS_NOTE})
+                yield _loom_nudge(convo, "refocus", _REFOCUS_NOTE)
             log_event(
                 "guard",
                 level="WARN",
@@ -2668,11 +2678,7 @@ class LoomClient:
                 "fichier par appel write_file, et découpe tout contenu volumineux "
                 "en plusieurs fichiers/appels successifs. Reprends, en plus court."
             )
-            convo.append({"role": "user", "content": note})
-            yield (
-                "tool_result",
-                {"name": "(génération)", "ok": False, "preview": note},
-            )
+            yield _loom_nudge(convo, "troncature", note)
             st["action"] = "continue"
             return
         # Erreurs NON récupérables : pas un overflow -> message clair et stop net,
@@ -2934,15 +2940,7 @@ class LoomClient:
             # la 2e erreur d'exécution on injecte la méthode systématique, une seule fois par tour.
             if st["fail_count"] >= 2 and not st["debug_forced"]:
                 st["debug_forced"] = True
-                convo.append({"role": "user", "content": _DEBUG_FORCE})
-                yield (
-                    "tool_result",
-                    {
-                        "name": "(debug)",
-                        "ok": True,
-                        "preview": "Cascade d'erreurs — méthode debug imposée (cause racine, pas symptôme).",
-                    },
-                )
+                yield _loom_nudge(convo, "debug", _DEBUG_FORCE)
         yield (
             "content",
             f"\n(arrêt : backstop anti-runaway atteint après {max_iters} tours d'outils — "
