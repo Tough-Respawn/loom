@@ -3265,6 +3265,7 @@ def _register_chat_routes(app, S):
                 "notice",
                 "parallel",
                 "user",  # note en vol injectée : à sa vraie position au rechargement
+                "harness",  # intervention du garde-fou Loom (3e voix) : rejouable
             }
 
             def _tl(event, **data):
@@ -3500,6 +3501,13 @@ def _register_chat_routes(app, S):
                         save()
                         yield _tl("user", content=payload)
                         yield _sse("note", text=payload)
+                        continue
+
+                    if kind == "harness":
+                        # 3e voix : intervention du garde-fou Loom (relance, audit,
+                        # recentrage…). Ni toi ni le modèle -> bulle distincte,
+                        # persistée pour être rejouée au rechargement.
+                        yield _tl("harness", **payload)
                         continue
 
                     if kind == "status":

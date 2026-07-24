@@ -57,8 +57,10 @@ def test_reponse_vide_relances_puis_done():
     events, done = run(client)
     assert done["reason"] == "empty_response"
     assert len(fake.calls) == 3
-    vides = [p for p in only(events, "tool_result") if p["name"] == "(réponse vide)"]
-    assert len(vides) == 2 and all(p["ok"] is False for p in vides)
+    # Les relances sont des interventions du HARNAIS (3e voix) -> events 'harness',
+    # plus des tool_result déguisés (refonte 2026-07-23).
+    vides = [p for p in only(events, "harness") if p["kind"] == "réponse vide"]
+    assert len(vides) == 2 and all("vide" in p["text"].lower() for p in vides)
 
 
 def test_continuation_length():
@@ -285,6 +287,24 @@ def test_notes_en_vol_injectees():
     )
 
 
+def test_harness_est_une_3e_voix_marquee_loom():
+    # Le garde-fou (ici : réponse vide) parle au modèle en role:user MARQUÉ [LOOM]
+    # (pas l'utilisateur) et émet un event 'harness' distinct pour l'UI (3e voix).
+    client, fake = make_client([turn_text(""), turn_text("ok.")])
+    events, done = run(client)
+    # 1) event harness visible en UI, étiqueté
+    harness = only(events, "harness")
+    assert harness and harness[0]["kind"] == "réponse vide"
+    # 2) dans la conversation vue par le modèle : role user, mais préfixé [LOOM]
+    injected = [
+        m
+        for m in fake.calls[-1]["messages"]
+        if m["role"] == "user" and "[LOOM" in m.get("content", "")
+    ]
+    assert injected, "le nudge doit être marqué [LOOM] pour le modèle"
+    assert "pas l'utilisateur" in injected[0]["content"].lower()
+
+
 def test_note_au_stop_naturel_relance():
     # Bug 2026-07-23 : une note postée PENDANT la génération finale (après le
     # drain d'avant-appel) était laissée en file jusqu'au prochain message
@@ -337,8 +357,8 @@ def test_boucle_degeneree_texte_repete():
     client, _ = make_client([list(tour_boucle), list(tour_boucle), list(tour_boucle)])
     events, done = run(client)
     assert done["reason"] == "loop_degenerate"
-    boucles = [p for p in only(events, "tool_result") if p["name"] == "(boucle)"]
-    assert len(boucles) == 2 and all(p["ok"] is False for p in boucles)
+    boucles = [p for p in only(events, "harness") if p["kind"] == "boucle"]
+    assert len(boucles) == 2
 
 
 def test_strong_desactive_repeat_stop():
