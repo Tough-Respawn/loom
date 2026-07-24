@@ -499,8 +499,8 @@ function Item({ it, userIndex, sid }) {
     case "notice":
       return html`<div class="notice-line">${it.text}</div>`;
     case "harness":
-      // 3e voix : le garde-fou Loom (ni toi ni le modèle). Forme distincte.
-      return html`<div class="harness-line"><span class="harness-tag">Loom · garde-fou${it.hkind ? " (" + it.hkind + ")" : ""}</span> ${it.text}</div>`;
+      // 3e voix : le garde-fou Loom (ni toi ni le modèle). Identité visuelle propre.
+      return html`<div class="harness-line"><span class="harness-tag">Loom${it.hkind ? html` <span class="harness-kind">· ${it.hkind}</span>` : ""}</span><span class="harness-text">${it.text}</span></div>`;
     default:
       return null;
   }
