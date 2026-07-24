@@ -1085,12 +1085,16 @@ def _inject_notes(notes_provider, convo: list[dict]) -> Iterator[tuple[str, obje
 
 # Le HARNAIS Loom (garde-fous, relances automatiques) parle au modèle via des
 # messages role:user — le standard OpenAI n'a pas de rôle « framework » et on n'y
-# touche pas. Mais ce n'est PAS l'utilisateur : ce préfixe le dit sans ambiguïté au
-# modèle (sinon il répond « l'utilisateur a dit… » à un garde-fou — vécu 2026-07-23,
-# incident loom-amd). Émis AUSSI en event ('harness', …) pour que l'UI le rende comme
-# une 3e voix distincte (ni toi ni le modèle). La note en vol de l'utilisateur, elle,
-# vient VRAIMENT de lui -> voix user, pas [LOOM] (cf. _inject_notes).
-_LOOM_TAG = "[LOOM — cadre d'exécution automatique, ce n'est PAS l'utilisateur]"
+# touche pas. Mais ce n'est PAS l'utilisateur : le modèle doit le savoir (sinon il
+# répond « l'utilisateur a dit… » à un garde-fou — vécu 2026-07-23, incident loom-amd).
+#
+# On marque chaque nudge d'un tag MINIMAL `[LOOM]` (3-4 tokens par injection, pas un
+# pavé re-consommé à chaque relance) ; le SENS du tag est expliqué UNE fois dans le
+# system prompt (stable, en tête -> absorbé par le prefix-cache, coût réel ~0).
+# Émis AUSSI en event ('harness', …) pour que l'UI le rende comme une 3e voix
+# distincte (ni toi ni le modèle). La note en vol de l'utilisateur, elle, vient
+# VRAIMENT de lui -> voix user, pas [LOOM] (cf. _inject_notes).
+_LOOM_TAG = "[LOOM]"
 
 
 def _loom_nudge(convo: list[dict], kind: str, text: str) -> tuple[str, object]:

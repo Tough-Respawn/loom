@@ -295,14 +295,26 @@ def test_harness_est_une_3e_voix_marquee_loom():
     # 1) event harness visible en UI, étiqueté
     harness = only(events, "harness")
     assert harness and harness[0]["kind"] == "réponse vide"
-    # 2) dans la conversation vue par le modèle : role user, mais préfixé [LOOM]
+    # 2) dans la conversation vue par le modèle : role user, préfixé du tag MINIMAL
+    #    [LOOM] (le sens est expliqué UNE fois dans le system prompt, pas répété ici).
     injected = [
         m
         for m in fake.calls[-1]["messages"]
-        if m["role"] == "user" and "[LOOM" in m.get("content", "")
+        if m["role"] == "user" and m.get("content", "").startswith("[LOOM]")
     ]
     assert injected, "le nudge doit être marqué [LOOM] pour le modèle"
-    assert "pas l'utilisateur" in injected[0]["content"].lower()
+
+
+def test_system_prompt_explique_le_tag_loom():
+    # Le SENS du tag [LOOM] est défini UNE fois dans les system prompts (stables,
+    # en tête -> absorbés par le prefix-cache) : les modèles savent que ce n'est pas
+    # l'utilisateur, sans re-consommer l'explication à chaque relance.
+    from loom.prompts import CHAT_SYSTEM, CHAT_SYSTEM_STRONG
+
+    for prompt in (CHAT_SYSTEM, CHAT_SYSTEM_STRONG):
+        assert "[LOOM]" in prompt
+        low = prompt.lower()
+        assert "harness" in low or "harnais" in low  # le concept, en EN ou FR
 
 
 def test_note_au_stop_naturel_relance():
