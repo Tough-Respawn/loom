@@ -821,7 +821,49 @@ _EXEC_CLAIM = (
 )
 # Chemin ABSOLU de fichier (avec extension), Windows ou POSIX, cité dans le texte.
 _PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)[\w./\\-]+\.[A-Za-z0-9]{1,6}")
-_ARTIFACT_VERBS = ("cree", "ecrit", "genere", "produit", "contient", "preuve")
+# Marqueurs d'ACCOMPLISSEMENT (1re personne passé / état de fait) : ils distinguent une
+# vraie revendication (« j'ai créé X », « X a été créé », accusé d'outil « créé : X ») d'une
+# simple mention illustrative (« tu pourrais créer X », « voici X, par exemple »). L'audit
+# ne se déclenche QUE sur un accomplissement affirmé — sinon il fabriquait l'action à partir
+# d'un exemple pédagogique (incident loom-amd 2026-07-23 : un chemin montré en exemple a été
+# matérialisé par le nudge). En forme _norm (minuscule, sans accents).
+_DONE_MARKERS = (
+    "j'ai cree",
+    "j'ai ecrit",
+    "j'ai genere",
+    "j'ai produit",
+    "j'ai ajoute",
+    "j'ai modifie",
+    "j'ai mis a jour",
+    "a ete cree",
+    "a ete ecrit",
+    "a ete genere",
+    "a ete produit",
+    "a ete ajoute",
+    "est cree",
+    "est ecrit",
+    "est pret",
+    "sont crees",
+    "cree :",
+    "ecrit :",
+    "genere :",
+)
+# Tournures ILLUSTRATIVES : si l'une est proche du chemin, c'est un exemple, pas une
+# revendication -> on n'audite pas (double filet, en plus du retrait des blocs de code).
+_ILLUSTRATIVE = (
+    "par exemple",
+    "pourrais",
+    "comme si",
+    "un exemple",
+    "e.g",
+    "tu peux mettre",
+)
+
+
+def _strip_code_blocks(text: str) -> str:
+    """Retire les blocs de code balisés (``` … ```) : un chemin qui n'apparaît QUE dans un
+    exemple de code est une ILLUSTRATION, jamais une revendication d'artefact produit."""
+    return re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
 
 
 def _claims_execution(text: str) -> bool:
@@ -831,17 +873,26 @@ def _claims_execution(text: str) -> bool:
 
 
 def _claims_missing_artifact(text: str, files_written: set) -> str | None:
-    """Renvoie le 1er chemin ABSOLU revendiqué (créé/contient) qui n'existe PAS et n'a pas
-    été écrit ce tour — artefact inventé. Sinon None. Chemins absolus uniquement (vérif
-    fiable sans connaître le workspace)."""
-    low = _norm(text)
-    for match in _PATH_RE.finditer(text):
+    """Renvoie le 1er chemin ABSOLU revendiqué comme ACCOMPLI (« j'ai créé X ») qui
+    n'existe PAS et n'a pas été écrit ce tour — artefact confabulé. Sinon None.
+
+    Resserré (2026-07-23) pour ne PLUS mordre sur une mention illustrative : (1) les
+    blocs de code sont retirés (un chemin montré en exemple n'est pas un artefact),
+    (2) il faut une vraie revendication d'accomplissement à proximité (_DONE_MARKERS),
+    pas un simple verbe de création (« tu pourrais créer X » ne déclenche plus),
+    (3) une tournure illustrative proche (_ILLUSTRATIVE) désamorce. Chemins absolus
+    uniquement (vérif fiable sans connaître le workspace)."""
+    prose = _strip_code_blocks(text)
+    low = _norm(prose)
+    for match in _PATH_RE.finditer(prose):
         path = match.group(0).strip("`\"'")
         idx = low.find(_norm(path))
         if idx == -1:
             continue
-        window = low[max(0, idx - 60) : idx + len(path) + 60]
-        if not any(v in window for v in _ARTIFACT_VERBS):
+        window = low[max(0, idx - 80) : idx + len(path) + 80]
+        if not any(m in window for m in _DONE_MARKERS):
+            continue
+        if any(m in window for m in _ILLUSTRATIVE):
             continue
         if path in files_written:
             continue
