@@ -239,8 +239,8 @@ def _step_r_adv(state, t, deps):
     }
     return WizardResult(
         None,
-        f"Modèle distant « {state['id']} » ajouté (config/local.toml) — "
-        "disponible dans le sélecteur.",
+        f"Modèle distant « {state['id']} » ajouté (remote/{state['id']}/model.toml) "
+        "— disponible dans le sélecteur.",
         {"kind": "upsert_remote", "record": record},
     )
 
@@ -250,7 +250,7 @@ def _step_r_adv(state, t, deps):
 
 def start_remove(deps) -> WizardResult:
     """Liste numérotée des modèles supprimables : locaux (dossier sur disque),
-    distants (config/local.toml, source unique) et image/vidéo (définition)."""
+    distants (dossier remote/<id>/) et image/vidéo (définition)."""
     items = deps.removable_models()
     if not items:
         return WizardResult(None, "Aucun modèle supprimable ici.")
@@ -259,8 +259,8 @@ def start_remove(deps) -> WizardResult:
         {"step": "d_pick", "items": items},
         "[remove-model 1/2] Quel modèle supprimer ?\n"
         + "\n".join(lines)
-        + "\n(réponds par un numéro — /cancel pour annuler ; un distant sera "
-        "retiré de config/local.toml ; image/vidéo : définition seule, les "
+        + "\n(réponds par un numéro — /cancel pour annuler ; un distant = son "
+        "dossier remote/<id>/ supprimé ; image/vidéo : définition seule, les "
         "poids ComfyUI partagés ne sont pas touchés)",
     )
 
@@ -272,9 +272,11 @@ def _step_d_pick(state, t, deps):
     it = items[int(t) - 1]
     warns = {
         "local": "son DOSSIER et ses fichiers (GGUF compris) seront SUPPRIMÉS du disque",
-        "remote": "il sera retiré de config/local.toml (sa clé avec) et démonté",
-        # Alias hérité : state persisté d'avant l'unification 2026-07-21 (même effet).
-        "remote_config": "il sera retiré de config/local.toml (sa clé avec) et démonté",
+        "remote": "son dossier remote/<id>/ (sa clé avec) sera supprimé et le "
+        "modèle démonté",
+        # Alias hérité : state persisté d'avant l'unification (même effet).
+        "remote_config": "son dossier remote/<id>/ (sa clé avec) sera supprimé et le "
+        "modèle démonté",
         "image": "sa définition Loom (model.toml + workflow.json) sera supprimée ; "
         "les poids ComfyUI partagés ne sont PAS touchés",
         "video": "sa définition Loom (model.toml + workflow.json) sera supprimée ; "
@@ -596,6 +598,38 @@ def _step_l_id(state, t, deps):
         )
     if mid in deps.existing_ids:
         return WizardResult(state, f"« {mid} » existe déjà. Choisis un autre id :")
+    # Plusieurs racines de stockage ([storage] models_root) -> étape disque : la
+    # première (la plus rapide par convention) est le défaut, espace libre affiché.
+    roots = deps.install_roots()
+    if len(roots) > 1:
+        lines = []
+        for i, r in enumerate(roots):
+            free = f"{r['free_gb']} Go libres" if r.get("free_gb") is not None else "?"
+            tag = "  <- défaut (le plus rapide)" if i == 0 else ""
+            lines.append(f"  {i + 1}. {r['path']}  ({free}){tag}")
+        return WizardResult(
+            dict(state, step="l_root", model_id=mid, roots=[r["path"] for r in roots]),
+            "[add-model] Sur quel disque l'installer ?\n"
+            + "\n".join(lines)
+            + "\n(réponds par un numéro, ou « ok » pour le défaut)",
+        )
+    return _install_result(state, mid, root=None)
+
+
+def _step_l_root(state, t, deps):
+    roots = state["roots"]
+    if t.lower() in ("ok", "oui"):
+        idx = 0
+    elif t.isdigit() and 1 <= int(t) <= len(roots):
+        idx = int(t) - 1
+    else:
+        return WizardResult(
+            state, "Réponds par le numéro du disque, ou « ok » (ou /cancel)."
+        )
+    return _install_result(state, state["model_id"], root=roots[idx])
+
+
+def _install_result(state, mid, root):
     chosen = state["chosen"]
     action = {
         "kind": "install",
@@ -605,10 +639,12 @@ def _step_l_id(state, t, deps):
         "files": list(chosen["part_files"]),
         "size_mb": chosen["size_mb"],
         "mmproj_filename": state.get("mmproj"),
+        "root": root,  # None = racine prioritaire (models_dir)
     }
+    where = f" sur {root}" if root else ""
     return WizardResult(
         None,
-        f"Installation de « {mid} » : téléchargement de "
+        f"Installation de « {mid} »{where} : téléchargement de "
         f"{chosen['size_mb'] / 1024:.1f} Go lancé — la progression s'affiche ici. "
         "Si ça coupe, la reprise est automatique au premier lancement du modèle.",
         action,
@@ -628,6 +664,7 @@ _STEPS = {
     "l_repo": _step_l_repo,
     "l_quant": _step_l_quant,
     "l_id": _step_l_id,
+    "l_root": _step_l_root,
     "r_id": _step_r_id,
     "r_base_url": _step_r_base_url,
     "r_model": _step_r_model,

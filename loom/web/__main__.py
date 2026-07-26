@@ -8,11 +8,11 @@ import os
 from pathlib import Path
 
 from loom.agent.client import LoomClient
-from loom.config import load_config
 from loom.agent.context import effective_context_budget
 from loom.agent.conversation import Conversation
-from loom.permissions import evaluate
 from loom.agent.session import SessionStore
+from loom.config import load_config
+from loom.permissions import evaluate
 from loom.tools import AVAILABLE_TOOLS, build_registry
 from loom.web.app import create_app
 
@@ -30,9 +30,10 @@ def build_app(cfg):
     conversation = Conversation.load(cfg.chat.history_path, cfg.chat.system_prompt)
     if not conversation.model:
         conversation.set_model(cfg.default_model)
-    # Modèles distants : config/local.toml est la source unique (un store JSON
-    # hérité est replié dedans par load_config). Le chemin du store ne sert plus
-    # qu'en filet de suppression et pour ancrer var/generated (create_app).
+    # Modèles distants : un dossier remote/<id>/ par modèle sous les racines
+    # (découverts par load_config, qui replie aussi les emplacements hérités).
+    # Le chemin du store JSON ne sert plus qu'en filet de suppression et pour
+    # ancrer var/generated (create_app).
     from loom.config import remote_store_path as _remote_store_path
 
     remote_store = _remote_store_path(cfg.chat.history_path)
@@ -221,7 +222,7 @@ def build_app(cfg):
         seed.conversation = conversation
         store.save(seed)
 
-    permission = lambda name, args: evaluate(name, args, cfg.permissions)  # noqa: E731
+    permission = lambda name, args: evaluate(name, args, cfg.permissions)
     # Fenêtre et plafond de sortie PAR MODÈLE : un modèle local garde sa fenêtre (override
     # model.toml sinon le global) ; un modèle distant exploite SA grande fenêtre + son
     # max_tokens. Sert au seuil de microcompact (côté app) -> on profite du contexte du
@@ -306,6 +307,7 @@ def build_app(cfg):
         local_models=local_models,
         image_models=image_models,
         models_dir=str(cfg.models_dir),
+        models_roots=[str(r) for r in cfg.models_roots],
     )
     return app
 

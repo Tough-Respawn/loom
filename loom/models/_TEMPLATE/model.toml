@@ -1,4 +1,5 @@
-# TEMPLATE de modèle Loom — copie ce dossier en `loom/models/<ton-id>/` et adapte.
+# TEMPLATE de modèle LOCAL texte — copie ce dossier en `<racine>/local/text/<ton-id>/`
+# et adapte (distant : cf. remote-model.toml à côté).
 # L'`id` du modèle = le NOM DU DOSSIER (pas un champ ici). Il apparaît dans le sélecteur UI
 # et dans `default_model` (section [chat] de loom.config.toml).
 #
