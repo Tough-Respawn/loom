@@ -530,18 +530,32 @@
     .rm-msg { font-size: 10.5px; color: var(--text-faint); min-height: 13px; }
     .rm-msg.ok { color: var(--accent); }
     .rm-msg.err { color: var(--err); }
-    /* --- Âme (export/import chiffré) --- */
-    .ame-block { margin: 12px 0; padding: 10px; border: 1px solid var(--border, #333); border-radius: 8px; }
-    .ame-head { font-weight: 600; margin-bottom: 6px; }
-    .ame-sub { opacity: .75; font-size: .85em; margin-bottom: 6px; }
-    .ame-sessions { max-height: 160px; overflow-y: auto; margin: 6px 0; }
-    .ame-sessions label { display: block; font-size: .9em; padding: 2px 0; }
-    .ame-sessions .ame-date { opacity: .6; font-size: .85em; margin-left: 6px; }
-    .ame-pass-row { display: flex; gap: 6px; align-items: center; }
-    .ame-pass-row .rm-in { flex: 1; }
-    .ame-gauge { font-size: .85em; min-height: 1.2em; margin: 4px 0 8px; opacity: .85; }
+    /* --- Sessions (export/import chiffré .soul) — ids "ame-*" conservés (legacy :
+       le namespace "sess-*" est déjà pris par la liste de sessions de la sidebar). --- */
+    .ame-intro { font-size: 10.5px; color: var(--text-faint); padding: 8px 12px 2px; line-height: 1.5; }
+    .ame-seg { display: flex; gap: 4px; margin: 10px 12px 4px; }
+    .ame-seg button {
+      flex: 1; background: var(--bg); border: 1px solid var(--border-soft); color: var(--text-dim);
+      font: inherit; font-size: 12px; padding: 7px 0; border-radius: 7px; cursor: pointer;
+      transition: color .12s, border-color .12s, background .12s;
+    }
+    .ame-seg button:hover { color: var(--text); }
+    .ame-seg button.on { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
+    .ame-block { padding: 6px 12px 4px; }
+    .ame-block[hidden] { display: none; }
+    .ame-label { font-size: 10.5px; color: var(--text-dim); margin: 8px 0 4px; }
+    .ame-all { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 2px 0; }
+    .ame-note { font-size: 10px; color: var(--text-faint); margin: 5px 0; line-height: 1.45; }
+    .ame-sessions { max-height: 150px; overflow-y: auto; margin: 2px 0 4px; }
+    .ame-sessions label { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 0; }
+    .ame-sessions .ame-date { margin-left: auto; color: var(--text-faint); font-size: 11px; flex: none; }
+    .ame-pass-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .ame-pass-row .rm-in { flex: 1; min-width: 150px; }
+    .ame-pass-row .rm-add-btn { width: auto; flex: none; padding: 6px 12px; }
+    .ame-gauge { font-size: 10.5px; min-height: 14px; margin: 4px 0 6px; color: var(--text-faint); }
     .ame-gauge.ok { color: #7dba7d; }
     .ame-gauge.ko { color: #c98a8a; }
+    .ame-do { width: 100%; margin-top: 6px; padding: 9px; font-weight: 600; }
     .rm-actions { display: flex; gap: 6px; }
     .rm-btn {
       flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text-dim);
@@ -600,8 +614,8 @@
     .cfg-x:hover { background: var(--bg-hover); color: var(--text); }
     /* Onglets : une section visible à la fois -> pas de scroll interminable. */
     .cfg-tabs {
-      display: flex; gap: 2px; padding: 6px 18px 0; border-bottom: 1px solid var(--border-soft);
-      flex: none;
+      display: flex; flex-wrap: wrap; gap: 2px 6px; padding: 6px 18px 0;
+      border-bottom: 1px solid var(--border-soft); flex: none;
     }
     .cfg-tab {
       background: none; border: none; border-bottom: 2px solid transparent;
@@ -1076,6 +1090,10 @@
       .sidebar-toggle { display: block; }
       .messages { padding: 0 12px; }
       .composer-wrap { padding: 8px 12px 12px; }
+      /* Config : plein écran, plus de largeur fixe qui déborde ni de coins arrondis flottants. */
+      .cfg-dialog { width: 100vw; max-width: 100vw; max-height: 100dvh; border-radius: 0; border: none; margin: 0; }
+      .cfg-tabs { padding: 6px 12px 0; }
+      .cfg-scroll { padding: 8px 12px 16px; }
     }
   </style>
 </head>
@@ -1196,7 +1214,7 @@
         <button type="button" class="cfg-tab" data-tab="systeme">Propre à cette machine</button>
         <button type="button" class="cfg-tab" data-tab="locaux">Modèles locaux</button>
         <button type="button" class="cfg-tab" data-tab="modeles">Modèles distants</button>
-        <button type="button" class="cfg-tab" data-tab="ame">Âme</button>
+        <button type="button" class="cfg-tab" data-tab="ame">Sessions</button>
       </div>
       <div class="cfg-scroll">
         <!-- Onglet Modèles locaux (servis sur cette machine). Tuning d'offload GPU éditable. -->
@@ -1227,40 +1245,45 @@
             </div>
           </form>
         </div>
-        <!-- Onglet Âme : export/import chiffré de l'état portable (sessions, mémoire,
-             identité, skills). Aucun secret ne part : les clés API restent ici. -->
+        <!-- Onglet Sessions : export/import chiffré de l'état portable (conversations,
+             mémoire, identité, skills). Aucun secret ne part : les clés API restent ici.
+             Ids "ame-*" conservés (legacy) — voir la note CSS du bloc .ame-*. -->
         <div id="cfg-ame" class="cfg-panel" data-tab="ame" hidden>
-          <div class="cfg-group-sub">Emporte tes sessions, ta mémoire, ton identité et tes skills
-            dans un fichier chiffré (.soul) — clé USB, disque ou dossier cloud synchronisé.
-            Les clés API ne partent jamais. Sur l'autre machine : Importer, même passphrase, fusion sans perte.</div>
+          <div class="ame-intro">Emporte tes conversations dans un fichier chiffré (.soul) —
+            clé USB, disque ou cloud. Mémoire, identité et skills suivent ; les clés API restent ici.</div>
 
-          <div class="ame-block">
-            <div class="ame-head">Exporter</div>
-            <div class="ame-sub">Socle toujours inclus : mémoire, identité, skills. Sessions au choix :</div>
+          <div class="ame-seg">
+            <button type="button" id="ame-seg-exp" class="on">Exporter</button>
+            <button type="button" id="ame-seg-imp">Importer</button>
+          </div>
+
+          <div id="ame-exp" class="ame-block">
+            <div class="ame-label">Conversations à emporter</div>
             <label class="ame-all"><input type="checkbox" id="ame-all" checked> toutes les sessions</label>
             <div id="ame-sessions" class="ame-sessions"></div>
-            <input id="ame-dest" class="rm-in" placeholder="dossier de destination (E:\ , D:\sauvegardes, dossier Drive...)">
+            <div class="ame-note">Mémoire, identité et skills sont toujours inclus.</div>
+            <input id="ame-dest" class="rm-in" placeholder="dossier de destination (E:\, D:\sauvegardes, dossier Drive…)">
             <div class="ame-pass-row">
               <input id="ame-pass" class="rm-in" type="password" placeholder="passphrase (jamais stockée)" autocomplete="new-password">
               <button type="button" id="ame-eye" class="rm-add-btn" title="afficher/masquer">&#128065;</button>
               <button type="button" id="ame-gen" class="rm-add-btn">générer</button>
             </div>
-            <div class="ame-pass-row">
-              <input id="ame-pass2" class="rm-in" type="password" placeholder="confirmer la passphrase" autocomplete="new-password">
-            </div>
+            <input id="ame-pass2" class="rm-in" type="password" placeholder="confirmer la passphrase" autocomplete="new-password">
             <div id="ame-gauge" class="ame-gauge"></div>
-            <button type="button" id="ame-export" class="rm-add-btn" disabled>Exporter</button>
+            <button type="button" id="ame-export" class="rm-add-btn ame-do" disabled>Exporter</button>
           </div>
 
-          <div class="ame-block">
-            <div class="ame-head">Importer</div>
+          <div id="ame-imp" class="ame-block" hidden>
+            <div class="ame-label">Fichier .soul à importer</div>
             <input id="ame-file" class="rm-in" placeholder="chemin du fichier .soul">
             <div class="ame-pass-row">
               <input id="ame-ipass" class="rm-in" type="password" placeholder="passphrase" autocomplete="off">
               <button type="button" id="ame-ieye" class="rm-add-btn" title="afficher/masquer">&#128065;</button>
             </div>
-            <button type="button" id="ame-import" class="rm-add-btn">Importer</button>
+            <div class="ame-note">Fusion sans perte : rien n'est écrasé, les conflits sont posés à côté.</div>
+            <button type="button" id="ame-import" class="rm-add-btn ame-do">Importer</button>
           </div>
+
           <div id="ame-msg" class="rm-msg"></div>
         </div>
         <div class="cfg-body" id="config-body"></div>
