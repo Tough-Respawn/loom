@@ -568,8 +568,8 @@ def _list_remote_models(base_url: str, api_key: str) -> list[str] | None:
 
 def _removable_models(S) -> list[dict]:
     """Modèles supprimables via /remove-model : TOUT ce que le sélecteur affiche.
-    kind ∈ {local, remote (config/local.toml, source unique des distants), image,
-    video} — le wizard adapte son message de confirmation au kind (_step_d_pick)."""
+    kind ∈ {local, remote (dossier remote/<id>/), image, video} — le wizard adapte
+    son message de confirmation au kind (_step_d_pick)."""
     import tomllib
 
     items = []
@@ -582,7 +582,7 @@ def _removable_models(S) -> list[dict]:
                 "label": f"{m['id']} — local, {size:.1f} Go sur disque",
             }
         )
-    # Distants : tous dans config/local.toml (tomlkit) — si c'est le default_model,
+    # Distants : un dossier remote/<id>/ par modèle — si c'est le default_model,
     # la confirmation avertit (repli boot sur le 1er modèle).
     default_model = ""
     if S.config_local_path and Path(S.config_local_path).exists():
@@ -598,7 +598,7 @@ def _removable_models(S) -> list[dict]:
                 "kind": "remote",
                 "is_default": mid == default_model,
                 "label": f"{mid} — distant "
-                f"({S.remote_model_names.get(mid, '?')}, config/local.toml)",
+                f"({S.remote_model_names.get(mid, '?')}, remote/{mid}/)",
             }
         )
     # Image/vidéo (ComfyUI) : seule la DÉFINITION Loom (model.toml + workflow.json)
@@ -630,6 +630,38 @@ def _forget_remote(S, mid: str) -> None:
         S.models.remove(mid)
 
 
+def _models_roots(S) -> list[str]:
+    """Racines des modèles, dans l'ordre de priorité (racine[0] = cible des écritures :
+    nouveaux distants remote/<id>/, installs locaux). Repli : dérivée de models_dir
+    (<racine>/local/text) quand create_app n'a pas reçu models_roots (vieux appels)."""
+    roots = getattr(S, "models_roots", None)
+    if roots:
+        return [str(r) for r in roots]
+    # Repli sûr : uniquement si models_dir suit la convention <racine>/local/text —
+    # sinon remonter de deux crans pointerait n'importe où.
+    if S.models_dir:
+        p = Path(S.models_dir)
+        if p.name == "text" and p.parent.name == "local":
+            return [str(p.parent.parent)]
+    return []
+
+
+def _install_roots(S) -> list[dict]:
+    """Racines candidates à l'installation d'un LOCAL, avec l'espace libre (Go) pour que
+    le wizard affiche un choix éclairé quand il y a plusieurs disques. racine[0] = défaut
+    (la plus rapide par convention, cf. [storage] models_root)."""
+    import shutil
+
+    out = []
+    for r in _models_roots(S):
+        try:
+            free_gb = shutil.disk_usage(r).free // (1024**3)
+        except OSError:
+            free_gb = None
+        out.append({"path": r, "free_gb": free_gb})
+    return out
+
+
 def _wizard_deps(S):
     """Dépendances du wizard (INJECTÉES : la machine à états reste pure et testable).
     Point de patch des tests — garder la construction ici, jamais dans wizard.py."""
@@ -658,6 +690,7 @@ def _wizard_deps(S):
         check_workflow=_check_workflow,
         rebenchable_models=lambda: _rebenchable_models(S),
         model_kind=lambda mid: _model_kind(S, mid),
+        install_roots=lambda: _install_roots(S),
     )
 
 
@@ -1097,27 +1130,29 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             )
     elif res.action and res.action["kind"] == "upsert_remote":
         rec = {k: v for k, v in res.action["record"].items() if v is not None}
-        if S.config_local_path:
+        roots = _models_roots(S)
+        if roots:
             with S.toml_lock:
-                model_store.upsert_remote_in_toml(S.config_local_path, rec)
+                model_store.write_remote_dir(roots[0], rec)
             if getattr(S, "client", None) is not None:
                 _mount_remote(S, rec)
             models_changed = True
         else:
-            extra_reply = "\n(config/local.toml indisponible : ajout NON persisté)"
+            extra_reply = "\n(racine des modèles indisponible : ajout NON persisté)"
     elif res.action and res.action["kind"] == "remove":
         a = res.action
         if a["model_kind"] in ("remote", "remote_config"):
-            # Tous les distants vivent dans config/local.toml (source unique) ; le
-            # delete du store JSON reste en filet pour un vieux state pré-migration
-            # (sans jamais recréer le fichier vide).
+            # Un distant = son dossier remote/<id> (purgé sur TOUTES les racines) ;
+            # les emplacements hérités (local.toml, store JSON) sont nettoyés en
+            # filet, sans jamais recréer un fichier vide.
             with S.toml_lock:
+                model_store.delete_remote_dir(_models_roots(S), a["id"])
                 if S.config_local_path:
                     model_store.delete_remote_in_toml(S.config_local_path, a["id"])
                 if S.remote_store_path and Path(S.remote_store_path).exists():
                     model_store.delete(S.remote_store_path, a["id"])
             _forget_remote(S, a["id"])
-            extra_reply = f"\n✅ « {a['id']} » retiré (config/local.toml + sélecteur)."
+            extra_reply = f"\n✅ « {a['id']} » retiré (dossier remote/ + sélecteur)."
             models_changed = True
         elif a["model_kind"] in ("image", "video"):
             import shutil
@@ -1228,7 +1263,14 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                 "\n(models_dir non configuré : installation locale indisponible)"
             )
         else:
-            mdir = Path(S.models_dir) / a["model_id"]
+            # `root` : racine choisie à l'étape disque du wizard (multi-racines) ;
+            # sans elle, racine prioritaire = S.models_dir (<racine[0]>/local/text).
+            base = (
+                Path(a["root"]) / "local" / "text"
+                if a.get("root")
+                else Path(S.models_dir)
+            )
+            mdir = base / a["model_id"]
             files = list(a["files"])
             if a.get("mmproj_filename"):
                 files.append(a["mmproj_filename"])
@@ -2541,8 +2583,9 @@ def _register_model_routes(app, S):
 
     @app.post("/models/remote")
     def models_remote_upsert():
-        if not S.config_local_path:
-            return {"error": "config/local.toml indisponible"}, 500
+        roots = _models_roots(S)
+        if not roots:
+            return {"error": "racine des modèles indisponible"}, 500
         b = request.get_json(silent=True) or {}
         mid = (b.get("id") or "").strip()
         base_url = (b.get("base_url") or "").strip().rstrip("/")
@@ -2562,22 +2605,30 @@ def _register_model_routes(app, S):
             "max_tokens": int(b["max_tokens"]) if b.get("max_tokens") else None,
             "vision": bool(b.get("vision")),
         }
-        # config/local.toml, source unique : édition en place par id (tomlkit,
-        # commentaires préservés) — seuls les champs non-None sont posés.
+        # Un distant = un dossier remote/<id>/model.toml sur la racine prioritaire.
+        # Édition en place (tomlkit) : si le dossier vit sur une AUTRE racine, on
+        # l'édite là-bas plutôt que de créer un doublon masqué par la priorité.
         with S.toml_lock:
-            model_store.upsert_remote_in_toml(S.config_local_path, rec)
+            dest = next(
+                (r for r in roots if model_store.remote_dir(r, mid).is_dir()),
+                roots[0],
+            )
+            model_store.write_remote_dir(dest, rec)
         _mount_remote(S, rec)
         return {"ok": True, "models": _models_payload(S), "remotes": _remote_list(S)}
 
     @app.delete("/models/remote/<mid>")
     def models_remote_delete(mid):
-        if not S.config_local_path:
-            return {"error": "config/local.toml indisponible"}, 500
+        roots = _models_roots(S)
+        if not roots:
+            return {"error": "racine des modèles indisponible"}, 500
         if mid not in S.remote_model_ids:
             return {"error": f"modèle distant '{mid}' inconnu"}, 404
         with S.toml_lock:
-            model_store.delete_remote_in_toml(S.config_local_path, mid)
-            # Filet : store JSON hérité pré-migration (sans le recréer vide)
+            model_store.delete_remote_dir(roots, mid)
+            # Filets : emplacements hérités, sans jamais recréer un fichier vide.
+            if S.config_local_path:
+                model_store.delete_remote_in_toml(S.config_local_path, mid)
             if S.remote_store_path and Path(S.remote_store_path).exists():
                 model_store.delete(S.remote_store_path, mid)
         _forget_remote(S, mid)
@@ -2852,7 +2903,7 @@ def _register_chat_routes(app, S):
         cancel_event.clear()
 
         conv = sess.conversation
-        save = lambda: S.session_store.save(sess)  # noqa: E731
+        save = lambda: S.session_store.save(sess)
 
         # Commande /add-model + wizard actif : le wizard déterministe capte TOUT
         # message de la session tant qu'il est actif (y compris avant /goal — un

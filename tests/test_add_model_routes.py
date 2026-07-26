@@ -25,7 +25,10 @@ def _sse_texts(body: bytes) -> str:
 
 @pytest.fixture()
 def env(tmp_path):
-    for d in ("skills", "skills_user", "workspace", "models"):
+    # Arbo réaliste : la racine des modèles = tmp/root (local/text + remote).
+    root = tmp_path / "root"
+    (root / "local" / "text").mkdir(parents=True)
+    for d in ("skills", "skills_user", "workspace"):
         (tmp_path / d).mkdir()
     store = SessionStore(
         tmp_path / "sessions",
@@ -44,11 +47,12 @@ def env(tmp_path):
         plugins_dir=str(tmp_path / "plugins"),
         remote_store_path=str(tmp_path / "remote_models.json"),
         config_local_path=str(tmp_path / "local.toml"),
-        models_dir=str(tmp_path / "models"),
+        models_dir=str(root / "local" / "text"),
+        models_roots=[str(root)],
     )
     web = app.test_client()
     assert web.post("/session/new", data={}).status_code == 200
-    return SimpleNamespace(web=web, tmp=tmp_path)
+    return SimpleNamespace(web=web, tmp=tmp_path, root=root)
 
 
 def _fake_deps(monkeypatch, hits=(), files=()):
@@ -64,6 +68,7 @@ def _fake_deps(monkeypatch, hits=(), files=()):
         removable_models=lambda: [
             {"id": "glm-test", "kind": "remote", "label": "glm-test — distant"}
         ],
+        install_roots=lambda: [{"path": "C:/loom-models", "free_gb": 100}],
     )
     monkeypatch.setattr(routes, "_wizard_deps", lambda S: deps)
 
@@ -86,7 +91,7 @@ def test_add_model_cancel(env, monkeypatch):
     assert "annulé" in _sse_texts(r.data).lower()
 
 
-def test_add_model_distant_persiste_local_toml(env, monkeypatch):
+def test_add_model_distant_persiste_le_dossier_remote(env, monkeypatch):
     _fake_deps(monkeypatch)
     # nouvel ordre : la CLÉ vient avant le modèle (elle sert à lister GET /models)
     for msg in [
@@ -100,13 +105,17 @@ def test_add_model_distant_persiste_local_toml(env, monkeypatch):
         env.web.post("/chat", data={"message": msg})
     r = env.web.post("/chat", data={"message": "non"})
     assert "ajouté" in _sse_texts(r.data)
-    # Source unique : config/local.toml — le store JSON n'est plus créé.
+    # Un distant = un dossier remote/<id>/model.toml sur la racine prioritaire —
+    # ni store JSON, ni [[remote_models]] dans local.toml.
     import tomllib
 
-    cfg = tomllib.loads((env.tmp / "local.toml").read_text(encoding="utf-8"))
-    assert cfg["remote_models"][0]["id"] == "glm-test"
-    assert cfg["remote_models"][0]["base_url"] == "https://api.exemple/v4"
+    p = env.root / "remote" / "glm-test" / "model.toml"
+    assert p.exists()
+    d = tomllib.loads(p.read_text(encoding="utf-8"))
+    assert d["base_url"] == "https://api.exemple/v4"
+    assert d["model"] == "glm-test-model"
     assert not (env.tmp / "remote_models.json").exists()
+    assert not (env.tmp / "local.toml").exists()
 
 
 def test_remove_model_confirmation_porte_des_boutons(env, monkeypatch):
@@ -121,7 +130,7 @@ def test_remove_model_confirmation_porte_des_boutons(env, monkeypatch):
     assert {"type": "choices", "options": ["oui", "annuler"]} in events
 
 
-def test_remove_model_distant_vide_local_toml(env, monkeypatch):
+def test_remove_model_distant_supprime_le_dossier(env, monkeypatch):
     _fake_deps(monkeypatch)
     # ajoute d'abord un distant (flux complet), puis le supprime via /remove-model
     for msg in [
@@ -134,14 +143,12 @@ def test_remove_model_distant_vide_local_toml(env, monkeypatch):
         "non",
     ]:
         env.web.post("/chat", data={"message": msg})
+    assert (env.root / "remote" / "glm-test").is_dir()
     env.web.post("/chat", data={"message": "/remove-model"})
     env.web.post("/chat", data={"message": "1"})
     r = env.web.post("/chat", data={"message": "oui"})
     assert "retiré" in _sse_texts(r.data)
-    import tomllib
-
-    cfg = tomllib.loads((env.tmp / "local.toml").read_text(encoding="utf-8"))
-    assert cfg.get("remote_models", []) == []
+    assert not (env.root / "remote" / "glm-test").exists()
 
 
 # ---------- tous types : liste complète, image/vidéo, distant config ----------
@@ -314,13 +321,13 @@ def test_remove_image_rmtree_dossier_et_demonte(env_img, monkeypatch):
 
 
 def test_remove_remote_config_edite_local_toml_et_demonte(env_img, monkeypatch):
+    # Distant hérité encore déclaré en [[remote_models]] (pas migré : pas de boot
+    # load_config dans ce fixture) : /remove-model doit le purger du fichier AUSSI.
     _real_img_deps(monkeypatch)
     env_img.web.post("/chat", data={"message": "/remove-model"})
     r = env_img.web.post("/chat", data={"message": "1"})  # cfg-distant
     body = _sse_texts(r.data)
-    assert (
-        "config/local.toml" in body and "défaut" in body
-    )  # avertissement default_model
+    assert "remote/" in body and "défaut" in body  # avertissement default_model
     r = env_img.web.post("/chat", data={"message": "oui"})
     assert "retiré" in _sse_texts(r.data)
     assert "cfg-distant" not in env_img.cfg.read_text(encoding="utf-8").replace(
@@ -377,7 +384,7 @@ def test_add_model_local_installe(env, monkeypatch):
     body = _sse_texts(r.data)
     assert "téléchargement" in body.lower()
 
-    mdir = env.tmp / "models" / "nouveau-modele"
+    mdir = env.root / "local" / "text" / "nouveau-modele"
     assert (mdir / "model.toml").exists()
     assert 'repo = "org/mon-GGUF"' in (mdir / "model.toml").read_text(encoding="utf-8")
     # monté à chaud : visible dans la liste des modèles sélectionnables

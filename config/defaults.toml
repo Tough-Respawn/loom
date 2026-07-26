@@ -49,10 +49,18 @@ swap_bin = "llama-swap"
 [storage]
 # Racine(s) des modèles — arbo : local/{text,image,video} + remote + _TEMPLATE.
 # Par défaut dans le package (loom/models) ; pointe-la vers un gros disque dans
-# config/local.toml. Chaîne ou LISTE (plusieurs disques, première racine gagnante
-# en cas d'id en double), ex. :
+# config/local.toml. Chaîne ou LISTE (plusieurs disques) : ORDONNE du plus rapide
+# au plus lent — la PREMIÈRE racine gagne en cas d'id en double ET reçoit les
+# nouveaux modèles (/add-model propose le choix quand il y en a plusieurs), ex. :
 # models_root = "E:/loom-models"
 # models_root = ["C:/loom-models", "E:/loom-models"]
+
+# ========================= Modèles distants (standard) ======================
+# Réglages appliqués à TOUS les distants (un dossier remote/<id>/model.toml par
+# modèle sous les racines ci-dessus ; gabarit _TEMPLATE/remote-model.toml). Le
+# model.toml de chaque dossier surcharge champ par champ. Exemples :
+# [remote]
+# max_tokens = 8192           # borne de sortie commune (sinon limite du provider)
 
 # ============================== Chat / runtime ==============================
 [chat]
