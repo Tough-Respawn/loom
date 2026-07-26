@@ -418,6 +418,7 @@ def create_app(
     local_models=None,
     image_models=None,
     models_dir=None,
+    models_roots=None,
 ) -> Flask:
     app = Flask(__name__)
 
@@ -589,6 +590,9 @@ def create_app(
         # Destination des installs /add-model : <models_root>/local/text
         # (None = installation locale indisponible, le wizard le dit).
         models_dir=models_dir,
+        # Racines des modèles (ordre de priorité) : dossiers remote/<id>/ des
+        # distants + choix du disque à l'install. Repli routes._models_roots.
+        models_roots=models_roots,
         model_contexts=model_contexts,
         model_max_tokens=model_max_tokens,
         model_prices=model_prices,
