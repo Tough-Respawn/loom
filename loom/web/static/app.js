@@ -931,7 +931,7 @@ function renderTabs() {
   plus.className = "tab-new";
   plus.type = "button";
   plus.textContent = "+";
-  plus.title = "Nouvelle session (clic droit : importer un export .zip)";
+  plus.title = "Nouvelle session (clic droit : importer une conversation .zip)";
   plus.addEventListener("click", newSessionTab);
   // Clic droit = importer un export de session (le sélecteur de fichier s'ouvre).
   plus.addEventListener("contextmenu", (e) => {
@@ -2066,7 +2066,7 @@ function openTabMenu(e, sid) {
     });
   }
   // Archive portable (session.json + timeline) : le serveur pousse le téléchargement.
-  add("Exporter la session (.zip)", () => {
+  add("Exporter la conversation (.zip)", () => {
     window.location = "/session/" + encodeURIComponent(sid) + "/export";
   });
   document.body.appendChild(m);
@@ -2151,7 +2151,7 @@ async function importSessionFile(file) {
     return;
   }
   openSessionTab(d);
-  showToast("session importée" + (d.model ? " (modèle : " + d.model + ")" : ""));
+  showToast("conversation importée" + (d.model ? " (modèle : " + d.model + ")" : ""));
 }
 
 function addSidebarSession(d) {

@@ -19,8 +19,10 @@ donne, pas un coffre.
    chiffrement : contenu = la conversation elle-même, l'utilisateur sait ce qu'il
    partage ; les clés API n'y vivent pas (la saisie wizard est déjà masquée).
 2. **Export** : `GET /session/<sid>/export` → téléchargement
-   `loom-session-<titre-slug>-<sid>.zip`. UI : entrée « Exporter la session
-   (.zip) » dans le menu contextuel d'onglet/bandeau (à côté du chemin réel).
+   `loom-session-<titre-slug>-<sid>.zip`. UI : entrée « Exporter la conversation
+   (.zip) » dans le menu contextuel d'onglet/bandeau (à côté du chemin réel) —
+   libellé « conversation », le mot « Sessions » désignant l'onglet de config du
+   coffre .soul chiffré (état portable global).
 3. **Import** : `POST /session/import` (multipart `file`) → session recréée sous un
    **id NEUF** (jamais d'écrasement), activée et ouverte en onglet comme une
    session neuve. UI : clic droit sur le bouton « + » (tooltip l'annonce) → sélecteur
