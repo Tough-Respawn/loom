@@ -307,7 +307,8 @@ def remote_model_from_dict(d: dict) -> RemoteModelConfig:
 
 
 def _parse_remote_model(d: dict) -> RemoteModelConfig:
-    """Construit un RemoteModelConfig depuis une table TOML [[remote_models]]."""
+    """Construit un RemoteModelConfig depuis un dict : model.toml d'un dossier
+    remote/<id>/ (base [remote] déjà fusionnée) ou entrée héritée en migration."""
     return RemoteModelConfig(
         id=d["id"],
         base_url=str(d["base_url"]).rstrip("/"),
@@ -429,28 +430,43 @@ def load_config(
     models.sort(key=lambda m: m.id)
     if not models:
         models = [_parse_model(rm) for rm in data.get("models", [])]
-    remote_models = [_parse_remote_model(rm) for rm in data.get("remote_models", [])]
-    # Héritage : les distants ajoutés via l'UI vivaient dans un store JSON séparé
-    # (var/remote_models.json). Unification 2026-07-21 : config/local.toml est la
-    # source UNIQUE — un store résiduel est replié dans local.toml ici (puis
-    # supprimé) ; ses entrées gardent la priorité par id sur ce chargement.
+    # Distants : un DOSSIER par modèle (<racine>/remote/<id>/model.toml), découverts
+    # multi-racines comme les locaux. La table [remote] (defaults.toml, surchargée par
+    # local.toml via le deep-merge) porte les réglages standard appliqués à tous les
+    # distants ; le model.toml de chaque dossier surcharge. Les emplacements hérités
+    # ([[remote_models]] de local.toml, store JSON var/remote_models.json) sont repliés
+    # en dossiers ICI (idempotent) ; une entrée non migrable reste fusionnée en mémoire
+    # ce boot-ci (dégradation douce).
     from loom.runtime import model_store
 
-    for md in model_store.migrate_to_toml(
-        remote_store_path(chat.history_path), local_path
-    ):
-        rc = _parse_remote_model(md)
-        remote_models = [rm for rm in remote_models if rm.id != rc.id]
-        remote_models.append(rc)
+    remote_base = {
+        k: v for k, v in data.get("remote", {}).items() if k in model_store.FIELDS
+    }
+    leftovers = model_store.migrate_into_dirs(
+        local_path, remote_store_path(chat.history_path), models_root
+    )
+    remote_records = model_store.discover_remote(models_roots)
+    seen_remote = {md["id"] for md in remote_records}
+    # Entrées [[remote_models]] encore dans la config de CE chargement (data a été
+    # lu AVANT la migration ; ou defaults de test, ou écriture impossible) + reliquats
+    # du store JSON : fusion en mémoire, le dossier prioritaire par id — zéro perte.
+    for rm in data.get("remote_models", []):
+        if isinstance(rm, dict) and rm.get("id") and rm["id"] not in seen_remote:
+            seen_remote.add(rm["id"])
+            remote_records.append({k: rm[k] for k in model_store.KEEP if k in rm})
+    remote_records += [md for md in leftovers if md["id"] not in seen_remote]
+    remote_models = [
+        _parse_remote_model({**remote_base, **md}) for md in remote_records
+    ]
     # Boot « remote-only » : aucun modèle local mais au moins un distant -> models=[]
     # est toléré (loom.web sait discuter via l'API distante ; le serveur llama.cpp
     # local ne sert que les locaux et démarre à la demande). On ne lève que si NI
     # local NI distant — machine vierge, c'est maybe_bootstrap qui guide l'installeur.
     if not models and not remote_models:
         raise ValueError(
-            f"aucun modèle : crée <racine>/local/text/<id>/model.toml sous une des "
-            f"racines {[str(r) for r in models_roots]} (ou un bloc [[models]], ou un "
-            f"modèle distant [[remote_models]] dans config/local.toml)"
+            f"aucun modèle : crée <racine>/local/text/<id>/model.toml (local) ou "
+            f"<racine>/remote/<id>/model.toml (distant) sous une des racines "
+            f"{[str(r) for r in models_roots]} (ou un bloc [[models]] legacy)"
         )
     default_model = ch.get("default_model") or (models[0].id if models else "")
     if not models:
