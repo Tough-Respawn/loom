@@ -29,25 +29,8 @@ workspace_dir = "C:/Users/<toi>/Documents"
 default_model = "glm-distant"
 
 # ============================= Modèles distants =============================
-# API OpenAI-compatible ; s'ajoute au sélecteur à côté des locaux. NE mets JAMAIS ta vraie
-# clé dans un fichier partagé : ce gabarit ne porte que des placeholders. Éditable aussi via
-# la console de l'UI (onglet Modèles distants).
-[[remote_models]]
-
-# Nom affiché dans le sélecteur
-id = "glm-distant"
-
-# Endpoint du provider + id du modèle CÔTÉ provider
-base_url = "https://api.z.ai/api/paas/v4"
-model = "glm-5.2"
-
-# Clé en clair, ou api_key_env = "GLM_API_KEY" (variable d'env)
-api_key = "<TA_CLE_ICI>"
-
-# Fenêtre de contexte : rarement publiée par l'API -> source de vérité = la DOC officielle
-# (ex. glm-5.2 = 1000000 sur docs.z.ai). Les providers qui l'exposent (OpenRouter, vLLM) sont
-# lus tout seuls ; cette valeur ne sert que de repli.
-context = 1000000
-
-# PAS de max_tokens : un distant prend la limite de sortie DU PROVIDER (sa machine n'a pas les
-# contraintes du local). N'en ajoute un que pour BORNER volontairement le coût.
+# Les distants ne vivent PAS ici : un dossier par modèle, comme les locaux —
+#   <models_root>/remote/<id>/model.toml   (gabarit : loom/models/_TEMPLATE/remote-model.toml)
+# La voie royale : « /add-model distant » dans le chat, ou le panneau engrenage de l'UI.
+# Les réglages standard communs à tous les distants vont dans la table [remote]
+# (defaults.toml, surchargeable ici) ; le model.toml de chaque dossier surcharge tout.

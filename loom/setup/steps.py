@@ -147,14 +147,21 @@ def needs_setup(raw_cfg: dict, package_models: Path) -> bool:
 
 
 def has_remote_models(raw_cfg: dict) -> bool:
-    """Au moins un modèle DISTANT disponible : bloc [[remote_models]] (config) OU
-    store UI (remote_models.json à côté de l'historique). Sert au boot remote-only
-    de loom.web (maybe_bootstrap remote_ok) : avec un distant on peut discuter sans
+    """Au moins un modèle DISTANT disponible : dossier remote/<id>/model.toml sous une
+    racine (source actuelle), sinon emplacements hérités pas encore migrés
+    ([[remote_models]] de la config, store JSON UI). Sert au boot remote-only de
+    loom.web (maybe_bootstrap remote_ok) : avec un distant on peut discuter sans
     moteur local — l'installeur reste accessible via `uv run loom-setup`."""
+    from loom.runtime import model_store
+
+    raw_roots = raw_cfg.get("storage", {}).get("models_root") or []
+    if not isinstance(raw_roots, list):
+        raw_roots = [raw_roots]
+    if raw_roots and model_store.discover_remote(raw_roots):
+        return True
     if raw_cfg.get("remote_models"):
         return True
     from loom.config import remote_store_path
-    from loom.runtime import model_store
 
     history = raw_cfg.get("chat", {}).get("history_path", "var/conversation.json")
     return bool(model_store.load(remote_store_path(history)))

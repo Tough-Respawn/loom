@@ -20,8 +20,10 @@ def deps(existing=(), hits=None, files=None, remote_models=None, removable=None)
         image_dir_state=lambda ikind, mid: None,
         check_workflow=lambda p: {"ok": True, "error": None, "warnings": []},
         # Flux /rebench : rien de calibrable par défaut
-        rebenchable_models=lambda: [],
+        rebenchable_models=list,
         model_kind=lambda mid: None,
+        # Une seule racine de stockage par défaut -> pas d'étape choix du disque
+        install_roots=lambda: [{"path": "C:/loom-models", "free_gb": 100}],
     )
 
 
@@ -161,8 +163,8 @@ def test_remove_liste_avec_rappel_et_confirmations_par_kind():
         {"id": "loc", "kind": "local", "label": "loc — local, 1.0 Go sur disque"},
         {
             "id": "cfg",
-            "kind": "remote_config",
-            "label": "cfg — distant (m, config/local.toml)",
+            "kind": "remote",
+            "label": "cfg — distant (m, remote/cfg/)",
             "is_default": True,
         },
         {
@@ -172,13 +174,13 @@ def test_remove_liste_avec_rappel_et_confirmations_par_kind():
         },
     ]
     r = wizard.start_remove(deps(removable=items))
-    assert "config/local.toml" in r.reply and "poids ComfyUI" in r.reply
+    assert "remote/" in r.reply and "poids ComfyUI" in r.reply
     # local : message disque inchangé
     c = wizard.step(r.state, "1", deps(removable=items))
     assert "SUPPRIMÉS du disque" in c.reply
-    # remote_config : retrait du fichier + avertissement default_model
+    # distant : suppression du dossier remote/<id>/ + avertissement default_model
     c = wizard.step(r.state, "2", deps(removable=items))
-    assert "config/local.toml" in c.reply and "défaut" in c.reply
+    assert "remote/" in c.reply and "défaut" in c.reply
     # image : définition seule, poids non touchés
     c = wizard.step(r.state, "3", deps(removable=items))
     assert "workflow.json" in c.reply and "PAS touchés" in c.reply
@@ -475,7 +477,9 @@ def test_local_parcours_complet():
     assert r.state["step"] == "l_id"
     assert "id-propose" in r.reply
 
-    r = wizard.step(r.state, "ok", d)  # id proposé accepté
+    r = wizard.step(
+        r.state, "ok", d
+    )  # id proposé accepté ; 1 racine -> pas d'étape disque
     assert r.state is None
     assert r.action == {
         "kind": "install",
@@ -485,7 +489,30 @@ def test_local_parcours_complet():
         "files": ["m.Q8_0.gguf"],
         "size_mb": 20_000,
         "mmproj_filename": "mmproj-F16.gguf",
+        "root": None,
     }
+
+
+def test_local_multi_racines_propose_le_choix_du_disque():
+    d = deps(hits=HITS, files=FILES)
+    d.install_roots = lambda: [
+        {"path": "C:/loom-models", "free_gb": 120},
+        {"path": "E:/loom-models", "free_gb": 800},
+    ]
+    r = wizard.start("qwen", d)
+    r = wizard.step(r.state, "1", d)
+    r = wizard.step(r.state, "2", d)
+    r = wizard.step(r.state, "ok", d)  # id -> étape disque (2 racines)
+    assert r.state["step"] == "l_root"
+    assert "C:/loom-models" in r.reply and "défaut" in r.reply
+    ko = wizard.step(r.state, "disque Z", d)  # saisie invalide -> re-demande
+    assert ko.state["step"] == "l_root"
+    ok = wizard.step(r.state, "2", d)  # choix explicite du 2e disque
+    assert ok.state is None
+    assert ok.action["root"] == "E:/loom-models"
+    # « ok » = défaut (première racine, la plus rapide)
+    ok2 = wizard.step(r.state, "ok", d)
+    assert ok2.action["root"] == "C:/loom-models"
 
 
 def test_local_recherche_vide_redemande():
