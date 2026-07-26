@@ -3611,6 +3611,18 @@ function smRestorePos() {
   document.querySelectorAll('#cfg-tabs [data-tab="ame"]').forEach((b) =>
     b.addEventListener("click", loadSessions),
   );
+
+  // Sélecteur Exporter | Importer : un seul bloc visible à la fois (panneau moins chargé).
+  function seg(exporting) {
+    $("ame-seg-exp").classList.toggle("on", exporting);
+    $("ame-seg-imp").classList.toggle("on", !exporting);
+    $("ame-exp").hidden = !exporting;
+    $("ame-imp").hidden = exporting;
+    msg("");
+    if (exporting) loadSessions();
+  }
+  $("ame-seg-exp").addEventListener("click", () => seg(true));
+  $("ame-seg-imp").addEventListener("click", () => seg(false));
   $("ame-all").addEventListener("change", (e) => {
     panel.querySelectorAll(".ame-sess").forEach((c) => (c.checked = e.target.checked));
   });
