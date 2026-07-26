@@ -931,8 +931,26 @@ function renderTabs() {
   plus.className = "tab-new";
   plus.type = "button";
   plus.textContent = "+";
-  plus.title = "Nouvelle session";
+  plus.title = "Nouvelle session (clic droit : importer un export .zip)";
   plus.addEventListener("click", newSessionTab);
+  // Clic droit = importer un export de session (le sélecteur de fichier s'ouvre).
+  plus.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    let inp = document.getElementById("session-import-file");
+    if (!inp) {
+      inp = document.createElement("input");
+      inp.type = "file";
+      inp.accept = ".zip";
+      inp.id = "session-import-file";
+      inp.hidden = true;
+      inp.addEventListener("change", () => {
+        if (inp.files && inp.files[0]) importSessionFile(inp.files[0]);
+        inp.value = "";
+      });
+      document.body.appendChild(inp);
+    }
+    inp.click();
+  });
   tabbarEl.append(plus);
 }
 
@@ -2047,6 +2065,10 @@ function openTabMenu(e, sid) {
       showToast("chemin copié");
     });
   }
+  // Archive portable (session.json + timeline) : le serveur pousse le téléchargement.
+  add("Exporter la session (.zip)", () => {
+    window.location = "/session/" + encodeURIComponent(sid) + "/export";
+  });
   document.body.appendChild(m);
   m.style.left = Math.min(e.clientX, window.innerWidth - m.offsetWidth - 6) + "px";
   m.style.top = Math.min(e.clientY, window.innerHeight - m.offsetHeight - 6) + "px";
@@ -2084,7 +2106,12 @@ async function newSessionTab() {
   const r = await postForm("/session/new", {
     workspace: wd ? wd.textContent.trim() : "",
   });
-  const d = await r.json();
+  openSessionTab(await r.json());
+}
+
+// Ouvre en onglet une session que le serveur vient de créer (/session/new ou
+// /session/import) : même prise en charge dans les deux cas.
+function openSessionTab(d) {
   state.tabs[d.id] = {
     sid: d.id,
     title: d.title || "session",
@@ -2104,6 +2131,27 @@ async function newSessionTab() {
   state.order.push(d.id);
   addSidebarSession(d);
   activateTab(d.id);
+}
+
+// Import d'un export .zip -> session NEUVE (id regénéré côté serveur), ouverte
+// comme une session fraîche. L'erreur serveur (pas un export Loom…) part en toast.
+async function importSessionFile(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  let d = null;
+  try {
+    const r = await fetch("/session/import", { method: "POST", body: fd });
+    d = await r.json();
+    if (!r.ok) {
+      showToast(d && d.error ? d.error : "import impossible");
+      return;
+    }
+  } catch {
+    showToast("import impossible (serveur injoignable ?)");
+    return;
+  }
+  openSessionTab(d);
+  showToast("session importée" + (d.model ? " (modèle : " + d.model + ")" : ""));
 }
 
 function addSidebarSession(d) {

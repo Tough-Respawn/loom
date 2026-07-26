@@ -195,6 +195,83 @@ class SessionStore:
         except OSError:
             pass
 
+    # --- Export / import (.zip clair) ----------------------------------------------------
+    # Une session se donne : session.json + timeline.jsonl + manifeste, dans un zip
+    # SANS chiffrement (le chiffré, c'est l'Âme — identité globale). debug.log exclu
+    # (log runtime machine). À l'import : id NEUF (jamais d'écrasement), modèle inconnu
+    # sur cette machine replié sur le défaut local (sinon 404 llama-swap au 1er tour).
+
+    EXPORT_FORMAT = "loom-session"
+    EXPORT_VERSION = 1
+    # Refus des archives démesurées (déclaré OU décompressé) : une session légitime
+    # pèse quelques Ko à quelques Mo — 200 Mo, c'est déjà une anomalie (ou une bombe zip).
+    MAX_IMPORT_BYTES = 200 * 1024 * 1024
+
+    def export_zip(self, sid: str) -> bytes | None:
+        """Archive portable d'une session (None si inconnue)."""
+        import io
+        import zipfile
+
+        if not self._file(sid).exists():
+            return None
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr(
+                "loom-session.json",
+                json.dumps(
+                    {
+                        "format": self.EXPORT_FORMAT,
+                        "version": self.EXPORT_VERSION,
+                        "exported_at": _now_iso(),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            z.write(self._file(sid), "session.json")
+            tl = self._timeline_file(sid)
+            if tl.exists():
+                z.write(tl, "timeline.jsonl")
+        return buf.getvalue()
+
+    def import_zip(self, data: bytes) -> Session:
+        """Recrée une session depuis un export, sous un id NEUF, et l'active.
+
+        ValueError ACTIONNABLE (affichée telle quelle à l'utilisateur) si l'archive
+        n'est pas un export de session Loom. Seuls les membres CONNUS sont lus —
+        aucun chemin du zip n'est suivi sur disque (pas de traversal possible)."""
+        import io
+        import zipfile
+
+        try:
+            z = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile as exc:
+            raise ValueError("archive illisible — un export .zip de Loom est attendu") from exc
+        if sum(i.file_size for i in z.infolist()) > self.MAX_IMPORT_BYTES:
+            raise ValueError("archive anormalement grosse — import refusé")
+        names = set(z.namelist())
+        if "session.json" not in names:
+            raise ValueError(
+                "archive sans session.json — ce n'est pas un export de session Loom"
+            )
+        try:
+            payload = json.loads(z.read("session.json").decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError
+            sess = Session.from_dict(payload, self.default_system_prompt)
+        except (ValueError, KeyError, UnicodeDecodeError) as exc:
+            raise ValueError("session.json illisible dans l'archive") from exc
+        sess.id = uuid.uuid4().hex[:12]
+        if self._known_models and sess.conversation.model not in self._known_models:
+            # Machine différente : le modèle d'origine n'existe pas ici.
+            sess.conversation.set_model(self.default_model or "")
+        self.save(sess)
+        if "timeline.jsonl" in names:
+            self.session_dir(sess.id).joinpath("timeline.jsonl").write_bytes(
+                z.read("timeline.jsonl")
+            )
+        self.set_active(sess.id)
+        return sess
+
     def load(self, sid: str) -> Session | None:
         f = self._file(sid)
         if not f.exists():

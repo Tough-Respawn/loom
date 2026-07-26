@@ -2140,6 +2140,54 @@ def _register_session_routes(app, S):
 
         return {"id": sess.id, "title": sess.title, "workspace": sess.workspace}
 
+    # ---- Export / import de session (.zip clair, cf. SessionStore.export_zip) ----
+
+    @app.get("/session/<sid>/export")
+    def session_export(sid):
+        data = S.session_store.export_zip(sid)
+        if data is None:
+            return {"error": "session inconnue"}, 404
+        meta = S.session_store.load(sid)
+        slug = (
+            re.sub(r"[^A-Za-z0-9._-]+", "-", meta.title if meta else "session").strip(
+                "-."
+            )[:40]
+            or "session"
+        )
+        return Response(
+            data,
+            mimetype="application/zip",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="loom-session-{slug}-{sid}.zip"'
+                )
+            },
+        )
+
+    @app.post("/session/import")
+    def session_import():
+        f = request.files.get("file")
+        if f is None:
+            return {"error": "fichier manquant (champ multipart « file »)"}, 400
+        data = f.read(S.session_store.MAX_IMPORT_BYTES + 1)
+        if len(data) > S.session_store.MAX_IMPORT_BYTES:
+            return {"error": "archive trop grosse — import refusé"}, 413
+        try:
+            sess = S.session_store.import_zip(data)
+        except ValueError as exc:
+            return {"error": str(exc)}, 400
+        # Même prise en charge qu'une session neuve : cache, focus, prime en fond.
+        with S.gen_guard:
+            S.sessions_cache[sess.id] = sess
+        S.cur["session"] = sess
+        _prime_async(S, _ensure_model(S, sess), require_running=True)
+        return {
+            "id": sess.id,
+            "title": sess.title,
+            "workspace": sess.workspace,
+            "model": sess.conversation.model,
+        }
+
     @app.post("/session/activate")
     def session_activate():
         sid = (request.form.get("id") or "").strip()
