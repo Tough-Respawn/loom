@@ -70,7 +70,7 @@ def _fake_deps(monkeypatch, hits=(), files=()):
         ],
         install_roots=lambda: [{"path": "C:/loom-models", "free_gb": 100}],
     )
-    monkeypatch.setattr(routes, "_wizard_deps", lambda S: deps)
+    monkeypatch.setattr(routes.models, "_wizard_deps", lambda S: deps)
 
 
 def test_add_model_ack_et_etat_persiste(env, monkeypatch):
@@ -253,7 +253,7 @@ def _real_img_deps(monkeypatch):
             check_workflow=routes._check_workflow,
         )
 
-    monkeypatch.setattr(routes, "_wizard_deps", fake)
+    monkeypatch.setattr(routes.models, "_wizard_deps", fake)
 
 
 def _install_image(env_img, mid="zz-img"):

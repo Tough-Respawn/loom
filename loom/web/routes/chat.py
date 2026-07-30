@@ -1,0 +1,1568 @@
+from __future__ import annotations
+
+from __future__ import annotations
+import re
+import shutil
+import threading
+import time
+import traceback
+from functools import partial
+from pathlib import Path
+from flask import Response, request
+from loom.agent import context
+from loom.agent.client import _msg_chars, log_event, set_debug_log_path
+from loom.extend.skills import (
+    effective_skills,
+    render_catalog,
+)
+from loom.prompts import CHAT_SYSTEM_STRONG, IMAGE_REFINE_SYSTEM
+from loom.runtime.comfy import ComfyError
+from loom.runtime.models_profile import load_profile
+from loom.runtime.platform_info import detect as platform_detect
+from loom.web.app import (
+    _GOAL_CLEAR_WORDS,
+    _action_trace_line,
+    _build_user_content,
+    _detect_workspace,
+    _infer_title,
+    _init_message,
+    _should_adopt,
+    _sse,
+)
+
+from loom.web.routes.helpers import _cancel_for, _confirm, _engine_for, _ensure_local_server, _ensure_model, _free_image_engines, _get_session, _local_busy_notice, _local_size_mb, _lock_for, _model_limits, _price_of, _session, _totals
+from loom.web.routes.models import _handle_add_model_command
+from loom.web.routes.skills import _all_skills
+
+
+
+
+# ---- Commandes /goal et /init (préambule de /chat) ------------------------------------
+
+# Catalogue des commandes slash du chat — SOURCE DE VÉRITÉ de la palette « / » du
+# composer (GET /commands). À tenir en phase avec les handlers ci-dessous : une
+# commande non listée ici est indécouvrable pour l'utilisateur.
+CHAT_COMMANDS = [
+    {
+        "name": "/add-model",
+        "usage": "/add-model · /add-model <recherche HF> · /add-model distant [url]",
+        "description": "Ajouter un modèle : local (recherche Hugging Face, quant "
+        "recommandé selon ta machine) ou distant (API OpenAI-compatible — la clé "
+        "se donne à une étape dédiée, jamais dans la commande).",
+    },
+    {
+        "name": "/remove-model",
+        "usage": "/remove-model",
+        "description": "Supprimer un modèle : local (dossier et GGUF effacés du "
+        "disque) ou distant géré par l'UI — liste numérotée + confirmation.",
+    },
+    {
+        "name": "/rebench",
+        "usage": "/rebench · /rebench <id modèle local>",
+        "description": "Recalibrer un modèle LOCAL texte tel que configuré "
+        "(contexte par pente mesurée + vitesse en profondeur) — verdict comparé "
+        "à l'actuel, application sur confirmation.",
+    },
+    {
+        "name": "/goal",
+        "usage": "/goal <condition> · /goal (statut) · /goal clear",
+        "description": "Poser un objectif vérifiable pour la session, le consulter, "
+        "ou l'effacer.",
+    },
+    {
+        "name": "/init",
+        "usage": "/init [dossier]",
+        "description": "Analyser le workspace et générer sa fiche projet loom.md "
+        "(injectée ensuite au contexte).",
+    },
+    {
+        "name": "/cancel",
+        "usage": "/cancel",
+        "description": "Annuler le wizard en cours (ex. /add-model).",
+    },
+]
+
+
+def _handle_goal_command(S, message, conv, save, chat_lock):
+    """Traite la commande /goal : pose/statut/efface l'objectif de session.
+
+    Retourne (message, response) : response non None = ack immédiat (return direct
+    dans chat()) ; response None = continuer le flux normal (message éventuellement
+    réécrit en consigne de démarrage)."""
+
+    if message == "/goal" or message.startswith("/goal "):
+        arg = message[len("/goal") :].strip()
+        if arg and arg.lower() not in _GOAL_CLEAR_WORDS:
+            # Pose l'objectif et AMORCE le travail : on remplace le message par une consigne
+            # de démarrage et on laisse le flux normal tourner, objectif désormais actif.
+            conv.set_goal(arg)
+            save()
+            message = (
+                f"Objectif à atteindre : {arg}\n"
+                "Commence MAINTENANT à agir pour l'atteindre, et PROUVE-le (exécute, montre "
+                "la sortie réelle). Ne t'arrête pas tant qu'il n'est pas démontré atteint."
+            )
+            # (pas de return : on tombe dans la génération normale ci-dessous)
+        else:
+            if not arg:
+                ack = (
+                    f"Objectif courant : « {conv.goal} » (actif jusqu'à preuve d'atteinte, "
+                    "/goal clear pour l'effacer)."
+                    if conv.goal
+                    else "Aucun objectif actif. Pose-en un : /goal <condition vérifiable>."
+                )
+            else:
+                conv.set_goal("")
+                save()
+                ack = "Objectif effacé - retour au mode normal (arrêt au stop naturel)."
+            chat_lock.release()
+
+            def _goal_ack():
+                yield _sse("text", text=ack)
+                yield _sse("done")
+
+            return message, Response(_goal_ack(), mimetype="text/event-stream")
+    return message, None
+
+
+def _handle_init_command(S, message):
+    """Traite /init : adopte un dossier cible si fourni, et réécrit le message en consigne
+    de génération de fiche projet. Retourne le message (éventuellement réécrit)."""
+    if message == "/init" or message.startswith("/init "):
+        arg = message[len("/init") :].strip()
+        _sess = _session(S)
+        target_dir = _sess.workspace
+        if arg:
+            cand = Path(arg).expanduser()
+            if cand.is_dir():
+                target_dir = str(cand.resolve())
+                if target_dir != _sess.workspace:
+                    _sess.workspace = target_dir
+                    S.session_store.save(_sess)
+        target_display = str(Path(target_dir)).replace("\\", "/")
+        message = _init_message(target_display)
+        # (pas de return : le flux normal ci-dessous exécute la consigne)
+    return message
+
+
+# ---- System prompt --------------------------------------------------------------------
+
+
+def _build_system_prompt(S, conv):
+    """Construit le system prompt complet : identité always-on + base (strong/local) +
+    catalogue des skills + déclaration du moteur + conventions OS + dossier de travail +
+    objectif de session. Retourne (system_prompt, strong)."""
+
+    skills = effective_skills(
+        _all_skills(S),
+        overrides=conv.skill_overrides,
+        disabled=conv.disabled_skills,
+    )
+
+    catalog = render_catalog(skills)
+
+    # Identité always-on (SOUL/USER/MEMORY) EN TÊTE : c'est la définition qui FAIT FOI
+    # de qui est Loom (rôle, persona, style). Le mode d'emploi opérationnel (outils,
+    # règles) de chat.system.md vient APRÈS et s'y conforme - on ne plante plus un
+    # cadrage générique d'abord pour le corriger 12k caractères plus loin. Always-on =>
+    # survit toujours à la microcompaction/summarization (qui ne touchent que
+    # l'historique). Bornée par identity_max_tokens. Cf. design §5.6.
+    _idblk = ""
+
+    if S.identity_paths:
+        from loom.memory.identity import identity_block
+
+        _idblk = identity_block(
+            S.identity_paths["soul_path"],
+            S.identity_paths["user_path"],
+            S.identity_paths["memory_md_path"],
+            max_tokens=S.settings["identity_max_tokens"],
+        )
+
+    # TIER du harnais : un modèle DISTANT (API, non quantifié) se pilote seul -> prompt
+    # ALLÉGÉ (identité + outils + mémoire + sécurité), sans le scaffolding de comportement
+    # de chat.system.md qui ne sert qu'à un petit modèle local. Le flag `strong` sert
+    # aussi (plus bas) à couper les gardes de comportement dans la boucle d'outils.
+    strong = bool(
+        conv.model
+        and conv.model in S.remote_model_ids
+        and conv.model not in S.remote_weak_ids
+    )
+
+    base_prompt = CHAT_SYSTEM_STRONG if strong else conv.system_prompt
+
+    system_prompt = f"{_idblk}\n\n{base_prompt}" if _idblk else base_prompt
+
+    # Distant (strong) : la machine du provider encaisse le parallélisme -> on incite à
+    # GROUPER les sous-agents indépendants dans un même tour (ils tournent en parallèle).
+    if strong:
+        system_prompt += (
+            "\n\nParallélisme : quand plusieurs sous-tâches sont INDÉPENDANTES (auditer/"
+            "explorer des pans distincts), émets PLUSIEURS dispatch_agent dans le MÊME "
+            "tour - ils s'exécutent EN PARALLÈLE, bien plus vite qu'un par tour. Un pan = "
+            "un agent, lance-les ensemble."
+        )
+
+    if catalog:
+        system_prompt += f"\n\n{catalog}"
+
+    # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
+    # "Tu es Loom") -> il baratine quand on lui demande "quel modèle ?". On lui
+    # injecte son modèle courant pour qu'il réponde honnêtement. DISTANT vs LOCAL :
+    # sans ça un modèle servi par une API répétait « je tourne en local/offline sur
+    # llama.cpp » (la persona de Loom est « agent local ») -> confabulation d'infra.
+    if conv.model:
+        if conv.model in S.remote_model_ids:
+            _pm = S.remote_model_names.get(conv.model)
+
+            _label = (
+                f"« {_pm} » (route « {conv.model} »)" if _pm else f"« {conv.model} »"
+            )
+
+            system_prompt += (
+                f"\n\n# Ton moteur\nTon raisonnement est servi par le modèle DISTANT "
+                f"{_label}, via une API externe - PAS en local. Tes OUTILS, eux, "
+                "s'exécutent bien sur la machine de l'utilisateur, mais toi (le cerveau) "
+                "non. Ne prétends donc JAMAIS être offline, ni tourner sur llama.cpp / "
+                "llama-swap / une carte graphique locale : ce serait faux. Si on te "
+                "demande quel modèle/moteur tu utilises, donne ce nom honnêtement, sans "
+                "inventer de détails d'infrastructure."
+            )
+
+        else:
+            system_prompt += (
+                f"\n\n# Ton moteur\nTu tournes sur le modèle local « {conv.model} ». "
+                "Si on te demande quel modèle/moteur tu utilises, réponds-le "
+                "honnêtement et directement (ce nom), sans esquiver."
+            )
+
+    # Système : Loom détecte SEUL l'OS et injecte ses conventions (shell, commandes,
+    # chemins) -> le modèle produit du PowerShell sous Windows, du bash/unix sous
+    # macOS/Linux, sans qu'on code l'OS en dur dans le prompt. Source unique partagée
+    # avec run_shell (loom.runtime.platform_info) : jamais de divergence.
+    system_prompt += "\n\n" + platform_detect().prompt_block()
+
+    # Dossier de travail courant : le modèle l'IGNORE sinon et le devine en sondant
+    # (git rev-parse à l'aveugle, list_dir…) -> tours gaspillés. On le lui dit, avec
+    # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git. Reste EN BAS
+    # (contexte volatil, près de l'action).
+    _ws = _session(S).workspace
+
+    system_prompt += (
+        f"\n\n# Dossier de travail courant\nTes commandes (run_shell) tournent dans "
+        f"`{_ws}` et les chemins relatifs s'y résolvent - n'y répète pas le nom de ce "
+        "dossier dans tes chemins. Si une commande git échoue par « not a git "
+        "repository », c'est que CE dossier n'est pas un repo : fais UN list_dir pour "
+        "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
+        "même commande à l'identique."
+    )
+
+    # Fiche projet auto-injectée : si `<workspace>/loom.md` existe (générée par /init),
+    # le modèle la reçoit d'office au lieu de re-sonder le projet à chaque session.
+    # Cache mtime (read_md) -> préfixe stable en session = prompt caching préservé ;
+    # suit le workspace courant (adoption/changement en cours de session). Les DEUX
+    # tiers la reçoivent (c'est de la mémoire, pas du scaffolding de comportement).
+    # L'en-tête la cadre en CONTEXTE (pas instructions, possiblement périmée) : une
+    # fiche est écrite en lisant le projet, un repo piégé ne doit pas pouvoir élever
+    # ses consignes au rang de system prompt.
+    from loom.memory.identity import project_block
+
+    _pm_blk = project_block(_ws, max_tokens=S.settings["project_memory_max_tokens"])
+
+    if _pm_blk:
+        system_prompt += f"\n\n{_pm_blk}"
+
+    # Objectif de session (/goal), en DIRECTIVE DOUCE : pas de juge externe qui te
+    # contredit (retiré - il recalait des preuves correctes). Tu restes seul maître de
+    # ta propre vérification : ne te déclare pas fini tant que l'objectif n'est pas
+    # ATTEINT ET PROUVÉ par tes exécutions (montre la sortie réelle) ; une fois prouvé,
+    # dis-le et arrête-toi. L'utilisateur l'efface avec « /goal clear ».
+    if conv.goal:
+        system_prompt += (
+            f"\n\n# Objectif de session\nTant qu'il est actif, oriente ton travail vers "
+            f"cet objectif et ne le déclare atteint qu'une fois PROUVÉ par tes propres "
+            f"exécutions (sortie réelle affichée) :\n{conv.goal}"
+        )
+
+    return system_prompt, strong
+
+
+# ---- Maintenance post-tour et keep-warm ------------------------------------------------
+
+
+def _prime_slot(S, sess) -> bool:
+    """Ré-amorce le cache KV du slot local avec le fil de `sess` : re-prefill
+    silencieux du MÊME préfixe que le prochain tour (system prompt + messages +
+    schémas d'outils — mêmes ingrédients que /chat, sinon zéro réutilisation).
+    Le message suivant ne préfille alors que son delta. Fil VIDE accepté : sur une
+    session neuve on amorce le préfixe statique (system prompt + schémas), c'est
+    justement là que le premier message payait tout le prefill. False si rien à
+    amorcer (modèle distant : cache provider + appel payant ; image/vidéo)."""
+    try:
+        conv = sess.conversation
+        model = conv.model
+        if (
+            not model
+            or model in S.remote_model_ids
+            or model in S.image_model_ids
+            or model in S.video_model_ids
+        ):
+            return False
+        # Reprise à CHAUD one-shot AVANT le re-prefill : sur slot froid (serveur
+        # (re)démarré, swap de modèle, boot loom.web), si un save de CETTE session
+        # existe, un restore (~0,6 s) remplace le re-prefill intégral (~60-85 s
+        # mesurés sur un 35B). Best-effort : le warm_context ci-dessous reste le
+        # repli ET la validation (préfixe identique -> ne paie que le delta).
+        # getattr : les fakes de test (PrimeSpy…) n'implémentent que warm_context.
+        _thr = getattr(S.client, "try_hot_resume", None)
+        if _thr is not None and _thr(model, sess.id):
+            print(
+                "[prime] reprise à CHAUD : slot restauré depuis le save de fin de "
+                "tour (le re-prefill ci-dessous ne paie que le delta)",
+                flush=True,
+            )
+        msgs = conv.to_messages()
+        if not msgs:
+            # Fil vide : certains templates (Qwen3-coder/Agents-A1) EXIGENT un message
+            # user (« No user query found » -> 400). On amorce avec un placeholder
+            # minimal : le préfixe commun (system prompt + schémas + en-tête user)
+            # reste réutilisé tel quel, seul le contenu du placeholder diverge du
+            # vrai premier message (quelques tokens re-préfillés, pas des milliers).
+            msgs = [{"role": "user", "content": "."}]
+        system_prompt, _strong = _build_system_prompt(S, conv)
+        registry = S.tool_factory(conv.active_tools, sess.workspace, conv)
+        return S.client.warm_context(
+            msgs,
+            system_prompt,
+            model=model,
+            registry=registry if (registry is not None and len(registry)) else None,
+            thinking=conv.thinking,
+        )
+    except Exception as e:  # noqa: BLE001 - amorçage best-effort, jamais bloquant
+        print(f"[prime] erreur ignorée : {e}", flush=True)
+        return False
+
+
+def _prime_async(S, sess, *, wait_server: float = 0.0, require_running: bool = False):
+    """Amorce le cache KV en FOND (thread daemon) dès qu'un modèle local devient la
+    cible du prochain tour : le prefill du préfixe se paie pendant le temps mort
+    (chargement/choix du modèle, bascule de session), plus au premier message.
+    Remplace l'ancien ping warmup qui chargeait le modèle mais écrasait le slot
+    avec un préfixe poubelle -> le 1er message re-préfillait TOUT.
+    `wait_server` > 0 : démarre le serveur modèle s'il est éteint et attend (choix
+    de modèle, bouton start = intention claire). `require_running` : n'amorce que
+    si le serveur tourne déjà (bascule de session : changer de fil ne doit pas
+    booter la machine). Best-effort : jamais bloquant, jamais d'erreur visible."""
+    conv = sess.conversation
+    model = conv.model
+    if (
+        S.client is None
+        or not model
+        or model in S.remote_model_ids
+        or model in S.image_model_ids
+        or model in S.video_model_ids
+    ):
+        return
+
+    def _run():
+        try:
+            if wait_server > 0:
+                if not _ensure_local_server(S, wait=wait_server):
+                    print(
+                        "[prime] serveur modèle indisponible — amorçage abandonné",
+                        flush=True,
+                    )
+                    return
+            elif require_running:
+                reachable, _ = S.client.running_local(timeout=2.0)
+                if not reachable:
+                    print("[prime] serveur éteint — amorçage sauté", flush=True)
+                    return
+            # Une génération locale en cours = modèle déjà chaud et cache géré en
+            # fin de tour (_post_turn_maintenance) : on ne s'y empile pas.
+            if not S.local_gen_lock.acquire(blocking=False):
+                print("[prime] génération en cours — amorçage sauté", flush=True)
+                return
+            S.local_busy["reason"] = "prime"
+            try:
+                ok = _prime_slot(S, sess)
+                print(
+                    f"[prime] amorçage au chargement : "
+                    f"{'ok' if ok else 'échec/sans objet'}",
+                    flush=True,
+                )
+                if ok:
+                    # Préfixe chaud : le keep-warm prend le relais pour le garder.
+                    S.last_activity[0] = time.time()
+            finally:
+                S.local_busy["reason"] = ""
+                S.local_gen_lock.release()
+        except Exception as e:  # noqa: BLE001 - amorçage best-effort
+            print(f"[prime] erreur ignorée : {e}", flush=True)
+
+    threading.Thread(target=_run, daemon=True, name="loom-prime").start()
+
+
+def _boot_prime(S):
+    """Amorce au DÉMARRAGE de loom.web : si une session active persistée existe et
+    que le serveur modèle tourne déjà (instance externe ou restart de loom.web),
+    son préfixe est pré-préfillé sans attendre le premier message. Ne crée jamais
+    de session et ne démarre jamais le serveur : boot = zéro effet de bord."""
+    try:
+        if S.client is None:
+            return
+        sess = S.session_store.active()
+        if sess is None:
+            return
+        with S.gen_guard:
+            sess = S.sessions_cache.setdefault(sess.id, sess)
+        _ensure_model(S, sess)
+        _prime_async(S, sess, require_running=True)
+    except Exception as e:  # noqa: BLE001 - best-effort, jamais bloquant au boot
+        print(f"[prime] erreur ignorée (boot) : {e}", flush=True)
+
+
+def _post_turn_maintenance(
+    S, sess, msgs, actions, answer, model, do_reflect, kv_saved=False
+):
+    """Fin de tour déportée hors du flux SSE : reflect (apprentissage) PUIS
+    restauration du cache de la conversation (save fait en fin de génération ;
+    repli = ré-amorçage par re-prefill si le save a échoué). Local : sérialisé
+    derrière le verrou (attend la fermeture du flux ; si l'utilisateur a déjà
+    relancé, on passe après son tour). Distant : reflect seul."""
+    is_local = bool(model) and model not in S.remote_model_ids
+
+    if is_local and not S.local_gen_lock.acquire(timeout=600):
+        return
+    if is_local:
+        S.local_busy["reason"] = "maintenance"
+
+    try:
+        if do_reflect:
+            try:
+                from loom.agent.reflect import reflect as _reflect
+
+                _res = _reflect(
+                    msgs,
+                    actions,
+                    answer,
+                    client=S.client,
+                    model=model or S.reflect_model,
+                    provider=S.reflect_stores.provider,
+                    paths=S.reflect_stores.paths,
+                    learned_dir=S.reflect_stores.learned_dir,
+                )
+
+                # Trace VISIBLE (console/serve.log) : sinon l'apprentissage est
+                # une boîte noire — on ne sait pas s'il a tourné ni retenu quoi.
+                if _res is None:
+                    print(
+                        "[reflect] rien retenu (tour peu généralisable)",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[reflect] retenu : {len(_res.new_skills)} skill(s), "
+                        f"{len(_res.improved_skills)} amélioré(s), "
+                        f"{len(_res.episodes)} épisode(s), "
+                        f"{len(_res.memory_updates) + len(_res.user_updates) + len(_res.soul_updates)} "
+                        "note(s) identité",
+                        flush=True,
+                    )
+
+            except Exception as _e:  # noqa: BLE001 - best-effort, jamais bloquant
+                print(f"[reflect] erreur ignorée : {_e}", flush=True)
+
+        if is_local:
+            if kv_saved and S.client.restore_slot(model, "turnend.kv"):
+                print(
+                    "[slot] cache de la conversation RESTAURÉ après fin de tour "
+                    "(~ms, save/restore du slot KV)",
+                    flush=True,
+                )
+            else:
+                _ok = _prime_slot(S, sess)
+                print(
+                    f"[prime] repli ré-amorçage par re-prefill : "
+                    f"{'ok' if _ok else 'échec/sans objet'}",
+                    flush=True,
+                )
+            S.last_activity[0] = time.time()
+
+    finally:
+        if is_local:
+            S.local_busy["reason"] = ""
+            S.local_gen_lock.release()
+
+
+# --- Keep-warm : empêche l'OS d'évincer le modèle inactif (cold start après pause). --
+
+# Thread daemon qui ping le modèle de la session ACTIVE (1 token) quand : keep-warm
+
+# activé, une vraie requête a déjà eu lieu (_last_activity > 0), et on est resté idle
+
+# depuis >= keepwarm_interval. `_local_gen_lock` non bloquant => on ne ping JAMAIS pendant
+
+# une génération LOCALE (--parallel 1). On ne ping QUE le modèle déjà chargé => pas de swap.
+
+
+def _keepwarm_loop(S):
+    while True:
+        interval = float(S.settings["keepwarm_interval"])  # relu à chaud
+        time.sleep(max(15.0, min(interval / 3.0, 60.0)))
+
+        # Activable/désactivable à chaud : si coupé, on ne ping pas (thread reste en veille).
+        if not S.settings["keepwarm_enabled"]:
+            continue
+
+        last = S.last_activity[0]
+
+        if last <= 0 or (time.time() - last) < interval:
+            continue
+
+        if not S.local_gen_lock.acquire(blocking=False):
+            continue  # génération locale en cours => déjà chaud
+
+        S.local_busy["reason"] = "keepwarm"
+        try:
+            sess = S.cur["session"]
+
+            model = sess.conversation.model if sess else None
+
+            if not model:
+                continue
+
+            # Keep-warm = garder chaud le modèle LOCAL (éviter le cold start). Un modèle
+            # DISTANT n'a pas de cold start côté machine ET est PAYANT à l'appel : le
+            # pinger en boucle brûlerait des crédits pour rien -> on saute.
+            if model in S.remote_model_ids:
+                continue
+
+            # Keep-warm v2 : on ré-amorce le PRÉFIXE DE LA CONVERSATION au lieu
+            # d'un « ping » — l'ancien ping gardait le modèle chaud mais ÉCRASAIT
+            # le cache KV du fil (slot unique) : chaque reprise re-préfillait
+            # TOUT (bug 2026-07-10). Ici : modèle chaud ET cache chaud ; si le
+            # cache est déjà bon, le prefill est ~nul -> quasi gratuit. Repli
+            # ping pour une session encore vide (rien à amorcer, juste chauffer).
+            if not _prime_slot(S, sess):
+                for _kind, _chunk in S.client.stream_chat(
+                    [{"role": "user", "content": "ping"}],
+                    "",
+                    1,
+                    model=model,
+                    thinking=False,
+                ):
+                    pass
+
+            S.last_activity[0] = time.time()  # gardé chaud => relance un intervalle
+
+        except Exception:  # noqa: BLE001 - keep-warm best-effort, jamais bloquant
+            pass
+
+        finally:
+            S.local_busy["reason"] = ""
+            S.local_gen_lock.release()
+
+
+# ---- Route : /chat (génération SSE) -----------------------------------------------------
+
+
+def _register_chat_routes(app, S):
+    @app.post("/chat")
+    def chat():
+        message = (request.form.get("message") or "").strip()
+
+        if not message or len(message) > 5000:
+            return Response("message invalide", status=400)
+
+        # Session CIBLE : par `session_id` (onglet) sinon la session focus. Chaque session a
+        # son verrou : une nouvelle soumission n'interrompt QUE la génération de SA session,
+        # les autres onglets continuent en parallèle.
+        req_sid = (request.form.get("session_id") or "").strip()
+        sess = _get_session(S, req_sid) or _session(S)
+        S.cur["session"] = sess  # focus (défaut de l'index)
+        sid = sess.id
+        chat_lock = _lock_for(S, sid)
+        cancel_event = _cancel_for(S, sid)
+
+        if not chat_lock.acquire(blocking=False):
+            # Une génération de CETTE session tourne déjà : on ne l'interrompt PAS.
+            # Le message part en FILE D'ATTENTE (même mécanique que les notes en vol) :
+            # injecté role=user au prochain point d'arrêt de la boucle tool-use, ou au
+            # début du tour suivant s'il arrive trop tard — jamais perdu. L'annulation,
+            # c'est UNIQUEMENT le bouton stop (/cancel).
+            if S.notes.push(sid, message) < 0:
+                return Response(
+                    "file d'attente pleine — attendre le prochain point d'arrêt ou Stop",
+                    status=429,
+                )
+            # La file est TEXTE-ONLY : d'éventuelles images jointes ne peuvent pas suivre.
+            queued_msg = (
+                "message mis en file d'attente (génération en cours) — il sera pris "
+                "en compte au prochain point d'arrêt"
+            )
+            if request.files.getlist("image"):
+                queued_msg += " (images ignorées : la file ne transporte que du texte)"
+            return Response(queued_msg, status=202)
+
+        # On tient le verrou : repartir d'un signal d'annulation propre.
+
+        cancel_event.clear()
+
+        conv = sess.conversation
+        save = lambda: S.session_store.save(sess)
+
+        # Commande /add-model + wizard actif : le wizard déterministe capte TOUT
+        # message de la session tant qu'il est actif (y compris avant /goal — un
+        # « /goal » tapé en plein wizard est une réponse au wizard, pas une commande).
+        message, _wiz_resp = _handle_add_model_command(
+            S, message, conv, sess, save, chat_lock
+        )
+        if _wiz_resp is not None:
+            return _wiz_resp
+
+        # Commande /goal : pilote l'OBJECTIF de complétion de la session. La logique
+        # (pose/statut/efface) est factorisée dans _handle_goal_command, qui renvoie
+        # (message, response) : response non None = ack immédiat à retourner directement.
+        message, _goal_resp = _handle_goal_command(S, message, conv, save, chat_lock)
+        if _goal_resp is not None:
+            return _goal_resp
+
+        # Commande /init : génère une fiche projet `loom.md` À LA RACINE DU DOSSIER
+        # de TRAVAIL de la session. Factorisé dans _handle_init_command (adopte un
+        # dossier cible si fourni, réécrit le message en consigne de génération).
+        message = _handle_init_command(S, message)
+
+        # Plus de garde bloquant : un modèle texte-only ne reçoit PAS l'image inline (qui
+
+        # ferait planter un llama-server sans mmproj) — on la stocke sur disque et il l'inspecte
+
+        # via read_image, routé vers un modèle vision (cf. _build_user_content plus bas).
+
+        # Logs PAR SESSION (au même titre que session.json) : (1) trace des échanges modèle
+
+        # routée vers sessions/<id>/debug.log ; (2) copie du log serveur modèle global
+
+        # (var/logs/serve.log) dans la session — doublon assumé, pour tout avoir sous la main.
+
+        _sdir = S.session_store.session_dir(_session(S).id)
+
+        set_debug_log_path(_sdir / "debug.log")
+
+        _serve_log = S.session_store.root.parent / "logs" / "serve.log"
+
+        if _serve_log.exists():
+            try:
+                _sdir.mkdir(parents=True, exist_ok=True)
+
+                shutil.copyfile(_serve_log, _sdir / "serve.log")
+
+            except OSError:
+                pass
+
+        # Auto-adoption du dossier de travail : si le message désigne un dossier EXISTANT,
+
+        # la session l'adopte avant le tour -> run_shell tourne dedans et les chemins
+
+        # relatifs s'y résolvent, sans que l'utilisateur ait à pointer le dossier dans l'UI.
+
+        adopted_ws = None
+
+        detected = _detect_workspace(message, S.workspace_dir)
+
+        if detected:
+            sess = _session(S)
+
+            # Un chemin INTERNE au projet courant n'est pas un changement de contexte :
+            # adopter casserait le cache KV (re-prefill intégral) pour rien — cf.
+            # _should_adopt (vécu 2026-07-19 : var/sessions/<id> cité comme simple info).
+            if detected != sess.workspace and _should_adopt(sess.workspace, detected):
+                sess.workspace = detected
+
+                S.session_store.save(sess)
+
+                adopted_ws = detected
+
+        try:
+            content = _build_user_content(
+                message,
+                request.files.getlist("image"),
+                is_vision=bool(conv.model and conv.model in S.vision_models),
+                stash_dir=_sdir / "uploads",
+            )
+
+            conv.add("user", content)
+
+            save()
+
+            # Journal d'affichage temps réel : on y consigne le message user (le journal est la
+            # source de RÉ-AFFICHAGE au rechargement -> il doit être complet, user inclus).
+            S.session_store.append_event(sess.id, "user", {"content": message})
+
+            # Résumé auto pré-tour : DÉPLACÉ dans generate() (plus bas) pour être VISIBLE
+            # dans le stream (label d'activité « compaction… ») au lieu d'un blocage muet
+            # avant le 1er octet. Le prompt système ne dépend pas de l'historique -> on le
+            # construit ici sans attendre le résumé.
+            system_prompt, strong = _build_system_prompt(S, conv)
+        except ValueError as exc:
+            chat_lock.release()
+
+            return Response(str(exc), status=400)
+
+        except Exception:  # noqa: BLE001
+            chat_lock.release()
+            traceback.print_exc()
+            return Response("erreur interne", status=500)
+
+        # --- Modèle IMAGE sélectionné : court-circuit de la boucle tool-use. Un message
+        # user = un prompt d'image = une image dans la conversation. Même GPU que le LLM
+        # local -> même sérialisation (_local_gen_lock) ; VRAM libérée (unload_local)
+        # avant la diffusion ; erreurs TOUJOURS lisibles (patron « génération interrompue »).
+        if conv.model in S.image_model_ids:
+            _im = S.image_by_id[conv.model]
+
+            def generate_image():
+                S.stay_awake.acquire()
+                _img_held = False
+                _sess = _session(S)
+
+                def _finish(md_text: str):
+                    conv.add("assistant", md_text)
+                    save()
+                    S.session_store.append_event(_sess.id, "text", {"text": md_text})
+                    return _sse("text", text=md_text)
+
+                try:
+                    yield _sse("status", label="préparation du moteur image…")
+                    S.local_gen_lock.acquire()
+                    _img_held = True
+                    S.local_busy["reason"] = "image"
+                    # Photo d'ENTRÉE (modèles d'édition, ex. Kontext) : un chemin de
+                    # fichier image dans le message est détecté, vérifié sur disque,
+                    # retiré du texte (le prompt ne doit porter que l'instruction) et
+                    # transmis au moteur ({IMAGE} du workflow). Chemins avec espaces :
+                    # entre guillemets.
+                    src_image, msg_text = None, message
+                    for cand in re.findall(
+                        r'"([^"]+\.(?:png|jpe?g|webp|bmp))"', message, re.IGNORECASE
+                    ) + re.findall(
+                        r"[A-Za-z]:[\\/][^\s\"']+\.(?:png|jpe?g|webp|bmp)",
+                        message,
+                        re.IGNORECASE,
+                    ):
+                        if Path(cand).is_file():
+                            src_image = cand
+                            msg_text = (
+                                message.replace(f'"{cand}"', " ")
+                                .replace(cand, " ")
+                                .strip()
+                            )
+                            break
+                    # Affinage du prompt (best-effort, JAMAIS bloquant) : le refiner
+                    # déclaré par le modèle image (model.toml, id d'un modèle Loom)
+                    # réécrit la demande — quelle que soit la langue — en prompt de
+                    # diffusion anglais. Séquence VRAM sûre : le refiner est servi par
+                    # llama-swap D'ABORD, puis déchargé (unload_local ci-dessous) —
+                    # LLM et diffusion ne co-résident jamais.
+                    prompt, refined = msg_text, False
+                    if _im.refiner and _im.refiner in S.models:
+                        yield _sse(
+                            "status", label=f"affinage du prompt ({_im.refiner})…"
+                        )
+                        try:
+                            if (
+                                _im.refiner in S.remote_model_ids
+                                or _ensure_local_server(S, wait=90.0)
+                            ):
+                                # Édition d'une photo : le refiner doit produire une
+                                # INSTRUCTION (quoi changer / quoi garder), pas une
+                                # description de scène — on le lui dit dans le message.
+                                _refine_in = (
+                                    "[An input photo is attached; write an EDIT "
+                                    "instruction: what to change, what must stay "
+                                    f"identical.] {msg_text}"
+                                    if src_image
+                                    else msg_text
+                                )
+                                # Prompt système = règles générales + grammaire propre
+                                # au générateur (refine_hints du model.toml) : chaque
+                                # modèle a son style de prompt optimal.
+                                _refine_sys = IMAGE_REFINE_SYSTEM
+                                if _im.refine_hints:
+                                    _refine_sys += (
+                                        "\n\nTARGET-MODEL RULES (override the above "
+                                        "when they conflict):\n" + _im.refine_hints
+                                    )
+                                out = ""
+                                for kind, chunk in S.client.stream_chat(
+                                    [{"role": "user", "content": _refine_in}],
+                                    _refine_sys,
+                                    max_tokens=512,
+                                    model=_im.refiner,
+                                    thinking=False,
+                                ):
+                                    if kind == "content":
+                                        out += chunk
+                                out = " ".join(out.split()).strip().strip('"')
+                                if out:
+                                    prompt, refined = out, True
+                        except Exception:  # noqa: BLE001 - affinage best-effort
+                            traceback.print_exc()
+                        if not refined:
+                            yield _sse(
+                                "notice",
+                                text="affinage indisponible — prompt envoyé tel quel.",
+                            )
+                    # FORMAT dynamique : le refiner termine par un tag
+                    # [format: portrait|landscape|square] dérivé de la demande —
+                    # extrait ici, retiré du prompt, converti en résolution. Absent
+                    # -> dimensions du model.toml (les workflows sans {WIDTH}/{HEIGHT}
+                    # ignorent simplement ces valeurs).
+                    gen_w, gen_h = _im.width, _im.height
+                    # Tag TOUJOURS retiré quelle que soit sa valeur (un petit modèle
+                    # invente parfois la sienne, ex. "full-body" : elle ne doit JAMAIS
+                    # fuir dans le prompt de diffusion) ; synonymes mappés, inconnu ->
+                    # dimensions par défaut.
+                    _fmt = re.search(
+                        r"\[\s*format\s*:\s*([a-zà-ÿ -]+?)\s*\]\s*$",
+                        prompt,
+                        re.IGNORECASE,
+                    )
+                    if _fmt:
+                        prompt = prompt[: _fmt.start()].strip()
+                        _f = _fmt.group(1).lower()
+                        if any(
+                            k in _f
+                            for k in ("portrait", "full-body", "full body", "vertical")
+                        ):
+                            gen_w, gen_h = 832, 1216
+                        elif any(
+                            k in _f
+                            for k in ("landscape", "paysage", "wide", "horizontal")
+                        ):
+                            gen_w, gen_h = 1216, 832
+                        elif any(k in _f for k in ("square", "carr")):
+                            gen_w, gen_h = 1024, 1024
+                    # Titre de session : une session image/vidéo mérite un nom comme
+                    # les autres. Inféré par le REFINER (encore résident — coût nul en
+                    # rechargement) ; sans refiner, _infer_title retombe sur le début
+                    # du message. Fait AVANT unload_local.
+                    if _sess.title == "Nouvelle session":
+                        _title = _infer_title(S.client, _im.refiner or None, msg_text)
+                        if _title:
+                            _sess.title = _title
+                            S.session_store.save(_sess)
+                            yield _sse("session_title", id=_sess.id, title=_title)
+                    S.client.unload_local()  # VRAM libre pour la diffusion
+                    eng = _engine_for(S, _im)
+                    eng.ensure_up()
+                    yield _sse("status", label="génération de l'image…")
+                    data, ext = eng.generate(
+                        Path(_im.workflow_path).read_text(encoding="utf-8"),
+                        prompt,
+                        timeout=float(_im.timeout),
+                        image_path=src_image,
+                        width=gen_w,
+                        height=gen_h,
+                    )
+                    # UNIQUE copie : dans le dossier de LA session (comme sa timeline).
+                    # Le média suit le cycle de vie de la session — la supprimer emporte
+                    # ses médias, aucun orphelin (décision user 2026-07-09 : fini les
+                    # duplications var/generated + workspace + output ComfyUI).
+                    name = f"loom_{int(time.time() * 1000)}{ext}"
+                    media_dir = S.session_store.root / _sess.id / "generated"
+                    media_dir.mkdir(parents=True, exist_ok=True)
+                    (media_dir / name).write_bytes(data)
+                    loc = str(media_dir / name)
+                    if ext in (".png", ".jpg", ".jpeg", ".webp"):
+                        md = (
+                            f"![{(prompt or 'image')[:80]}](/genimg/{_sess.id}/{name})\n\n"
+                            f"Image écrite : `{loc}`"
+                        )
+                    else:
+                        # Vidéo (webm/mp4) : le markdown image ne la lit pas — lien
+                        # cliquable, le navigateur la joue dans un onglet.
+                        md = (
+                            f"[vidéo générée — cliquer pour lire](/genimg/{_sess.id}/{name})\n\n"
+                            f"Vidéo écrite : `{loc}`"
+                        )
+                    if refined:
+                        # Le prompt réellement envoyé au diffuseur, visible dans le fil :
+                        # l'utilisateur voit ce que l'affinage a fait de sa demande.
+                        md += f"\n\nPrompt affiné ({_im.refiner}) : `{prompt}`"
+                    yield _finish(md)
+                except ComfyError as exc:
+                    yield _finish(f"[génération d'image interrompue : {exc}]")
+                except Exception as exc:  # noqa: BLE001 - jamais de stacktrace dans le chat
+                    traceback.print_exc()
+                    yield _finish(
+                        f"[génération d'image interrompue : erreur interne — {str(exc)[:160]}]"
+                    )
+                finally:
+                    if _img_held:
+                        S.local_busy["reason"] = ""
+                        S.local_gen_lock.release()
+                    chat_lock.release()
+                    S.stay_awake.release()
+                    yield _sse("status", label="")
+
+            return Response(generate_image(), mimetype="text/event-stream")
+
+        def generate():
+            # Empêche la mise en veille du système tant que CE tour génère (release au
+            # finally) : sans ça, une veille par inactivité gèle loom.web + llama.cpp et la
+            # génération meurt (« connexion perdue »). L'écran peut s'éteindre, le travail
+            # continue en arrière-plan.
+            S.stay_awake.acquire()
+            # Annulation de CETTE session, lue par _confirm (même thread de génération).
+            S.confirm_local.ev = cancel_event
+            # Verrou modèle LOCAL : pris dans le try ci-dessous (avant le 1er appel modèle),
+            # libéré au finally. Distant -> jamais pris (vrai parallèle entre onglets).
+            _local_held = False
+
+            # Profil du modèle : correctifs déterministes (cadratins, guillemets
+
+            # typographiques) appliqués au texte streamé du chat. Le profil existe
+
+            # déjà pour les outils d'écriture (via tool_factory) ; on le recharge ici
+
+            # pour l'appliquer AUSSI aux réponses du modèle, pas seulement aux fichiers.
+
+            _profile = load_profile(conv.model) if conv.model else None
+
+            if adopted_ws:  # informe l'UI que le dossier de travail a été adopté
+                yield _sse("workspace", path=adopted_ws)
+
+            # Démarrage AUTO du serveur modèle, RACONTÉ dans le fil : notices streamées
+            # pendant le démarrage de la stack puis le chargement du modèle — l'utilisateur
+            # voit que ça travaille au lieu de paniquer devant un silence. Fait DANS le
+            # générateur (pas avant la Response) pour que ces étapes s'affichent en direct.
+            if conv.model and conv.model not in S.remote_model_ids:
+                _reachable, _running_txt = S.client.running_local(timeout=2.0)
+                if not _reachable:
+                    yield _sse(
+                        "notice",
+                        text="serveur modèle éteint — démarrage de la stack en cours…",
+                    )
+                    _t_srv = time.monotonic()
+                    S.server_manager.start()
+                    # Attente pilotée par l'ÉTAT DU PROCESS, pas par un mur de temps :
+                    # un 35 Go à froid dépasse largement 90 s, et l'ancien message
+                    # prédisait « la génération va échouer » à tort (vécu 2026-07-21).
+                    # Stack vivante -> on attend en le disant (notice périodique) ;
+                    # stack MORTE -> vrai échec, on arrête d'attendre tout de suite.
+                    _deadline = time.monotonic() + 600.0  # garde-fou absolu
+                    _last_notice = time.monotonic()
+                    while time.monotonic() < _deadline and not cancel_event.is_set():
+                        time.sleep(0.7)
+                        _reachable, _running_txt = S.client.running_local(timeout=2.0)
+                        if _reachable:
+                            # Étape TRACÉE (console debug) : chaque phase du tour porte
+                            # sa durée — plus jamais un « 1min52 » opaque (2026-07-19).
+                            log_event(
+                                "turn.step",
+                                etape="demarrage_serveur",
+                                s=round(time.monotonic() - _t_srv, 1),
+                            )
+                            yield _sse("notice", text="serveur modèle démarré.")
+                            break
+                        if not S.server_manager.owns_running():
+                            break  # process mort : inutile d'attendre le garde-fou
+                        if time.monotonic() - _last_notice >= 15.0:
+                            _last_notice = time.monotonic()
+                            yield _sse(
+                                "notice",
+                                text=(
+                                    "chargement du modèle en cours… "
+                                    f"({int(time.monotonic() - _t_srv)} s — un gros "
+                                    "modèle peut prendre plusieurs minutes)"
+                                ),
+                            )
+                    if not _reachable and not cancel_event.is_set():
+                        if S.server_manager.owns_running():
+                            _txt = (
+                                "le serveur modèle charge encore après "
+                                f"{int(time.monotonic() - _t_srv)} s — la génération "
+                                "est tentée quand même ; si elle échoue, réessaie "
+                                "dans un moment (détails : var/logs/serve.log)."
+                            )
+                        else:
+                            _txt = (
+                                "le serveur modèle s'est ARRÊTÉ pendant le démarrage "
+                                "— la génération va échouer (cause : var/logs/serve.log)."
+                            )
+                        yield _sse("notice", text=_txt)
+                if _reachable and conv.model not in _running_txt:
+                    yield _sse(
+                        "notice",
+                        text="chargement du modèle en mémoire — la première réponse met "
+                        "plus de temps à démarrer…",
+                    )
+
+            answer = ""
+
+            actions: list[str] = []  # trace compacte des outils (anti-amnésie)
+
+            saved = False
+            # Persistance AU FIL DE L'EAU : au lieu de tout sauver une seule fois EN FIN de tour
+            # (un long audit interrompu/rechargé/relancé perdait TOUT), on met à jour EN PLACE
+            # l'unique message assistant du tour (réponse en cours + trace compacte des actions)
+            # et on sauve à CHAQUE étape marquante (outil terminé, flux de texte) + à la fin.
+            _turn = {"idx": None, "last": 0.0}
+
+            # Journal d'affichage TEMPS RÉEL : chaque événement visible est écrit à l'instant
+            # dans timeline.jsonl (append, zéro batch) -> rejouable au rechargement. On y met
+            # les événements qui reconstruisent la vue (raisonnement, texte, cartes d'outils) ;
+            # pas les compteurs (metrics/totals) ni les décorations live (tool_stream/args).
+            _TL = {
+                "reasoning",
+                "text",
+                "tool_call",
+                "tool_result",
+                "phase",
+                "notice",
+                "parallel",
+                "user",  # note en vol injectée : à sa vraie position au rechargement
+                "harness",  # intervention du garde-fou Loom (3e voix) : rejouable
+            }
+
+            def _tl(event, **data):
+                if event in _TL:
+                    S.session_store.append_event(sess.id, event, data)
+                return _sse(event, **data)
+
+            def _persist(final=False):
+                # On NE persiste pas les messages `tool` bruts (gonflerait le contexte + casserait
+                # le résumeur) : seulement le texte + la trace des actions. Un même tour = UN seul
+                # message assistant, mis à jour en place (pas de doublons).
+                nonlocal saved
+
+                body = answer
+
+                if actions:
+                    trace = "[Actions de ce tour : " + " · ".join(actions[:20]) + "]"
+
+                    body = f"{body}\n\n{trace}" if body else trace
+
+                if not body:  # rien à dire ET rien fait -> pas de bulle vide
+                    return
+
+                # Piloté par ÉVÉNEMENT (chaque outil terminé + fin), plus par un timer : le
+                # temps réel de l'affichage vient du journal `timeline.jsonl`, pas d'ici. Ce
+                # session.json ne porte que le contexte lean du modèle, inutile à chaque token.
+                if _turn["idx"] is None:
+                    conv.add("assistant", body)
+                    _turn["idx"] = len(conv.messages) - 1
+                else:
+                    conv.messages[_turn["idx"]]["content"] = body
+
+                save()
+                saved = True
+
+            # Registre construit selon les outils activés pour CETTE conversation
+
+            # (toggles UI) ET le workspace de la session active : sans ça les outils
+
+            # (write/edit/run_shell + sous-agent) retombent sur cfg.chat.workspace_dir
+
+            # et écrivent à côté du dossier ciblé.
+
+            # Résumé PRÉ-TOUR (proactif), DANS le stream pour être VISIBLE : si l'historique
+            # dépasse le budget, on émet le label d'activité « compaction… », on résume, on
+            # trace une carte, puis on efface le label. Gate `needs_summary` d'abord (sans
+            # appel modèle) pour ne montrer le label QUE si un résumé va vraiment tourner.
+            # Placé APRÈS le démarrage du serveur modèle (le résumé appelle le modèle).
+            # LOCAL UNIQUEMENT : un modèle DISTANT a une grande fenêtre et gère lui-même son
+            # contexte + son prefix-cache ; réécrire son historique casserait ce cache et
+            # coûterait des tokens pour rien. On ne compacte donc que le local.
+            _is_local_model = bool(conv.model) and conv.model not in S.remote_model_ids
+            # SEUIL relatif à la FENÊTRE, pas le `context_budget` (3000) absolu : ce dernier
+            # est comparé à system_prompt + messages, or le prompt système SEUL fait ~11k
+            # tokens -> le seuil 3000 était TOUJOURS dépassé et la compaction partait à CHAQUE
+            # message (même « poursuis »), en appelant le modèle (lent). On la déclenche
+            # désormais seulement près de la saturation (même seuil que le microcompact).
+            _, _pre_threshold = _model_limits(S, conv.model)
+            if (
+                _is_local_model
+                and context.needs_summary(
+                    conv.system_prompt, conv.messages, _pre_threshold
+                )
+                and len(conv.messages) > S.settings["keep_recent"]
+            ):
+                yield _sse("status", label="compaction du contexte…")
+                if context.summarize(
+                    conv, S.client, _pre_threshold, S.settings["keep_recent"]
+                ):
+                    save()
+                    # Jauge à jour TOUT DE SUITE (estimation ~3 car./token), sans attendre
+                    # l'usage réel du 1er appel du tour.
+                    conv.context_tokens = (
+                        len(conv.system_prompt)
+                        + sum(_msg_chars(m.get("content")) for m in conv.messages)
+                    ) // 3
+                    yield _tl(
+                        "tool_result",
+                        name="(compaction)",
+                        ok=True,
+                        preview="Contexte résumé pour libérer de la place. Je reprends.",
+                    )
+                    yield _sse("totals", **_totals(S, conv))
+                yield _sse("status", label="")  # efface le label d'activité
+
+            ws = _session(S).workspace
+
+            registry = S.tool_factory(conv.active_tools, ws, conv)
+
+            use_tools = registry is not None and len(registry)
+
+            # Limites du modèle courant (distant = sa grande fenêtre ; local = global).
+
+            eff_max_tokens, eff_compact = _model_limits(S, conv.model)
+
+            # `strong` (tier distant=fort) est calculé plus haut, à la construction du prompt :
+
+            # il coupe ici les gardes de comportement (act_nudge, claim_audit, coupe non-progrès).
+
+            # On ne garde que outils + mémoire + sécurité. Un modèle local garde le harnais complet.
+
+            if use_tools:
+                source = S.client.stream_chat_tools(
+                    conv.to_messages(),
+                    system_prompt,
+                    eff_max_tokens,
+                    model=conv.model or None,
+                    registry=registry,
+                    thinking=conv.thinking,
+                    permission=S.perm["fn"],
+                    confirm=partial(_confirm, S),
+                    compact_after_tokens=eff_compact,
+                    strong=strong,
+                    # Notes en vol : remarques poussées par /note PENDANT ce tour,
+                    # injectées au prochain point d'arrêt sans interrompre.
+                    notes_provider=lambda: S.notes.drain(sess.id),
+                    # Note de recentrage : seulement si l'épisode de troncature
+                    # précédent n'a pas déjà été géré proprement (cf. _refocus_handled).
+                    refocus_note=not S.refocus_handled.get(sess.id, False),
+                )
+
+            else:
+                source = S.client.stream_chat(
+                    conv.to_messages(),
+                    system_prompt,
+                    eff_max_tokens,
+                    model=conv.model or None,
+                    thinking=conv.thinking,
+                )
+
+            interrupted = False
+
+            saw_compaction = (
+                False  # une troncature (force-fit/compaction) a eu lieu ce tour
+            )
+            stop_reason = ""  # raison du done de la boucle (natural, repeat_stop, …)
+
+            recv_confirmed = 0  # reçus confirmés par l'usage (tool-calls inclus)
+
+            cur_turn = 0  # reçus live du tour en cours (reset à chaque usage)
+
+            sent_tokens = 0  # envoyés (prompt) cumulés via l'usage
+
+            last_rate = 0.0  # dernier débit mesuré
+
+            burst_start = None  # début de rafale (débit hors pauses outils)
+
+            burst_tokens = 0
+
+            last_tok = None
+
+            # Auto-titre DÈS L'ENVOI (le titre dérive du MESSAGE, pas de la réponse). Pour un
+            # modèle DISTANT : on l'infère en tâche de fond tout de suite et on le pousse au
+            # client dès qu'il est prêt (interleavé), sans attendre la fin du tour -> l'onglet
+            # prend son vrai nom en ~1-2s même sur une génération longue. Pour un modèle LOCAL,
+            # on NE le fait PAS ici (llama-swap = 1 slot ; un appel concurrent contendrait avec
+            # la génération) : on garde le titrage en fin de tour, quand le slot est libre.
+            _titled = {"value": None, "emitted": False}
+            _title_ready = threading.Event()
+            _immediate_title = (
+                sess.title == "Nouvelle session" and conv.model in S.remote_model_ids
+            )
+            if _immediate_title:
+
+                def _do_title(_msg=message, _model=conv.model):
+                    _t = ""
+                    try:
+                        _t = _infer_title(S.client, _model or None, _msg)
+                    except Exception:  # noqa: BLE001 - titre best-effort, jamais bloquant
+                        _t = ""
+                    _titled["value"] = _t or ""
+                    if _t:
+                        sess.title = _t
+                    _title_ready.set()
+
+                threading.Thread(
+                    target=_do_title, daemon=True, name="loom-title"
+                ).start()
+
+            try:
+                # Modèle LOCAL : llama-swap n'en sert qu'UN à la fois -> on sérialise via le
+                # verrou global (limitation machine connue, signalée à l'UI). Modèle DISTANT :
+                # pas de verrou -> cette session génère EN PARALLÈLE des autres onglets.
+                if conv.model and conv.model not in S.remote_model_ids:
+                    if not S.local_gen_lock.acquire(blocking=False):
+                        yield _sse("notice", text=_local_busy_notice(S))
+                        S.local_gen_lock.acquire()
+                    _local_held = True
+                    S.local_busy["reason"] = "génération"
+                    # Un moteur image encore chargé tiendrait la VRAM que le LLM va
+                    # réclamer : le vider d'abord (best-effort, rapide si rien à vider).
+                    # Son cache RAM n'est gardé que si le LLM tient à côté (64 Go : oui ;
+                    # machine étroite : non, et on le DIT — l'utilisateur comprend
+                    # pourquoi la prochaine image rechargera depuis le disque).
+                    if _free_image_engines(S, _local_size_mb(S, conv.model)) is False:
+                        yield _sse(
+                            "notice",
+                            text=(
+                                "moteur image déchargé de la RAM (insuffisante pour "
+                                "garder LLM + cache image ensemble) : la prochaine "
+                                "image repaiera le chargement disque."
+                            ),
+                        )
+
+                for kind, payload in source:
+                    # Titre distant prêt (thread de fond) -> on le pousse dès la 1re occasion.
+                    if (
+                        _immediate_title
+                        and _title_ready.is_set()
+                        and not _titled["emitted"]
+                    ):
+                        _titled["emitted"] = True
+                        if _titled["value"]:
+                            S.session_store.save(sess)
+                            yield _sse(
+                                "session_title", id=sess.id, title=_titled["value"]
+                            )
+
+                    if cancel_event.is_set():
+                        # Une nouvelle soumission demande l'arrêt : on stoppe net
+
+                        # et on persiste ce qui a déjà été généré.
+
+                        interrupted = True
+
+                        break
+
+                    if kind == "note":
+                        # Note en vol INJECTÉE par la boucle : on la PERSISTE telle
+                        # quelle (même contenu que ce que le modèle a vu) et on
+                        # l'affiche dans le fil à sa vraie position.
+                        conv.add("user", payload)
+                        save()
+                        yield _tl("user", content=payload)
+                        yield _sse("note", text=payload)
+                        continue
+
+                    if kind == "harness":
+                        # 3e voix : intervention du garde-fou Loom (relance, audit,
+                        # recentrage…). Ni toi ni le modèle -> bulle distincte,
+                        # persistée pour être rejouée au rechargement.
+                        yield _tl("harness", **payload)
+                        continue
+
+                    if kind == "status":
+                        # Signal d'activité (ex. compaction en cours) : piloté vers le label
+                        # animé au-dessus du composer, comme « le modèle tourne ».
+                        yield _sse("status", **payload)
+
+                    elif kind == "context_estimate":
+                        # Compaction : la jauge de contexte est rafraîchie IMMÉDIATEMENT
+                        # (estimation), sans attendre l'usage réel du prochain appel — sinon
+                        # elle resterait au pic pendant tout l'appel suivant. L'usage réel du
+                        # tour d'après la corrigera de toute façon.
+                        conv.context_tokens = int(payload.get("tokens", 0) or 0)
+                        yield _sse("totals", **_totals(S, conv))
+
+                    elif kind == "reasoning":
+                        yield _tl("reasoning", text=payload)
+
+                    elif kind == "content":
+                        if _profile is not None:
+                            payload = _profile.apply_to_text(payload)
+                        answer += payload
+
+                        # Temps réel : le texte est journalisé à l'instant (rejouable). Le
+                        # session.json (contexte) se met à jour aux frontières d'outils + fin.
+                        yield _tl("text", text=payload)
+
+                    elif kind == "parallel":
+                        yield _tl("parallel", **payload)
+
+                    elif kind == "tool_call":
+                        yield _tl("tool_call", **payload)
+
+                    elif kind == "tool_request":
+                        yield _sse("tool_request", **payload)
+
+                    elif kind == "tool_begin":
+                        yield _sse("tool_begin", **payload)
+
+                    elif kind == "tool_args":
+                        yield _sse("tool_args", **payload)
+
+                    elif kind == "tool_stream":
+                        yield _sse("tool_stream", **payload)
+
+                    elif kind == "tool_result":
+                        if str(payload.get("name", "")).startswith("(compaction"):
+                            saw_compaction = True
+
+                        line = _action_trace_line(payload)
+
+                        if line and line not in actions:
+                            actions.append(line)
+
+                        yield _tl("tool_result", **payload)
+
+                        _persist()  # checkpoint contexte (event-driven) : l'outil vient de finir
+
+                    elif kind == "usage":
+                        # Fin d'un tour : llama-server donne le prompt réel et le completion
+
+                        # EXACT (tool-calls inclus) -> on cumule envoyés/reçus à travers les
+
+                        # tours ET les outils, et on réconcilie le tour courant.
+
+                        _p = payload.get("prompt_tokens", 0) or 0
+                        _c = payload.get("completion_tokens", 0) or 0
+                        _cached = payload.get("cached_tokens", 0) or 0
+
+                        sent_tokens += _p
+
+                        recv_confirmed += _c
+
+                        cur_turn = 0
+
+                        # Cumul RÉEL de la session : chaque appel refacture tout le contexte en
+                        # INPUT -> on somme input/output/cache/coût sur TOUS les appels
+                        # (persisté), pas seulement le tour. C'est LA vraie somme facturée, et
+                        # `cached` mesure si le prompt caching du provider mord.
+                        _pin, _pout, _pcached = _price_of(S, conv.model)
+                        conv.add_usage(_p, _c, _cached, _pin, _pout, _pcached)
+
+                        yield _sse("usage", **payload)
+
+                        yield _sse(
+                            "metrics",
+                            sent=sent_tokens,
+                            recv=recv_confirmed,
+                            tok_s=last_rate,
+                        )
+
+                        yield _sse("totals", **_totals(S, conv))
+
+                    elif kind == "sub_usage":
+                        # Conso d'un SOUS-AGENT (dispatch_agent) : ses tokens sont RÉELS et
+                        # facturés -> on les ajoute aux totaux de session (coût, N×, in/out/
+                        # cache). `set_context=False` : son prompt n'est PAS le contexte du fil
+                        # principal, on ne touche donc pas la jauge de remplissage ni les
+                        # métriques per-tour (sent/recv) qui décrivent le tour principal.
+                        _sp = payload.get("prompt_tokens", 0) or 0
+                        _sc = payload.get("completion_tokens", 0) or 0
+                        _scached = payload.get("cached_tokens", 0) or 0
+                        _pin, _pout, _pcached = _price_of(S, conv.model)
+                        conv.add_usage(
+                            _sp,
+                            _sc,
+                            _scached,
+                            _pin,
+                            _pout,
+                            _pcached,
+                            set_context=False,
+                        )
+                        yield _sse("totals", **_totals(S, conv))
+
+                    elif kind == "phase":
+                        yield _tl("phase", **payload)
+
+                    elif kind == "done":
+                        # Raison d'arrêt de la boucle (natural, repeat_stop,
+                        # loop_degenerate…) : nourrit la boucle de feedback de la
+                        # note de recentrage ci-dessous.
+                        stop_reason = str(payload.get("reason", "") or "")
+
+                    # Compteur live : chaque delta (texte OU arguments d'un tool_call) =
+
+                    # 1 vrai token streamé par llama-server. On compte aussi tool_args
+
+                    # pour que le compteur avance pendant la génération d'un appel (gros
+
+                    # write_file inclus) au lieu de se figer. On affiche le cumul + un débit
+
+                    # mesuré sur la rafale courante ; le timer se réinitialise après >1s sans
+
+                    # token (pause d'exécution) pour que les tok/s reflètent la génération.
+
+                    if kind in ("reasoning", "content", "tool_args"):
+                        now = time.monotonic()
+
+                        if last_tok is None or now - last_tok > 1.0:
+                            burst_start = now
+
+                            burst_tokens = 0
+
+                        burst_tokens += 1
+
+                        cur_turn += 1
+
+                        last_tok = now
+
+                        span = now - burst_start
+
+                        tok_s = round(burst_tokens / span, 1) if span > 0 else 0.0
+
+                        last_rate = tok_s
+
+                        yield _sse(
+                            "metrics",
+                            sent=sent_tokens,
+                            recv=recv_confirmed + cur_turn,
+                            tok_s=tok_s,
+                        )
+
+                if interrupted:
+                    _persist(
+                        final=True
+                    )  # interrompu : on force la sauvegarde du travail fait
+
+                    # Stop PROPRE : marqueur PERSISTÉ -> au tour suivant le modèle
+                    # SAIT que sa réponse est tronquée volontairement (sans ça il
+                    # reprenait une réponse incomplète comme si de rien n'était).
+                    conv.add(
+                        "user",
+                        "[Interrupted by the user here — the answer above is "
+                        "incomplete. Wait for the next instruction.]",
+                    )
+                    save()
+
+                    return
+
+                # Feedback de la note de recentrage : troncature + tour fini PROPREMENT
+                # (stop naturel) = épisode GÉRÉ, on cesse de ré-injecter la note ;
+                # dérapage (non-progrès/boucle) = ré-armée ; tour sans troncature =
+                # remise à zéro (le prochain épisode aura sa note).
+                if saw_compaction:
+                    if stop_reason == "natural":
+                        S.refocus_handled[sess.id] = True
+                    elif stop_reason in ("repeat_stop", "loop_degenerate"):
+                        S.refocus_handled[sess.id] = False
+                else:
+                    S.refocus_handled[sess.id] = False
+
+                if not answer.strip():
+                    answer = "(le modèle a seulement réfléchi — augmente max_tokens)"
+
+                    yield _sse("text", text=answer)
+
+                _persist(final=True)  # fin de tour : écriture finale garantie
+
+                # Cache souverain : le slot local contient LA conversation à cet
+                # instant précis -> on le sauve MAINTENANT (~ms), avant que le titre
+                # (inline ci-dessous) et le reflect (maintenance) ne l'écrasent ; la
+                # maintenance le RESTAURERA (~ms) au lieu de re-préfiller des minutes.
+                # session_id : sidecar meta pour la reprise à CHAUD one-shot
+                # (try_hot_resume ne restaure jamais le save d'une autre session).
+                _kv_saved = S.client.save_slot(
+                    conv.model, "turnend.kv", session_id=sess.id
+                )
+
+                # Apprentissage post-tour + restauration du cache : DÉPORTÉS dans un
+                # thread (cf. _post_turn_maintenance). Avant, reflect tournait ICI,
+                # avant le `done` -> l'UI restait sur « le modèle travaille » pendant
+                # un appel modèle entier, ET le cache KV de la conversation était
+                # écrasé -> re-prefill INTÉGRAL au message suivant (bug 2026-07-10).
+                # Le thread attend le verrou local (libéré à la fermeture du flux).
+                _do_reflect = (
+                    S.settings["reflect_enabled"]
+                    and S.reflect_stores is not None
+                    and saved
+                    and len(actions) >= S.settings["reflect_min_actions"]
+                )
+
+                threading.Thread(
+                    target=_post_turn_maintenance,
+                    args=(
+                        S,
+                        sess,
+                        conv.to_messages(),
+                        list(actions),
+                        answer,
+                        conv.model,
+                        _do_reflect,
+                        _kv_saved,
+                    ),
+                    daemon=True,
+                    name="loom-post-turn",
+                ).start()
+
+                # Auto-titre : à la 1re vraie réponse, nommer la session (le modèle infère le
+                # sujet). On titre LA session de CETTE génération (`sess`), pas la session
+                # focus (_cur) — sinon, en multi-onglets concurrent, on titrerait la mauvaise.
+
+                if _immediate_title:
+                    # Distant : filet de secours si le thread de titre n'a pas fini avant la
+                    # fin de la boucle (ou tour sans événement) -> on l'attend brièvement.
+                    if not _titled["emitted"]:
+                        _title_ready.wait(timeout=8)
+                        _titled["emitted"] = True
+                        if _titled["value"]:
+                            sess.title = _titled["value"]
+                            S.session_store.save(sess)
+                            yield _sse(
+                                "session_title", id=sess.id, title=_titled["value"]
+                            )
+                elif saved and sess.title == "Nouvelle session":
+                    # Local : titrage en fin de tour (slot llama-swap libre, pas de contention).
+                    _title = _infer_title(S.client, conv.model or None, message)
+                    if _title:
+                        sess.title = _title
+                        S.session_store.save(sess)
+                        yield _sse("session_title", id=sess.id, title=_title)
+
+                yield _sse("done")
+
+            except GeneratorExit:
+                # Marqueur d'interruption AVANT la persistance finale : le tour
+                # suivant (celui qui a remplacé ce flux) saura que cette réponse
+                # est volontairement tronquée.
+                try:
+                    conv.add(
+                        "user",
+                        "[Interrupted by a new user submission — the answer above "
+                        "is incomplete.]",
+                    )
+                except Exception:  # noqa: BLE001 - marqueur best-effort
+                    pass
+                # L'utilisateur a soumis un nouveau message : le client a fermé le
+
+                # flux. On persiste la réponse PARTIELLE déjà reçue, puis on relaie
+
+                # l'interruption (re-raise obligatoire pour le protocole générateur).
+
+                _persist(final=True)  # client parti : écriture finale garantie
+
+                raise
+
+            except Exception:  # noqa: BLE001 - on remonte l'erreur au client SSE
+                traceback.print_exc()
+                yield _sse("error", message="erreur interne")
+
+            finally:
+                S.last_activity[0] = time.time()  # marque l'activité pour le keep-warm
+
+                if _local_held:
+                    S.local_busy["reason"] = ""
+                    S.local_gen_lock.release()
+
+                chat_lock.release()
+                S.stay_awake.release()  # plus de veille bloquée si plus aucune génération
+
+        return Response(generate(), mimetype="text/event-stream")
