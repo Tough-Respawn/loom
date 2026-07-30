@@ -90,7 +90,7 @@ def _launch(env, monkeypatch, calib=CALIB, error=None):
             raise error
         return calib, env.mdir / "fake.gguf"
 
-    monkeypatch.setattr(routes, "_run_calibration", fake_run)
+    monkeypatch.setattr(routes.models, "_run_calibration", fake_run)
     env.web.post("/chat", data={"message": "/rebench loc-test"})
     return env.web.post("/chat", data={"message": "oui"})
 
@@ -108,7 +108,7 @@ def test_rebench_confirmation_et_verdict_portent_des_boutons(env, monkeypatch):
 
     monkeypatch.setitem(routes._REBENCH, "job", None)
     monkeypatch.setattr(
-        routes, "_run_calibration", lambda S, spec, progress: (CALIB, None)
+        routes.models, "_run_calibration", lambda S, spec, progress: (CALIB, None)
     )
     r = env.web.post("/chat", data={"message": "/rebench loc-test"})
     assert {"type": "choices", "options": ["oui", "annuler"]} in _sse_events(r.data)
