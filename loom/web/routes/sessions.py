@@ -383,7 +383,9 @@ def _register_session_routes(app, S):
         # le dossier choisi s'écrivait ailleurs et le tour partait sur l'ancien
         # workspace (bug constaté le 2026-07-10).
         req_sid = (request.form.get("session_id") or "").strip()
-        sess = (_get_session(S, req_sid) if req_sid else None) or _session(S)
+        sess = _get_session(S, req_sid) if req_sid else _session(S)
+        if sess is None:
+            return Response("session introuvable", status=404)
 
         sess.workspace = ws
 
@@ -395,13 +397,36 @@ def _register_session_routes(app, S):
     def session_delete():
         sid = (request.form.get("id") or "").strip()
 
-        S.session_store.delete(sid)
+        # Vérifier l'existence AVANT de créer un verrou : _lock_for fait un setdefault,
+        # donc un id inconnu/invalide laisserait une entrée PERMANENTE dans sess_locks
+        # (qu'on ne retire plus) -> fuite mémoire sur POST répétés. 404 net si inconnue.
+        if _get_session(S, sid) is None:
+            return Response("session introuvable", status=404)
 
-        # Si on supprime la session courante, on recharge l'active (ou on en crée une).
+        # Refuser tant qu'une génération tourne sur CETTE session (verrou tenu) : une
+        # save en vol recréerait le dossier juste après la suppression (session zombie).
+        lock = _lock_for(S, sid)
+        if not lock.acquire(blocking=False):
+            return Response("occupé : cette session génère — Stop d'abord", status=409)
+        try:
+            S.session_store.delete(sid)
 
-        if S.cur["session"] is not None and S.cur["session"].id == sid:
-            S.cur["session"] = None
+            # Purge du cache d'OBJETS et du signal d'annulation : sans ça l'objet
+            # survivait en mémoire (helpers._get_session lit le cache d'abord) et pouvait
+            # réapparaître à la prochaine save.
+            with S.gen_guard:
+                S.sessions_cache.pop(sid, None)
+                S.sess_cancel.pop(sid, None)
 
-            _session(S)
+            # Si on supprime la session courante, on recharge l'active (ou on en crée une).
+            if S.cur["session"] is not None and S.cur["session"].id == sid:
+                S.cur["session"] = None
+                _session(S)
+        finally:
+            lock.release()
+            # On NE retire PAS sess_locks[sid] : un /chat concurrent peut détenir une
+            # référence vers CE verrou (capturé avant l'acquisition). Le retirer ferait
+            # coexister deux verrous pour le même sid -> exclusion mutuelle rompue. Un
+            # Lock orphelin par session supprimée est un coût mémoire négligeable.
 
         return {"ok": True}
