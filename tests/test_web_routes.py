@@ -57,6 +57,55 @@ def test_session_activate_delete(web):
     assert b["id"] not in ids
 
 
+def test_delete_purge_le_cache_pas_de_resurrection(web):
+    # Après suppression, l'objet ne doit plus être servi depuis S.sessions_cache
+    # (sinon /session_state le retrouve et une save ultérieure recrée le dossier).
+    b = web.post("/session/new", data={}).get_json()
+    assert web.get("/session_state", query_string={"id": b["id"]}).status_code == 200
+    assert web.post("/session/delete", data={"id": b["id"]}).status_code == 200
+    assert web.get("/session_state", query_string={"id": b["id"]}).status_code == 404
+    assert b["id"] not in web.application.S.sessions_cache
+
+
+def test_delete_refuse_si_generation_en_cours(web):
+    # Le verrou de génération tenu => la route refuse (409) et ne supprime pas :
+    # supprimer sous une boucle active laissait une session zombie.
+    from loom.web.routes.helpers import _lock_for
+
+    b = web.post("/session/new", data={}).get_json()
+    S = web.application.S
+    lock = _lock_for(S, b["id"])
+    lock.acquire()
+    try:
+        assert web.post("/session/delete", data={"id": b["id"]}).status_code == 409
+        assert (
+            web.get("/session_state", query_string={"id": b["id"]}).status_code == 200
+        )
+    finally:
+        lock.release()
+
+
+def test_delete_id_inconnu_404_sans_fuite_de_verrou(web):
+    # /session/delete ne doit pas créer d'entrée dans sess_locks pour un id inconnu
+    # (le verrou n'étant plus retiré, ce serait une fuite mémoire sur POST répétés) :
+    # on vérifie l'existence AVANT _lock_for -> 404 net, aucun verrou créé.
+    S = web.application.S
+    before = set(S.sess_locks)
+    r = web.post("/session/delete", data={"id": "deadbeefdead"})
+    assert r.status_code == 404
+    assert set(S.sess_locks) == before, (
+        "un id inconnu a créé une entrée dans sess_locks"
+    )
+
+
+def test_workspace_id_explicite_inconnu_repond_404(web_sess, tmp_env):
+    r = web_sess.post(
+        "/session/workspace",
+        data={"workspace": str(tmp_env), "session_id": "deadbeefdead"},
+    )
+    assert r.status_code == 404
+
+
 def test_session_state(web_sess):
     sid = web_sess.get("/sessions").get_json()["active"]
     r = web_sess.get("/session_state", query_string={"id": sid})
