@@ -128,6 +128,42 @@ def test_chat_verrou_relache_apres_le_tour(chat_env):
     assert _sse_events(r2.data)[-1]["type"] == "done"
 
 
+def test_resend_apres_stop_genere_sans_202(chat_env):
+    # Bug STOP+reprise : après un STOP (cancel_event posé), le verrou de session reste
+    # tenu le temps du teardown de la génération interrompue. Un message RENVOYÉ pendant
+    # cette fenêtre NE DOIT PAS partir en file (202) — il attend la libération du verrou
+    # puis GÉNÈRE. Sans le fix, il tombe en 202 et n'est jamais généré (message perdu).
+    import threading
+    import time
+
+    from loom.web.routes.helpers import _lock_for
+
+    web, _, _, sid = chat_env([turn_text("je reprends.")])
+    S = web.application.S
+    lock = _lock_for(S, sid)
+    lock.acquire()  # génération en cours d'interruption : verrou encore tenu
+    web.post("/cancel", data={"session_id": sid})  # STOP demandé sur CETTE session
+    # Le teardown de la génération interrompue relâche le verrou incessamment :
+    threading.Thread(
+        target=lambda: (time.sleep(0.3), lock.release()), daemon=True
+    ).start()
+    r = web.post("/chat", data={"message": "reprends", "session_id": sid})
+    assert r.status_code == 200, f"resend après STOP doit générer, reçu {r.status_code}"
+    assert _sse_events(r.data)[-1]["type"] == "done"
+
+
+def test_note_en_vol_reste_202_sans_stop(chat_env):
+    # Garde-fou : SANS STOP en cours, un message envoyé pendant une génération active
+    # reste une note en vol (202). Le fix ne doit pas casser cette sémantique.
+    from loom.web.routes.helpers import _lock_for
+
+    web, _, _, sid = chat_env([turn_text("x.")])
+    S = web.application.S
+    _lock_for(S, sid).acquire()  # génération active, AUCUN /cancel
+    r = web.post("/chat", data={"message": "btw note", "session_id": sid})
+    assert r.status_code == 202
+
+
 def test_chat_erreur_api_flux_error_generique(chat_env):
     # Une exception NON-openai pendant la génération (ici : script épuisé) remonte
     # jusqu'au try de generate() qui la capture : dernier event SSE = "error" avec

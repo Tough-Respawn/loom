@@ -614,6 +614,11 @@ def create_app(
         gen_guard=threading.Lock(),
         sess_locks={},
         sess_cancel={},
+        # Attente bornée du verrou de session quand un STOP vient d'être demandé : la
+        # génération interrompue relâche son verrou pendant son teardown -> un message
+        # renvoyé après un stop attend cette libération puis génère (cf. routes/chat.py),
+        # au lieu de tomber en file d'attente et de n'être jamais généré.
+        interrupt_wait=interrupt_wait,
         local_gen_lock=threading.Lock(),
         # QUI tient local_gen_lock (« prime », « génération », « keepwarm »,
         # « maintenance », « image », « skill ») : sert au message de mise en file —

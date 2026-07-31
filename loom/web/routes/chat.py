@@ -23,6 +23,7 @@ from loom.web.app import (
     _should_adopt,
     _sse,
 )
+from loom.web.routes.commands import _handle_goal_command, _handle_init_command
 from loom.web.routes.helpers import (
     _cancel_for,
     _confirm,
@@ -38,13 +39,9 @@ from loom.web.routes.helpers import (
     _session,
     _totals,
 )
-from loom.web.routes.models import _handle_add_model_command
-
-from loom.web.routes.commands import _handle_goal_command, _handle_init_command
 from loom.web.routes.maintenance import _post_turn_maintenance
+from loom.web.routes.models import _handle_add_model_command
 from loom.web.routes.system_prompt import _build_system_prompt
-
-
 
 # ---- Commandes /goal et /init (préambule de /chat) ------------------------------------
 
@@ -114,24 +111,35 @@ def _register_chat_routes(app, S):
         cancel_event = _cancel_for(S, sid)
 
         if not chat_lock.acquire(blocking=False):
-            # Une génération de CETTE session tourne déjà : on ne l'interrompt PAS.
-            # Le message part en FILE D'ATTENTE (même mécanique que les notes en vol) :
-            # injecté role=user au prochain point d'arrêt de la boucle tool-use, ou au
-            # début du tour suivant s'il arrive trop tard — jamais perdu. L'annulation,
-            # c'est UNIQUEMENT le bouton stop (/cancel).
-            if S.notes.push(sid, message) < 0:
-                return Response(
-                    "file d'attente pleine — attendre le prochain point d'arrêt ou Stop",
-                    status=429,
+            # Le verrou de CETTE session est tenu. Deux cas se distinguent par
+            # cancel_event (posé par /cancel, effacé seulement à l'acquisition d'un
+            # nouveau tour) :
+            #  - STOP en cours (cancel_event posé) : la génération interrompue relâche
+            #    son verrou pendant son teardown. Un message RENVOYÉ après un stop ne
+            #    doit PAS partir en file (elle n'est drainée que par une génération
+            #    active, qui n'existe plus après l'arrêt -> message jamais généré). On
+            #    ATTEND la libération (bornée par interrupt_wait) puis on génère.
+            #  - vraie génération concurrente (cancel_event absent) : on ne l'interrompt
+            #    PAS, le message part en FILE D'ATTENTE (même mécanique que les notes en
+            #    vol), injecté au prochain point d'arrêt. L'annulation, c'est le stop.
+            if not (
+                cancel_event.is_set() and chat_lock.acquire(timeout=S.interrupt_wait)
+            ):
+                if S.notes.push(sid, message) < 0:
+                    return Response(
+                        "file d'attente pleine — attendre le prochain point d'arrêt ou Stop",
+                        status=429,
+                    )
+                # La file est TEXTE-ONLY : d'éventuelles images jointes ne peuvent pas suivre.
+                queued_msg = (
+                    "message mis en file d'attente (génération en cours) — il sera pris "
+                    "en compte au prochain point d'arrêt"
                 )
-            # La file est TEXTE-ONLY : d'éventuelles images jointes ne peuvent pas suivre.
-            queued_msg = (
-                "message mis en file d'attente (génération en cours) — il sera pris "
-                "en compte au prochain point d'arrêt"
-            )
-            if request.files.getlist("image"):
-                queued_msg += " (images ignorées : la file ne transporte que du texte)"
-            return Response(queued_msg, status=202)
+                if request.files.getlist("image"):
+                    queued_msg += (
+                        " (images ignorées : la file ne transporte que du texte)"
+                    )
+                return Response(queued_msg, status=202)
 
         # On tient le verrou : repartir d'un signal d'annulation propre.
 
