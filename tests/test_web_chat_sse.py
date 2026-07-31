@@ -152,6 +152,75 @@ def test_resend_apres_stop_genere_sans_202(chat_env):
     assert _sse_events(r.data)[-1]["type"] == "done"
 
 
+def test_cancel_ferme_le_stream_distant_bloque(chat_env):
+    # (3) hung-remote : sur un modèle distant bloqué au moment du STOP, cancel_event
+    # n'est lu qu'ENTRE deux chunks. Si l'itération du stream ne rend jamais la main
+    # (modèle distant lent/figé), le finally qui relâche le verrou de session n'est
+    # jamais atteint -> session morte (tout /chat suivant -> 202 pour toujours). /cancel
+    # doit FERMER le stream actif : close() lève httpx.ReadError, la boucle la classe en
+    # api_error, le finally s'exécute et le verrou est libéré de façon BORNÉE.
+    import threading
+
+    import httpx
+
+    from .fakes import _FakeStream
+
+    class _BlockingStream:
+        """Stream distant qui BLOQUE à l'itération jusqu'à close() ; close() débloque
+        et fait lever httpx.ReadError (comme un stream SDK fermé sous le lecteur)."""
+
+        def __init__(self):
+            self.started = threading.Event()
+            self._closed = threading.Event()
+
+        def __iter__(self):
+            self.started.set()
+            self._closed.wait(timeout=5)  # bloque jusqu'à close()
+            raise httpx.ReadError("stream fermé par /cancel")
+            yield
+
+        def close(self):
+            self._closed.set()
+
+    web, fake, _, sid = chat_env([turn_text("je repars après annulation.")])
+    S = web.application.S
+    S.interrupt_wait = 1.0  # borne l'attente du resend (sinon 15 s si le fix manque)
+
+    bstream = _BlockingStream()
+    holder = {"first": True}
+
+    def create(**kwargs):
+        fake.calls.append(kwargs)
+        if holder["first"]:
+            holder["first"] = False
+            return bstream
+        return _FakeStream(fake.scripts.pop(0))
+
+    fake.chat.completions.create = create
+
+    out: dict = {}
+
+    def run_chat():
+        r = web.post("/chat", data={"message": "bloque-toi", "session_id": sid})
+        out["status"] = r.status_code
+
+    t = threading.Thread(target=run_chat, daemon=True)
+    t.start()
+    assert bstream.started.wait(timeout=5), "le stream distant n'a jamais démarré"
+
+    # STOP : doit fermer le stream bloqué et libérer le verrou de façon bornée.
+    assert web.post("/cancel", data={"session_id": sid}).status_code == 204
+    t.join(timeout=5)
+    assert not t.is_alive(), "le /chat bloqué ne s'est pas terminé après /cancel"
+
+    # Verrou relâché : un nouveau /chat GÉNÈRE (200), pas coincé en 202 pour toujours.
+    r2 = web.post("/chat", data={"message": "reprends", "session_id": sid})
+    assert r2.status_code == 200, (
+        f"verrou de session non relâché après /cancel (reçu {r2.status_code})"
+    )
+    assert _sse_events(r2.data)[-1]["type"] == "done"
+
+
 def test_note_en_vol_reste_202_sans_stop(chat_env):
     # Garde-fou : SANS STOP en cours, un message envoyé pendant une génération active
     # reste une note en vol (202). Le fix ne doit pas casser cette sémantique.
