@@ -614,6 +614,12 @@ def create_app(
         gen_guard=threading.Lock(),
         sess_locks={},
         sess_cancel={},
+        # Stream distant EN COURS par session (sid -> {"stream": <sdk stream>|None}).
+        # Rempli par _stream_model_turn à la création du stream, vidé au finally de la
+        # génération. /cancel le ferme pour DÉBLOQUER une itération figée (modèle distant
+        # lent/bloqué) : sans ça, cancel_event n'est lu qu'entre deux chunks et le verrou
+        # de session reste tenu à vie (cf. routes/chat.py + routes/sessions.py:/cancel).
+        active_streams={},
         # Attente bornée du verrou de session quand un STOP vient d'être demandé : la
         # génération interrompue relâche son verrou pendant son teardown -> un message
         # renvoyé après un stop attend cette libération puis génère (cf. routes/chat.py),

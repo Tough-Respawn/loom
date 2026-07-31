@@ -663,6 +663,12 @@ def _register_chat_routes(app, S):
 
             # On ne garde que outils + mémoire + sécurité. Un modèle local garde le harnais complet.
 
+            # Holder du stream distant EN COURS : rempli par _stream_model_turn à la création
+            # du stream, fermé par /cancel pour débloquer une itération figée (modèle distant
+            # lent/bloqué) -> verrou de session libéré de façon bornée. Vidé au finally.
+            stream_holder: dict = {}
+            S.active_streams[sess.id] = stream_holder
+
             if use_tools:
                 source = S.client.stream_chat_tools(
                     conv.to_messages(),
@@ -681,6 +687,7 @@ def _register_chat_routes(app, S):
                     # Note de recentrage : seulement si l'épisode de troncature
                     # précédent n'a pas déjà été géré proprement (cf. _refocus_handled).
                     refocus_note=not S.refocus_handled.get(sess.id, False),
+                    stream_holder=stream_holder,
                 )
 
             else:
@@ -690,6 +697,7 @@ def _register_chat_routes(app, S):
                     eff_max_tokens,
                     model=conv.model or None,
                     thinking=conv.thinking,
+                    stream_holder=stream_holder,
                 )
 
             interrupted = False
@@ -1095,6 +1103,10 @@ def _register_chat_routes(app, S):
 
             finally:
                 S.last_activity[0] = time.time()  # marque l'activité pour le keep-warm
+
+                S.active_streams.pop(
+                    sess.id, None
+                )  # plus de stream à fermer pour /cancel
 
                 if _local_held:
                     S.local_busy["reason"] = ""

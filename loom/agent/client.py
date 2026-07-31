@@ -737,6 +737,7 @@ class LoomClient:
         max_tokens: int = 2048,
         model: str | None = None,
         thinking: bool = True,
+        stream_holder: dict | None = None,
     ) -> Iterator[tuple[str, str]]:
         """Yield les events (reasoning|content), system prompt injecté en tête."""
         oai, api_model, native = self._resolve(model)
@@ -750,6 +751,9 @@ class LoomClient:
         )
         _debug_messages(kwargs["model"], kwargs["messages"])
         stream = oai.chat.completions.create(**kwargs)
+        # Exposé à /cancel pour fermer un stream figé (cf. _stream_model_turn).
+        if stream_holder is not None:
+            stream_holder["stream"] = stream
         reasoning, content = "", ""
         saw_usage = False
         try:
@@ -767,6 +771,8 @@ class LoomClient:
                     _estimate_usage(system_prompt, messages, content, reasoning, []),
                 )
         finally:
+            if stream_holder is not None:
+                stream_holder["stream"] = None
             _close(stream)
             _debug("REPONSE <- modele", {"reasoning": reasoning, "content": content})
 
@@ -1134,6 +1140,7 @@ class LoomClient:
         strong: bool = False,
         notes_provider=None,
         refocus_note: bool = True,
+        stream_holder: dict | None = None,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
 
@@ -1242,6 +1249,7 @@ class LoomClient:
                     tools,
                     thinking,
                     st,
+                    stream_holder=stream_holder,
                 )
             except (APIError, httpx.HTTPError) as exc:
                 yield from self._handle_stream_api_error(

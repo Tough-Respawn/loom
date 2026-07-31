@@ -4,6 +4,7 @@ import re
 
 from flask import Response, render_template, request
 
+from loom.agent.streaming import _close
 from loom.web.app import (
     _NOTE_MAX_CHARS,
 )
@@ -161,6 +162,13 @@ def _register_session_routes(app, S):
         sess = _get_session(S, req_sid) if req_sid else S.cur["session"]
         if sess is not None:
             _cancel_for(S, sess.id).set()
+            # Modèle distant lent/bloqué : cancel_event n'est lu qu'ENTRE deux chunks.
+            # Si l'itération du stream ne rend jamais la main, le finally qui relâche le
+            # verrou de session n'est jamais atteint. On FERME donc le stream en cours :
+            # close() lève httpx.ReadError (attrapée par la boucle) -> teardown borné.
+            holder = S.active_streams.get(sess.id)
+            if holder is not None and holder.get("stream") is not None:
+                _close(holder["stream"])
 
         return Response("", status=204)
 
