@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,13 @@ from pathlib import Path
 
 from loom.agent.conversation import Conversation
 from loom.utils import now_iso as _now_iso
+
+# Format d'un id de session : 12 hex minuscules (uuid4().hex[:12]). Tout id qui ne
+# matche PAS est refusé avant de toucher au disque -> aucune opération (suppression,
+# lecture, export) ne peut sortir de root : un id vide (root / "" == root), un
+# traversal (../voisin) ou un chemin absolu (pathlib remplace la base) échapperaient
+# sinon à SessionStore.root (revue sécu : rmtree/lecture hors racine).
+_SID_RE = re.compile(r"[0-9a-f]{12}")
 
 
 @dataclass
@@ -48,7 +56,7 @@ class Session:
         }
 
     @classmethod
-    def from_dict(cls, data: dict, default_system_prompt: str) -> "Session":
+    def from_dict(cls, data: dict, default_system_prompt: str) -> Session:
         return cls(
             id=data["id"],
             title=data.get("title", ""),
@@ -109,6 +117,14 @@ class SessionStore:
         except OSError:
             pass
 
+    def _safe_dir(self, sid: str) -> Path | None:
+        """root/<sid> SEULEMENT si sid est un id de session valide (_SID_RE) ; None
+        sinon. Choke-point de confinement : toute opération FS par id non fiable
+        (delete, load, read_timeline, export_zip) passe par ici avant de toucher root."""
+        if not (isinstance(sid, str) and _SID_RE.fullmatch(sid)):
+            return None
+        return self.root / sid
+
     def _file(self, sid: str) -> Path:
         return self.root / sid / "session.json"
 
@@ -137,6 +153,10 @@ class SessionStore:
         return session
 
     def save(self, session: Session) -> None:
+        # Jamais d'écriture hors racine : un id invalide (traversal, absolu, vide)
+        # est refusé net plutôt que de laisser _file() sortir de root.
+        if not _SID_RE.fullmatch(session.id or ""):
+            raise ValueError(f"id de session invalide : {session.id!r}")
         session.updated_at = _now_iso()
         f = self._file(session.id)
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -171,6 +191,8 @@ class SessionStore:
 
     def read_timeline(self, sid: str) -> list[dict]:
         """Relit le journal (liste ordonnée d'événements). Vide si absent/illisible."""
+        if self._safe_dir(sid) is None:
+            return []
         p = self._timeline_file(sid)
         if not p.exists():
             return []
@@ -212,6 +234,8 @@ class SessionStore:
         import io
         import zipfile
 
+        if self._safe_dir(sid) is None:
+            return None
         if not self._file(sid).exists():
             return None
         buf = io.BytesIO()
@@ -245,7 +269,9 @@ class SessionStore:
         try:
             z = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile as exc:
-            raise ValueError("archive illisible — un export .zip de Loom est attendu") from exc
+            raise ValueError(
+                "archive illisible — un export .zip de Loom est attendu"
+            ) from exc
         if sum(i.file_size for i in z.infolist()) > self.MAX_IMPORT_BYTES:
             raise ValueError("archive anormalement grosse — import refusé")
         names = set(z.namelist())
@@ -258,7 +284,15 @@ class SessionStore:
             if not isinstance(payload, dict):
                 raise ValueError
             sess = Session.from_dict(payload, self.default_system_prompt)
-        except (ValueError, KeyError, UnicodeDecodeError) as exc:
+        except (
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            UnicodeDecodeError,
+        ) as exc:
+            # TypeError/AttributeError : JSON valide mais mal typé (conversation/messages
+            # null) -> rejet PROPRE (400) au lieu d'une 500 non maîtrisée.
             raise ValueError("session.json illisible dans l'archive") from exc
         sess.id = uuid.uuid4().hex[:12]
         if self._known_models and sess.conversation.model not in self._known_models:
@@ -273,12 +307,19 @@ class SessionStore:
         return sess
 
     def load(self, sid: str) -> Session | None:
+        if self._safe_dir(sid) is None:
+            return None  # id invalide : ne lit jamais un session.json hors racine
         f = self._file(sid)
         if not f.exists():
             return None
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
-            return Session.from_dict(data, self.default_system_prompt)
+            sess = Session.from_dict(data, self.default_system_prompt)
+            # Le NOM DE DOSSIER (sid, déjà validé par _safe_dir) fait foi, PAS le champ
+            # id du fichier : un session.json au contenu forgé ("id": "../victim") ne
+            # doit pas contaminer sess.id (sinon save/session_dir ressortiraient de root).
+            sess.id = sid
+            return sess
         except (json.JSONDecodeError, OSError, KeyError):
             return None
 
@@ -304,7 +345,10 @@ class SessionStore:
         return metas
 
     def delete(self, sid: str) -> None:
-        shutil.rmtree(self.root / sid, ignore_errors=True)
+        d = self._safe_dir(sid)
+        if d is None:
+            return  # id invalide : aucune suppression (jamais rmtree hors racine)
+        shutil.rmtree(d, ignore_errors=True)
         if self._active_id() == sid:
             (self.root / "active").unlink(missing_ok=True)
 
