@@ -346,7 +346,16 @@ def _register_session_routes(app, S):
         # complet) en fond si le serveur tourne, sans jamais le démarrer pour ça.
         _prime_async(S, loaded, require_running=True)
 
-        return {"id": loaded.id}
+        # Renvoie l'état complet de la session activée : le front s'en sert pour
+        # rafraîchir l'affichage du path/workspace à CHAQUE bascule d'onglet.
+        # Sans ça, un onglet dont le workspace a changé (ou est vide) garde
+        # l'affichage du path de l'onglet précédent.
+        return {
+            "id": loaded.id,
+            "title": loaded.title,
+            "workspace": loaded.workspace,
+            "model": loaded.conversation.model,
+        }
 
     @app.post("/session/workspace")
     def session_workspace():

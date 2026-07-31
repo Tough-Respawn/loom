@@ -1,7 +1,33 @@
 // loom/web/static/tabs.js — issu du decoupage de app.js (comportement constant).
-import { focusedPane, paneShowing, panesFor, renderMsgNav, renderPane, state, uid } from "./state.js";
-import { importSessionFile, newSessionTab, openTabMenu, paintModelSelect, postForm, reflectWorkdir, scheduleMachineRefresh, setMetrics, updateUsageMeter, wireSidDrag } from "./panels.js";
-import { autosize, hidePal, removePane, savePanesLayout, setPaneActivity, syncComposer } from "./panes.js";
+import {
+  focusedPane,
+  paneShowing,
+  panesFor,
+  renderMsgNav,
+  renderPane,
+  state,
+  uid,
+} from "./state.js";
+import {
+  importSessionFile,
+  newSessionTab,
+  openTabMenu,
+  paintModelSelect,
+  postForm,
+  reflectWorkdir,
+  scheduleMachineRefresh,
+  setMetrics,
+  updateUsageMeter,
+  wireSidDrag,
+} from "./panels.js";
+import {
+  autosize,
+  hidePal,
+  removePane,
+  savePanesLayout,
+  setPaneActivity,
+  syncComposer,
+} from "./panes.js";
 import { set_loomWorkdir } from "./shared.js";
 
 export const tabbarEl = document.getElementById("tabbar");
@@ -45,7 +71,8 @@ export function renderTabs() {
       (sid !== state.active && paneShowing(sid) ? " shown" : "") +
       (mt ? " mdl-" + mt : "");
     el.title =
-      (t.title || "session") + (t.model ? " — " + t.model : " — modèle par défaut");
+      (t.title || "session") +
+      (t.model ? " — " + t.model : " — modèle par défaut");
     // Split view : clic droit = menu (ouvrir à droite/en dessous…), glisser = déplacer
     // l'onglet vers un panneau.
     el.addEventListener("contextmenu", (e) => openTabMenu(e, sid));
@@ -156,7 +183,13 @@ export function _replayTimeline(t, events) {
       case "reasoning":
         if (asst) asst = null;
         if (!think)
-          think = add({ kind: "think", role: "", text: "", active: false, done: true });
+          think = add({
+            kind: "think",
+            role: "",
+            text: "",
+            active: false,
+            done: true,
+          });
         think.text += d.text || "";
         break;
       case "text":
@@ -169,13 +202,19 @@ export function _replayTimeline(t, events) {
         asst = null;
         const tid = "tool:" + (d.id || d.name);
         if (!byTool[tid])
-          byTool[tid] = add({ id: tid, kind: "tool", name: d.name, pending: true });
+          byTool[tid] = add({
+            id: tid,
+            kind: "tool",
+            name: d.name,
+            pending: true,
+          });
         break;
       }
       case "tool_result": {
         const tid = "tool:" + (d.id || d.name);
         let it = byTool[tid];
-        if (!it) it = byTool[tid] = add({ id: tid, kind: "tool", name: d.name });
+        if (!it)
+          it = byTool[tid] = add({ id: tid, kind: "tool", name: d.name });
         Object.assign(it, {
           name: d.name,
           path: d.path,
@@ -216,7 +255,9 @@ export function ensureTab(sid) {
   const load = (async () => {
     let d;
     try {
-      d = await (await fetch("/session_state?id=" + encodeURIComponent(sid))).json();
+      d = await (
+        await fetch("/session_state?id=" + encodeURIComponent(sid))
+      ).json();
     } catch {
       return null;
     }
@@ -287,7 +328,25 @@ export function focusSingletonsFor(sid) {
   if (_lastActivated !== sid) {
     _lastActivated = sid;
     postForm("/session/activate", { id: sid })
-      .then(() => scheduleMachineRefresh())
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        // Vérité serveur à la bascule : le path affiché doit suivre CET onglet,
+        // pas un cache périmé. /session/activate renvoie l'état complet (workspace,
+        // model, title) précisément pour ça.
+        if (d && d.workspace !== undefined) {
+          t.workspace = d.workspace;
+          if (d.title) t.title = d.title;
+          if (d.model) t.model = d.model;
+          set_loomWorkdir(t.workspace);
+          try {
+            localStorage.loomWorkdir = t.workspace;
+          } catch (e) {
+            /* sans effet */
+          }
+          reflectWorkdir();
+        }
+        scheduleMachineRefresh();
+      })
       .catch(() => {});
   }
   // Synchronise les contrôles de la sidebar/topbar à cet onglet.
@@ -300,18 +359,20 @@ export function focusSingletonsFor(sid) {
   if (think) think.checked = !!t.thinking;
   const lo = document.getElementById("local-only-cb");
   if (lo) lo.checked = !!t.localOnly;
-  if (t.workspace) {
-    set_loomWorkdir(t.workspace);
-    try {
-      localStorage.loomWorkdir = t.workspace;
-    } catch (e) {
-      /* sans effet */
-    }
-    reflectWorkdir();
+  // Le path suit CET onglet, même vide : sinon on garde l'affichage du path de
+  // l'onglet PRÉCÉDENT (vécu à la bascule d'onglet : le modèle suivait, le path non).
+  set_loomWorkdir(t.workspace || "");
+  try {
+    localStorage.loomWorkdir = t.workspace || "";
+  } catch (e) {
+    /* sans effet */
   }
+  reflectWorkdir();
   if (t.meter) updateUsageMeter(t.meter);
   if (t.metrics)
-    setMetrics(t.metrics.sent, t.metrics.recv, t.metrics.tokS, { done: !t.streaming });
+    setMetrics(t.metrics.sent, t.metrics.recv, t.metrics.tokS, {
+      done: !t.streaming,
+    });
   else setMetrics(null, null, null);
   // Surligne la session active dans la sidebar.
   document
