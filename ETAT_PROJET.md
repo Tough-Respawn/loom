@@ -2,7 +2,10 @@
 
 <!-- RÔLE : suivi interne (livré, état technique, reste/pistes, conventions). Pitch public : README.md. Carte technique : loom.md. Historique versions : CHANGELOG.md. -->
 
-> Dernière mise à jour : 2026-07-10
+> Dernière mise à jour : 2026-07-31 — les 3 god-files (`client.py`, `routes.py`, `app.js`)
+> éclatés par domaine et mergés sur `master` (501 tests verts, ruff clean, app.js vérifié
+> navigateur) ; voir [CHANGELOG.md](CHANGELOG.md) et [docs/audit-dette.md](docs/audit-dette.md).
+> Reste (vague 2, confort) : `routes/chat.py` (~1318 L) et `routes/models.py` (~1079 L).
 
 Agent IA **local, multimodal et offline** : un modèle open-source rendu réellement utile par
 un **harness tool-use** — la boucle qui lui donne des outils et la logique de les enchaîner.

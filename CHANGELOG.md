@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-07-31 — éclatement des god-files
+
+### Refactoring
+- **Trois god-files éclatés par domaine, à comportement constant** (branche `refactor/god-files`, mergée en fast-forward) :
+  - `loom/agent/client.py` **3014 → 1353 L** : fonctions libres sorties en modules cohésifs (`debuglog`, `errors`, `toolsets`, `compaction`, `guards`, `streaming`, `toolrun`), layering acyclique. `LoomClient` + réexports gardés en façade dans `client.py`.
+  - `loom/web/routes.py` **4003 L → package `loom/web/routes/`** : `helpers` (cœur partagé) + `config`/`skills`/`chat`/`models`/`misc`/`sessions`/`soul`. Cycle `models↔chat` rompu par import tardif dans `_register_model_routes` ; `_index_context` basculé en `skills`.
+  - `loom/web/static/app.js` **4144 → 1313 L** : ES modules `render`/`state`/`components`/`sse`/`chat`/`tabs`/`panes`/`panels` + `shared.js` (5 variables mutables partagées via setters, seule façon de réassigner un binding importé en ESM).
+- **Méthode** : découpage mécanique piloté par AST (Python) / acorn (JS), imports croisés calculés, cycles détectés avant écriture. Filet : 501 tests pytest verts après chaque split ; app.js vérifié en navigateur réel (chat, palette, drawer, compteurs, 0 erreur console).
+- **Hygiène** : `audit-dette.md` déplacé dans `docs/`, 2 lambdas assignées converties en `def` (ruff `E731`), ruff `loom` clean.
+
+---
+
 ## 2026-07-18 — boot remote-only
 
 ### Améliorations
