@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from __future__ import annotations
 import re
 import shutil
 import threading
@@ -8,7 +7,9 @@ import time
 import traceback
 from functools import partial
 from pathlib import Path
+
 from flask import Response, request
+
 from loom.agent import context
 from loom.agent.client import _msg_chars, log_event, set_debug_log_path
 from loom.extend.skills import (
@@ -29,13 +30,24 @@ from loom.web.app import (
     _should_adopt,
     _sse,
 )
-
-from loom.web.routes.helpers import _cancel_for, _confirm, _engine_for, _ensure_local_server, _ensure_model, _free_image_engines, _get_session, _local_busy_notice, _local_size_mb, _lock_for, _model_limits, _price_of, _session, _totals
+from loom.web.routes.helpers import (
+    _cancel_for,
+    _confirm,
+    _engine_for,
+    _ensure_local_server,
+    _ensure_model,
+    _free_image_engines,
+    _get_session,
+    _local_busy_notice,
+    _local_size_mb,
+    _lock_for,
+    _model_limits,
+    _price_of,
+    _session,
+    _totals,
+)
 from loom.web.routes.models import _handle_add_model_command
 from loom.web.routes.skills import _all_skills
-
-
-
 
 # ---- Commandes /goal et /init (préambule de /chat) ------------------------------------
 
@@ -610,7 +622,9 @@ def _register_chat_routes(app, S):
         cancel_event.clear()
 
         conv = sess.conversation
-        save = lambda: S.session_store.save(sess)
+
+        def save():
+            return S.session_store.save(sess)
 
         # Commande /add-model + wizard actif : le wizard déterministe capte TOUT
         # message de la session tant qu'il est actif (y compris avant /goal — un

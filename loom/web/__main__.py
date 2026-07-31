@@ -222,7 +222,9 @@ def build_app(cfg):
         seed.conversation = conversation
         store.save(seed)
 
-    permission = lambda name, args: evaluate(name, args, cfg.permissions)
+    def permission(name, args):
+        return evaluate(name, args, cfg.permissions)
+
     # Fenêtre et plafond de sortie PAR MODÈLE : un modèle local garde sa fenêtre (override
     # model.toml sinon le global) ; un modèle distant exploite SA grande fenêtre + son
     # max_tokens. Sert au seuil de microcompact (côté app) -> on profite du contexte du
