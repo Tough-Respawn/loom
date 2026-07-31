@@ -1,17 +1,15 @@
 # loom/web/routes/commands.py — helper de chat sorti de chat.py (comportement constant).
 from __future__ import annotations
+
 from pathlib import Path
+
 from flask import Response
+
 from loom.web.app import (
     _GOAL_CLEAR_WORDS,
     _init_message,
     _sse,
 )
-from loom.web.routes.helpers import (
-    _session,
-)
-
-
 
 
 def _handle_goal_command(S, message, conv, save, chat_lock):
@@ -56,12 +54,15 @@ def _handle_goal_command(S, message, conv, save, chat_lock):
     return message, None
 
 
-def _handle_init_command(S, message):
+def _handle_init_command(S, message, sess):
     """Traite /init : adopte un dossier cible si fourni, et réécrit le message en consigne
-    de génération de fiche projet. Retourne le message (éventuellement réécrit)."""
+    de génération de fiche projet. Retourne le message (éventuellement réécrit).
+
+    `sess` = la session CIBLE capturée par /chat (jamais _session(S)/focus : sinon /init
+    adopterait le dossier d'un autre onglet activé pendant la génération)."""
     if message == "/init" or message.startswith("/init "):
         arg = message[len("/init") :].strip()
-        _sess = _session(S)
+        _sess = sess
         target_dir = _sess.workspace
         if arg:
             cand = Path(arg).expanduser()
