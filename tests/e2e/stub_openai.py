@@ -122,6 +122,22 @@ def completions():
 
         return Response(gen_verdict(), mimetype="text/event-stream")
 
+    # Scénario E2E-QUEUE (file d'attente / 202) : le stub DIFFÈRE son premier chunk de
+    # ~20 s. Loom reste bloqué dans l'itération du stream (aucune écriture vers le client)
+    # -> le verrou de session est tenu de façon fiable pendant cette fenêtre. Un 2e message
+    # envoyé entre-temps tombe donc en file (202), ce qui permet d'observer l'état « en
+    # file » sur la bulle côté navigateur, sans course avec la détection de déconnexion.
+    if "E2E-QUEUE" in last:
+
+        def gen_hold():
+            time.sleep(60)
+            yield _chunk({"content": "Réponse différée du stub."})
+            yield _chunk(finish="stop")
+            yield _usage_chunk()
+            yield "data: [DONE]\n\n"
+
+        return Response(gen_hold(), mimetype="text/event-stream")
+
     if slow:
         words = ("je réfléchis posément, morceau par morceau, " * 8).split(" ")
         delay = 1.2

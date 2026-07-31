@@ -929,6 +929,12 @@
       position: relative; cursor: pointer; transition: border-color .12s;
     }
     .msg.user:hover { border-left-color: var(--accent); }
+    .msg.user.queued { border-left-color: var(--warn); background: var(--warn-bg); }
+    .msg.user .msg-queued {
+      display: inline-block; margin-left: 8px; padding: 1px 7px; font-size: 10px;
+      color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn);
+      border-radius: 4px; vertical-align: middle; white-space: nowrap;
+    }
     .msg.user img { max-width: 200px; border-radius: 6px; margin-top: 6px; display: block; }
     .msg-fork {
       position: absolute; top: 2px; right: 4px; padding: 2px 7px; font-size: 10px;

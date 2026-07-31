@@ -22,12 +22,13 @@ export async function sendChat(sid, text, images) {
   // n'est pas à l'écran).
   const { push, get, patch } = opsFor(sid);
 
+  let userId;
   if (images && images.length) {
     const parts = [{ type: "text", text }];
     for (const im of images) parts.push({ type: "image_url", image_url: { url: URL.createObjectURL(im) } });
-    push({ kind: "user", content: parts });
+    userId = push({ kind: "user", content: parts }).id;
   } else {
-    push({ kind: "user", content: text });
+    userId = push({ kind: "user", content: text }).id;
   }
   const tools = {}; // callId -> item id
   let thinkId = null;
@@ -69,6 +70,16 @@ export async function sendChat(sid, text, images) {
     )
       t.forcedActivity = null;
     switch (evt.type) {
+      case "queued":
+        // Réponse 202 : le message est parti en FILE D'ATTENTE (une génération de cette
+        // session tourne déjà). On marque la bulle utilisateur « en file » et on trace
+        // une ligne discrète — la boucle backend la drainera au prochain point d'arrêt.
+        if (userId) patch(userId, { queued: true });
+        push({
+          kind: "notice",
+          text: evt.message || "Message mis en file d'attente : pris au prochain point d'arrêt.",
+        });
+        break;
       case "note":
         // Note en vol INJECTÉE (le modèle vient de la recevoir) : bulle utilisateur
         // à sa vraie position dans le fil, les bulles en cours sont clôturées.
