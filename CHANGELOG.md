@@ -15,6 +15,7 @@
   - `loom/web/static/app.js` **4144 → 1313 L** : ES modules `render`/`state`/`components`/`sse`/`chat`/`tabs`/`panes`/`panels` + `shared.js` (5 variables mutables partagées via setters, seule façon de réassigner un binding importé en ESM).
 - **Méthode** : découpage mécanique piloté par AST (Python) / acorn (JS), imports croisés calculés, cycles détectés avant écriture. Filet : 501 tests pytest verts après chaque split ; app.js vérifié en navigateur réel (chat, palette, drawer, compteurs, 0 erreur console).
 - **Hygiène** : `audit-dette.md` déplacé dans `docs/`, 2 lambdas assignées converties en `def` (ruff `E731`), ruff `loom` clean.
+- **Vague 2 (god-files de 2e génération)** : `routes/chat.py` **1582 → 1098 L** (helpers sortis en `system_prompt`/`priming`/`maintenance`/`commands`, la boucle SSE `_register_chat_routes` reste) ; `routes/models.py` **1182 → 639 L** (`model_admin.py` = helpers remote/image/install, `rebench.py` = calibration ; le cœur patché par les tests reste dans `models.py`). 501 tests verts, ruff clean.
 
 ---
 
