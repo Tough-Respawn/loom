@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from __future__ import annotations
 import json
 import re
 import time
@@ -9,8 +8,6 @@ from typing import Any
 
 from loom.agent.compaction import _msg_chars
 from loom.agent.debuglog import _debug, log_event
-
-
 
 
 def _usage_dict(usage: Any) -> dict:
@@ -307,6 +304,7 @@ def _stream_model_turn(
     tools,
     thinking: bool,
     st: dict,
+    stream_holder: dict | None = None,
 ) -> Iterator[tuple[str, object]]:
     """Un appel modèle streamé : relaie les events tels quels, remplit `collector`
     (tool_calls, finish_reason, looped) et pose le texte/raisonnement accumulés
@@ -326,6 +324,11 @@ def _stream_model_turn(
     _t_req = time.monotonic()
     _first_ms: float | None = None
     stream = oai.chat.completions.create(**kwargs)
+    # Expose le stream à /cancel : il pourra le fermer pour débloquer une itération
+    # figée (modèle distant lent/bloqué). close() lève httpx.ReadError, rattrapée par
+    # l'appelant -> le verrou de session est libéré de façon bornée.
+    if stream_holder is not None:
+        stream_holder["stream"] = stream
     try:
         for kind, chunk in _iter_turn(stream, collector):
             if _first_byte:
@@ -346,6 +349,8 @@ def _stream_model_turn(
                 )
             yield (kind, chunk)
     finally:
+        if stream_holder is not None:
+            stream_holder["stream"] = None
         _close(stream)
     # Décomposition CHIFFRÉE du tour (llama-server local seulement — `timings` absent
     # chez les providers distants) : chargement / prefill / génération, chacun avec sa
