@@ -1,16 +1,14 @@
 # loom/web/routes/priming.py — helper de chat sorti de chat.py (comportement constant).
 from __future__ import annotations
+
 import threading
 import time
+
 from loom.web.routes.helpers import (
     _ensure_local_server,
     _ensure_model,
 )
-
 from loom.web.routes.system_prompt import _build_system_prompt
-
-
-
 
 # ---- Maintenance post-tour et keep-warm ------------------------------------------------
 
@@ -54,7 +52,7 @@ def _prime_slot(S, sess) -> bool:
             # reste réutilisé tel quel, seul le contenu du placeholder diverge du
             # vrai premier message (quelques tokens re-préfillés, pas des milliers).
             msgs = [{"role": "user", "content": "."}]
-        system_prompt, _strong = _build_system_prompt(S, conv)
+        system_prompt, _strong = _build_system_prompt(S, conv, workspace=sess.workspace)
         registry = S.tool_factory(conv.active_tools, sess.workspace, conv)
         return S.client.warm_context(
             msgs,

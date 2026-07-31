@@ -104,7 +104,11 @@ def _register_chat_routes(app, S):
         # son verrou : une nouvelle soumission n'interrompt QUE la génération de SA session,
         # les autres onglets continuent en parallèle.
         req_sid = (request.form.get("session_id") or "").strip()
-        sess = _get_session(S, req_sid) or _session(S)
+        # Un session_id EXPLICITE mais inconnu -> 404 (comme /fork, /compact) : sinon
+        # l'onglet enverrait silencieusement son message dans la session focus.
+        sess = _get_session(S, req_sid) if req_sid else _session(S)
+        if sess is None:
+            return Response("session introuvable", status=404)
         S.cur["session"] = sess  # focus (défaut de l'index)
         sid = sess.id
         chat_lock = _lock_for(S, sid)
@@ -145,6 +149,14 @@ def _register_chat_routes(app, S):
 
         cancel_event.clear()
 
+        # Anti-résurrection : entre la capture de `sess` (plus haut) et l'acquisition du
+        # verrou, un /session/delete concurrent a pu supprimer cette session. Maintenant
+        # qu'on tient le verrou, plus aucune suppression n'est possible -> si le dossier a
+        # disparu, on abandonne AVANT tout save() (qui la recréerait, session zombie).
+        if not S.session_store.session_dir(sid).exists():
+            chat_lock.release()
+            return Response("session supprimée", status=404)
+
         conv = sess.conversation
 
         def save():
@@ -169,7 +181,7 @@ def _register_chat_routes(app, S):
         # Commande /init : génère une fiche projet `loom.md` À LA RACINE DU DOSSIER
         # de TRAVAIL de la session. Factorisé dans _handle_init_command (adopte un
         # dossier cible si fourni, réécrit le message en consigne de génération).
-        message = _handle_init_command(S, message)
+        message = _handle_init_command(S, message, sess)
 
         # Plus de garde bloquant : un modèle texte-only ne reçoit PAS l'image inline (qui
 
@@ -183,7 +195,7 @@ def _register_chat_routes(app, S):
 
         # (var/logs/serve.log) dans la session — doublon assumé, pour tout avoir sous la main.
 
-        _sdir = S.session_store.session_dir(_session(S).id)
+        _sdir = S.session_store.session_dir(sess.id)
 
         set_debug_log_path(_sdir / "debug.log")
 
@@ -209,8 +221,6 @@ def _register_chat_routes(app, S):
         detected = _detect_workspace(message, S.workspace_dir)
 
         if detected:
-            sess = _session(S)
-
             # Un chemin INTERNE au projet courant n'est pas un changement de contexte :
             # adopter casserait le cache KV (re-prefill intégral) pour rien — cf.
             # _should_adopt (vécu 2026-07-19 : var/sessions/<id> cité comme simple info).
@@ -241,7 +251,9 @@ def _register_chat_routes(app, S):
             # dans le stream (label d'activité « compaction… ») au lieu d'un blocage muet
             # avant le 1er octet. Le prompt système ne dépend pas de l'historique -> on le
             # construit ici sans attendre le résumé.
-            system_prompt, strong = _build_system_prompt(S, conv)
+            system_prompt, strong = _build_system_prompt(
+                S, conv, workspace=sess.workspace
+            )
         except ValueError as exc:
             chat_lock.release()
 
@@ -262,7 +274,7 @@ def _register_chat_routes(app, S):
             def generate_image():
                 S.stay_awake.acquire()
                 _img_held = False
-                _sess = _session(S)
+                _sess = sess
 
                 def _finish(md_text: str):
                     conv.add("assistant", md_text)
@@ -647,7 +659,7 @@ def _register_chat_routes(app, S):
                     yield _sse("totals", **_totals(S, conv))
                 yield _sse("status", label="")  # efface le label d'activité
 
-            ws = _session(S).workspace
+            ws = sess.workspace
 
             registry = S.tool_factory(conv.active_tools, ws, conv)
 

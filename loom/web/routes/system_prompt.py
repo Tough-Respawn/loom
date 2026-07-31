@@ -1,5 +1,6 @@
 # loom/web/routes/system_prompt.py — helper de chat sorti de chat.py (comportement constant).
 from __future__ import annotations
+
 from loom.extend.skills import (
     effective_skills,
     render_catalog,
@@ -11,13 +12,10 @@ from loom.web.routes.helpers import (
 )
 from loom.web.routes.skills import _all_skills
 
-
-
-
 # ---- System prompt --------------------------------------------------------------------
 
 
-def _build_system_prompt(S, conv):
+def _build_system_prompt(S, conv, workspace=None):
     """Construit le system prompt complet : identité always-on + base (strong/local) +
     catalogue des skills + déclaration du moteur + conventions OS + dossier de travail +
     objectif de session. Retourne (system_prompt, strong)."""
@@ -115,7 +113,10 @@ def _build_system_prompt(S, conv):
     # (git rev-parse à l'aveugle, list_dir…) -> tours gaspillés. On le lui dit, avec
     # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git. Reste EN BAS
     # (contexte volatil, près de l'action).
-    _ws = _session(S).workspace
+    # Workspace de la session CIBLE (passé par /chat) ; à défaut, la session focus
+    # (amorçage). Sans ça, une génération sur l'onglet A pendant que la focus est B
+    # injectait le dossier de B dans le prompt de A.
+    _ws = workspace if workspace is not None else _session(S).workspace
 
     system_prompt += (
         f"\n\n# Dossier de travail courant\nTes commandes (run_shell) tournent dans "
