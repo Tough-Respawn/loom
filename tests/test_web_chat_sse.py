@@ -233,6 +233,161 @@ def test_note_en_vol_reste_202_sans_stop(chat_env):
     assert r.status_code == 202
 
 
+def test_chat_outils_dans_le_workspace_de_la_session_cible(tmp_env, monkeypatch):
+    # Anti-mélange d'onglets : /chat cible `sess` (session_id). Même si la session
+    # FOCUS change (autre onglet activé pendant la génération -> _session(S) renvoie une
+    # autre session), les OUTILS doivent tourner dans le workspace de la session CIBLE,
+    # jamais celui de la focus. Sans le fix, chat.py:650 lit _session(S).workspace.
+    from loom.agent.client import LoomClient
+    from loom.agent.session import SessionStore
+
+    from .fakes import FakeOAI, FakeRegistry, turn_text
+
+    captured = {}
+
+    client = LoomClient("http://127.0.0.1:9/v1")
+    client.add_remote_route(
+        MODEL, {"base_url": "http://127.0.0.1:9/v1", "api_key": "k", "model": "fake/x"}
+    )
+    client._routes[MODEL]["client"] = FakeOAI([turn_text("ok.")])
+    registry = FakeRegistry({"list_dir": lambda a: "x"})
+    store = SessionStore(
+        tmp_env / "sessions",
+        default_system_prompt="prompt de test",
+        default_model=MODEL,
+        known_models=[MODEL],
+    )
+
+    def tf(tools, ws, conv):
+        captured["ws"] = ws
+        return registry
+
+    app = create_app(
+        client=client,
+        skills_dir=str(tmp_env / "skills"),
+        session_store=store,
+        models=[MODEL],
+        remote_model_ids=[MODEL],
+        keepwarm_enabled=False,
+        workspace_dir=str(tmp_env / "workspace"),
+        user_skills_dir=str(tmp_env / "skills_user"),
+        plugins_dir=str(tmp_env / "plugins"),
+        remote_store_path=str(tmp_env / "remote_models.json"),
+        tool_factory=tf,
+    )
+    web = app.test_client()
+    from loom.web.routes.helpers import _get_session
+
+    sidA = web.post("/session/new", data={"title": "A"}).get_json()["id"]
+    web.post("/session/workspace", data={"session_id": sidA, "workspace": "C:/wsA"})
+    # une AUTRE session B, avec un workspace différent, que _session renverra (focus)
+    sessB = _get_session(
+        app.S, web.post("/session/new", data={"title": "B"}).get_json()["id"]
+    )
+    sessB.workspace = "C:/wsB"
+    monkeypatch.setattr("loom.web.routes.chat._session", lambda _S: sessB)
+
+    r = web.post("/chat", data={"message": "salut", "session_id": sidA})
+    assert r.status_code == 200
+    assert _sse_events(r.data)[-1]["type"] == "done"
+    assert captured["ws"] == "C:/wsA", (
+        f"outils dans le mauvais workspace : {captured['ws']}"
+    )
+
+
+def test_chat_ne_ressuscite_pas_une_session_supprimee(chat_env):
+    # Fenêtre de résurrection concurrente : /chat capture l'objet session AVANT
+    # d'acquérir son verrou. Un /session/delete peut supprimer entre-temps. On simule
+    # l'état résultant (dossier supprimé, objet encore en cache) : /chat, une fois le
+    # verrou acquis, doit détecter la disparition et ABANDONNER, sans que save() ne
+    # recrée la session.
+    import shutil
+
+    web, _, _, sid = chat_env([turn_text("ok.")])
+    S = web.application.S
+    shutil.rmtree(S.session_store.session_dir(sid))  # supprimé sous les pieds de /chat
+    r = web.post("/chat", data={"message": "reprends", "session_id": sid})
+    assert r.status_code == 404
+    assert not S.session_store.session_dir(sid).exists(), (
+        "save() a ressuscité une session supprimée"
+    )
+
+
+def test_init_adopte_la_session_cible_pas_la_focus(tmp_env):
+    # /init <dir> doit adopter le dossier dans la session PASSÉE (cible capturée par
+    # /chat), pas dans S.cur (focus) : sinon un onglet activé pendant la génération
+    # détournerait l'adoption. Test unitaire du contrat de _handle_init_command.
+    from types import SimpleNamespace
+
+    from loom.agent.session import SessionStore
+    from loom.web.routes.commands import _handle_init_command
+
+    store = SessionStore(
+        tmp_env / "sessions",
+        default_system_prompt="p",
+        default_model="m",
+        known_models=["m"],
+    )
+    target = store.create()  # session CIBLE
+    focus = store.create()  # session FOCUS, distincte
+    S = SimpleNamespace(session_store=store, cur={"session": focus})
+    projet = tmp_env / "projet"
+    projet.mkdir()
+
+    _handle_init_command(S, f"/init {projet}", target)
+
+    want = str(projet.resolve())
+    assert target.workspace == want, "la session cible n'a pas adopté le dossier"
+    assert focus.workspace != want, "la session focus a été modifiée à tort"
+
+
+def test_prime_slot_utilise_le_workspace_de_la_session_cible(app):
+    # L'amorçage KV (_prime_slot) construit le prompt avec le workspace de la session
+    # CIBLE passée, pas celui de S.cur (focus) : sinon on amorce le cache avec le
+    # loom.md/dossier d'un autre onglet.
+    from types import SimpleNamespace
+
+    from loom.web.routes.priming import _prime_slot
+
+    S = app.S
+    S.remote_model_ids = set()
+    S.image_model_ids = set()
+    S.video_model_ids = set()
+    captured = {}
+
+    def fake_warm(msgs, sp, **kw):
+        captured["sp"] = sp
+        return True
+
+    S.client = SimpleNamespace(warm_context=fake_warm)
+    S.tool_factory = lambda tools, ws, conv: None
+
+    store = S.session_store
+    target = store.create()
+    target.workspace = "C:/wsA_prime"
+    store.save(target)
+    focus = store.create()
+    focus.workspace = "C:/wsB_prime"
+    store.save(focus)
+    S.cur["session"] = focus  # focus DISTINCTE de la cible
+
+    assert _prime_slot(S, target) is True
+    assert "C:/wsA_prime" in captured["sp"], (
+        "l'amorçage n'utilise pas le workspace de la cible"
+    )
+    assert "C:/wsB_prime" not in captured["sp"], (
+        "l'amorçage a utilisé le workspace de la focus"
+    )
+
+
+def test_chat_id_explicite_inconnu_repond_404(web_sess):
+    # Un session_id EXPLICITE mais inconnu ne doit pas retomber en silence sur la
+    # session focus (l'onglet enverrait son message dans une autre session) : 404,
+    # comme /fork et /compact.
+    r = web_sess.post("/chat", data={"message": "x", "session_id": "deadbeefdead"})
+    assert r.status_code == 404
+
+
 def test_chat_erreur_api_flux_error_generique(chat_env):
     # Une exception NON-openai pendant la génération (ici : script épuisé) remonte
     # jusqu'au try de generate() qui la capture : dernier event SSE = "error" avec
