@@ -895,7 +895,8 @@ def _mount_remote(S, rec):
 def _register_model_routes(app, S):
     # Import TARDIF (rompt le cycle models<->chat au chargement : chat importe models
     # au top, models n'a besoin de chat qu'ici, une fois, au montage des routes).
-    from loom.web.routes.chat import CHAT_COMMANDS, _prime_async
+    from loom.web.routes.chat import CHAT_COMMANDS
+    from loom.web.routes.priming import _prime_async
 
     @app.post("/model")
     def model_update():

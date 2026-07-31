@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-from __future__ import annotations
 import re
+
 from flask import Response, render_template, request
+
 from loom.web.app import (
     _NOTE_MAX_CHARS,
 )
-
-from loom.web.routes.chat import _prime_async
-from loom.web.routes.helpers import _cancel_for, _ctx, _ensure_model, _get_session, _lock_for, _session, _totals
+from loom.web.routes.helpers import (
+    _cancel_for,
+    _ctx,
+    _ensure_model,
+    _get_session,
+    _lock_for,
+    _session,
+    _totals,
+)
+from loom.web.routes.priming import _prime_async
 from loom.web.routes.skills import _index_context
-
-
-
 
 # ---- Routes : sessions (fil, notes, fork, compaction) ---------------------------------
 
