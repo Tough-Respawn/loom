@@ -204,17 +204,22 @@ export function UserMsg({ it, userIndex, sid }) {
 
   const forkBtn = html`<button class="msg-fork" type="button" title="Repartir de ce message" onClick=${doFork}>↩ repartir</button>`;
 
+  // Bulle « en file » (réponse 202) : badge discret, la boucle backend la drainera.
+  const queuedTag = it.queued
+    ? html`<span class="msg-queued" title="En file : sera pris au prochain point d'arrêt">en file</span>`
+    : "";
+  const cls = it.queued ? "msg user queued" : "msg user";
   const parts = Array.isArray(it.content) ? it.content : null;
   if (!parts) {
-    return html`<div class="msg user">${it.content}${forkBtn}</div>`;
+    return html`<div class=${cls}>${it.content}${queuedTag}${forkBtn}</div>`;
   }
-  return html`<div class="msg user">
+  return html`<div class=${cls}>
     ${parts.map((p) =>
       p.type === "image_url"
         ? html`<img src=${p.image_url.url} alt="image" />`
         : html`<span>${p.text}</span>`,
     )}
-    ${forkBtn}
+    ${queuedTag}${forkBtn}
   </div>`;
 }
 
