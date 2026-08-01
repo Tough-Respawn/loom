@@ -681,29 +681,27 @@ def _register_chat_routes(app, S):
             stream_holder: dict = {}
             S.active_streams[sess.id] = stream_holder
 
-            if use_tools:
-                source = S.client.stream_chat_tools(
-                    conv.to_messages(),
-                    system_prompt,
-                    eff_max_tokens,
-                    model=conv.model or None,
-                    registry=registry,
-                    thinking=conv.thinking,
-                    permission=S.perm["fn"],
-                    confirm=partial(_confirm, S),
-                    compact_after_tokens=eff_compact,
-                    strong=strong,
-                    # Notes en vol : remarques poussées par /note PENDANT ce tour,
-                    # injectées au prochain point d'arrêt sans interrompre.
-                    notes_provider=lambda: S.notes.drain(sess.id),
-                    # Note de recentrage : seulement si l'épisode de troncature
-                    # précédent n'a pas déjà été géré proprement (cf. _refocus_handled).
-                    refocus_note=not S.refocus_handled.get(sess.id, False),
-                    stream_holder=stream_holder,
-                )
-
-            else:
-                source = S.client.stream_chat(
+            def _make_source():
+                # Fabrique un flux de generation sur l'etat COURANT de la conversation.
+                # Rappele a la REPRISE (apres un STOP suivi d'une note en file) pour
+                # repartir de la note, meme prefixe (schemas d'outils compris).
+                if use_tools:
+                    return S.client.stream_chat_tools(
+                        conv.to_messages(),
+                        system_prompt,
+                        eff_max_tokens,
+                        model=conv.model or None,
+                        registry=registry,
+                        thinking=conv.thinking,
+                        permission=S.perm["fn"],
+                        confirm=partial(_confirm, S),
+                        compact_after_tokens=eff_compact,
+                        strong=strong,
+                        notes_provider=lambda: S.notes.drain(sess.id),
+                        refocus_note=not S.refocus_handled.get(sess.id, False),
+                        stream_holder=stream_holder,
+                    )
+                return S.client.stream_chat(
                     conv.to_messages(),
                     system_prompt,
                     eff_max_tokens,
@@ -786,214 +784,218 @@ def _register_chat_routes(app, S):
                             ),
                         )
 
-                for kind, payload in source:
-                    # Titre distant prêt (thread de fond) -> on le pousse dès la 1re occasion.
-                    if (
-                        _immediate_title
-                        and _title_ready.is_set()
-                        and not _titled["emitted"]
-                    ):
-                        _titled["emitted"] = True
-                        if _titled["value"]:
-                            S.session_store.save(sess)
+                # Boucle de REPRISE : un STOP avec une note en file relance un tour
+                # pour repartir de la note, au lieu de tout arreter.
+                while True:
+                    source = _make_source()
+                    interrupted = False
+                    saw_compaction = False
+                    stop_reason = ""
+                    for kind, payload in source:
+                        # Titre distant prêt (thread de fond) -> on le pousse dès la 1re occasion.
+                        if (
+                            _immediate_title
+                            and _title_ready.is_set()
+                            and not _titled["emitted"]
+                        ):
+                            _titled["emitted"] = True
+                            if _titled["value"]:
+                                S.session_store.save(sess)
+                                yield _sse(
+                                    "session_title", id=sess.id, title=_titled["value"]
+                                )
+
+                        if cancel_event.is_set():
+                            # Une nouvelle soumission demande l'arrêt : on stoppe net
+
+                            # et on persiste ce qui a déjà été généré.
+
+                            interrupted = True
+
+                            break
+
+                        if kind == "note":
+                            # Note en vol INJECTÉE par la boucle : on la PERSISTE telle
+                            # quelle (même contenu que ce que le modèle a vu) et on
+                            # l'affiche dans le fil à sa vraie position.
+                            conv.add("user", payload)
+                            save()
+                            yield _tl("user", content=payload)
+                            yield _sse("note", text=payload)
+                            continue
+
+                        if kind == "harness":
+                            # 3e voix : intervention du garde-fou Loom (relance, audit,
+                            # recentrage…). Ni toi ni le modèle -> bulle distincte,
+                            # persistée pour être rejouée au rechargement.
+                            yield _tl("harness", **payload)
+                            continue
+
+                        if kind == "status":
+                            # Signal d'activité (ex. compaction en cours) : piloté vers le label
+                            # animé au-dessus du composer, comme « le modèle tourne ».
+                            yield _sse("status", **payload)
+
+                        elif kind == "context_estimate":
+                            # Compaction : la jauge de contexte est rafraîchie IMMÉDIATEMENT
+                            # (estimation), sans attendre l'usage réel du prochain appel — sinon
+                            # elle resterait au pic pendant tout l'appel suivant. L'usage réel du
+                            # tour d'après la corrigera de toute façon.
+                            conv.context_tokens = int(payload.get("tokens", 0) or 0)
+                            yield _sse("totals", **_totals(S, conv))
+
+                        elif kind == "reasoning":
+                            yield _tl("reasoning", text=payload)
+
+                        elif kind == "content":
+                            if _profile is not None:
+                                payload = _profile.apply_to_text(payload)
+                            answer += payload
+
+                            # Temps réel : le texte est journalisé à l'instant (rejouable). Le
+                            # session.json (contexte) se met à jour aux frontières d'outils + fin.
+                            yield _tl("text", text=payload)
+
+                        elif kind == "parallel":
+                            yield _tl("parallel", **payload)
+
+                        elif kind == "tool_call":
+                            yield _tl("tool_call", **payload)
+
+                        elif kind == "tool_request":
+                            yield _sse("tool_request", **payload)
+
+                        elif kind == "tool_begin":
+                            yield _sse("tool_begin", **payload)
+
+                        elif kind == "tool_args":
+                            yield _sse("tool_args", **payload)
+
+                        elif kind == "tool_stream":
+                            yield _sse("tool_stream", **payload)
+
+                        elif kind == "tool_result":
+                            if str(payload.get("name", "")).startswith("(compaction"):
+                                saw_compaction = True
+
+                            line = _action_trace_line(payload)
+
+                            if line and line not in actions:
+                                actions.append(line)
+
+                            yield _tl("tool_result", **payload)
+
+                            _persist()  # checkpoint contexte (event-driven) : l'outil vient de finir
+
+                        elif kind == "usage":
+                            # Fin d'un tour : llama-server donne le prompt réel et le completion
+
+                            # EXACT (tool-calls inclus) -> on cumule envoyés/reçus à travers les
+
+                            # tours ET les outils, et on réconcilie le tour courant.
+
+                            _p = payload.get("prompt_tokens", 0) or 0
+                            _c = payload.get("completion_tokens", 0) or 0
+                            _cached = payload.get("cached_tokens", 0) or 0
+
+                            sent_tokens += _p
+
+                            recv_confirmed += _c
+
+                            cur_turn = 0
+
+                            # Cumul RÉEL de la session : chaque appel refacture tout le contexte en
+                            # INPUT -> on somme input/output/cache/coût sur TOUS les appels
+                            # (persisté), pas seulement le tour. C'est LA vraie somme facturée, et
+                            # `cached` mesure si le prompt caching du provider mord.
+                            _pin, _pout, _pcached = _price_of(S, conv.model)
+                            conv.add_usage(_p, _c, _cached, _pin, _pout, _pcached)
+
+                            yield _sse("usage", **payload)
+
                             yield _sse(
-                                "session_title", id=sess.id, title=_titled["value"]
+                                "metrics",
+                                sent=sent_tokens,
+                                recv=recv_confirmed,
+                                tok_s=last_rate,
                             )
 
-                    if cancel_event.is_set():
-                        # Une nouvelle soumission demande l'arrêt : on stoppe net
+                            yield _sse("totals", **_totals(S, conv))
 
-                        # et on persiste ce qui a déjà été généré.
+                        elif kind == "sub_usage":
+                            # Conso d'un SOUS-AGENT (dispatch_agent) : ses tokens sont RÉELS et
+                            # facturés -> on les ajoute aux totaux de session (coût, N×, in/out/
+                            # cache). `set_context=False` : son prompt n'est PAS le contexte du fil
+                            # principal, on ne touche donc pas la jauge de remplissage ni les
+                            # métriques per-tour (sent/recv) qui décrivent le tour principal.
+                            _sp = payload.get("prompt_tokens", 0) or 0
+                            _sc = payload.get("completion_tokens", 0) or 0
+                            _scached = payload.get("cached_tokens", 0) or 0
+                            _pin, _pout, _pcached = _price_of(S, conv.model)
+                            conv.add_usage(
+                                _sp,
+                                _sc,
+                                _scached,
+                                _pin,
+                                _pout,
+                                _pcached,
+                                set_context=False,
+                            )
+                            yield _sse("totals", **_totals(S, conv))
 
-                        interrupted = True
+                        elif kind == "phase":
+                            yield _tl("phase", **payload)
 
+                        elif kind == "done":
+                            # Raison d'arrêt de la boucle (natural, repeat_stop,
+                            # loop_degenerate…) : nourrit la boucle de feedback de la
+                            # note de recentrage ci-dessous.
+                            stop_reason = str(payload.get("reason", "") or "")
+
+                        # Compteur live : chaque delta (texte OU arguments d'un tool_call) =
+
+                        # 1 vrai token streamé par llama-server. On compte aussi tool_args
+
+                        # pour que le compteur avance pendant la génération d'un appel (gros
+
+                        # write_file inclus) au lieu de se figer. On affiche le cumul + un débit
+
+                        # mesuré sur la rafale courante ; le timer se réinitialise après >1s sans
+
+                        # token (pause d'exécution) pour que les tok/s reflètent la génération.
+
+                        if kind in ("reasoning", "content", "tool_args"):
+                            now = time.monotonic()
+
+                            if last_tok is None or now - last_tok > 1.0:
+                                burst_start = now
+
+                                burst_tokens = 0
+
+                            burst_tokens += 1
+
+                            cur_turn += 1
+
+                            last_tok = now
+
+                            span = now - burst_start
+
+                            tok_s = round(burst_tokens / span, 1) if span > 0 else 0.0
+
+                            last_rate = tok_s
+
+                            yield _sse(
+                                "metrics",
+                                sent=sent_tokens,
+                                recv=recv_confirmed + cur_turn,
+                                tok_s=tok_s,
+                            )
+
+                    if not interrupted:
                         break
 
-                    if kind == "note":
-                        # Note en vol INJECTÉE par la boucle : on la PERSISTE telle
-                        # quelle (même contenu que ce que le modèle a vu) et on
-                        # l'affiche dans le fil à sa vraie position.
-                        conv.add("user", payload)
-                        save()
-                        yield _tl("user", content=payload)
-                        yield _sse("note", text=payload)
-                        continue
-
-                    if kind == "harness":
-                        # 3e voix : intervention du garde-fou Loom (relance, audit,
-                        # recentrage…). Ni toi ni le modèle -> bulle distincte,
-                        # persistée pour être rejouée au rechargement.
-                        yield _tl("harness", **payload)
-                        continue
-
-                    if kind == "status":
-                        # Signal d'activité (ex. compaction en cours) : piloté vers le label
-                        # animé au-dessus du composer, comme « le modèle tourne ».
-                        yield _sse("status", **payload)
-
-                    elif kind == "context_estimate":
-                        # Compaction : la jauge de contexte est rafraîchie IMMÉDIATEMENT
-                        # (estimation), sans attendre l'usage réel du prochain appel — sinon
-                        # elle resterait au pic pendant tout l'appel suivant. L'usage réel du
-                        # tour d'après la corrigera de toute façon.
-                        conv.context_tokens = int(payload.get("tokens", 0) or 0)
-                        yield _sse("totals", **_totals(S, conv))
-
-                    elif kind == "reasoning":
-                        yield _tl("reasoning", text=payload)
-
-                    elif kind == "content":
-                        if _profile is not None:
-                            payload = _profile.apply_to_text(payload)
-                        answer += payload
-
-                        # Temps réel : le texte est journalisé à l'instant (rejouable). Le
-                        # session.json (contexte) se met à jour aux frontières d'outils + fin.
-                        yield _tl("text", text=payload)
-
-                    elif kind == "parallel":
-                        yield _tl("parallel", **payload)
-
-                    elif kind == "tool_call":
-                        yield _tl("tool_call", **payload)
-
-                    elif kind == "tool_request":
-                        yield _sse("tool_request", **payload)
-
-                    elif kind == "tool_begin":
-                        yield _sse("tool_begin", **payload)
-
-                    elif kind == "tool_args":
-                        yield _sse("tool_args", **payload)
-
-                    elif kind == "tool_stream":
-                        yield _sse("tool_stream", **payload)
-
-                    elif kind == "tool_result":
-                        if str(payload.get("name", "")).startswith("(compaction"):
-                            saw_compaction = True
-
-                        line = _action_trace_line(payload)
-
-                        if line and line not in actions:
-                            actions.append(line)
-
-                        yield _tl("tool_result", **payload)
-
-                        _persist()  # checkpoint contexte (event-driven) : l'outil vient de finir
-
-                    elif kind == "usage":
-                        # Fin d'un tour : llama-server donne le prompt réel et le completion
-
-                        # EXACT (tool-calls inclus) -> on cumule envoyés/reçus à travers les
-
-                        # tours ET les outils, et on réconcilie le tour courant.
-
-                        _p = payload.get("prompt_tokens", 0) or 0
-                        _c = payload.get("completion_tokens", 0) or 0
-                        _cached = payload.get("cached_tokens", 0) or 0
-
-                        sent_tokens += _p
-
-                        recv_confirmed += _c
-
-                        cur_turn = 0
-
-                        # Cumul RÉEL de la session : chaque appel refacture tout le contexte en
-                        # INPUT -> on somme input/output/cache/coût sur TOUS les appels
-                        # (persisté), pas seulement le tour. C'est LA vraie somme facturée, et
-                        # `cached` mesure si le prompt caching du provider mord.
-                        _pin, _pout, _pcached = _price_of(S, conv.model)
-                        conv.add_usage(_p, _c, _cached, _pin, _pout, _pcached)
-
-                        yield _sse("usage", **payload)
-
-                        yield _sse(
-                            "metrics",
-                            sent=sent_tokens,
-                            recv=recv_confirmed,
-                            tok_s=last_rate,
-                        )
-
-                        yield _sse("totals", **_totals(S, conv))
-
-                    elif kind == "sub_usage":
-                        # Conso d'un SOUS-AGENT (dispatch_agent) : ses tokens sont RÉELS et
-                        # facturés -> on les ajoute aux totaux de session (coût, N×, in/out/
-                        # cache). `set_context=False` : son prompt n'est PAS le contexte du fil
-                        # principal, on ne touche donc pas la jauge de remplissage ni les
-                        # métriques per-tour (sent/recv) qui décrivent le tour principal.
-                        _sp = payload.get("prompt_tokens", 0) or 0
-                        _sc = payload.get("completion_tokens", 0) or 0
-                        _scached = payload.get("cached_tokens", 0) or 0
-                        _pin, _pout, _pcached = _price_of(S, conv.model)
-                        conv.add_usage(
-                            _sp,
-                            _sc,
-                            _scached,
-                            _pin,
-                            _pout,
-                            _pcached,
-                            set_context=False,
-                        )
-                        yield _sse("totals", **_totals(S, conv))
-
-                    elif kind == "phase":
-                        yield _tl("phase", **payload)
-
-                    elif kind == "done":
-                        # Raison d'arrêt de la boucle (natural, repeat_stop,
-                        # loop_degenerate…) : nourrit la boucle de feedback de la
-                        # note de recentrage ci-dessous.
-                        stop_reason = str(payload.get("reason", "") or "")
-
-                    # Compteur live : chaque delta (texte OU arguments d'un tool_call) =
-
-                    # 1 vrai token streamé par llama-server. On compte aussi tool_args
-
-                    # pour que le compteur avance pendant la génération d'un appel (gros
-
-                    # write_file inclus) au lieu de se figer. On affiche le cumul + un débit
-
-                    # mesuré sur la rafale courante ; le timer se réinitialise après >1s sans
-
-                    # token (pause d'exécution) pour que les tok/s reflètent la génération.
-
-                    if kind in ("reasoning", "content", "tool_args"):
-                        now = time.monotonic()
-
-                        if last_tok is None or now - last_tok > 1.0:
-                            burst_start = now
-
-                            burst_tokens = 0
-
-                        burst_tokens += 1
-
-                        cur_turn += 1
-
-                        last_tok = now
-
-                        span = now - burst_start
-
-                        tok_s = round(burst_tokens / span, 1) if span > 0 else 0.0
-
-                        last_rate = tok_s
-
-                        yield _sse(
-                            "metrics",
-                            sent=sent_tokens,
-                            recv=recv_confirmed + cur_turn,
-                            tok_s=tok_s,
-                        )
-
-                if interrupted:
-                    _persist(
-                        final=True
-                    )  # interrompu : on force la sauvegarde du travail fait
-
-                    # Stop PROPRE : marqueur PERSISTÉ -> au tour suivant le modèle
-                    # SAIT que sa réponse est tronquée volontairement (sans ça il
-                    # reprenait une réponse incomplète comme si de rien n'était).
+                    # STOP : on persiste le travail fait et on pose le marqueur.
+                    _persist(final=True)
                     conv.add(
                         "user",
                         "[Interrupted by the user here — the answer above is "
@@ -1001,7 +1003,18 @@ def _register_chat_routes(app, S):
                     )
                     save()
 
-                    return
+                    # Note en file (remarque postee avant le STOP) : on REPART d'elle au
+                    # lieu de tout arreter -> on l'injecte comme message user et la boucle
+                    # while relance un tour pour y repondre. Sans note en file : vrai stop.
+                    _pending = S.notes.drain(sess.id)
+                    if not _pending:
+                        return
+                    for _n in _pending:
+                        conv.add("user", _n)
+                        S.session_store.append_event(sess.id, "user", {"content": _n})
+                        yield _sse("note", text=_n)
+                    save()
+                    cancel_event.clear()
 
                 # Feedback de la note de recentrage : troncature + tour fini PROPREMENT
                 # (stop naturel) = épisode GÉRÉ, on cesse de ré-injecter la note ;
