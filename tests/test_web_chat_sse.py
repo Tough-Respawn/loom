@@ -388,6 +388,89 @@ def test_chat_id_explicite_inconnu_repond_404(web_sess):
     assert r.status_code == 404
 
 
+def test_stop_avec_note_en_file_repart_de_la_note(tmp_env):
+    # Scénario réel : le modèle part dans une direction ; l'utilisateur pousse une
+    # remarque (mise en file) PUIS appuie STOP. Le STOP coupe la réponse en cours, mais
+    # la génération doit ENCHAÎNER sur la note en file (repartir de la remarque), pas
+    # s'arrêter en laissant la note orpheline dans S.notes.
+    from types import SimpleNamespace as NS
+
+    from loom.agent.client import LoomClient
+    from loom.agent.session import SessionStore
+    from loom.web.routes.helpers import _cancel_for
+
+    from .fakes import FakeRegistry, _FakeStream, chunk, usage_chunk
+
+    holder = {}
+
+    class MidCancelStream:
+        # Appel 1 : le modèle streame un bout, puis l'utilisateur pousse une note + STOP.
+        def __iter__(self):
+            yield chunk(content="je pars dans la ")
+            holder["S"].notes.push(holder["sid"], "non, fais plutôt un bouton discret")
+            _cancel_for(holder["S"], holder["sid"]).set()
+            yield chunk(content="mauvaise direction", finish="stop")
+            yield usage_chunk()
+
+        def close(self):
+            pass
+
+    class ScriptedOAI:
+        def __init__(self):
+            self.n = 0
+            self.chat = NS(completions=NS(create=self._create))
+
+        def _create(self, **kw):
+            self.n += 1
+            if self.n == 1:
+                return MidCancelStream()
+            return _FakeStream(
+                [
+                    chunk(content="ok, je repars de ta note : bouton.", finish="stop"),
+                    usage_chunk(),
+                ]
+            )
+
+    client = LoomClient("http://127.0.0.1:9/v1")
+    client.add_remote_route(
+        MODEL, {"base_url": "http://127.0.0.1:9/v1", "api_key": "k", "model": "fake/x"}
+    )
+    client._routes[MODEL]["client"] = ScriptedOAI()
+    store = SessionStore(
+        tmp_env / "sessions",
+        default_system_prompt="prompt de test",
+        default_model=MODEL,
+        known_models=[MODEL],
+    )
+    app = create_app(
+        client=client,
+        skills_dir=str(tmp_env / "skills"),
+        session_store=store,
+        models=[MODEL],
+        remote_model_ids=[MODEL],
+        keepwarm_enabled=False,
+        workspace_dir=str(tmp_env / "workspace"),
+        user_skills_dir=str(tmp_env / "skills_user"),
+        plugins_dir=str(tmp_env / "plugins"),
+        remote_store_path=str(tmp_env / "remote_models.json"),
+        tool_factory=lambda t, w, c: FakeRegistry({"list_dir": lambda a: "x"}),
+    )
+    web = app.test_client()
+    holder["S"] = app.S
+    sid = web.post("/session/new", data={"title": "t"}).get_json()["id"]
+    holder["sid"] = sid
+
+    r = web.post("/chat", data={"message": "commence", "session_id": sid})
+    assert r.status_code == 200
+    texts = "".join(
+        e.get("text", "") for e in _sse_events(r.data) if e["type"] == "text"
+    )
+    assert "je repars de ta note" in texts, (
+        "le STOP n'a pas enchaîné sur la note en file"
+    )
+    assert app.S.notes.drain(sid) == [], "la note est restée orpheline dans la file"
+
+
 def test_chat_erreur_api_flux_error_generique(chat_env):
     # Une exception NON-openai pendant la génération (ici : script épuisé) remonte
     # jusqu'au try de generate() qui la capture : dernier event SSE = "error" avec
