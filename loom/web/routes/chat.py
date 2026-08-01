@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import threading
@@ -89,16 +90,89 @@ CHAT_COMMANDS = [
 ]
 
 
+_HANDOFF_MAX_CHARS = 100_000
+
+
+def _handoff_provenance(raw: str, source) -> list[dict[str, str]]:
+    """Valide la chaîne reçue puis ajoute la source directe, vérifiée côté serveur.
+
+    Aucun plafond de profondeur : un message peut faire autant d'allers-retours que
+    nécessaire. Chaque champ est seulement borné pour empêcher une métadonnée UI de
+    gonfler le prompt sans limite.
+    """
+    previous = []
+    if raw:
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("provenance de transfert invalide") from exc
+        if not isinstance(decoded, list):
+            raise ValueError("provenance de transfert invalide")
+        for item in decoded:
+            if not isinstance(item, dict):
+                raise ValueError("provenance de transfert invalide")
+            previous.append(
+                {
+                    "session_id": str(item.get("session_id", ""))[:80],
+                    "title": str(item.get("title", ""))[:120],
+                    "model": str(item.get("model", ""))[:120],
+                }
+            )
+    previous.append(
+        {
+            "session_id": source.id,
+            "title": (source.title or "session")[:120],
+            "model": (source.conversation.model or "modèle par défaut")[:120],
+        }
+    )
+    return previous
+
+
+def _handoff_prompt(content: str, provenance: list[dict[str, str]]) -> str:
+    direct = provenance[-1]
+    route = " → ".join(f"{p['model']} (session « {p['title']} »)" for p in provenance)
+    return (
+        "[Message transferred from another Loom session]\n"
+        f"Direct source: model {direct['model']}, session « {direct['title']} ».\n"
+        f"Transfer route: {route}.\n"
+        "Use the transferred content below as context and respond to it.\n\n"
+        "--- transferred content ---\n"
+        f"{content}"
+    )
+
+
 # ---- Route : /chat (génération SSE) -----------------------------------------------------
 
 
 def _register_chat_routes(app, S):
+    @app.post("/handoff")
     @app.post("/chat")
     def chat():
-        message = (request.form.get("message") or "").strip()
+        is_handoff = request.path == "/handoff"
+        display_message = (request.form.get("message") or "").strip()
+        provenance: list[dict[str, str]] = []
+        handoff_id = ""
 
-        if not message or len(message) > 5000:
+        if not display_message or len(display_message) > (
+            _HANDOFF_MAX_CHARS if is_handoff else 5000
+        ):
             return Response("message invalide", status=400)
+
+        if is_handoff:
+            source_sid = (request.form.get("source_session_id") or "").strip()
+            source = _get_session(S, source_sid)
+            if source is None:
+                return Response("session source introuvable", status=404)
+            handoff_id = (request.form.get("handoff_id") or "").strip()[:80]
+            try:
+                provenance = _handoff_provenance(
+                    request.form.get("provenance") or "", source
+                )
+            except ValueError as exc:
+                return Response(str(exc), status=400)
+            message = _handoff_prompt(display_message, provenance)
+        else:
+            message = display_message
 
         # Session CIBLE : par `session_id` (onglet) sinon la session focus. Chaque session a
         # son verrou : une nouvelle soumission n'interrompt QUE la génération de SA session,
@@ -109,10 +183,41 @@ def _register_chat_routes(app, S):
         sess = _get_session(S, req_sid) if req_sid else _session(S)
         if sess is None:
             return Response("session introuvable", status=404)
-        S.cur["session"] = sess  # focus (défaut de l'index)
+        if is_handoff and sess.id == source.id:
+            return Response("transfert vers la session source refusé", status=400)
+        if not is_handoff:
+            S.cur["session"] = sess  # focus (défaut de l'index)
         sid = sess.id
         chat_lock = _lock_for(S, sid)
         cancel_event = _cancel_for(S, sid)
+
+        queued_payload: str | dict = message
+        if is_handoff:
+            queued_payload = {
+                "text": message,
+                "display": display_message,
+                "provenance": provenance,
+                "handoff_id": handoff_id,
+            }
+
+        # Le front emploie ce mode quand la cible streame déjà : on exige alors la
+        # mise en file. Si le tour vient juste de finir, 409 lui dit de relancer le
+        # même handoff sur le chemin SSE normal au lieu de laisser une note orpheline.
+        queue_only = is_handoff and request.form.get("queue_only") == "1"
+        if queue_only:
+            if chat_lock.acquire(blocking=False):
+                chat_lock.release()
+                return Response("session cible disponible", status=409)
+            if S.notes.push(sid, queued_payload) < 0:
+                return Response(
+                    "file d'attente pleine — attendre le prochain point d'arrêt ou Stop",
+                    status=429,
+                )
+            return Response(
+                "message transféré mis en file d'attente — il sera pris en compte "
+                "au prochain point d'arrêt",
+                status=202,
+            )
 
         if not chat_lock.acquire(blocking=False):
             # Le verrou de CETTE session est tenu. Deux cas se distinguent par
@@ -129,7 +234,7 @@ def _register_chat_routes(app, S):
             if not (
                 cancel_event.is_set() and chat_lock.acquire(timeout=S.interrupt_wait)
             ):
-                if S.notes.push(sid, message) < 0:
+                if S.notes.push(sid, queued_payload) < 0:
                     return Response(
                         "file d'attente pleine — attendre le prochain point d'arrêt ou Stop",
                         status=429,
@@ -162,26 +267,31 @@ def _register_chat_routes(app, S):
         def save():
             return S.session_store.save(sess)
 
-        # Commande /add-model + wizard actif : le wizard déterministe capte TOUT
-        # message de la session tant qu'il est actif (y compris avant /goal — un
-        # « /goal » tapé en plein wizard est une réponse au wizard, pas une commande).
-        message, _wiz_resp = _handle_add_model_command(
-            S, message, conv, sess, save, chat_lock
-        )
-        if _wiz_resp is not None:
-            return _wiz_resp
+        if not is_handoff:
+            # Commande /add-model + wizard actif : le wizard déterministe capte TOUT
+            # message de la session tant qu'il est actif (y compris avant /goal — un
+            # « /goal » tapé en plein wizard est une réponse au wizard, pas une commande).
+            message, _wiz_resp = _handle_add_model_command(
+                S, message, conv, sess, save, chat_lock
+            )
+            if _wiz_resp is not None:
+                return _wiz_resp
 
-        # Commande /goal : pilote l'OBJECTIF de complétion de la session. La logique
-        # (pose/statut/efface) est factorisée dans _handle_goal_command, qui renvoie
-        # (message, response) : response non None = ack immédiat à retourner directement.
-        message, _goal_resp = _handle_goal_command(S, message, conv, save, chat_lock)
-        if _goal_resp is not None:
-            return _goal_resp
+            # Commande /goal : pilote l'OBJECTIF de complétion de la session. La logique
+            # (pose/statut/efface) est factorisée dans _handle_goal_command, qui renvoie
+            # (message, response) : response non None = ack immédiat à retourner directement.
+            message, _goal_resp = _handle_goal_command(
+                S, message, conv, save, chat_lock
+            )
+            if _goal_resp is not None:
+                return _goal_resp
 
-        # Commande /init : génère une fiche projet `loom.md` À LA RACINE DU DOSSIER
-        # de TRAVAIL de la session. Factorisé dans _handle_init_command (adopte un
-        # dossier cible si fourni, réécrit le message en consigne de génération).
-        message = _handle_init_command(S, message, sess)
+            # Commande /init : génère une fiche projet `loom.md` À LA RACINE DU DOSSIER
+            # de TRAVAIL de la session. Factorisé dans _handle_init_command (adopte un
+            # dossier cible si fourni, réécrit le message en consigne de génération).
+            message = _handle_init_command(S, message, sess)
+
+        title_message = display_message if is_handoff else message
 
         # Plus de garde bloquant : un modèle texte-only ne reçoit PAS l'image inline (qui
 
@@ -218,7 +328,9 @@ def _register_chat_routes(app, S):
 
         adopted_ws = None
 
-        detected = _detect_workspace(message, S.workspace_dir)
+        # Un transfert apporte du CONTEXTE, pas une demande de changer le workspace :
+        # un chemin cité dans la réponse source ne doit jamais réaffecter la cible.
+        detected = None if is_handoff else _detect_workspace(message, S.workspace_dir)
 
         if detected:
             # Un chemin INTERNE au projet courant n'est pas un changement de contexte :
@@ -245,7 +357,17 @@ def _register_chat_routes(app, S):
 
             # Journal d'affichage temps réel : on y consigne le message user (le journal est la
             # source de RÉ-AFFICHAGE au rechargement -> il doit être complet, user inclus).
-            S.session_store.append_event(sess.id, "user", {"content": message})
+            user_event = {
+                "content": display_message if is_handoff else message,
+            }
+            if is_handoff:
+                user_event.update(
+                    {
+                        "provenance": provenance,
+                        "handoff_id": handoff_id,
+                    }
+                )
+            S.session_store.append_event(sess.id, "user", user_event)
 
             # Résumé auto pré-tour : DÉPLACÉ dans generate() (plus bas) pour être VISIBLE
             # dans le stream (label d'activité « compaction… ») au lieu d'un blocage muet
@@ -279,8 +401,11 @@ def _register_chat_routes(app, S):
                 def _finish(md_text: str):
                     conv.add("assistant", md_text)
                     save()
-                    S.session_store.append_event(_sess.id, "text", {"text": md_text})
-                    return _sse("text", text=md_text)
+                    _data = {"text": md_text}
+                    if provenance:
+                        _data["provenance"] = provenance
+                    S.session_store.append_event(_sess.id, "text", _data)
+                    return _sse("text", **_data)
 
                 try:
                     yield _sse("status", label="préparation du moteur image…")
@@ -469,6 +594,11 @@ def _register_chat_routes(app, S):
             # Verrou modèle LOCAL : pris dans le try ci-dessous (avant le 1er appel modèle),
             # libéré au finally. Distant -> jamais pris (vrai parallèle entre onglets).
             _local_held = False
+            # Provenance portée par les bulles assistant produites en réponse au
+            # transfert courant. Une note-handoff injectée pendant un tour remplace
+            # cette valeur au point d'arrêt, afin que sa réponse puisse repartir plus
+            # tard avec toute la chaîne.
+            response_provenance = list(provenance)
 
             # Profil du modèle : correctifs déterministes (cadratins, guillemets
 
@@ -744,7 +874,7 @@ def _register_chat_routes(app, S):
             )
             if _immediate_title:
 
-                def _do_title(_msg=message, _model=conv.model):
+                def _do_title(_msg=title_message, _model=conv.model):
                     _t = ""
                     try:
                         _t = _infer_title(S.client, _model or None, _msg)
@@ -818,10 +948,29 @@ def _register_chat_routes(app, S):
                             # Note en vol INJECTÉE par la boucle : on la PERSISTE telle
                             # quelle (même contenu que ce que le modèle a vu) et on
                             # l'affiche dans le fil à sa vraie position.
-                            conv.add("user", payload)
+                            if isinstance(payload, dict):
+                                note_text = str(payload.get("text", ""))
+                                note_display = str(payload.get("display", note_text))
+                                note_provenance = payload.get("provenance") or []
+                                response_provenance = list(note_provenance)
+                                note_data = {
+                                    "content": note_display,
+                                    "provenance": note_provenance,
+                                    "handoff_id": str(payload.get("handoff_id", "")),
+                                }
+                            else:
+                                note_text = payload
+                                note_display = payload
+                                note_data = {"content": payload}
+                            conv.add("user", note_text)
                             save()
-                            yield _tl("user", content=payload)
-                            yield _sse("note", text=payload)
+                            yield _tl("user", **note_data)
+                            yield _sse(
+                                "note",
+                                text=note_display,
+                                provenance=note_data.get("provenance"),
+                                handoff_id=note_data.get("handoff_id", ""),
+                            )
                             continue
 
                         if kind == "harness":
@@ -854,7 +1003,10 @@ def _register_chat_routes(app, S):
 
                             # Temps réel : le texte est journalisé à l'instant (rejouable). Le
                             # session.json (contexte) se met à jour aux frontières d'outils + fin.
-                            yield _tl("text", text=payload)
+                            text_data = {"text": payload}
+                            if response_provenance:
+                                text_data["provenance"] = response_provenance
+                            yield _tl("text", **text_data)
 
                         elif kind == "parallel":
                             yield _tl("parallel", **payload)
@@ -1010,9 +1162,28 @@ def _register_chat_routes(app, S):
                     if not _pending:
                         return
                     for _n in _pending:
-                        conv.add("user", _n)
-                        S.session_store.append_event(sess.id, "user", {"content": _n})
-                        yield _sse("note", text=_n)
+                        if isinstance(_n, dict):
+                            _note_text = str(_n.get("text", ""))
+                            _note_display = str(_n.get("display", _note_text))
+                            _note_provenance = _n.get("provenance") or []
+                            response_provenance = list(_note_provenance)
+                            _note_data = {
+                                "content": _note_display,
+                                "provenance": _note_provenance,
+                                "handoff_id": str(_n.get("handoff_id", "")),
+                            }
+                        else:
+                            _note_text = _n
+                            _note_display = _n
+                            _note_data = {"content": _n}
+                        conv.add("user", _note_text)
+                        S.session_store.append_event(sess.id, "user", _note_data)
+                        yield _sse(
+                            "note",
+                            text=_note_display,
+                            provenance=_note_data.get("provenance"),
+                            handoff_id=_note_data.get("handoff_id", ""),
+                        )
                     save()
                     cancel_event.clear()
 
@@ -1031,7 +1202,10 @@ def _register_chat_routes(app, S):
                 if not answer.strip():
                     answer = "(le modèle a seulement réfléchi — augmente max_tokens)"
 
-                    yield _sse("text", text=answer)
+                    text_data = {"text": answer}
+                    if response_provenance:
+                        text_data["provenance"] = response_provenance
+                    yield _tl("text", **text_data)
 
                 _persist(final=True)  # fin de tour : écriture finale garantie
 
@@ -1092,7 +1266,7 @@ def _register_chat_routes(app, S):
                             )
                 elif saved and sess.title == "Nouvelle session":
                     # Local : titrage en fin de tour (slot llama-swap libre, pas de contention).
-                    _title = _infer_title(S.client, conv.model or None, message)
+                    _title = _infer_title(S.client, conv.model or None, title_message)
                     if _title:
                         sess.title = _title
                         S.session_store.save(sess)
