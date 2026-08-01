@@ -1,14 +1,6 @@
 // loom/web/static/sse.js — issu du decoupage de app.js (comportement constant).
 export async function streamSSE(url, fd, onEvent, signal) {
   const resp = await fetch(url, { method: fd ? "POST" : "GET", body: fd || undefined, signal });
-  if (resp.status === 429) {
-    onEvent({ type: "error", message: "Occupé : un échange est déjà en cours." });
-    return;
-  }
-  if (resp.status === 400) {
-    onEvent({ type: "error", message: "Requête invalide." });
-    return;
-  }
   if (resp.status === 202) {
     // Message légitimement MIS EN FILE (génération de la session en cours) : le back
     // le drainera au prochain point d'arrêt. Réponse TEXTE (pas un flux SSE) -> on la
@@ -22,6 +14,16 @@ export async function streamSSE(url, fd, onEvent, signal) {
       /* corps illisible : on garde le libellé par défaut côté appelant */
     }
     onEvent({ type: "queued", message: msg });
+    return;
+  }
+  if (!resp.ok) {
+    let msg = "Requête refusée.";
+    try {
+      msg = (await resp.text()).trim() || msg;
+    } catch (e) {
+      /* le statut HTTP reste exploitable même sans corps */
+    }
+    onEvent({ type: "request_error", status: resp.status, message: msg });
     return;
   }
   const reader = resp.body.getReader();

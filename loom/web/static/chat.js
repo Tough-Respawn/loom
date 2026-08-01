@@ -1,12 +1,12 @@
 // loom/web/static/chat.js — issu du decoupage de app.js (comportement constant).
-import { opsFor, panesFor, state, tab } from "./state.js";
+import { opsFor, panesFor, scheduleRenderFor, state, tab } from "./state.js";
 import { renderTabs } from "./tabs.js";
 import { setActivityFor, syncComposersFor } from "./panes.js";
 import { reflectWorkdir, scheduleMachineRefresh, setMetrics, updateUsageMeter } from "./panels.js";
 import { loomWorkdir, set_loomWorkdir } from "./shared.js";
 import { streamSSE } from "./sse.js";
 
-export async function sendChat(sid, text, images) {
+export async function sendChat(sid, text, images, options = {}) {
   const t = tab(sid);
   if (!t) return;
   panesFor(sid).forEach((p) => (p.pin = true));
@@ -23,12 +23,13 @@ export async function sendChat(sid, text, images) {
   const { push, get, patch } = opsFor(sid);
 
   let userId;
+  const userFields = options.userFields || {};
   if (images && images.length) {
     const parts = [{ type: "text", text }];
     for (const im of images) parts.push({ type: "image_url", image_url: { url: URL.createObjectURL(im) } });
-    userId = push({ kind: "user", content: parts }).id;
+    userId = push({ kind: "user", content: parts, ...userFields }).id;
   } else {
-    userId = push({ kind: "user", content: text }).id;
+    userId = push({ kind: "user", content: text, ...userFields }).id;
   }
   const tools = {}; // callId -> item id
   let thinkId = null;
@@ -41,6 +42,8 @@ export async function sendChat(sid, text, images) {
   fd.append("message", text);
   fd.append("session_id", sid); // cible la session de l'onglet (génération concurrente)
   for (const im of images || []) fd.append("image", im); // multi-images : le back fait getlist
+  for (const [key, value] of Object.entries(options.form || {}))
+    fd.append(key, String(value));
 
   if (sid === state.active) setMetrics(0, 0, null); // liveness immédiate si onglet affiché
 
@@ -85,7 +88,24 @@ export async function sendChat(sid, text, images) {
         // à sa vraie position dans le fil, les bulles en cours sont clôturées.
         if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
         if (asstId) { patch(asstId, { done: true }); asstId = null; }
-        push({ kind: "user", content: evt.text });
+        if (evt.handoff_id) {
+          const existing = t.timeline.find(
+            (item) => item.handoffId === evt.handoff_id,
+          );
+          if (existing)
+            patch(existing.id, {
+              content: evt.text,
+              provenance: evt.provenance || existing.provenance || [],
+              queued: false,
+            });
+          else
+            push({
+              kind: "user",
+              content: evt.text,
+              provenance: evt.provenance || [],
+              handoffId: evt.handoff_id,
+            });
+        } else push({ kind: "user", content: evt.text });
         break;
       case "harness":
         // 3e voix : intervention du garde-fou Loom, bulle distincte.
@@ -115,7 +135,15 @@ export async function sendChat(sid, text, images) {
           patch(thinkId, { active: false });
           thinkId = null;
         }
-        if (!asstId) asstId = push({ kind: "assistant", raw: "", done: false }).id;
+        if (!asstId)
+          asstId = push({
+            kind: "assistant",
+            raw: "",
+            done: false,
+            provenance: evt.provenance || [],
+          }).id;
+        else if (evt.provenance)
+          patch(asstId, { provenance: evt.provenance });
         patch(asstId, { raw: get(asstId).raw + evt.text });
         break;
       case "tool_begin":
@@ -227,6 +255,21 @@ export async function sendChat(sid, text, images) {
       case "error":
         push({ kind: "error", message: "Erreur : " + evt.message + " (connexion à loom.web perdue ?)" });
         break;
+      case "request_error": {
+        if (options.handoffId) {
+          t.timeline = t.timeline.filter((item) => item.id !== userId);
+          scheduleRenderFor(sid);
+          opsFor(options.errorSid || sid).push({
+            kind: "error",
+            message:
+              "Transfert impossible : " +
+              (evt.message || "session cible introuvable"),
+          });
+        } else {
+          push({ kind: "error", message: evt.message || "Requête refusée." });
+        }
+        break;
+      }
     }
   };
 
@@ -266,13 +309,22 @@ export async function sendChat(sid, text, images) {
   }, 500);
 
   try {
-    await streamSSE("/chat", fd, onEvent, ac.signal);
+    await streamSSE(options.endpoint || "/chat", fd, onEvent, ac.signal);
     if (asstId) patch(asstId, { done: true });
   } catch (err) {
     if (err.name === "AbortError") {
       if (asstId) patch(asstId, { done: true });
     } else {
-      push({ kind: "error", message: "Erreur : " + err.message + " (connexion à loom.web perdue ?)" });
+      if (options.handoffId) {
+        t.timeline = t.timeline.filter((item) => item.id !== userId);
+        scheduleRenderFor(sid);
+        opsFor(options.errorSid || sid).push({
+          kind: "error",
+          message: "Transfert impossible : " + err.message,
+        });
+      } else {
+        push({ kind: "error", message: "Erreur : " + err.message + " (connexion à loom.web perdue ?)" });
+      }
     }
   } finally {
     clearInterval(gaTimer);
@@ -293,4 +345,94 @@ export async function sendChat(sid, text, images) {
       }
     }
   }
+}
+
+function _handoffId() {
+  if (globalThis.crypto?.randomUUID) return "handoff:" + crypto.randomUUID();
+  return "handoff:" + Date.now() + ":" + Math.random().toString(36).slice(2);
+}
+
+function _handoffForm(sourceSid, previous, handoffId, queueOnly = false) {
+  return {
+    source_session_id: sourceSid,
+    provenance: JSON.stringify(Array.isArray(previous) ? previous : []),
+    handoff_id: handoffId,
+    ...(queueOnly ? { queue_only: "1" } : {}),
+  };
+}
+
+export async function sendHandoff(sourceSid, targetSid, text, previous) {
+  const source = tab(sourceSid);
+  const target = tab(targetSid);
+  if (!source || !target) {
+    if (source)
+      opsFor(sourceSid).push({
+        kind: "error",
+        message: "Transfert impossible : session cible introuvable",
+      });
+    return;
+  }
+
+  const handoffId = _handoffId();
+  const chain = [
+    ...(Array.isArray(previous) ? previous : []),
+    {
+      session_id: sourceSid,
+      title: source.title || "session",
+      model: source.model || "modèle par défaut",
+    },
+  ];
+  const userFields = { provenance: chain, handoffId };
+
+  // Cible déjà en génération : ne crée surtout pas un second flux et ne l'interrompt
+  // pas. Le backend confirme atomiquement la mise en file ; si le tour s'est terminé
+  // entre-temps (409), on retombe sur le chemin SSE direct ci-dessous.
+  if (target.streaming) {
+    panesFor(targetSid).forEach((pane) => (pane.pin = true));
+    const queuedItem = opsFor(targetSid).push({
+      kind: "user",
+      content: text,
+      ...userFields,
+      queued: true,
+    });
+    const fd = new FormData();
+    fd.append("message", text);
+    fd.append("session_id", targetSid);
+    for (const [key, value] of Object.entries(
+      _handoffForm(sourceSid, previous, handoffId, true),
+    ))
+      fd.append(key, String(value));
+    try {
+      const response = await fetch("/handoff", { method: "POST", body: fd });
+      if (response.status === 202) return;
+      target.timeline = target.timeline.filter((item) => item.id !== queuedItem.id);
+      scheduleRenderFor(targetSid);
+      if (response.status !== 409) {
+        const detail = (await response.text()).trim();
+        opsFor(sourceSid).push({
+          kind: "error",
+          message:
+            "Transfert impossible : " +
+            (detail || "session cible introuvable"),
+        });
+        return;
+      }
+    } catch (err) {
+      target.timeline = target.timeline.filter((item) => item.id !== queuedItem.id);
+      scheduleRenderFor(targetSid);
+      opsFor(sourceSid).push({
+        kind: "error",
+        message: "Transfert impossible : " + err.message,
+      });
+      return;
+    }
+  }
+
+  return sendChat(targetSid, text, [], {
+    endpoint: "/handoff",
+    form: _handoffForm(sourceSid, previous, handoffId),
+    userFields,
+    handoffId,
+    errorSid: sourceSid,
+  });
 }

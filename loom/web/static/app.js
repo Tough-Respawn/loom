@@ -6,6 +6,7 @@
 // Plus aucune manipulation DOM manuelle → la classe de bugs (doublons/fantômes,
 // pills non rattachées) disparaît par construction. Validé par `node --check`.
 
+import { initKbdCheatsheet } from "./kbd.js";
 import { _phRaf, loomWorkdir, set_CMDS, set__phRaf, set_loomWorkdir, set_machineUnloaded, set_skGenBusy } from "./shared.js";
 import { addImages, clampRatio, createPane, renderLayout, savePanesLayout, updatePlaceholders } from "./panes.js";
 import { SM_POS_KEY, _multiSel, _typesetAll, clearMultiSel, closeDrawer, closeSkillDrawer, closeTabMenu, compactBtn, doDeleteSkill, drawer, drawerClose, drawerScrim, fmtTok, localOnlyCb, newSessionTab, openConfirmPop, openDeleteConfirm, openDrawer, openSkillCreator, openSkillEditor, paintModelSelect, pickFolderBtn, postForm, postSkillsToggle, reflectWorkdir, resetBtn, saveSkill, scheduleMachineRefresh, sessionNew, setMetrics, setSkillDrawerMode, settingsBtn, showToast, sidebarEl, sidebarToggle, singleView, skBody, skCurrent, skDraft, skDrawer, skGenDesc, skMode, skNameInput, skScrim, skStatus, smPlace, splitWith, syncSkillsMaster, thinkingCb, toggleMultiSel, updateUsageMeter, workdirChip } from "./panels.js";
@@ -1310,3 +1311,4 @@ document.addEventListener("change", (e) => {
 document.body.addEventListener("htmx:afterSwap", () => paintModelSelect());
 
 paintModelSelect();
+initKbdCheatsheet();

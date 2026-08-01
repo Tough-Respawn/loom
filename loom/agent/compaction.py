@@ -6,8 +6,6 @@ from collections.abc import Iterator
 from loom.agent.debuglog import _debug
 
 
-
-
 # --- Microcompact INTERNE à la boucle d'outils ---------------------------------------
 # Sur une chaîne longue (refactor multi-fichiers, exploration), `convo` accumule TOUS les
 # messages role:tool et finit par approcher la fenêtre du modèle -> overflow. CC règle ça
@@ -245,12 +243,29 @@ def _inject_notes(notes_provider, convo: list[dict]) -> Iterator[tuple[str, obje
     count = 0
     try:
         for _raw_note in notes_provider() or []:
+            # Les transferts inter-sessions voyagent dans la même file que les notes,
+            # mais gardent leurs métadonnées pour que la timeline cible affiche la
+            # provenance et que la réponse puisse la chaîner au prochain transfert.
+            # Le modèle, lui, ne reçoit toujours qu'un texte role:user.
+            _meta = _raw_note if isinstance(_raw_note, dict) else None
+            _note_text = (
+                str(_meta.get("text", "")) if _meta is not None else str(_raw_note)
+            )
             _wrapped = (
                 "[User note received mid-turn — take it into account "
-                f"and continue the task] {_raw_note}"
+                f"and continue the task] {_note_text}"
             )
             convo.append({"role": "user", "content": _wrapped})
-            yield ("note", _wrapped)
+            if _meta is None:
+                yield ("note", _wrapped)
+            else:
+                yield (
+                    "note",
+                    {
+                        **_meta,
+                        "text": _wrapped,
+                    },
+                )
             count += 1
     except Exception as _e:  # noqa: BLE001 - notes best-effort
         _debug("NOTES_ERR", str(_e))

@@ -1,7 +1,7 @@
 // loom/web/static/components.js — issu du decoupage de app.js (comportement constant).
 import { html, useEffect, useRef, useState } from "./preact-htm.js";
-import { opsFor, paneShowing, scheduleRenderFor, tab } from "./state.js";
-import { renderPreviews, submitPane } from "./panes.js";
+import { opsFor, paneShowing, scheduleRenderFor, state, tab } from "./state.js";
+import { handoffMessage, renderPreviews, submitPane } from "./panes.js";
 import { md } from "./render.js";
 
 export function Think({ it }) {
@@ -208,12 +208,21 @@ export function UserMsg({ it, userIndex, sid }) {
   const queuedTag = it.queued
     ? html`<span class="msg-queued" title="En file : sera pris au prochain point d'arrêt">en file</span>`
     : "";
+  const chain = Array.isArray(it.provenance) ? it.provenance : [];
+  const direct = chain.length ? chain[chain.length - 1] : null;
+  const provenanceTag = direct
+    ? html`<span
+        class="msg-provenance"
+        title=${"Parcours : " + chain.map((p) => p.model || "modèle").join(" → ")}
+      >transféré depuis ${direct.model || "un autre modèle"}</span>`
+    : "";
   const cls = it.queued ? "msg user queued" : "msg user";
   const parts = Array.isArray(it.content) ? it.content : null;
   if (!parts) {
-    return html`<div class=${cls}>${it.content}${queuedTag}${forkBtn}</div>`;
+    return html`<div class=${cls}>${provenanceTag}${it.content}${queuedTag}${forkBtn}</div>`;
   }
   return html`<div class=${cls}>
+    ${provenanceTag}
     ${parts.map((p) =>
       p.type === "image_url"
         ? html`<img src=${p.image_url.url} alt="image" />`
@@ -223,17 +232,77 @@ export function UserMsg({ it, userIndex, sid }) {
   </div>`;
 }
 
-export function Assistant({ it }) {
+export function Assistant({ it, sid }) {
   const ref = useRef(null);
+  const controlsRef = useRef(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
     if (it.done && ref.current) enhance(ref.current, it.raw);
   }, [it.done, it.raw]);
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const outside = (e) => {
+      if (!controlsRef.current?.contains(e.target)) setMenuOpen(false);
+    };
+    const escape = (e) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [menuOpen]);
+
+  const candidates = state.order
+    .filter((targetSid) => targetSid !== sid && tab(targetSid))
+    .sort((a, b) => (a === state.active ? -1 : b === state.active ? 1 : 0));
+  const disabled = sid === state.active || candidates.length === 0;
+  const sendTo = (targetSid) => {
+    setMenuOpen(false);
+    handoffMessage(sid, targetSid, it.raw, it.provenance || []);
+  };
+  const chooseTarget = (e) => {
+    e.stopPropagation();
+    if (disabled) return;
+    if (candidates.length === 1) sendTo(candidates[0]);
+    else setMenuOpen((open) => !open);
+  };
+
   if (it.done) {
     return html`<div
       class="msg assistant"
       ref=${ref}
-      dangerouslySetInnerHTML=${{ __html: md(it.raw) }}
-    ></div>`;
+    >
+      <div class="assistant-content" dangerouslySetInnerHTML=${{ __html: md(it.raw) }}></div>
+      <div class="msg-send" ref=${controlsRef}>
+        <button
+          class="msg-transfer"
+          type="button"
+          title=${disabled ? "La session active ne peut pas recevoir ce message" : "Envoyer cette réponse vers une autre session"}
+          disabled=${disabled}
+          onClick=${chooseTarget}
+        >→ envoyer</button>
+        ${menuOpen
+          ? html`<div class="transfer-menu" role="menu">
+              ${candidates.map((targetSid, i) => {
+                const target = tab(targetSid);
+                return html`<button
+                  type="button"
+                  role="menuitem"
+                  class=${targetSid === state.active ? "preferred" : ""}
+                  autoFocus=${i === 0}
+                  onClick=${(e) => { e.stopPropagation(); sendTo(targetSid); }}
+                >
+                  <span>${target.title || "session"}</span>
+                  <small>${target.model || "modèle par défaut"}</small>
+                </button>`;
+              })}
+            </div>`
+          : null}
+      </div>
+    </div>`;
   }
   return html`<div class="msg assistant streaming">${it.raw}</div>`;
 }
@@ -279,7 +348,7 @@ export function Item({ it, userIndex, sid }) {
     case "user":
       return html`<${UserMsg} it=${it} userIndex=${userIndex} sid=${sid} />`;
     case "assistant":
-      return html`<${Assistant} it=${it} />`;
+      return html`<${Assistant} it=${it} sid=${sid} />`;
     case "think":
       return html`<${Think} it=${it} />`;
     case "tool":

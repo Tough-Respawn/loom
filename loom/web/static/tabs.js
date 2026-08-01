@@ -1,4 +1,5 @@
 // loom/web/static/tabs.js — issu du decoupage de app.js (comportement constant).
+import { ensureKbdCheatsheetButton } from "./kbd.js";
 import {
   focusedPane,
   paneShowing,
@@ -120,6 +121,9 @@ export function renderTabs() {
     inp.click();
   });
   tabbarEl.append(plus);
+  // renderTabs remplace tout le contenu de la barre : le bouton d'aide doit donc
+  // être réinséré explicitement à chaque rendu (initialisation idempotente).
+  ensureKbdCheatsheetButton();
 }
 
 export function _userTexts(messages) {
@@ -167,6 +171,9 @@ export function _replayTimeline(t, events) {
           kind: "user",
           content: d.content,
           raw: typeof d.content === "string" ? d.content : "",
+          provenance: d.provenance || [],
+          handoffId: d.handoff_id || "",
+          queued: !!d.queued,
           done: true,
         });
         break;
@@ -194,7 +201,14 @@ export function _replayTimeline(t, events) {
         break;
       case "text":
         if (think) think = null;
-        if (!asst) asst = add({ kind: "assistant", raw: "", done: true });
+        if (!asst)
+          asst = add({
+            kind: "assistant",
+            raw: "",
+            done: true,
+            provenance: d.provenance || [],
+          });
+        else if (d.provenance) asst.provenance = d.provenance;
         asst.raw += d.text || "";
         break;
       case "tool_call": {
@@ -386,6 +400,7 @@ export function focusSingletonsFor(sid) {
 }
 
 export function focusPane(target) {
+  const previous = focusedPane();
   const i = typeof target === "number" ? target : state.panes.indexOf(target);
   const pane = state.panes[i];
   if (!pane) return;
@@ -394,6 +409,11 @@ export function focusPane(target) {
   if (pane.sid) focusSingletonsFor(pane.sid);
   else state.active = null;
   renderTabs();
+  // Les boutons « envoyer » dépendent de state.active (source active = désactivé).
+  // Repeindre les deux panneaux concernés garde cet état visuel exact au changement
+  // de focus, sans rafraîchir les autres timelines.
+  if (previous && previous !== pane) renderPane(previous);
+  renderPane(pane);
 }
 
 export function activateTab(sid) {
