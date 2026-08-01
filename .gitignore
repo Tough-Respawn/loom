@@ -39,3 +39,5 @@ evals/out_review/
 CLAUDE.md
 ROADMAP.md
 STORIES-handoff-multi-modeles.md
+/logs/handoff_monitor.log
+scripts/
