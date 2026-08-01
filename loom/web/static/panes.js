@@ -3,7 +3,7 @@ import { focusedPane, opsFor, paneShowing, panesFor, renderMsgNav, renderPane, s
 import { focusPane, setPaneSid } from "./tabs.js";
 import { SID_MIME, dropTabOnPane, openTabMenu, postForm, showToast, wireSidDrag } from "./panels.js";
 import { CMDS } from "./shared.js";
-import { sendChat } from "./chat.js";
+import { sendChat, sendHandoff } from "./chat.js";
 
 export const panesEl = document.getElementById("panes");
 
@@ -445,6 +445,10 @@ export function submitPane(pane) {
   syncComposer(pane);
 }
 
+export function handoffMessage(sourceSid, targetSid, text, provenance) {
+  return sendHandoff(sourceSid, targetSid, text, provenance);
+}
+
 export function stopPane(pane) {
   const t = tab(pane.sid);
   if (t && t.abort) t.abort.abort();
@@ -455,7 +459,10 @@ export function stopPane(pane) {
 export function wirePane(pane) {
   const input = pane.input;
   // Focus du panneau au premier geste dedans (split view) — capture, avant les boutons.
-  const takeFocus = () => {
+  const takeFocus = (e) => {
+    // Cliquer « envoyer » dans un panneau source NON focus doit conserver le focus
+    // courant : c'est précisément lui qui désigne la cible nominale du handoff.
+    if (e?.target?.closest?.(".msg-send")) return;
     if (state.panes[state.focusedIdx] !== pane) focusPane(pane);
   };
   pane.el.addEventListener("pointerdown", takeFocus, true);

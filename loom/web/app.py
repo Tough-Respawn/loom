@@ -356,9 +356,13 @@ class NotesQueue:
 
     def __init__(self) -> None:
         self._guard = threading.Lock()
-        self._queues: dict[str, list[str]] = {}
+        # Une entrée est normalement une chaîne. Les handoffs utilisent un dict borné
+        # contenant le texte réellement injecté + les métadonnées d'affichage
+        # (provenance, id). La boucle agent sait lire les deux formes ; les notes
+        # historiques restent strictement inchangées.
+        self._queues: dict[str, list[str | dict]] = {}
 
-    def push(self, sid: str, text: str) -> int:
+    def push(self, sid: str, text: str | dict) -> int:
         """Empile une note ; renvoie la taille de la file, ou -1 si elle est pleine."""
         with self._guard:
             q = self._queues.setdefault(sid, [])
@@ -367,7 +371,7 @@ class NotesQueue:
             q.append(text)
             return len(q)
 
-    def drain(self, sid: str) -> list[str]:
+    def drain(self, sid: str) -> list[str | dict]:
         with self._guard:
             q = self._queues.get(sid) or []
             self._queues[sid] = []
