@@ -1,4 +1,3 @@
-# loom/runtime/gguf_meta.py
 """Lecture MINIMALE du header GGUF, sans dépendance externe.
 
 On ne lit QUE le header (magic/version/counts + paires clé/valeur) — jamais les
@@ -12,8 +11,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-# Types scalaires GGUF -> format struct (little-endian). 8=string et 9=array sont
-# traités à part. Le type 7 (bool) est lu comme u8.
+# Les chaînes et tableaux GGUF nécessitent un décodage distinct des scalaires.
 _SCALAR = {
     0: "B",
     1: "b",
@@ -40,8 +38,7 @@ def _read_value(f, vtype: int):
     if vtype == 9:
         (itype,) = struct.unpack("<I", f.read(4))
         (count,) = struct.unpack("<Q", f.read(8))
-        # Les arrays (ex. vocab tokenizer) doivent être TRAVERSÉS pour atteindre les
-        # clés suivantes ; leur contenu ne nous sert pas, on le jette.
+        # Traverser les tableaux garde le curseur aligné sur les clés suivantes.
         for _ in range(count):
             _read_value(f, itype)
         return None
@@ -86,8 +83,7 @@ def read_gguf_meta(path: str | Path) -> dict:
         "n_layers": _int("block_count"),
         "context_length": _int("context_length"),
         "expert_count": _int("expert_count"),
-        # Attention (pour estimer le cache KV par token) : head_dim = key_length
-        # si présent, sinon embedding_length / head_count.
+        # `key_length` donne une estimation plus juste du cache KV quand il existe.
         "head_count": _int("attention.head_count"),
         "head_count_kv": _int("attention.head_count_kv"),
         "embedding_length": _int("embedding_length"),

@@ -1,4 +1,3 @@
-# loom/tools/note.py
 """Outils write_note / read_note : mémoire DURABLE de la boucle tool-use.
 
 Les résultats d'outils (lectures de fichiers, recherches) peuvent être PURGÉS du

@@ -1,4 +1,3 @@
-# loom/tools/format.py
 """Outil format_code : reformate proprement un fichier selon son langage.
 
 Le 4B produit souvent du code mal indenté / non conforme (PEP8 en Python, alignement en
@@ -76,8 +75,7 @@ def make_format_code(workspace_dir: str) -> ToolSpec:
     root = Path(workspace_dir)
 
     def _format_python(path: Path) -> str:
-        # ruff est une dépendance de Loom (présent dans le venv) : on l'utilise EN PRIORITÉ
-        # (hors-ligne, version pinnée). Repli sur `uvx ruff` si le binaire n'est pas sur le PATH.
+        # Préférer le Ruff local, disponible hors ligne et de version maîtrisée.
         ruff = shutil.which("ruff")
         if ruff:
             base = [ruff]
@@ -87,7 +85,7 @@ def make_format_code(workspace_dir: str) -> ToolSpec:
                 raise ToolError(_RUFF_HINT)
             base = [uvx, "ruff"]
         try:
-            # 1) corrige les soucis PEP8 SÛRS (imports inutiles, tri…), 2) style.
+            # Corriger d'abord les règles sûres, puis appliquer le formatage.
             fix = _run([*base, "check", "--fix", str(path)], root, 60)
             fmt = _run([*base, "format", str(path)], root, 60)
         except subprocess.TimeoutExpired as exc:
@@ -97,8 +95,7 @@ def make_format_code(workspace_dir: str) -> ToolSpec:
         lines = [f"format_code (ruff) : {path.name}"]
         if fmt_out:
             lines.append(fmt_out)
-        # ruff check renvoie non-zéro s'il reste des soucis NON auto-corrigeables :
-        # info utile (le modèle doit les corriger), pas un échec de l'outil.
+        # Les diagnostics non corrigeables restent informatifs après le formatage.
         if fix.returncode != 0 and fix_out:
             lines.append("lint restant (à corriger) :")
             lines.append(fix_out)
@@ -111,8 +108,7 @@ def make_format_code(workspace_dir: str) -> ToolSpec:
         if not npx:
             raise ToolError(_PRETTIER_HINT)
         try:
-            # --no-install : on REFUSE le download (Loom est offline) ; si prettier n'est
-            # pas déjà présent, npx échoue et on renvoie le hint d'installation.
+            # Ne jamais télécharger Prettier implicitement dans un environnement hors ligne.
             proc = _run(
                 [npx, "--no-install", "prettier", "--write", str(path)], root, 90
             )
@@ -128,8 +124,7 @@ def make_format_code(workspace_dir: str) -> ToolSpec:
                 or "npx canceled" in low
             ):
                 raise ToolError(_PRETTIER_HINT)
-            # prettier signale aussi les ERREURS DE SYNTAXE (ligne/colonne) : retour
-            # actionnable -> convention "erreur:" pour que la boucle marque l'échec.
+            # Le préfixe d'erreur permet à la boucle de classer les erreurs de syntaxe.
             return f"erreur: prettier a échoué sur {path.name}.\n{out}"
         return _clean(f"format_code (prettier) : {path.name}", out)
 

@@ -1,4 +1,3 @@
-# loom/tools/read.py
 """Outils de lecture : read_file (texte + PDF/Excel/Word, routage par extension) et
 read_image. READ-only. Chemin absolu (n'importe où) ou relatif au dossier de travail.
 
@@ -16,16 +15,13 @@ from loom.agent.inline_image import wrap_image
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.trust import untrusted
 
-# Message UNIQUE du « modèle sans vision » : servi par make_read_image (describer absent)
-# ET par build_registry (outil gaté hors du schéma, cf. mark_unavailable) — une seule
-# source, sinon les deux copies dérivent et l'une raconte une UI qui n'existe plus.
+# Une source unique garde cohérentes les erreurs des modèles sans vision.
 VISION_UNAVAILABLE = (
     "ce modèle N'A PAS la vision : il ne peut pas lire d'image. "
     "Dis-le franchement à l'utilisateur et propose-lui de basculer sur "
     "un modèle marqué VISION dans le sélecteur (infobulle au survol)."
 )
 
-# Images servies au modèle multimodal (mmproj). MIME par extension.
 _IMAGE_MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -50,7 +46,7 @@ def _decode_text_enc(data: bytes) -> tuple[str, str] | tuple[None, None]:
         return data.decode("utf-8"), "utf-8"  # cas le plus courant
     except UnicodeDecodeError:
         pass
-    # UTF-16 sans BOM : beaucoup d'octets nuls (1 octet sur 2 pour de l'ASCII).
+    # Les octets nuls alternés trahissent souvent un UTF-16 sans BOM.
     if data and data.count(b"\x00") > len(data) // 4:
         for enc in ("utf-16-le", "utf-16-be"):
             try:
@@ -100,11 +96,7 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
         if total_chars == 0:
             return f"[fichier vide : {rel}]"
 
-        # Fenêtre de lecture (1-based, optionnelle) : lire un GROS fichier par TRANCHES
-        # plutôt que tout d'un coup -> on ne dépasse jamais le contexte.
-        # ALIAS tolérés : les modèles entraînés sur d'autres API écrivent souvent
-        # `offset`/`limit`/`n`/`end_line`. Avant, ces clés étaient IGNORÉES en silence
-        # (lecture depuis la ligne 1 en prétendant lire ailleurs). On les mappe.
+        # Accepter les alias courants évite d'ignorer silencieusement une fenêtre demandée.
         def _first(*keys):
             for k in keys:
                 v = args.get(k)
@@ -123,13 +115,11 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
         el = _first("end_line", "to_line")
         try:
             count = None if lc in (None, "") else int(lc)
-            # `end_line` (borne haute inclusive) -> nombre de lignes, si line_count absent.
             if count is None and el not in (None, ""):
                 count = max(0, int(el) - start + 1)
         except (TypeError, ValueError):
             raise ToolError("line_count/end_line doit être un entier") from None
         if count is not None and count < 1:
-            # count=0 rendait une plage vide « lignes 2–1 » (silencieux, absurde).
             raise ToolError(
                 "line_count doit être >= 1 (ou omis pour lire jusqu'au bout)"
             )
@@ -144,12 +134,7 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
         if total == 0:
             return f"[fichier vide : {rel}]"
 
-        # REPLI PAR CARACTÈRES : le découpage par lignes est inutile sur un fichier
-        # MONO-LIGNE (JSON/CSS/JS minifié = une ligne géante) — le cap `max_bytes` ne
-        # coupe qu'ENTRE lignes, donc une ligne de 74k passerait entière et saturerait le
-        # contexte. On bascule en lecture par CARACTÈRES si `start_char` est fourni, OU
-        # automatiquement dès qu'une ligne de la fenêtre dépasse le budget. Ainsi UNE
-        # lecture ne renvoie JAMAIS plus de `max_bytes` caractères.
+        # Les fichiers minifiés exigent une fenêtre par caractères pour respecter le budget.
         if start > total and start_char is None:
             raise ToolError(f"start_line={start} hors fichier : {rel} a {total} lignes")
         end_check = total if count is None else min(total, start - 1 + count)
@@ -182,9 +167,7 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
                 )
             return head + chunk + footer
 
-        # MODE LIGNES : sélection bornée par line_count ET par le cap de caractères. On
-        # coupe AVANT de dépasser `max_bytes` (jamais d'overshoot d'une ligne entière ; les
-        # lignes plus grosses que le budget sont déjà parties en mode caractères ci-dessus).
+        # Couper avant de dépasser le budget, jamais après une ligne entière.
         end_limit = total if count is None else min(total, start - 1 + count)
         selected: list[str] = []
         chars = 0
@@ -196,16 +179,12 @@ def make_read_file(workspace_dir: str, max_bytes: int) -> ToolSpec:
             chars += len(lines[i]) + 1
             i += 1
         last = i  # index exclusif -> dernière ligne affichée = i (1-based)
-        # NUMÉROS DE LIGNE (format `  12→contenu`), ABSOLUS : le modèle les référence pour
-        # se repérer/naviguer. Pour ÉDITER : copie l'extrait EXACT (sans le préfixe
-        # `N→`) dans edit_file(old_string).
+        # Les numéros absolus servent à naviguer, mais ne font pas partie du contenu.
         width = max(2, len(str(last)))
         numbered = "\n".join(
             f"{n:>{width}}→{line}" for n, line in enumerate(selected, start)
         )
-        # Marqueur de fin EXPLICITE : sans lui, le modèle qui voit du code s'arrêter net
-        # croit que SA LECTURE a été coupée et relit en boucle. Si tronqué, on indique la
-        # COMMANDE pour lire la suite (mécanisme réel, pas un vœu pieux).
+        # Un marqueur explicite distingue une fin réelle d'une fenêtre tronquée.
         if last >= total:
             footer = (
                 f"\n[FIN DU FICHIER — lignes {start}–{total} sur {total}. Pour éditer : "
@@ -380,8 +359,7 @@ def make_read_image(
             )
         b64 = base64.b64encode(data).decode("ascii")
         data_uri = f"data:{mime};base64,{b64}"
-        # Modèle qui ne voit pas : réponse FRANCHE (règle : read_image = le modèle en
-        # cours, jamais un détour vers un autre modèle — loom.web passe describer=None).
+        # Ne jamais détourner une image vers un autre modèle sans accord.
         if not active_is_vision:
             if describer is None:
                 raise ToolError(VISION_UNAVAILABLE)

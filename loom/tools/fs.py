@@ -1,4 +1,3 @@
-# loom/tools/fs.py
 """Outils d'écriture/édition. Trois outils DÉLIBÉRÉMENT distincts (cf. ADR 0003 : édition par numéro de ligne retirée) :
 chacun neutralise une contrainte précise d'un petit modèle sur un contexte étroit.
 
@@ -29,27 +28,13 @@ from loom.permissions import is_protected_write_path
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.read import _decode_text_enc
 
-# ---- Diagnostics auto après écriture de code (« palier 1 LSP ») ------------------
-# Le modèle n'appelle format_code que s'il y pense (et le 4B confabule l'exécution) :
-# on déplace le check de l'espace prompt vers l'espace harnais. Après CHAQUE écriture
-# d'un fichier code couvert, un lint NON-MUTANT (jamais de --fix : ne pas invalider
-# les lignes que le modèle vient de viser) colle les ERREURS au résultat d'outil.
-# Jamais bloquant : linter absent / timeout / rc inattendu -> silence, l'écriture
-# reste acquise. Haute confiance uniquement (syntaxe, bugs quasi certains), JAMAIS
-# les règles « inutilisé » (F401/F841/no-unused-vars) : sur un squelette en cours de
-# chunking elles pousseraient le modèle à « corriger » du code que le chunk suivant
-# utilise.
-#   - .py/.pyi -> ruff (dépendance Loom) : E9/F63/F7/F82 (syntaxe, comparaisons
-#     cassées, return/yield hors fonction, noms non définis), `--isolated` car le
-#     workspace = de vrais projets dont la config ne doit pas changer le harnais.
-#   - .js/.ts/... -> oxlint (binaire Rust autonome, optionnel) : catégorie
-#     correctness en erreur. Ne couvre PAS le JS inline d'un .html (filet runtime :
-#     check_page).
+# Après écriture, un lint non mutant remonte seulement les erreurs certaines.
+# Il reste best-effort et isolé de la configuration du projet cible.
 _LINT_PY_EXTS = frozenset({".py", ".pyi"})
 _LINT_JS_EXTS = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx"})
 _LINT_MAX_LINES = 8  # budget contexte : plafond dur sur ce qu'on injecte
 
-# Résumés de fin de sortie à écarter ("Found 2 errors." ruff, "3 problems" oxlint).
+# Écarter les résumés pour ne garder que les diagnostics actionnables.
 _LINT_NOISE = re.compile(r"^(Found \d+|\[\*\]|\d+ problems?\b)")
 
 
@@ -100,8 +85,7 @@ def _lint_auto_hint(path: Path) -> str:
         if not tool:
             return ""
         label = "oxlint"
-        # correctness passé en ERREUR (rc 1) ; no-unused-vars retiré (bruit de
-        # chunking, cf. bloc ci-dessus).
+        # Les variables inutilisées sont du bruit pendant une écriture par morceaux.
         argv = [
             tool,
             "-f",
@@ -151,10 +135,7 @@ def make_write_file(
 ) -> ToolSpec:
     """Outil write_file borné au workspace, taille plafonnée, écriture atomique."""
     root = Path(workspace_dir)
-    # Plafond « un seul write » DÉRIVÉ du budget de sortie (max_tokens), pas codé en dur : un
-    # contenu plus gros risque d'être tronqué par la limite de tokens AVANT d'arriver ici (JSON
-    # d'appel cassé). Au-delà -> on impose le découpage par UNITÉ LOGIQUE. ~1.75 car./token (la
-    # moitié du budget réservée au raisonnement).
+    # Dériver la taille du budget évite qu'un appel JSON soit tronqué avant exécution.
     one_shot_cap = int(max_tokens * 1.75)
 
     def run(args: dict) -> str:
@@ -237,8 +218,7 @@ def make_append_file(
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8", newline="") as fh:
             fh.write(content)
-        # Une erreur de syntaxe ICI = chunk coupé au milieu d'une unité logique
-        # (la doctrine du chunking veut que le fichier parse après chaque append).
+        # Chaque morceau doit laisser un fichier syntaxiquement valide.
         return f"ajouté : {rel} (+{len(content)} caractères)" + _lint_auto_hint(path)
 
     return ToolSpec(
@@ -298,29 +278,20 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
             raise ToolError(f"fichier introuvable : {rel}")
         if path.is_dir():
             raise ToolError(f"'{rel}' est un répertoire, pas un fichier")
-        # Décodage MULTI-ENCODAGE (comme read_file) : un fichier UTF-16 (défaut
-        # PowerShell) ou cp1252 se lit et s'édite, on mémorise l'encodage pour ré-écrire
-        # à l'identique. Avant, un `decode("utf-8")` sec déclarait « binaire » un fichier
-        # que read_file venait pourtant de lire — impasse pour le modèle.
+        # Réécrire avec l'encodage détecté garde éditables les fichiers UTF-16 et cp1252.
         raw, _enc = _decode_text_enc(path.read_bytes())
         if raw is None:
             raise ToolError(
                 f"fichier binaire non éditable : {rel} (aucun encodage texte détecté)"
             )
-        # Matching AGNOSTIQUE aux fins de ligne. read_file montre du LF (splitlines) -> le
-        # modèle copie un old_string en LF, alors que le fichier sur disque est souvent CRLF
-        # (Windows). AVANT, `text.count(old_string)` échouait sur tout extrait multi-ligne
-        # d'un fichier CRLF. On normalise TOUT en LF pour chercher/remplacer, puis on
-        # ré-applique le style du fichier (CRLF) à l'écriture -> l'édition marche quel que
-        # soit le style, et le fichier garde ses fins de ligne d'origine.
+        # Chercher en LF puis restaurer le style original rend l'édition indépendante de l'OS.
         is_crlf = "\r\n" in raw
         text = raw.replace("\r\n", "\n")
         old_string = old_string.replace("\r\n", "\n")
         new_string = new_string.replace("\r\n", "\n")
         count = text.count(old_string)
         if count == 0:
-            # Piège fréquent : le modèle copie l'affichage de read_file, qui préfixe chaque
-            # ligne d'un « N→ » (numéro de ligne + flèche) ABSENT du fichier réel.
+            # Signaler les numéros décoratifs copiés depuis `read_file`.
             prefix_hint = ""
             if re.search(r"(?m)^\s*\d+→", old_string):
                 prefix_hint = (
@@ -352,9 +323,7 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
             if replace_all
             else f"modifié : {rel}"
         )
-        # Read-back CONDITIONNEL (édits à risque seulement : multi-ligne ou gros bloc).
-        # Systématique, il gonflerait tours/tokens sur chaque petit édit ; ciblé, il
-        # coupe le cycle « edit -> affirme -> faux » sans re-lire tout le fichier.
+        # Relire seulement les changements assez grands pour justifier ce coût.
         if "\n" in old_string or "\n" in new_string or len(new_string) > 200:
             line = _occurrence_lines(text, old_string)[0]
             msg += (

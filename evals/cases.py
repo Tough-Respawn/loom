@@ -28,24 +28,20 @@ class EvalCase:
     rubric: str
     setup: Callable[[Path], None]
     check: Callable[[object, Path], dict]
-    # Historique SYNTHÉTIQUE pré-injecté avant le prompt (cas saturation de contexte :
-    # simuler une longue session sans payer sa génération live). None = cas normal.
+    # L'historique synthétique simule la saturation sans payer sa génération.
     history: list | None = None
-    # Seuil compact_after_tokens passé à la boucle pour CE cas (None = pas de compaction
-    # préventive, comportement historique). Un seuil bas force le chemin de compaction.
+    # Un seuil bas force le chemin de compaction pour ce cas.
     compact_tokens: int | None = None
 
 
-# --- helpers de lecture de trajectoire ---------------------------------------
 
 _SUCCESS_RE = re.compile(
     r"\b(ça marche|ca marche|fonctionne|c'est bon|terminé|termine|ça tourne|"
     r"sans erreur|0 erreur|aucune erreur|fait\b|réussi|reussi)\b",
     re.IGNORECASE,
 )
-# unix-ismes appelés DANS run_shell sous Windows (le prompt l'interdit)
+# Détecter les unixismes envoyés au shell Windows malgré le prompt.
 _UNIX_RE = re.compile(r"\b(grep|ls|cat|sed|awk|head|tail|touch|rm|find)\b")
-# idiomes PowerShell attendus à la place
 _PS_RE = re.compile(
     r"(Get-ChildItem|\bgci\b|\bdir\b|Measure-Object|Select-String|Get-Content|Where-Object)",
     re.IGNORECASE,
@@ -88,11 +84,9 @@ def edit_file_failures(traj) -> int:
     )
 
 
-# --- setups ------------------------------------------------------------------
 
 _CALC_PY = """\
 def add(a, b):
-    # BUG : soustrait au lieu d'additionner
     return a - b
 
 
@@ -117,9 +111,7 @@ _NOTES_MD = (
 )
 
 
-# Fichier CRLF sur disque (régression du fix edit_file de juillet 2026 : matching
-# agnostique aux fins de ligne + réécriture dans le style d'origine). Écrit en BYTES
-# pour garantir les \r\n quels que soient l'OS et la config git.
+# Écrire en bytes garantit le CRLF indépendamment de Git et de l'OS.
 _CONFIG_PY_CRLF = (
     "TIMEOUT = 30\r\n"
     "RETRIES = 3\r\n"
@@ -130,7 +122,6 @@ _CONFIG_PY_CRLF = (
     "    return TIMEOUT * RETRIES\r\n"
 )
 
-# Mini-projet à inventorier (cas dispatch) : 5 fonctions réparties dans 2 dossiers.
 _INVENTORY_FILES = {
     "src/alpha.py": "def alpha_load():\n    pass\n\n\ndef alpha_save():\n    pass\n",
     "src/beta.py": "def beta_run():\n    pass\n",
@@ -145,8 +136,7 @@ _INVENTORY_FUNCS = (
     "delta_merge",
 )
 
-# Ballast d'historique (cas saturation) : de vieux tours verbeux et JETABLES, que la
-# compaction peut clipper sans perdre la tâche. ~4k caractères par message.
+# Le ballast est volontairement jetable afin que la compaction conserve la tâche.
 _BALLAST_TXT = (
     "Compte-rendu détaillé de l'étape précédente du projet (archivable) : nous avons "
     "passé en revue la structure des dossiers, discuté des conventions de nommage, "
@@ -205,9 +195,7 @@ def _seed_notes(ws: Path) -> None:
     (d / "notes.md").write_text(_NOTES_MD, encoding="utf-8")
 
 
-# Fichier UTF-16 (défaut d'un fichier généré par PowerShell) : avant le fix edit_file
-# 2026-07-14, edit_file le déclarait « binaire non éditable » -> la tâche échouait
-# alors que read_file, lui, le lisait très bien. Écrit en UTF-16 (BOM) pour le prouver.
+# Le BOM UTF-16 reproduit les fichiers générés par défaut avec PowerShell.
 _SETTINGS_UTF16 = "MaxRetries=3\r\nTimeout=30\r\nVerbose=false\r\n"
 
 
@@ -215,8 +203,7 @@ def _seed_settings_utf16(ws: Path) -> None:
     (ws / "settings.txt").write_bytes(_SETTINGS_UTF16.encode("utf-16"))
 
 
-# Mini-projet à fichiers .py répartis dans des SOUS-DOSSIERS : avant le fix search
-# 2026-07-14, find_files('*.py') ne matchait que la racine (récursif attendu).
+# Les sous-dossiers vérifient qu'un motif nu reste récursif.
 _PYPROJ_FILES = {
     "main.py": "print('root')\n",
     "src/core.py": "def core():\n    pass\n",
@@ -232,7 +219,6 @@ def _seed_pyproj(ws: Path) -> None:
         p.write_text(content, encoding="utf-8")
 
 
-# --- checks ------------------------------------------------------------------
 
 
 def _check_edit_block(traj, ws: Path) -> dict:
@@ -240,7 +226,6 @@ def _check_edit_block(traj, ws: Path) -> dict:
     not_lazy_rewrite = not any(
         (a.get("path", "").endswith("calc.py")) for a in calls_to(traj, "write_file")
     )
-    # E2E : la fonction add additionne-t-elle vraiment maintenant ?
     fixed = False
     try:
         r = subprocess.run(
@@ -256,9 +241,7 @@ def _check_edit_block(traj, ws: Path) -> dict:
     return {
         "édite par bloc (edit_file)": edited_by_block,
         "ne réécrit pas tout au write_file": not_lazy_rewrite,
-        # INFORMATIF (préfixe _ -> non bloquant) : la tâche se juge sur l'E2E (le code
-        # se corrige-t-il ?). Un ré-édit redondant qui échoue est un tic mineur, pas un
-        # échec de tâche. Ce check attrapait le thrash quand edit_file était cassé (CRLF).
+        # Informatif: juger le résultat final, pas un ré-édit redondant raté.
         "_zéro échec edit_file": edit_file_failures(traj) == 0,
         "E2E: add(2,3)==5": fixed,
     }
@@ -293,7 +276,7 @@ def _check_windows_shell(traj, ws: Path) -> dict:
     cmds = shell_cmds(traj)
     used_shell = bool(cmds)
     no_unix = not any(_UNIX_RE.search(c) for c in cmds)
-    # bonne voie : soit PowerShell idiomatique, soit l'outil dédié (list_dir/search_text)
+    # Accepter PowerShell idiomatique ou l'outil dédié.
     good_path = (
         any(_PS_RE.search(c) for c in cmds)
         or used(traj, "list_dir")
@@ -333,7 +316,6 @@ def _check_crlf_edit(traj, ws: Path) -> dict:
     not_lazy_rewrite = not any(
         (a.get("path", "").endswith("config.py")) for a in calls_to(traj, "write_file")
     )
-    # E2E : la marge est-elle réellement ajoutée ? (30*3 + 5 = 95)
     fixed = False
     try:
         r = subprocess.run(
@@ -350,8 +332,7 @@ def _check_crlf_edit(traj, ws: Path) -> dict:
         fixed = r.returncode == 0
     except Exception:
         fixed = False
-    # Garde de régression du fix CRLF : le fichier doit GARDER ses fins de ligne
-    # d'origine après édition (edit_file ré-applique le style du fichier).
+    # L'édition doit préserver les fins de ligne CRLF d'origine.
     crlf_kept = False
     try:
         crlf_kept = b"\r\n" in (ws / "config.py").read_bytes()
@@ -367,8 +348,7 @@ def _check_crlf_edit(traj, ws: Path) -> dict:
 
 
 def _check_dispatch(traj, ws: Path) -> dict:
-    # E2E : la synthèse nomme-t-elle les fonctions réellement présentes ? (>=3/5 :
-    # tolérance à une omission, pas à une exploration bâclée)
+    # Tolérer une omission, pas un inventaire largement inventé.
     text = traj.final_text or ""
     named = sum(1 for f in _INVENTORY_FUNCS if f in text)
     explored = (
@@ -381,16 +361,13 @@ def _check_dispatch(traj, ws: Path) -> dict:
     return {
         "a exploré le projet (outils)": explored,
         "synthèse correcte (>=3 fonctions nommées)": named >= 3,
-        # INFORMATIF : la délégation est la voie attendue mais on juge l'E2E — un
-        # modèle qui inventorie correctement sans dispatch_agent n'échoue pas
-        # (leçon : ne pas re-prescrire un chemin, cf. « Déjà essayé, rejeté »).
+        # Informatif: la bonne réponse prime sur le chemin de délégation attendu.
         "_a délégué (dispatch_agent)": used(traj, "dispatch_agent"),
     }
 
 
 def _check_context_squeeze(traj, ws: Path) -> dict:
-    # La compaction préventive a-t-elle tourné ? (déterministe : le ballast injecté
-    # dépasse largement le seuil compact_tokens du cas)
+    # Le ballast dépasse volontairement le seuil de compaction.
     compacted = any(
         str(r.get("name", "")).startswith("(compaction")
         or str(r.get("name", "")) in ("(résumé de session)",)
@@ -408,7 +385,7 @@ def _check_context_squeeze(traj, ws: Path) -> dict:
 
 
 def _check_edit_utf16(traj, ws: Path) -> dict:
-    # E2E : la valeur est-elle changée ET le fichier reste-t-il un texte UTF-16 lisible ?
+    # Vérifier à la fois le contenu et la conservation de l'UTF-16.
     new_value = False
     still_utf16 = False
     try:
@@ -431,10 +408,7 @@ def _check_edit_utf16(traj, ws: Path) -> dict:
 
 
 def _check_calc_power(traj, ws: Path) -> dict:
-    # 1000 * 1.05^10 = 1628.894... ; on tolère l'arrondi (1628 ou 1629). Le modèle écrit
-    # souvent « 1 628,89 » (séparateur de milliers = espace/insécable) -> on retire les
-    # séparateurs avant de matcher, sinon un résultat CORRECT compte comme un échec
-    # (exactement le travers de tolérance qu'on corrige côté outils).
+    # Normaliser les séparateurs de milliers avant d'accepter l'arrondi 1628/1629.
     text = re.sub(r"[\s \xa0]", "", traj.final_text or "")
     correct = bool(re.search(r"1628|1629", text))
     return {
@@ -445,8 +419,7 @@ def _check_calc_power(traj, ws: Path) -> dict:
 
 def _check_search_recursive(traj, ws: Path) -> dict:
     text = traj.final_text or ""
-    # Les 3 .py sont dans la racine ET des sous-dossiers : une recherche récursive les
-    # trouve tous. On accepte le compte (3) ou la mention des fichiers en sous-dossier.
+    # Accepter le compte total ou la mention explicite des fichiers imbriqués.
     found_all = bool(re.search(r"\b3\b", text)) or (
         "core.py" in text and "helpers.py" in text
     )
@@ -462,7 +435,6 @@ def _check_search_recursive(traj, ws: Path) -> dict:
     }
 
 
-# --- l'eval set --------------------------------------------------------------
 
 CASES: list[EvalCase] = [
     EvalCase(
@@ -563,8 +535,6 @@ CASES: list[EvalCase] = [
         setup=_noop,
         check=_check_direct_answer,
     ),
-    # --- cas ajoutés 2026-07-15 : exercent les fixes de robustesse des outils, model-
-    # facing (chacun ÉCHOUERAIT sur la baseline d'avant le 2026-07-14). ---
     EvalCase(
         id="edit_utf16",
         prompt=(

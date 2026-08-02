@@ -1,4 +1,3 @@
-# loom/tools/__init__.py
 """Package outils de la boucle tool-use : API publique stable + assemblage du registre.
 
 `from loom.tools import …` reste le point d'entrée (ToolError, ToolSpec, ToolRegistry,
@@ -21,18 +20,8 @@ __all__ = [
     "make_read_image",
 ]
 
-# Outils confiés à un SOUS-AGENT (dispatch_agent) : TOUT sauf dispatch_agent lui-même
-# (anti-récursion) et manage_todos (le plan reste celui du fil principal). Le sous-agent
-# peut écrire/exécuter - un ouvrier en lecture seule ne sert à rien ; la deny-list dure
-# de run_shell et la politique de permission s'appliquent comme au fil principal.
-# SYNCHRO : cette liste est décrite dans prompts/subagent.system.md (section TES OUTILS).
-# Si tu ajoutes/retires un outil dans AVAILABLE_TOOLS, cette liste se met à jour
-# automatiquement - mais mets le prompt à jour aussi.
-# Exclus du kit sous-agent : dispatch_agent (anti-récursion), manage_todos (le plan
-# vit dans la conversation principale), et les outils plugins (opérations de setup,
-# dangereuses et hors-sujet pour un ouvrier — sorties du défaut le 2026-07-15).
-# run_workflow : même anti-récursion que dispatch_agent — un ouvrier qui lance un
-# workflow lancerait des ouvriers, et le plafond d'agents ne serait plus global.
+# Les sous-agents excluent récursion, plan principal et administration des plugins.
+# Garder prompts/subagent.system.md synchronisé avec ce kit.
 _SUBAGENT_EXCLUDED = {
     "dispatch_agent",
     "run_workflow",
@@ -85,8 +74,7 @@ def build_registry(
     `conversation` : requise pour manage_todos (son plan vit dans `conversation.todos`,
     par session et persisté). Absente -> pas de manage_todos (cas du sous-agent).
     """
-    # Imports locaux : les sous-modules d'écriture/shell/web importent `base`,
-    # on les charge à la demande pour garder un graphe d'import simple.
+    # Les imports tardifs évitent les cycles entre le registre et ses outils.
     from loom.tools.fs import (
         make_append_file,
         make_edit_file,
@@ -102,14 +90,10 @@ def build_registry(
         specs.append(make_search_text(workspace_dir))
     if "list_dir" in enabled:
         specs.append(make_list_dir(workspace_dir))
-    # "read_document" accepté comme alias legacy : read_file extrait aussi PDF/xlsx/docx
-    # depuis la fusion — une config/session qui n'avait coché que read_document garde la
-    # lecture au lieu de la perdre en silence.
+    # Préserver l'ancien alias après la fusion de la lecture de documents.
     if "read_file" in enabled or "read_document" in enabled:
         specs.append(make_read_file(workspace_dir, max_bytes))
-    # Gaté VISION (2026-07-15) : sur un modèle texte pur, read_image n'occupe pas
-    # ~340 tokens de schéma pour répondre « je ne vois pas » — l'outil disparaît.
-    # La décision 2026-07-09 reste : jamais de repli vers un autre modèle.
+    # Masquer le schéma vision aux modèles texte sans changer implicitement de modèle.
     if "read_image" in enabled and active_is_vision:
         specs.append(
             make_read_image(
@@ -199,13 +183,11 @@ def build_registry(
         from loom.runtime.platform_info import detect as _platform_detect
         from loom.tools.agent import SubAgentRunner, make_dispatch_agent
 
-        # Le sous-agent hérite des conventions de l'OS courant (shell/commandes) comme le
-        # fil principal : sinon il écrirait du PowerShell sur Linux, etc.
+        # Le sous-agent doit suivre les conventions de l'OS du fil principal.
         _sub_system = SUBAGENT_SYSTEM + "\n\n" + _platform_detect().prompt_block()
 
         def _build_sub_registry() -> ToolRegistry:
-            # Sous-registre complet SANS client -> pas de dispatch_agent imbriqué
-            # (anti-récursion). Écriture/shell inclus : c'est un vrai ouvrier.
+            # Omettre le client interdit les dispatchs imbriqués.
             return build_registry(
                 workspace_dir,
                 max_bytes,
@@ -217,9 +199,7 @@ def build_registry(
                 mcp_hub=mcp_hub,
             )
 
-        # UNE machinerie pour les deux consommateurs : dispatch_agent (le modèle
-        # délègue) et run_workflow (un script délègue). Même routage de tiers, même
-        # cache KV, même politique de permission — un seul endroit à faire évoluer.
+        # Dispatch et workflows partagent routage, cache et politique de permission.
         _runner = SubAgentRunner(
             client,
             _build_sub_registry,
@@ -250,8 +230,7 @@ def build_registry(
                 make_run_workflow(
                     _runner,
                     workspace_dir,
-                    # Concurrence réelle : le modèle ACTIF tourne-t-il sur une API ?
-                    # Un slot llama-swap en local -> parallel() se sérialise.
+                    # Un slot local unique sérialise nécessairement les tâches parallèles.
                     is_remote=bool(client.is_remote(model)),
                 )
             )
@@ -260,9 +239,7 @@ def build_registry(
         from loom.tools.skills import make_use_skill
 
         def _skills_provider() -> list:
-            # Skills EFFECTIFS de la session : overrides (édition de session) appliqués et
-            # skills désactivés retirés -> use_skill ne charge que ce que voit le catalogue.
-            # Sous-agent (pas de conversation) -> tous les skills du disque.
+            # Une session expose seulement ses skills actifs; un sous-agent voit le disque.
             all_skills = collect_skills(
                 skills_dir,
                 plugins_root,

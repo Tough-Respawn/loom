@@ -1,4 +1,3 @@
-# loom/runtime/swap.py
 """Génération de la config llama-swap (un modèle = une commande llama-server)."""
 
 from __future__ import annotations
@@ -27,17 +26,11 @@ def _model_cmd(
         model.dir or models_dir
     )  # dossier du modèle (découverte) sinon racine partagée
     model_path = f"{base}/{model.filename}"
-    # Précédence UNIFIÉE via resolve_ngl (partagée avec serve.py) : cpu_moe >
-    # champ par modèle > override global > recommandation auto. SANS l'override ici,
-    # llama-swap laissait des couches sur CPU (-ngl 30/35 pour Gemma) -> plus lent
-    # que l'offload total (33 tok/s).
+    # Garder la même précédence d'offload que le chemin mono-modèle.
     ngl = resolve_ngl(model, profile, override_n_gpu_layers)
-    # Contexte propre au modèle si défini (gros MoE -> KV plus lourd -> on raccourcit).
     ctx = model.context or context
     mmproj = f"{base}/{model.mmproj_filename}" if model.mmproj_filename else None
-    # Mêmes réglages perf que le chemin mono-modèle (serve.py) : Flash-Attn + KV q8_0
-    # (gpu_tuning) divisent le KV par 2 -> indispensable sur 6 Go, sinon spill. Threads =
-    # cœurs PHYSIQUES en GPU (logiques/2) pour ne pas pénaliser la passe CPU (PLE Gemma).
+    # Reprendre les réglages mono-modèle évite des performances différentes via le routeur.
     threads = (
         max(1, profile.cpu_threads // 2) if profile.has_gpu else profile.cpu_threads
     )
@@ -57,8 +50,7 @@ def _model_cmd(
         ubatch=model.ubatch,
         batch=model.batch,
         checkpoint_min_step=model.checkpoint_min_step,
-        # Isolation mesurée au bench (model.toml) : ce modèle-là monte à 2 slots,
-        # les autres gardent le réglage global — décision PAR MODÈLE, pas machine.
+        # L'isolation du cache est une propriété du modèle, pas de la machine.
         n_parallel=resolve_parallel(n_parallel, model.cache_isolation),
     )
     return " ".join(str(a) for a in args).replace("\\", "/")

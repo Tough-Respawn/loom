@@ -1,4 +1,3 @@
-# loom/tools/agent.py
 """Sous-agents : le RUNNER (machinerie) et l'outil dispatch_agent (sa façade).
 
 Pourquoi : certaines tâches demandent de lire/chercher/agir BEAUCOUP pour ne
@@ -40,10 +39,7 @@ from collections.abc import Callable, Iterator
 
 from loom.tools.base import ToolError, ToolRegistry, ToolSpec
 
-# Consigne ajoutée à la tâche quand une SORTIE STRUCTURÉE est demandée. La mécanique
-# (les champs, leurs types) vit dans le SCHÉMA de submit_result, pas ici — un schéma
-# d'outil est mieux respecté qu'une description en prose (leçon 2026-07). Cette
-# phrase ne dit donc que l'OBLIGATION d'appeler l'outil, pas la forme du résultat.
+# Le schéma porte la forme; cette consigne impose seulement l'appel final.
 _SUBMIT_INSTRUCTION = (
     "\n\nWhen you are done, you MUST report your result by calling the "
     "`submit_result` tool. Its schema defines exactly what to provide. Do not "
@@ -120,14 +116,9 @@ class SubAgentRunner:
         self.permission = permission
         self.compact_after_tokens = compact_after_tokens
         self.compact_for = compact_for
-        # Rôles ABSTRAITS -> ids concrets (ex. {"cheap": "glm-flash", "strong":
-        # "glm-zai"}), dérivés de la config par l'appelant (flags `strong` des modèles
-        # distants + ordre de la chaîne). Un script de workflow épingle "cheap"/"strong"
-        # et reste PORTABLE : aucun id de machine en dur, et un renommage de modèle ne
-        # dégrade pas le routage en silence — la résolution suit la config.
+        # Les rôles abstraits gardent les workflows portables entre configurations.
         self.model_roles = model_roles or {}
-        # Gardé pour les overrides par appel : une session privée ignore TOUT
-        # override de modèle (règle cardinale — aucun octet ne part ailleurs).
+        # Une session privée ignore tout override susceptible d'envoyer des données ailleurs.
         self.local_only = local_only
         chain = [] if local_only else [m for m in (model_chain or []) if m != model]
         self.tiers = [*chain, model]
@@ -184,10 +175,7 @@ class SubAgentRunner:
         def _run_tier(tier):
             """Sous-boucle sur UN tier. Yield ses events ; l'échec se lit dans 'done'."""
             iters, threshold = self._limits(tier)
-            # Cache souverain : une sous-boucle LOCALE écrase le slot KV du parent
-            # -> save/restore autour (~ms, re-prefill évité, constaté 2026-07-10).
-            # Tier DISTANT : le serveur local n'est jamais touché, on ne sauve rien
-            # (le dispatch devient gratuit pour le cache du fil principal).
+            # Seul un sous-agent local peut écraser le slot KV du parent.
             saved = (
                 self.client.save_slot(self.model, "dispatch.kv")
                 if not self.client.is_remote(tier)
@@ -203,9 +191,7 @@ class SubAgentRunner:
                     thinking=False,
                     max_iters=iters,
                     permission=self.permission,
-                    # Sans seuil, la sous-boucle saturait sa fenêtre (session
-                    # 2026-07-14 : completion étranglée à ~129 tokens, tool calls
-                    # tronqués en boucle) — le sous-agent compacte comme le principal.
+                    # Compacter avant saturation évite les appels d'outils tronqués.
                     compact_after_tokens=threshold,
                 )
             finally:
@@ -222,8 +208,7 @@ class SubAgentRunner:
                         and payload.get("reason") == "api_error"
                         and i + 1 < len(tiers)
                     ):
-                        # Tier mort (429/5xx/timeout) : on passe la main au suivant
-                        # au lieu de rendre un échec — marqueur visible dans la synthèse.
+                        # Un tier indisponible cède la main au suivant avec une trace visible.
                         failed = True
                         yield (
                             "content",
@@ -276,8 +261,7 @@ def make_dispatch_agent(
     )
 
     def run_stream(args: dict):
-        # Validation eagerly : appeler run_stream(args) lève ToolError tout de suite
-        # si la tâche manque (le registre la convertit en event d'erreur).
+        # Valider avant de créer le générateur pour remonter immédiatement les erreurs.
         return runner.stream(args.get("task") or "")
 
     def run(args: dict) -> str:

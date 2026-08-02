@@ -1,4 +1,3 @@
-// loom/web/static/sse.js — issu du decoupage de app.js (comportement constant).
 export async function streamSSE(url, fd, onEvent, signal) {
   const resp = await fetch(url, { method: fd ? "POST" : "GET", body: fd || undefined, signal });
   if (resp.status === 202) {

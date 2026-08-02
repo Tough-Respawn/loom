@@ -1,4 +1,3 @@
-# loom/runtime/manager.py
 """Cycle de vie du serveur modèle GÉRÉ PAR loom.web (démarrage auto + boutons UI).
 
 Le serveur (serve.py -> llama-swap -> llama-server) est lancé comme ENFANT de

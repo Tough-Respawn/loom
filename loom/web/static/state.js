@@ -1,4 +1,3 @@
-// loom/web/static/state.js — issu du decoupage de app.js (comportement constant).
 import { html, render } from "./preact-htm.js";
 import { App } from "./components.js";
 

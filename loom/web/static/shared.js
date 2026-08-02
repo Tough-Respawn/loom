@@ -1,4 +1,3 @@
-// loom/web/static/shared.js — issu du decoupage de app.js (comportement constant).
 import { INIT } from "./render.js";
 import { workdirPath } from "./panels.js";
 

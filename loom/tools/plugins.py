@@ -1,4 +1,3 @@
-# loom/tools/plugins.py
 """Outils d'installation de plugins (appelables par le modèle, sous garde de permission) :
 add_marketplace / install_plugin clonent du code tiers ; list_plugins est en lecture seule."""
 

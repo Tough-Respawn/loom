@@ -1,4 +1,3 @@
-# loom/runtime/platform_info.py
 """Détection de l'OS et de ses conventions — SOURCE DE VÉRITÉ unique pour Loom.
 
 Le shell (run_shell) ET le prompt système en dérivent : Loom identifie tout seul sur quel

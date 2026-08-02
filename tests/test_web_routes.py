@@ -1,6 +1,4 @@
-# Caractérisation des routes de create_app (P2-1) : statuts, formes de réponse,
-# effets de bord observables — le filet avant découpage en services/blueprints.
-# Périmètre : tout ce qui est testable sans modèle ni processus externe.
+# Contrats des routes testables sans modèle ni processus externe.
 from __future__ import annotations
 
 import json
@@ -14,12 +12,10 @@ def _sse_types(body: bytes) -> list[str]:
     return out
 
 
-# ---------- socle / sessions ----------
 
 
 def test_commands_catalogue_de_la_palette(web):
-    # GET /commands : source de vérité de la palette « / » du composer — chaque
-    # commande porte name/usage/description, et les handlers connus y figurent.
+    # Le catalogue doit rester exploitable par la palette du composer.
     data = web.get("/commands").get_json()
     cmds = data["commands"]
     names = {c["name"] for c in cmds}
@@ -36,8 +32,7 @@ def test_index_cree_une_session(web):
 
 
 def test_session_new_fait_le_menage_des_fantomes(web):
-    # /session/new supprime les sessions VIDES non verrouillées avant de créer
-    # (app.py ~3040) : créer b fait disparaître a (vide).
+    # Créer une session balaie les sessions vierges non verrouillées.
     a = web.post("/session/new", data={}).get_json()
     b = web.post("/session/new", data={}).get_json()
     assert a["id"] != b["id"]
@@ -58,8 +53,7 @@ def test_session_activate_delete(web):
 
 
 def test_delete_purge_le_cache_pas_de_resurrection(web):
-    # Après suppression, l'objet ne doit plus être servi depuis S.sessions_cache
-    # (sinon /session_state le retrouve et une save ultérieure recrée le dossier).
+    # Le cache ne doit pas ressusciter une session supprimée.
     b = web.post("/session/new", data={}).get_json()
     assert web.get("/session_state", query_string={"id": b["id"]}).status_code == 200
     assert web.post("/session/delete", data={"id": b["id"]}).status_code == 200
@@ -68,8 +62,7 @@ def test_delete_purge_le_cache_pas_de_resurrection(web):
 
 
 def test_delete_refuse_si_generation_en_cours(web):
-    # Le verrou de génération tenu => la route refuse (409) et ne supprime pas :
-    # supprimer sous une boucle active laissait une session zombie.
+    # Refuser la suppression pendant une génération évite une session zombie.
     from loom.web.routes.helpers import _lock_for
 
     b = web.post("/session/new", data={}).get_json()
@@ -86,9 +79,7 @@ def test_delete_refuse_si_generation_en_cours(web):
 
 
 def test_delete_id_inconnu_404_sans_fuite_de_verrou(web):
-    # /session/delete ne doit pas créer d'entrée dans sess_locks pour un id inconnu
-    # (le verrou n'étant plus retiré, ce serait une fuite mémoire sur POST répétés) :
-    # on vérifie l'existence AVANT _lock_for -> 404 net, aucun verrou créé.
+    # Un id inconnu ne doit pas créer un verrou permanent.
     S = web.application.S
     before = set(S.sess_locks)
     r = web.post("/session/delete", data={"id": "deadbeefdead"})
@@ -132,7 +123,6 @@ def test_reset(web_sess):
     assert web_sess.post("/reset").status_code == 200
 
 
-# ---------- garde CSRF (before_request) ----------
 
 
 def test_csrf_cross_site_403(web_sess):
@@ -149,7 +139,6 @@ def test_csrf_same_origin_passe(web_sess):
     assert r.status_code == 200
 
 
-# ---------- /chat : branches synchrones sans modèle ----------
 
 
 def test_chat_message_vide_400(web_sess):
@@ -175,7 +164,6 @@ def test_chat_goal_clear_ack_sse(web_sess):
     assert _sse_types(r.data)[-1] == "done"
 
 
-# ---------- petites routes d'état ----------
 
 
 def test_cancel_204(web_sess):
@@ -199,7 +187,6 @@ def test_tools_et_skills_html(web_sess):
     assert web_sess.post("/skills", data={"skill": []}).status_code == 200
 
 
-# ---------- skills (source/save/delete) ----------
 
 
 def test_skill_source_404(web):
@@ -232,7 +219,6 @@ def test_skill_generate_sans_description_400(web_sess):
     assert web_sess.post("/skill/generate", data={"description": ""}).status_code == 400
 
 
-# ---------- modèles / config ----------
 
 
 def test_models_local(web):
@@ -270,7 +256,6 @@ def test_compact_session_inconnue_404(web_sess):
     assert r.status_code == 404
 
 
-# ---------- helpers module-level (logique pure, P2-2) ----------
 
 
 def test_sse_format():
@@ -297,41 +282,31 @@ def test_detect_workspace_nom_nu(tmp_env):
     (tmp_env / "cas").mkdir()
     (tmp_env / "energy-data-platform").mkdir()
 
-    # Un dossier au nom de mot courant ne doit JAMAIS être adopté par son seul nom :
-    # « cas » dans la prose d'un message collé basculait le workspace sur Documents/cas
-    # (hijack constaté le 2026-07-19, fuite de contenu personnel vers le modèle).
+    # Ne jamais adopter un dossier au nom courant depuis une simple mention en prose.
     assert _detect_workspace("analyse ce cas limite du parseur", str(tmp_env)) is None
 
-    # Un nom de projet « slug » (séparateur -/_/.) reste adoptable par son seul nom.
+    # Un slug de projet reste assez explicite pour être adopté.
     d = _detect_workspace("travaille sur energy-data-platform stp", str(tmp_env))
     assert d and d.endswith("energy-data-platform")
 
-    # Le chemin ABSOLU d'un dossier au nom courant marche toujours.
     d2 = _detect_workspace(str(tmp_env / "cas"), str(tmp_env))
     assert d2 and d2.endswith("cas")
 
 
 def test_should_adopt_pas_de_sous_chemin_dun_projet(tmp_env):
-    # Citer un chemin INTERNE au projet courant n'est pas un changement de contexte :
-    # l'adoption cassait le cache KV (system prompt modifié -> re-prefill intégral de
-    # ~9,2k tokens, 52 s — vécu 2026-07-19 en donnant var/sessions/<id> au modèle).
+    # Un chemin interne ne doit pas invalider le cache KV du projet courant.
     from loom.web.app import _should_adopt
 
     proj = tmp_env / "mon-projet"
     (proj / ".git").mkdir(parents=True)
     sub = proj / "var" / "sessions" / "abc"
     sub.mkdir(parents=True)
-    # Sous-chemin d'une racine de projet (.git) -> PAS d'adoption.
     assert _should_adopt(str(proj), str(sub)) is False
-    # Même dossier -> pas d'adoption (rien ne change).
     assert _should_adopt(str(proj), str(proj)) is False
-    # Chemin HORS du workspace -> vrai changement de contexte, adoption.
     autre = tmp_env / "autre-projet"
     autre.mkdir()
     assert _should_adopt(str(proj), str(autre)) is True
-    # Workspace générique (pas une racine de projet) -> focus d'un sous-projet OK.
     assert _should_adopt(str(tmp_env), str(proj)) is True
-    # loom.md marque aussi une racine de projet.
     proj2 = tmp_env / "proj-fiche"
     proj2.mkdir()
     (proj2 / "loom.md").write_text("fiche", encoding="utf-8")
@@ -365,10 +340,7 @@ class _FakeUpload:
 
 
 def test_build_user_content_image_modele_texte_note_honnete(tmp_env):
-    # Modèle SANS vision + image jointe : la note ne promet plus read_image/un VLM
-    # (read_image est gaté hors vision, pas de repli) — elle dit franchement que le
-    # modèle ne voit pas et cape sur le sélecteur VISION. Les chemins restent listés
-    # (une bascule vision dans la même session pourra les lire).
+    # Sans vision, ne promettre aucun repli implicite mais conserver les chemins pour une bascule.
     from loom.web.app import _build_user_content
 
     out = _build_user_content(

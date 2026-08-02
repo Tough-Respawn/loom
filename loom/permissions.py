@@ -1,4 +1,3 @@
-# loom/permissions.py
 """Mode permission : décide d'autoriser, demander ou refuser un appel d'outil.
 
 Module PUR (aucune I/O) et 100% testable. Le cœur sécurité est la `DEFAULT_DENY` :
@@ -12,14 +11,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-# Outils sans effet de bord destructeur : autorisés d'office (pas de bulle de
-# confirmation), même en mode 'ask'. Lecture/recherche + le bloc-notes de todos.
+# Les outils sans effet destructeur ne demandent pas de confirmation.
 READ_TOOLS = frozenset(
     {
         "read_file",
         "read_image",
-        # Calcul pur (évaluateur AST strict / horloge) : aucune écriture, aucune
-        # exécution arbitraire possible -> autorisés d'office comme les lectures.
+        # Les calculs purs sont équivalents aux lectures pour la permission.
         "calculate",
         "current_date",
         "find_files",
@@ -31,20 +28,12 @@ READ_TOOLS = frozenset(
         "manage_todos",
         "use_skill",
         "list_plugins",
-        # Mémoire interne (store + notes de session) : écrit dans le répertoire de données
-        # de Loom, jamais dans le workspace -> aucun effet destructeur, autorisé d'office.
+        # La mémoire interne reste dans le répertoire de données de Loom.
         "write_note",
         "read_note",
         "recall",
         "remember",
-        # Outil de SORTIE d'un sous-agent à schéma (loom/tools/agent.py) : il ne fait
-        # que déposer une valeur en mémoire pour son appelant — ni disque, ni process,
-        # ni réseau. RENDRE SON RÉSULTAT N'EST PAS UNE ACTION À AUTORISER.
-        # Sans cette ligne il tombait dans la branche « outil inconnu -> ask », et un
-        # sous-agent tourne SANS UI donc tout 'ask' y est refusé par défaut : le
-        # résultat n'était jamais enregistré et agent(schema=…) rendait None. Le modèle
-        # en concluait « le schéma bloque » et abandonnait la sortie structurée
-        # (constaté deux fois en E2E, 2026-07-16).
+        # Rendre un résultat structuré en mémoire n'est pas un effet à confirmer.
         "submit_result",
     }
 )
@@ -63,8 +52,7 @@ WRITE_TOOLS = frozenset(
 )
 
 
-# Motifs durs : destructeurs ou irréversibles. Refusés MÊME en mode allow et
-# MÊME si l'user confirme. Insensible à la casse.
+# Les motifs irréversibles restent refusés dans tous les modes.
 DEFAULT_DENY: tuple[re.Pattern, ...] = (
     re.compile(r"\brm\s+(-[a-z]*\s+)*-?(rf|fr)\b", re.IGNORECASE),
     re.compile(
@@ -86,20 +74,12 @@ DEFAULT_DENY: tuple[re.Pattern, ...] = (
 )
 
 
-# Chemins PROTÉGÉS en ÉCRITURE (write/append/edit/replace/insert) : refusés MÊME en
-# mode allow, comme la deny-list shell. Cibles dont l'écrasement est catastrophique ou
-# irréversible (dossiers système, clés/secrets) — pas une question de « persistance »
-# ennuyeuse, juste les dégâts qu'une hallucination de chemin ou une injection ne doit
-# JAMAIS pouvoir causer. Évalués sur le chemin RÉSOLU (absolu), séparateurs normalisés
-# en '/'. Volontairement COURTE (comme DEFAULT_DENY) : un mur, pas un filtre.
+# Refuser toute écriture résolue vers des dossiers système ou secrets critiques.
 DEFAULT_PROTECTED_PATHS: tuple[re.Pattern, ...] = (
-    # Windows : dossiers système (System32 est sous Windows/).
     re.compile(r"^[a-z]:/windows(/|$)", re.IGNORECASE),
     re.compile(r"^[a-z]:/program files( \(x86\))?(/|$)", re.IGNORECASE),
-    # Unix / macOS : dossiers système.
     re.compile(r"^/(bin|sbin|boot|dev|proc|sys|usr|lib|lib64|etc)(/|$)", re.IGNORECASE),
     re.compile(r"^/system(/|$)", re.IGNORECASE),
-    # Clés / secrets (toute plateforme) : ~/.ssh, ~/.gnupg.
     re.compile(r"/\.ssh/", re.IGNORECASE),
     re.compile(r"/\.gnupg/", re.IGNORECASE),
 )
@@ -199,10 +179,7 @@ def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
 
     if tool_name in WRITE_TOOLS:
         rel = (args.get("path") or "").strip()
-        # Plus de confinement au workspace : write/edit peuvent viser tout le système
-        # (Loom = agent généraliste). La deny-list dure (DEFAULT_PROTECTED_PATHS) +
-        # deny_paths custom restent le garde-fou, refusé MÊME en mode allow - comme
-        # DEFAULT_DENY pour le shell.
+        # Hors workspace, les chemins protégés restent le garde-fou non contournable.
         if is_protected_write_path(rel, cfg.deny_paths):
             return Decision(
                 "deny", "chemin protégé par la politique de sécurité (deny_paths)"
@@ -218,24 +195,14 @@ def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
         return Decision("ask")  # mode 'ask'
 
     if tool_name in ("dispatch_agent", "run_workflow"):
-        # Orchestration : délègue à un sous-agent dont CHAQUE action est re-soumise à
-        # cette même politique. On ne redemande pas pour l'orchestration, on suit le mode.
-        # run_workflow : chaque action de ses ouvriers repasse ici, comme ci-dessus.
-        # MAIS le script lui-même est du Python exécuté avec les builtins entiers — il
-        # PEUT ouvrir un fichier ou lancer un process sans repasser par un outil.
-        # Contrairement à Claude Code, dont le runtime JS interdit fs/shell au script,
-        # on ne prétend pas confiner : le bac à sable a été supprimé par décision
-        # (2026-06-04) et run_shell("python -c …") ouvre déjà exactement cette porte.
-        # Conséquence assumée, à ne pas se raconter autrement : un `open()` écrit par
-        # le script ne repasse par AUCUNE deny-list. Approuver run_workflow revient
-        # donc à approuver du code arbitraire, comme approuver run_shell.
+        # Le Python d'un workflow n'est pas confiné: l'approuver équivaut à approuver du shell.
         if cfg.mode == "deny_all":
             return Decision("deny", "mode deny_all")
         if cfg.mode == "allow":
             return Decision("allow")
         return Decision("ask")
 
-    # Outil inconnu : on demande par prudence (sauf deny_all).
+    # Demander par prudence pour tout outil inconnu.
     if cfg.mode == "deny_all":
         return Decision("deny", "mode deny_all")
     return Decision("ask")

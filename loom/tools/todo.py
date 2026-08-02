@@ -1,4 +1,3 @@
-# loom/tools/todo.py
 """Outil manage_todos : mémoire de travail EXTERNE pour la boucle tool-use.
 
 Un petit modèle perd le fil d'une tâche multi-étapes au bout de quelques appels
@@ -17,12 +16,10 @@ from __future__ import annotations
 
 from loom.tools.base import ToolError, ToolSpec, coerce_enum
 
-# Marqueurs ASCII (pas d'emoji) : à faire / en cours / fait.
 _MARK = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]"}
 _MAX_TODOS = 30
 
-# Synonymes qu'un modèle produit naturellement pour les statuts (au-delà de la
-# normalisation casse/tiret/espace faite par coerce_enum : "in-progress" y passe déjà).
+# Accepter les synonymes naturels après la normalisation de forme.
 _STATUS_ALIASES = {
     "completed": "done", "complete": "done", "finished": "done", "finish": "done",
     "fini": "done", "termine": "done", "terminé": "done", "ok": "done", "closed": "done",
