@@ -920,7 +920,11 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
 
     con.progress("bench en cours… (llama-bench, plusieurs minutes)")
     try:
-        rows = deps.run_bench(bench_bin, gguf_path, threads, ngl, n_cpu_moe=ncmoe)
+        # progress -> chaque mesure terminée s'affiche (ligne \r + chrono) au lieu
+        # d'un silence de plusieurs minutes.
+        rows = deps.run_bench(
+            bench_bin, gguf_path, threads, ngl, n_cpu_moe=ncmoe, progress=con.progress
+        )
     except RuntimeError as exc:
         con.progress_end()
         con.say(f"  [échec] {exc}")
