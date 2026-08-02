@@ -105,6 +105,17 @@ seule (enfant, à la demande) et l'éteint avec elle. (`uv run loom/runtime/serv
 reste dispo pour servir le moteur seul — et déclenche aussi l'installeur au premier
 run sur machine vierge.)
 
+### Vérifier l'installation
+
+```bash
+uv run pytest tests/ -q                       # suite de non-régression
+uv run ruff check loom tests scripts evals   # analyse statique
+uv run python -m evals.run_eval --self-test  # harnais d'éval, hors ligne
+```
+
+Le banc navigateur isolé (stub local, aucun vrai modèle) est documenté dans
+[`tests/e2e/README.md`](tests/e2e/README.md).
+
 > ⚠️ Avant de t'en servir, lis [Sécurité](#sécurité--périmètre-de-confiance) : Loom donne un
 > shell et l'écriture disque au modèle. En dehors d'un environnement isolé, mets
 > `[permissions] mode = "ask"`.
@@ -185,7 +196,8 @@ Re-calibrer (nouveau matériel, nouveau modèle par défaut) : supprimer la tabl
 
 ## Statut
 
-État détaillé : [ETAT_PROJET.md](ETAT_PROJET.md).
+État détaillé : [ETAT_PROJET.md](ETAT_PROJET.md). Dernière recette complète :
+[rapport de préparation du 2026-08-02](docs/rapport-preparation-2026-08-02.md).
 
 - ✅ Runtime auto-adaptatif (offload MoE), sessions (titre inféré), vision, thinking, interruption, multi-modèles.
 - ✅ Agent tool-use : ~23 outils, politique de décision + séquencement dans le prompt système.
@@ -197,7 +209,8 @@ Re-calibrer (nouveau matériel, nouveau modèle par défaut) : supprimer la tabl
   les synthèses restent hors du contexte du fil principal.
 - ✅ Calibration machine agnostique (`loom-setup`) : topologie découverte + contexte par pente
   mesurée et vitesse validée, décision tracée, fail-loud sur repli.
-- 🔜 Banc d'éval (juge LLM), tranches plugins (hooks, agents), SearXNG, RAG (skills volumineux).
+- ✅ Banc d'éval (graders déterministes + juge LLM) et SearXNG auto-hébergé.
+- 🔜 Tranches plugins suivantes (hooks, agents), RAG pour les skills volumineux et audio.
 
 ## Stack
 
