@@ -332,8 +332,7 @@ def _dispatch_no_tool_calls(
         yield _loom_nudge(convo, label, nudge)
         st["action"] = "continue"
         return
-    # Événement de monitor arrivé PENDANT la génération finale : même règle que
-    # les notes en vol, on l'injecte avant d'accepter le stop naturel.
+    # Événement monitor au stop naturel : injecté comme une note en vol avant le stop.
     injected_events = yield from (
         async_events_injector() if async_events_injector is not None else ()
     )
@@ -344,11 +343,7 @@ def _dispatch_no_tool_calls(
         )
         st["action"] = "continue"
         return
-    # Note en vol arrivée PENDANT la génération finale (donc après le dernier
-    # drain d'avant-appel) : sans ce re-drain, le stop naturel la laisserait en
-    # file jusqu'au prochain message manuel — l'utilisateur devait relancer par
-    # un « ? » pour qu'elle parte (bug 2026-07-23). On la draine ICI et on
-    # reboucle pour y répondre tout de suite, au lieu de clore le tour.
+    # Note en vol après le dernier drain : drainée ici et on reboucle (sinon elle attendrait un message manuel).
     injected = yield from _inject_notes(notes_provider, convo)
     if injected:
         _debug("NOTE_AU_STOP", f"{injected} note(s) au stop naturel -> relance")

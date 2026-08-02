@@ -29,8 +29,7 @@ _SUBAGENT_EXCLUDED = {
     "list_plugins",
     "add_marketplace",
     "install_plugin",
-    # Un monitor appartient au fil principal qui reçoit ses événements ; un
-    # sous-agent éphémère ne possède ni file persistante ni UI où les injecter.
+    # Monitor réservé au fil principal (file + UI) ; pas pour un sous-agent éphémère.
     "monitor",
 }
 _SUBAGENT_TOOLS = [
@@ -282,8 +281,7 @@ def build_registry(
     from loom.runtime.models_profile import load_profile
 
     profile = load_profile(active_model) if active_model else None
-    # Cœur toujours plein ; longue traîne consultable via tool_search. Le choix
-    # n'agit que si le kill-switch est actif, donc le défaut reste bit-identique.
+    # Cœur toujours plein, longue traîne via tool_search ; sans kill-switch actif, défaut bit-identique.
     core = {
         "find_files",
         "search_text",
@@ -311,16 +309,12 @@ def build_registry(
     registry = ToolRegistry(
         specs,
         profile=profile,
-        # Les outils MCP restent différés même si le kill-switch global des
-        # outils natifs est coupé : un serveur peut en annoncer des dizaines.
+        # MCP toujours différé même kill-switch natif coupé (un serveur peut en annoncer des dizaines).
         deferred_enabled=deferred_tools or any(s.always_deferred for s in specs),
         deferred_loaded=loaded,
         on_deferred_loaded=_save_loaded,
     )
-    # read_image gaté hors vision : le prompt système et les consignes d'images jointes
-    # peuvent le mentionner — un appel doit recevoir l'explication FRANCHE de
-    # make_read_image (proposer un modèle VISION), pas un « outil inconnu » trompeur
-    # (vécu 2026-07-19 : glm-flash annonçait « je peux lire les images » puis échouait).
+    # read_image hors vision : renvoyer l'explication franche de make_read_image (modèle VISION), pas « outil inconnu ».
     if "read_image" in enabled and not active_is_vision:
         from loom.tools.read import VISION_UNAVAILABLE
 
