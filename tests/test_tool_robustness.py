@@ -224,6 +224,8 @@ def test_fetch_url_domaine_nu_et_schema(monkeypatch):
     import loom.tools.web as web
 
     seen = {}
+    # Pas de DNS réel dans un test (réseau de l'hôte = variable, ex. DNS64).
+    monkeypatch.setattr(web, "_blocked_host_reason", lambda url: None)
     monkeypatch.setattr(
         web,
         "fetch_page",
@@ -380,6 +382,8 @@ def test_fetch_url_params_objet_encode(monkeypatch):
     import loom.tools.web as web
 
     seen = {}
+    # Pas de DNS réel dans un test (réseau de l'hôte = variable, ex. DNS64).
+    monkeypatch.setattr(web, "_blocked_host_reason", lambda url: None)
     monkeypatch.setattr(
         web,
         "fetch_page",
