@@ -3,7 +3,18 @@
 Rejouable après chaque étape des refactors P2-1/P2-3/P2-4 pour vérifier la chaîne
 complète UI → Flask → LoomClient → API (stub) → SSE → rendu, ce que pytest ne voit pas.
 
-## Lancement
+## Smoke automatisé (recommandé)
+
+```powershell
+uv run playwright install chromium   # une fois par machine si Chromium manque
+uv run python -m tests.e2e.smoke_ui
+```
+
+Le script lance les deux serveurs sur `127.0.0.1`, ouvre Chromium en mode headless,
+vérifie le chargement HTTP, la modale des raccourcis, un tour de chat SSE complet et
+l'absence d'erreur console, puis arrête tout dans un bloc `finally` implicite.
+
+## Lancement manuel
 
 ```
 uv run python tests/e2e/stub_openai.py        # stub OpenAI-compatible, port 18081
