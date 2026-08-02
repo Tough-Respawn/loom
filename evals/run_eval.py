@@ -485,14 +485,13 @@ def _injection_tests() -> bool:
     compaction) ne se testent PAS en E2E : on ne force pas un modèle stochastique à
     produire un appel cassé à la demande. On injecte donc directement les payloads
     dans les fonctions de garde (même patron que les trajectoires synthétiques)."""
-    from loom.agent.client import (
-        _force_fit,
-        _microcompact_tools,
-        _safe_args,
-        _salvage_tool_calls,
-        _scan_repeat,
-        _verify_streak_update,
-    )
+    # Importe chaque garde-fou depuis son module propriétaire. Le harnais ne doit pas
+    # dépendre des réexports privés de la façade client.py : le découpage du client en
+    # modules de domaine avait supprimé certains de ces alias sans casser pytest.
+    from loom.agent.compaction import _force_fit, _microcompact_tools
+    from loom.agent.guards import _verify_streak_update
+    from loom.agent.streaming import _salvage_tool_calls, _scan_repeat
+    from loom.agent.toolrun import _safe_args
 
     checks: dict[str, bool] = {}
 
