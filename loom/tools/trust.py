@@ -1,4 +1,3 @@
-# loom/tools/trust.py
 """Frontière de confiance (port du skill defensive-prompt-injection au niveau outil).
 
 Tout contenu venant d'une source EXTERNE (page web, document reçu, résultats de

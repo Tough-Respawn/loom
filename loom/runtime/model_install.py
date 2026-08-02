@@ -1,4 +1,3 @@
-# loom/runtime/model_install.py
 """Installation d'un modèle LOCAL choisi via /add-model : id dérivé du repo,
 recommandation de quant selon le matériel, écriture du model.toml, téléchargement
 en arrière-plan et finalisation post-download (métadonnées GGUF -> model.toml)."""
@@ -12,7 +11,6 @@ from pathlib import Path
 from loom.runtime.gguf_meta import read_gguf_meta
 from loom.runtime.models_fetch import ModelUnavailable, ensure_model
 
-# Suffixes d'empaquetage sans valeur pour un id ("-GGUF" etc.).
 _STRIP_SUFFIX = re.compile(r"[-_.](gguf)$", re.IGNORECASE)
 
 
@@ -130,10 +128,7 @@ class DownloadJob:
         except ModelUnavailable as exc:
             self.error = str(exc)
         finally:
-            # on_done AVANT done=True : les observateurs de `done` (flux SSE qui
-            # pousse l'événement « models » au front) ne doivent se réveiller
-            # qu'une fois le modèle FINALISÉ ET MONTÉ — sinon le sélecteur se
-            # recharge avant le montage et n'affiche pas le nouveau modèle.
+            # Publier `done` seulement après le montage évite un sélecteur UI incomplet.
             if self._on_done is not None:
                 try:
                     self._on_done(self)

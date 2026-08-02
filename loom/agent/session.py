@@ -18,11 +18,7 @@ from pathlib import Path
 from loom.agent.conversation import Conversation
 from loom.utils import now_iso as _now_iso
 
-# Format d'un id de session : 12 hex minuscules (uuid4().hex[:12]). Tout id qui ne
-# matche PAS est refusé avant de toucher au disque -> aucune opération (suppression,
-# lecture, export) ne peut sortir de root : un id vide (root / "" == root), un
-# traversal (../voisin) ou un chemin absolu (pathlib remplace la base) échapperaient
-# sinon à SessionStore.root (revue sécu : rmtree/lecture hors racine).
+# Valider l'id avant tout accès disque pour confiner lecture et suppression sous `root`.
 _SID_RE = re.compile(r"[0-9a-f]{12}")
 
 
@@ -88,15 +84,12 @@ class SessionStore:
     ) -> None:
         self.root = Path(root)
         self.default_system_prompt = default_system_prompt
-        # Outils armés sur CHAQUE session neuve. Sans ça, la conversation d'une session
-        # part avec active_tools=[] -> le chat tourne sans `tools=` -> le modèle, sommé
-        # d'agir, crache ses appels d'outil en texte (`<|tool_call|>...`) faute d'interface.
+        # Une session sans outils pousserait le modèle à émettre ses appels dans le texte.
         self.default_tools = list(default_tools or [])
-        # Modèle armé sur chaque session neuve. Sans ça, model="" -> llama-swap 404.
+        # Un modèle vide provoquerait un 404 dans llama-swap.
         self.default_model = default_model
         self.root.mkdir(parents=True, exist_ok=True)
-        # Mémoire du dernier modèle choisi : devient le défaut effectif des sessions
-        # neuves (prioritaire sur le config, suit l'utilisateur). Machine-local, gitignoré.
+        # Le dernier choix utilisateur prime sur la configuration pour les nouvelles sessions.
         self._known_models = set(known_models or [])
         self._last_model_file = self.root.parent / "last_model"
         self._load_last_model()
@@ -159,8 +152,7 @@ class SessionStore:
         return session
 
     def save(self, session: Session) -> None:
-        # Jamais d'écriture hors racine : un id invalide (traversal, absolu, vide)
-        # est refusé net plutôt que de laisser _file() sortir de root.
+        # Refuser traversal, chemin absolu et id vide avant de résoudre le fichier.
         if not _SID_RE.fullmatch(session.id or ""):
             raise ValueError(f"id de session invalide : {session.id!r}")
         session.conversation.runtime_session_id = session.id
@@ -174,11 +166,7 @@ class SessionStore:
         )
         os.replace(tmp, f)
 
-    # --- Journal d'affichage TEMPS RÉEL (timeline.jsonl) ---------------------------------
-    # Append-only, UNE ligne par événement écrite À L'INSTANT où il sort (raisonnement, texte,
-    # appel/résultat d'outil…). Distinct de session.json (contexte lean du modèle) : ce journal
-    # sert à REJOUER l'UI au rechargement -> on retrouve exactement ce qui s'affichait en direct,
-    # cartes d'outils comprises. Vrai temps réel, pas de batch : append + flush par événement.
+    # La timeline append-only rejoue l'UI exacte ; `session.json` reste le contexte lean.
     def _timeline_file(self, sid: str):
         return self.session_dir(sid) / "timeline.jsonl"
 
@@ -224,16 +212,12 @@ class SessionStore:
         except OSError:
             pass
 
-    # --- Export / import (.zip clair) ----------------------------------------------------
-    # Une session se donne : session.json + timeline.jsonl + manifeste, dans un zip
-    # SANS chiffrement (le chiffré, c'est l'Âme — identité globale). debug.log exclu
-    # (log runtime machine). À l'import : id NEUF (jamais d'écrasement), modèle inconnu
-    # sur cette machine replié sur le défaut local (sinon 404 llama-swap au 1er tour).
+    # L'export clair exclut les logs machine. L'import crée toujours un id neuf et
+    # replie un modèle inconnu sur le défaut local.
 
     EXPORT_FORMAT = "loom-session"
     EXPORT_VERSION = 1
-    # Refus des archives démesurées (déclaré OU décompressé) : une session légitime
-    # pèse quelques Ko à quelques Mo — 200 Mo, c'est déjà une anomalie (ou une bombe zip).
+    # Borner taille déclarée et décompressée pour bloquer les bombes zip.
     MAX_IMPORT_BYTES = 200 * 1024 * 1024
 
     def export_zip(self, sid: str) -> bytes | None:
@@ -298,12 +282,11 @@ class SessionStore:
             AttributeError,
             UnicodeDecodeError,
         ) as exc:
-            # TypeError/AttributeError : JSON valide mais mal typé (conversation/messages
-            # null) -> rejet PROPRE (400) au lieu d'une 500 non maîtrisée.
+            # Un JSON syntaxiquement valide peut encore porter des types invalides.
             raise ValueError("session.json illisible dans l'archive") from exc
         sess.id = uuid.uuid4().hex[:12]
         if self._known_models and sess.conversation.model not in self._known_models:
-            # Machine différente : le modèle d'origine n'existe pas ici.
+            # Le modèle d'origine peut manquer sur la machine cible.
             sess.conversation.set_model(self.default_model or "")
         self.save(sess)
         if "timeline.jsonl" in names:
@@ -322,9 +305,7 @@ class SessionStore:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             sess = Session.from_dict(data, self.default_system_prompt)
-            # Le NOM DE DOSSIER (sid, déjà validé par _safe_dir) fait foi, PAS le champ
-            # id du fichier : un session.json au contenu forgé ("id": "../victim") ne
-            # doit pas contaminer sess.id (sinon save/session_dir ressortiraient de root).
+            # Le dossier validé fait foi ; ne jamais réutiliser un id forgé dans l'archive.
             sess.id = sid
             return sess
         except (json.JSONDecodeError, OSError, KeyError):

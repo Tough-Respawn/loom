@@ -1,4 +1,3 @@
-# loom/runtime/serve.py
 """Lanceur cross-platform et auto-adaptatif de llama-server.
 
 Usage : uv run loom/runtime/serve.py
@@ -23,21 +22,14 @@ from loom.runtime.ngl import resolve_ngl
 from loom.runtime.server_args import build_server_args, resolve_parallel
 from loom.runtime.swap import build_swap_config, write_swap_yaml
 
-# serve.py vit dans loom/runtime/ : on remonte de DEUX niveaux pour pointer la racine
-# du package loom/ (où vivent config, models, data) — pas le dossier runtime/.
 LOOM_DIR = Path(__file__).resolve().parent.parent  # = loom/ (le package)
 REPO_ROOT = LOOM_DIR.parent
-# Config à la racine du repo (config/), modèles dans le package (loom/models), état machine
-# sous var/ (gitignored : llama-swap.yaml généré + logs).
 CONFIG_PATH = REPO_ROOT / "config" / "defaults.toml"
 PERSONAL_CONFIG_PATH = REPO_ROOT / "config" / "local.toml"
 MODELS_DIR = LOOM_DIR / "models"
 SWAP_YAML = REPO_ROOT / "var" / "cache" / "llama-swap.yaml"
-# Log PERSISTANT du serveur modèle (le terminal est éphémère / illisible à distance).
-# La web app en recopie une vue dans chaque session active. Repart à neuf à chaque lancement.
+# Persisté pour que l'interface puisse afficher les événements du serveur.
 SERVE_LOG = REPO_ROOT / "var" / "logs" / "serve.log"
-# Dossier des sauvegardes de cache KV (--slot-save-path) : fichiers .kv transitoires,
-# noms réutilisés (turnend/dispatch) -> taille bornée. Gitignored avec le reste de var/.
 SLOTS_DIR = REPO_ROOT / "var" / "cache" / "slots"
 
 
@@ -107,9 +99,7 @@ def build_launch(
         cfg.override_n_gpu_layers,
         cfg.gpu_kv_headroom_mb,
     )
-    # En mode GPU, threads = cœurs PHYSIQUES (≈ logiques/2 si HyperThreading) : au-delà,
-    # la contention HT ralentit la passe CPU (PLE de Gemma 3n). En CPU-only, tous les
-    # threads.
+    # L'hyperthreading ralentit la passe CPU quand le GPU traite le reste du modèle.
     if cfg.override_threads:
         threads = cfg.override_threads
     elif profile.has_gpu:
@@ -171,8 +161,7 @@ def _run(args: list[str], bin_name: str, hint: str) -> int:
     SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(SERVE_LOG, "a", encoding="utf-8", errors="replace") as fh:
         try:
-            # start_new_session : sur POSIX, isole l'enfant dans son groupe -> killpg propre,
-            # et Ctrl+C ne le frappe pas avant nous. Sans effet sur Windows (on a taskkill /T).
+            # Un groupe dédié permet de tuer tout l'arbre sous POSIX.
             proc = subprocess.Popen(
                 args,
                 stdout=fh,
@@ -191,7 +180,6 @@ def _run(args: list[str], bin_name: str, hint: str) -> int:
             _terminate_tree(proc)
             return 0
         finally:
-            # Filet de sécurité : quelle que soit la cause de sortie, pas d'orphelin.
             if proc.poll() is None:
                 _terminate_tree(proc)
 
@@ -230,8 +218,7 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         str(SWAP_YAML),
         "--listen",
         f"127.0.0.1:{cfg.port}",
-        # Recharge la config à la volée quand le fichier change : loom.web régénère ce yaml
-        # après une édition de modèle local / param serveur -> effet SANS relancer llama-swap.
+        # Les réglages UI prennent effet sans redémarrer llama-swap.
         "--watch-config",
     ]
     return _run(
@@ -254,8 +241,7 @@ def regenerate_swap_yaml(
     Best-effort : renvoie le chemin écrit, ou None si la config est illisible."""
     try:
         cfg = load_config(defaults_path, local_path)
-        # Profil AGNOSTIQUE : le binaire configuré fait foi (--list-devices) —
-        # sans lui, l'auto-offload de resolve_ngl ignorait tout GPU non-NVIDIA.
+        # Le binaire configuré détecte aussi les GPU non-NVIDIA.
         profile = detect_hardware(cfg.server_bin)
         swap = build_swap_config(
             cfg.models,
@@ -303,7 +289,6 @@ def maybe_bootstrap(remote_ok: bool = False) -> int | None:
     _log("[loom] Premier lancement : installation guidée (loom-setup)…")
     ensure_utf8_stdio()
     run(Console(log_path=SETUP_LOG), Deps())
-    # L'installeur a pu être refusé ou échouer : on ne sert que si tout est là.
     raw = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
     if needs_setup(raw, MODELS_DIR):
         _log(
@@ -315,7 +300,7 @@ def maybe_bootstrap(remote_ok: bool = False) -> int | None:
 
 
 def main() -> int:
-    # Log serveur frais à chaque lancement (on veut la session courante, pas l'historique).
+    # Le journal reflète uniquement le lancement courant.
     try:
         SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
         SERVE_LOG.write_text("", encoding="utf-8")
@@ -326,8 +311,7 @@ def main() -> int:
         return code
     cfg = load_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
     if not cfg.models:
-        # load_config tolère un parc 100 % distant (boot remote-only de loom.web) ;
-        # serve, lui, EST le moteur des modèles locaux -> rien à servir ici.
+        # La web app accepte le distant seul, mais ce lanceur sert uniquement le local.
         _log(
             "[loom] Aucun modèle LOCAL à servir (parc distant uniquement) — "
             "lance 'uv run loom-setup' pour en installer un."
@@ -339,14 +323,11 @@ def main() -> int:
     try:
         ensure_all_models(cfg.models, cfg.models_dir)
     except ModelUnavailable as exc:
-        # Modèle absent et non téléchargeable : on guide l'utilisateur (quoi poser, où)
-        # et on sort proprement (code 1, sans stacktrace).
         _log(f"[loom] {exc}")
         return 1
     _log(f"[loom] {len(cfg.models)} modèle(s), défaut={cfg.default_model}")
 
-    # Un seul modèle : pas de routeur, llama-server direct (zéro dépendance externe).
-    # Plusieurs : llama-swap pour le hot-swap par le champ 'model' de la requête.
+    # Le routeur n'est utile qu'avec plusieurs modèles.
     if len(cfg.models) <= 1:
         return launch_direct(cfg, profile)
     return launch_swap(cfg, profile)

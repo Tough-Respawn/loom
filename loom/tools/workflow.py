@@ -1,4 +1,3 @@
-# loom/tools/workflow.py
 """Outil run_workflow : exécute un script Python qui orchestre N sous-agents.
 
 Le modèle ÉCRIT le script (write_file) puis appelle run_workflow(path=...).
@@ -27,8 +26,7 @@ from pathlib import Path
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.workflow import WorkflowError, parse_meta, run_workflow
 
-# Le retour du script entre dans le contexte du modèle : on le borne comme n'importe
-# quelle sortie d'outil. Un workflow qui rend 200 ko annulerait sa raison d'être.
+# Borner la sortie empêche un workflow de saturer le contexte qu'il devait économiser.
 _MAX_RESULT_CHARS = 20000
 
 
@@ -91,15 +89,14 @@ def make_run_workflow(
                 if kind == "content" and isinstance(payload, str):
                     parts.append(payload)
                 elif kind in ("tool_call", "tool_result", "usage"):
-                    # Activité de l'ouvrier : visible en direct. 'usage' remonte aussi
-                    # pour que la conso du run compte dans les totaux de session.
+                    # Relayer aussi l'usage pour conserver des totaux de session exacts.
                     events.put((kind, payload))
             if schema is not None:
                 return sink[-1] if sink else None
             return "".join(parts).strip() or None
 
         def on_event(kind, payload):
-            # Appelé DEPUIS LES THREADS du runtime -> Queue (thread-safe) obligatoire.
+            # Les callbacks du runtime arrivent depuis plusieurs threads.
             events.put((kind, payload))
 
         result: dict = {}
@@ -131,8 +128,7 @@ def make_run_workflow(
             if item is _DONE:
                 break
             kind, payload = item
-            # Traduction vers les events que la boucle sait déjà relayer en lignes
-            # d'activité (_sub_activity_line) : aucun changement de frontend requis.
+            # Réutiliser les événements existants garde le frontend inchangé.
             if kind == "phase":
                 yield ("tool_call", {"name": f"phase — {payload.get('title', '')}"})
             elif kind == "log":

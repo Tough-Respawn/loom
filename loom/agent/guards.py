@@ -25,16 +25,8 @@ def _verify_streak_update(name: str, ok: bool, streak: int) -> int:
     return streak
 
 
-# Note de RECENTRAGE après un force-fit : un historique tronqué mais encore répétitif
-# induit l'IMITATION (observé en éval : le modèle a « continué » la série de vieux tours
-# archivés au lieu d'exécuter la tâche). La note casse le motif et repointe la demande.
-# Préfixe '[harnais' = reconnue par _force_fit (jamais prise pour la tâche courante).
-# Reformulée le 2026-07-10 : l'ancienne version ordonnait « reprends la DERNIÈRE
-# demande telle quelle et exécute-la » — injectée EN PLEIN TOUR (le force-fit
-# préventif tourne avant chaque appel), elle pouvait faire repartir de zéro un
-# modèle qui avançait bien, et insinuait une dérive là où la troncature n'est
-# qu'une opération de routine. On garde UNIQUEMENT l'anti-imitation (le cœur
-# validé en éval, cas context_squeeze) : informatif, jamais directif.
+# Après un force-fit, casser le motif des anciens tours sans ordonner de recommencer.
+# Le préfixe permet à la compaction de ne jamais prendre cette note pour la tâche.
 _REFOCUS_NOTE = (
     "[harnais : des tours anciens ci-dessus ont été TRONQUÉS pour tenir dans la "
     "fenêtre — opération de routine, rien d'anormal. Ce contenu tronqué est du "
@@ -44,17 +36,8 @@ _REFOCUS_NOTE = (
 )
 
 
-# --- Anti « parle sans agir » --------------------------------------------------------
-# Échec central d'un petit modèle : il ÉCRIT l'intention (« je vais lire X ») ou AFFIRME
-# le résultat (« j'ai créé le fichier ») SANS émettre l'appel d'outil. Comme un tour sans
-# tool_call termine la boucle, la tâche s'arrête inachevée (ou sur une affirmation fausse).
-# On détecte ce cas au stop et on RELANCE le modèle pour qu'il exécute réellement (nudge
-# borné). Ce n'est pas un orchestrateur : on ne décide pas QUOI faire, on force juste le
-# passage de la parole à l'acte. dispatch_agent reste l'autre garde-fou (exécution réelle
-# par un sous-agent). On exclut les verbes de PAROLE (résumer/expliquer) qui ne sont pas
-# des actions outillées, pour ne pas harceler un vrai message final. Marqueurs SANS accents
-# ni apostrophe courbe : la comparaison normalise le texte (un modèle quantifié laisse
-# parfois tomber les accents -> on veut quand même détecter).
+# Relancer un petit modèle qui annonce ou revendique une action sans appel d'outil.
+# Exclure les verbes de parole et comparer le texte normalisé sans accents.
 _ACT_INTENT = (
     "je vais ",
     "laisse-moi ",
@@ -122,14 +105,9 @@ _EXEC_CLAIM = (
     "preuve de sortie",
     "j'ai simule",  # aveu typique de confabulation
 )
-# Chemin ABSOLU de fichier (avec extension), Windows ou POSIX, cité dans le texte.
+# Chemin absolu Windows ou POSIX avec extension.
 _PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)[\w./\\-]+\.[A-Za-z0-9]{1,6}")
-# Marqueurs d'ACCOMPLISSEMENT (1re personne passé / état de fait) : ils distinguent une
-# vraie revendication (« j'ai créé X », « X a été créé », accusé d'outil « créé : X ») d'une
-# simple mention illustrative (« tu pourrais créer X », « voici X, par exemple »). L'audit
-# ne se déclenche QUE sur un accomplissement affirmé — sinon il fabriquait l'action à partir
-# d'un exemple pédagogique (incident loom-amd 2026-07-23 : un chemin montré en exemple a été
-# matérialisé par le nudge). En forme _norm (minuscule, sans accents).
+# Distinguer une revendication accomplie d'une mention illustrative, sous forme normalisée.
 _DONE_MARKERS = (
     "j'ai cree",
     "j'ai ecrit",
@@ -151,8 +129,7 @@ _DONE_MARKERS = (
     "ecrit :",
     "genere :",
 )
-# Tournures ILLUSTRATIVES : si l'une est proche du chemin, c'est un exemple, pas une
-# revendication -> on n'audite pas (double filet, en plus du retrait des blocs de code).
+# Une tournure illustrative proche du chemin annule l'audit de revendication.
 _ILLUSTRATIVE = (
     "par exemple",
     "pourrais",
@@ -208,17 +185,8 @@ def _claims_missing_artifact(text: str, files_written: set) -> str | None:
     return None
 
 
-# Le HARNAIS Loom (garde-fous, relances automatiques) parle au modèle via des
-# messages role:user — le standard OpenAI n'a pas de rôle « framework » et on n'y
-# touche pas. Mais ce n'est PAS l'utilisateur : le modèle doit le savoir (sinon il
-# répond « l'utilisateur a dit… » à un garde-fou — vécu 2026-07-23, incident loom-amd).
-#
-# On marque chaque nudge d'un tag MINIMAL `[LOOM]` (3-4 tokens par injection, pas un
-# pavé re-consommé à chaque relance) ; le SENS du tag est expliqué UNE fois dans le
-# system prompt (stable, en tête -> absorbé par le prefix-cache, coût réel ~0).
-# Émis AUSSI en event ('harness', …) pour que l'UI le rende comme une 3e voix
-# distincte (ni toi ni le modèle). La note en vol de l'utilisateur, elle, vient
-# VRAIMENT de lui -> voix user, pas [LOOM] (cf. _inject_notes).
+# OpenAI n'a pas de rôle framework : taguer les nudges `[LOOM]` dans `role:user` et
+# les émettre aussi comme troisième voix dans l'UI.
 _LOOM_TAG = "[LOOM]"
 
 
@@ -247,10 +215,7 @@ def _dispatch_no_tool_calls(
     réponse vide -> audit de claim / act-nudge -> stop naturel. Issue via
     st["action"] : "continue" (relancer le tour) ou "done" (l'event terminal
     ('done', …) a déjà été yieldé)."""
-    # BOUCLE DE DÉGÉNÉRESCENCE (détectée au streaming) : le modèle a répété la
-    # même phrase sans agir. À traiter AVANT la continuation 'length' : lui dire
-    # « continue où tu t'es arrêté » ne ferait qu'alimenter le cycle. On coupe et
-    # on relance avec un ordre FERME d'émettre un appel d'outil, borné.
+    # Traiter une boucle avant `length`, car une continuation alimenterait le cycle.
     if collector.get("looped"):
         if st["loop_breaks"] >= max_loop_breaks:
             yield (
@@ -276,13 +241,8 @@ def _dispatch_no_tool_calls(
         yield _loom_nudge(convo, "boucle", nudge)
         st["action"] = "continue"
         return
-    # CONTINUATION sur troncature : la réponse texte/raisonnement a été coupée
-    # par la limite de tokens (finish_reason == "length") sans appel d'outil.
-    # Plutôt que de rendre une réponse tronquée, on relance le modèle pour qu'il
-    # POURSUIVE là où il s'est arrêté. Autant de fois que nécessaire (cap dur
-    # max_length_continues, anti-runaway). Le texte continue d'être streamé à
-    # l'UI tour après tour (le web app concatène). Cas des tool_calls tronqués
-    # NON concerné (géré par 'arguments tronqués' / overflow).
+    # Continuer une réponse texte coupée par `length`; les tool-calls tronqués suivent
+    # le chemin d'overflow dédié.
     if (
         collector["finish_reason"] == "length"
         and st["length_continues"] < max_length_continues
@@ -307,10 +267,7 @@ def _dispatch_no_tool_calls(
         )
         st["action"] = "continue"
         return
-    # RÉPONSE VIDE (EOS immédiat : 0 texte, 0 tool call — vécu en éval,
-    # cas context_squeeze) : le stop naturel serait un SILENCE total pour
-    # l'utilisateur. On relance, borné. Filet de FONCTIONNEMENT (pas une
-    # garde de comportement) -> actif aussi pour un modèle fort (strong).
+    # Relancer un EOS vide, y compris pour un modèle fort, afin de ne jamais rendre silence.
     if not text.strip():
         if st["empty_retries"] < max_empty_retries:
             st["empty_retries"] += 1
@@ -336,13 +293,8 @@ def _dispatch_no_tool_calls(
         yield ("done", {"reason": "empty_response"})
         st["action"] = "done"
         return
-    # Audit de claim au stop : le modèle prétend-il un résultat qu'il n'a pas
-    # produit ? (A) artefact fichier inventé, (B) résultat d'exécution sans
-    # run_shell/dispatch, ou intention/affirmation sans exécution réelle. On le
-    # relance pour qu'il FASSE vraiment (borné). Garde de vérité, pas orchestrateur.
-    # COUPÉ pour un modèle FORT (distant) : ces relances de comportement, utiles à
-    # un petit modèle qui confabule, ne font que sur-piloter un modèle qui se vérifie
-    # déjà seul (cf. GLM qui doutait de sa propre preuve correcte).
+    # Relancer une revendication non prouvée. Désactiver ce sur-pilotage pour les
+    # modèles forts qui se vérifient seuls.
     missing = _claims_missing_artifact(text, st["files_written"])
     exec_confab = not st["executed"] and _claims_execution(text)
     if (
@@ -414,19 +366,15 @@ def _check_no_progress(
     l'event terminal a déjà été yieldé). Met à jour st["repeat_streak"] /
     st["prev_sig_set"]."""
     st["action"] = "proceed"
-    # Non-progrès : même jeu d'appels (outils+args) que le tour précédent ? On EXCLUT
-    # les outils d'exécution/vérification (_VERIFY_TOOLS) : re-lancer la même preuve est
-    # légitime. Un tour PUREMENT de vérif -> signature vide -> compté comme progrès (on
-    # ne coupe pas, on remet le compteur à zéro). Backstop ultime contre le vrai runaway :
-    # max_iters. Les boucles dégénérées (re-edit/re-write/re-read identiques) restent prises.
+    # Exclure les outils de preuve du non-progrès ; les relectures et réécritures
+    # identiques restent détectées, avec `max_iters` comme dernier filet.
     sig_set = frozenset(
         f"{tc['name']}\x00{tc['arguments']}"
         for tc in tool_calls
         if tc["name"] not in _VERIFY_TOOLS
     )
     if not sig_set:
-        # Tour purement exécution/vérif : progrès légitime, on ne coupe pas et on
-        # laisse passer vers l'exécution des outils (surtout PAS de continue ici).
+        # Un tour purement exécution/vérification est un progrès légitime.
         st["repeat_streak"] = 0
         st["prev_sig_set"] = None
         return
@@ -434,9 +382,7 @@ def _check_no_progress(
         st["repeat_streak"] + 1 if sig_set == st["prev_sig_set"] else 0
     )
     st["prev_sig_set"] = sig_set
-    # COUPÉ pour un modèle FORT (distant) : le seul backstop reste max_iters. Sur un
-    # petit modèle, la répétition = dégénérescence ; sur un fort, c'est presque
-    # toujours du légitime (le juger « bloqué » l'interrompt à tort).
+    # Sur un modèle fort, laisser `max_iters` seul arbitrer les répétitions légitimes.
     if not strong and st["repeat_streak"] >= repeat_limit - 1:
         log_event("guard", level="WARN", kind="repeat_stop")
         yield (

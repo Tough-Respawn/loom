@@ -1,4 +1,3 @@
-# loom/runtime/image_models.py
 """Découverte des modèles IMAGE/VIDÉO : <models_root>/local/{image,video}/<id>/
 (model.toml + workflow.json).
 
@@ -34,23 +33,14 @@ class ImageModel:
     comfy_dir: str  # racine de l'install ComfyUI (pour la démarrer nous-mêmes)
     comfy_port: int
     workflow_path: str
-    # id d'un modèle Loom (petit local décensuré de préférence) qui RÉÉCRIT la demande
-    # utilisateur (toute langue) en prompt de diffusion anglais avant la génération.
-    # Vide = pas d'affinage, le prompt part brut. Séquence VRAM sûre : le refiner est
-    # servi par llama-swap PUIS déchargé avant la diffusion (jamais deux résidents).
+    # Le refiner est déchargé avant la diffusion pour ne jamais cumuler les deux modèles.
     refiner: str = ""
-    # Budget d'attente de la génération (s). 600 suffit à une image ; un modèle VIDÉO
-    # (Wan) sur petit GPU se compte en dizaines de minutes -> à monter dans model.toml.
+    # Les modèles vidéo lents peuvent surcharger ce délai dans model.toml.
     timeout: int = 600
-    # "image" ou "video" : dérivé du dossier parent (local/image vs local/video).
-    # Sert au préfixe du sélecteur UI ; le comportement runtime est identique.
+    # `kind` ne change que la présentation dans l'interface.
     kind: str = "image"
-    # RÔLE en une ligne (model.toml `description`) : infobulle du sélecteur UI.
     description: str = ""
-    # Consignes de PROMPTING propres à CE modèle (model.toml `refine_hints`,
-    # multi-lignes) : ajoutées au prompt système du refiner. Chaque générateur a sa
-    # grammaire (Z-Image = gabarit caméra positif-only ; Chroma = prose détaillée ;
-    # Wan = mouvement) — la doc du modèle vit à côté de son workflow, pas dans le code.
+    # La grammaire de prompt reste avec le workflow propre au modèle.
     refine_hints: str = ""
 
 

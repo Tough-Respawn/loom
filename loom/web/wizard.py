@@ -1,4 +1,3 @@
-# loom/web/wizard.py
 """Machine à états PURE de /add-model — AUCUN I/O ici (ni réseau ni disque).
 
 Les effets (recherche HF, download, montage) sont exécutés par routes.py : soit via
@@ -22,9 +21,7 @@ class WizardResult:
     action: dict | None = (
         None  # {"kind": "install", ...} | {"kind": "upsert_remote", ...}
     )
-    # Boutons proposés par l'UI pour répondre à CETTE étape (purs raccourcis de
-    # frappe : le clic envoie le libellé comme un message normal). None = saisie
-    # libre. Non persisté : après un rechargement, on répond au clavier.
+    # Les choix sont des raccourcis non persistés; `None` laisse la saisie libre.
     choices: list[str] | None = None
 
 
@@ -46,7 +43,7 @@ def start(arg: str, deps) -> WizardResult:
             choices=["local", "distant", "image", "vidéo"],
         )
     low = a.lower()
-    # Raccourcis par type : « /add-model image|video » saute le menu, comme « distant ».
+    # Un type explicite saute le menu initial.
     if low in ("image", "video", "vidéo"):
         return _start_image("video" if low.startswith("vid") else "image", deps)
     if low == "local":
@@ -56,9 +53,7 @@ def start(arg: str, deps) -> WizardResult:
         )
     if low.startswith("local "):
         return _search(a.split(None, 1)[1], deps)
-    # « /add-model distant [url] » ou une URL brute -> flux DISTANT direct. Une URL
-    # n'est JAMAIS une recherche Hugging Face (vécu : URL + clé collées partaient en
-    # recherche locale, incompréhensible).
+    # Une URL explicite ouvre toujours le flux distant, jamais la recherche Hugging Face.
     if low.startswith(("distant", "remote")) or low.startswith(("http://", "https://")):
         tokens = a.split()
         if tokens[0].lower() in ("distant", "remote"):
@@ -68,9 +63,7 @@ def start(arg: str, deps) -> WizardResult:
             if tokens and tokens[0].lower().startswith(("http://", "https://"))
             else None
         )
-        # SÉCURITÉ : tout ce qui suit l'URL (une clé API collée ?) est IGNORÉ — la
-        # clé se donne à l'étape dédiée. Une clé tapée dans le fil reste dans
-        # l'historique de session : mieux vaut la régénérer.
+        # Ignorer le texte après l'URL pour ne pas traiter une clé collée hors de son étape.
         leaked = len(tokens) > (1 if url else 0)
         warn = (
             "\n⚠️ Le reste de ta commande a été IGNORÉ — la clé se donne à l'étape "
@@ -96,7 +89,7 @@ def start(arg: str, deps) -> WizardResult:
 def step(state: dict, text: str, deps) -> WizardResult:
     t = (text or "").strip()
     if t.lower() in CANCEL_WORDS:
-        # Message NEUTRE : ce step sert /add-model, /remove-model ET /rebench.
+        # Cette étape est partagée par ajout, suppression et recalibration.
         return WizardResult(None, "Commande annulée — rien n'a été touché.")
     fn = _STEPS.get(state.get("step"))
     if fn is None:  # état d'une vieille version : on sort proprement
@@ -106,7 +99,6 @@ def step(state: dict, text: str, deps) -> WizardResult:
     return fn(state, t, deps)
 
 
-# ---------- tronc ----------
 
 
 def _step_kind(state, t, deps):
@@ -131,7 +123,6 @@ def _step_kind(state, t, deps):
     )
 
 
-# ---------- flux distant ----------
 
 
 def _step_r_id(state, t, deps):
@@ -153,9 +144,7 @@ def _step_r_id(state, t, deps):
     )
 
 
-# La clé vient AVANT le choix du modèle : elle permet d'interroger GET /models du
-# provider et de CHOISIR dans la liste au lieu de deviner un nom. Masquée dans
-# l'historique par routes.py (étape r_key).
+# La clé précède le modèle pour pouvoir interroger sa liste, puis est masquée de l'historique.
 _KEY_PROMPT = (
     "[add-model — distant 3/5] Clé API (ou « aucune ») — elle sert aussi à lister "
     "les modèles du provider, et sera MASQUÉE dans l'historique :"
@@ -245,7 +234,6 @@ def _step_r_adv(state, t, deps):
     )
 
 
-# ---------- flux suppression (/remove-model) ----------
 
 
 def start_remove(deps) -> WizardResult:
@@ -274,7 +262,7 @@ def _step_d_pick(state, t, deps):
         "local": "son DOSSIER et ses fichiers (GGUF compris) seront SUPPRIMÉS du disque",
         "remote": "son dossier remote/<id>/ (sa clé avec) sera supprimé et le "
         "modèle démonté",
-        # Alias hérité : state persisté d'avant l'unification (même effet).
+        # Accepter l'ancien état persisté après l'unification.
         "remote_config": "son dossier remote/<id>/ (sa clé avec) sera supprimé et le "
         "modèle démonté",
         "image": "sa définition Loom (model.toml + workflow.json) sera supprimée ; "
@@ -307,9 +295,7 @@ def _step_d_confirm(state, t, deps):
     )
 
 
-# ---------- flux /rebench (recalibration d'un LOCAL TEXTE, tel que configuré) ----------
-# La mesure elle-même (topologie + pente + vitesse) vit dans routes.py / loom.setup ;
-# ici seulement le dialogue. L'état b_apply est POSÉ PAR ROUTES à la fin du job.
+# Ce module porte seulement le dialogue; les routes exécutent la mesure.
 
 
 def start_rebench(arg: str, deps) -> WizardResult:
@@ -383,18 +369,14 @@ def _step_b_apply(state, t, deps):
             "id": state["id"],
             "context": state["context"],
             "mecanisme": state["mecanisme"],
-            # Verdict d'isolation (None = pas de changement) : appliqué avec le
-            # contexte, jamais séparément — le couple a été mesuré ensemble.
+            # Appliquer ensemble le contexte et l'isolation mesurés ensemble.
             "isolation": state.get("isolation"),
             "isolation_detail": state.get("isolation_detail", ""),
         },
     )
 
 
-# ---------- flux image/vidéo (ComfyUI) ----------
-# Un modèle image/vidéo = dossier local/{image,video}/<id>/ avec model.toml (généré
-# ici) + workflow.json (export ComfyUI « format API » fourni par l'utilisateur — le
-# wizard ne peut PAS l'inventer). Les poids ComfyUI ne sont jamais gérés par Loom.
+# Le workflow ComfyUI vient de l'utilisateur; Loom ne gère pas ses poids.
 
 _IMG_DEFAULT_DIMS = {"image": (1024, 1024), "video": (832, 480)}
 
@@ -490,13 +472,10 @@ def _step_i_workflow(state, t, deps):
     return WizardResult(None, f"Création de « {state['id']} »…" + warn, action)
 
 
-# ---------- flux local ----------
 
 
 def _search(query, deps):
-    # URL huggingface.co ou id org/repo collé tel quel : on court-circuite la
-    # recherche (même contrat que loom-setup, parseur partagé) — l'inventaire
-    # des quants valide le repo.
+    # Une URL ou un id de repo explicite contourne la recherche mais pas l'inventaire.
     from loom.setup.catalog import parse_hf_repo
 
     repo = parse_hf_repo(query)
@@ -528,7 +507,7 @@ def _step_l_query(state, t, deps):
 def _list_quants(repo, deps):
     """Étape 3 (choix du quant) pour un repo résolu — par numéro OU par URL collée."""
     files = deps.list_gguf_files(repo)
-    # is_aux exclut mmproj ET mtp (repli sur is_mmproj pour un state d'avant la clé)
+    # Garder le repli `is_mmproj` pour les anciens états persistés.
     weights = [f for f in files if not f.get("is_aux", f["is_mmproj"])]
     if not weights:
         return WizardResult(
@@ -598,8 +577,7 @@ def _step_l_id(state, t, deps):
         )
     if mid in deps.existing_ids:
         return WizardResult(state, f"« {mid} » existe déjà. Choisis un autre id :")
-    # Plusieurs racines de stockage ([storage] models_root) -> étape disque : la
-    # première (la plus rapide par convention) est le défaut, espace libre affiché.
+    # En multi-racines, proposer la première par défaut et afficher l'espace libre.
     roots = deps.install_roots()
     if len(roots) > 1:
         lines = []

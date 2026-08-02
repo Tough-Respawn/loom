@@ -1,4 +1,3 @@
-# loom/runtime/term.py
 """Couleurs ANSI pour les sorties terminal de Loom (installeur, serve).
 
 Règles d'hygiène : couleur UNIQUEMENT si la sortie est un TTY (jamais dans un
@@ -61,9 +60,7 @@ def paint(text: str, *codes: str) -> str:
     return f"{''.join(codes)}{text}{RESET}"
 
 
-# Règles d'auto-coloration d'une ligne, testées DANS L'ORDRE : (regex, codes).
-# Élues d'après les écrans réels de loom-setup et serve — les marqueurs TEXTE
-# ([ok], [échec]…, jamais d'emoji) portent la sémantique, la couleur l'amplifie.
+# L'ordre des règles détermine la première coloration applicable.
 _RULES: list[tuple[re.Pattern, tuple[str, ...]]] = [
     (re.compile(r"^──"), (BOLD, CYAN)),  # bannières ── Loom setup ── / ── Bilan ──
     (re.compile(r"^\[\d/\d\]"), (BOLD,)),  # têtes d'étape [1/4]

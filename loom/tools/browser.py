@@ -1,4 +1,3 @@
-# loom/tools/browser.py
 """Outils navigateur : check_page (yeux sur une page rendue ; avec `steps`, preuve de
 jouabilité — ex-check_interactive fusionné 2026-07-15) et serve_and_check (démarre un
 serveur, vérifie, l'arrête).
@@ -34,11 +33,7 @@ from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 from loom.tools.shell import _kill_tree, _shell_argv
 from loom.tools.trust import untrusted
 
-# --- Registre des serveurs LAISSÉS VIVANTS par serve_and_check ---------------------------
-# serve_and_check démarre un serveur, le vérifie, puis le LAISSE TOURNER (au lieu de le tuer
-# aussitôt) pour que le modèle puisse tester PLUSIEURS pages/jeux sur le même serveur, puis
-# l'arrête explicitement via stop_server. Sécurités : arrêt de tout à la sortie de Loom
-# (atexit) + TTL de secours si le modèle oublie de fermer (pas de serveur orphelin éternel).
+# Les serveurs restent disponibles entre vérifications; atexit et TTL évitent les orphelins.
 _SERVERS_LOCK = threading.Lock()
 _LIVE_SERVERS: dict[str, dict] = {}  # id -> {proc, url, logpath, logf, started}
 _server_seq = [0]
@@ -138,10 +133,7 @@ _INSTALL_HINT = (
     "`uv run playwright install chromium`."
 )
 
-# check_page REND une page dans un navigateur (execute son JS) ; ce n'est PAS un lecteur de
-# fichiers. On le borne aux formats reellement web-rendables : sinon `check_page` sert de
-# contournement de lecture (file://.../id_rsa rendu -> contenu fuite dans le « texte visible »).
-# La vraie lecture passe par read_file, pas par le navigateur.
+# Restreindre `file://` aux formats web empêche de contourner les règles de lecture.
 _WEB_EXT = frozenset({".html", ".htm", ".xhtml", ".svg"})
 _NOT_WEB_MSG = (
     "check_page ne rend que des pages web (.html/.htm/.xhtml/.svg). Pour lire un autre "
@@ -166,9 +158,7 @@ def _browser_http_blocked(url: str) -> str | None:
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         cat = categorize_ip(ip)
-        # Loopback (127.0.0.1/::1) et LAN privé (192.168.x) AUTORISÉS : c'est l'usage
-        # même de l'outil. On ne bloque que ce qui n'a aucun usage dev : métadonnées
-        # cloud (link-local 169.254.x / fe80::), multicast, adresse non spécifiée.
+        # Le loopback et le LAN sont utiles au développement; bloquer les plages sans usage web.
         if cat in ("link-local", "multicast", "unspecified"):
             return f"hote interdit (adresse speciale : {ip})"
     return None
@@ -183,7 +173,6 @@ def _looks_like_host(target: str) -> str | bool:
         return True
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}(:\d+)?$", first):  # IPv4[:port]
         return True
-    # domaine a.b[.c][:port] — au moins un point, segments alphanumériques
     return bool(re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$", first, re.IGNORECASE))
 
 
@@ -208,15 +197,12 @@ def _browser_url(root: Path, target: str) -> str:
         if ext not in _WEB_EXT:
             raise ToolError(_NOT_WEB_MSG)
         return target
-    # chemin local (relatif au dossier de travail ou absolu) -> file:// (Path.as_uri()).
     path = _resolve_in_root(root, target)
     if path.exists():
         if path.suffix.lower() not in _WEB_EXT:
             raise ToolError(_NOT_WEB_MSG)
         return path.as_uri()
-    # Pas un fichier local : peut-être un hôte réseau SANS schéma (localhost:3000,
-    # 127.0.0.1:8080, example.com) — un modèle omet souvent http://. On re-route par la
-    # garde HTTP. Test APRÈS l'existence locale pour ne jamais détourner un vrai fichier.
+    # Tester le fichier avant d'interpréter une cible sans schéma comme hôte HTTP.
     if _looks_like_host(target):
         return _browser_url(root, "http://" + target)
     raise ToolError(f"fichier introuvable : {target}")
@@ -252,8 +238,7 @@ def _render_page(
                 page.goto(url, wait_until="load", timeout=15000)
                 loaded = True
             except PWTimeout:
-                # Chargement non termine : on NE LIT PAS la page (le thread JS peut etre
-                # gele -> nouveaux timeouts). On garde les preuves deja captees + un indice.
+                # Ne plus interroger un moteur JS gelé après le délai.
                 loaded = False
                 note = (
                     "chargement non termine en 15s -> script bloquant probable "
@@ -265,8 +250,7 @@ def _render_page(
                     try:
                         page.wait_for_selector(wait_selector, timeout=5000)
                     except Exception:  # noqa: BLE001 - absence = info, pas un crash
-                        # DIAGNOSTIC explicite : sans ça, un wait_selector jamais apparu
-                        # était indistinguable d'un succès (le modèle ne savait pas).
+                        # Un sélecteur absent doit être distingué d'un chargement réussi.
                         note = (
                             f"wait_selector « {wait_selector} » jamais apparu en 5s : "
                             "l'élément attendu n'existe pas (ou tarde/est mal orthographié)."
@@ -278,9 +262,7 @@ def _render_page(
                     body_text = body.inner_text()[:2000] if body else ""
                 except Exception as exc:  # noqa: BLE001 - lecture partiellement bloquee
                     note = f"lecture de la page interrompue : {str(exc)[:120]}"
-                # Comptage par sélecteur ISOLÉ : un sélecteur CSS invalide ne doit pas
-                # faire perdre le titre, le texte ET les autres comptes (avant : la
-                # dict-comprehension entière échouait sur un seul mauvais sélecteur).
+                # Isoler les sélecteurs pour qu'un CSS invalide ne masque pas les autres preuves.
                 bad: list[str] = []
                 for sel in count_selectors:
                     try:
@@ -296,7 +278,7 @@ def _render_page(
         msg = str(exc)
         if "Executable doesn't exist" in msg or "playwright install" in msg:
             raise ToolError(_INSTALL_HINT) from exc
-        # On NE jette PAS les preuves : diagnostic structure plutot qu'une exception seche.
+        # Conserver les preuves partielles dans le diagnostic.
         note = note or f"echec du chargement : {msg[:200]}"
 
     errors = [t for (k, t) in console if k == "error"] + page_errors
@@ -346,7 +328,7 @@ def _interactive_report(workspace_dir: str, target: str, steps: list) -> str:
     else:
         verdict = "au moins une action/post-condition echoue"
     lines.append("VERDICT : " + verdict)
-    # Le texte observe vient d'une page (potentiellement hostile) : donnee, pas des ordres.
+    # Le contenu observé est une donnée potentiellement hostile, jamais une instruction.
     return untrusted("\n".join(lines), f"page {res['url']}")
 
 
@@ -368,8 +350,7 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
                     "'steps' doit être une liste d'actions {op, selector, expect}"
                 )
             return _interactive_report(workspace_dir, target, steps)
-        # Cible validee : loopback/LAN prive AUTORISES (verif locale), extensions web sur
-        # file:// (le navigateur ne sert pas a exfiltrer un fichier arbitraire).
+        # La validation autorise le local utile et borne les fichiers aux formats web.
         url = _browser_url(root, target)
         wait_selector = (args.get("wait_selector") or "").strip() or None
         count_selectors = [
@@ -493,7 +474,6 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
         _reap_expired_servers()  # filet : referme les serveurs oublies > TTL
         action = (args.get("action") or "start").strip().lower()
 
-        # --- action='stop' : ferme un serveur laissé vivant (ou tous), sans command/url ---
         if action == "stop":
             return _stop_servers((args.get("id") or "").strip() or None)
 
@@ -511,11 +491,10 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
             )
         if not target.lower().startswith(("http://", "https://")):
             raise ToolError("'url' doit etre une URL http(s):// du serveur local")
-        # Barriere de securite (comme run_shell) : commande destructrice refusee avant lancement.
+        # Refuser les commandes destructrices avant tout lancement.
         if _is_hard_denied(command, []):
             raise ToolError("commande interdite par la politique de securite")
-        # localhost resout en ::1 (IPv6) chez certains serveurs lies en IPv4 seulement (et
-        # l'inverse) -> faux negatifs. On normalise sur 127.0.0.1 pour l'attente ET la verif.
+        # Normaliser localhost évite les faux négatifs entre bindings IPv4 et IPv6.
         url = target.replace("://localhost", "://127.0.0.1")
         reason = _browser_http_blocked(url)
         if reason:
@@ -542,9 +521,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
             if s.strip()
         ]
 
-        # Un serveur suivi tourne DEJA sur cette url (lance a un tour precedent) ? On ne
-        # relance PAS (le double bind echouerait) : on re-vérifie simplement la page demandée
-        # sur le serveur vivant. C'est le cas « tester une 2e page du meme site ».
+        # Réutiliser un serveur suivi évite un second binding sur le même port.
         existing = _find_server_by_url(url)
         if existing:
             report = _render_page(url, wait_selector, count_selectors)
@@ -554,8 +531,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                 f"page {url}",
             )
 
-        # Serveur DETACHE : sa sortie va dans un fichier temporaire. On NE communicate() PAS
-        # (il ne rend jamais la main) : on poll le port.
+        # Un serveur détaché ne rend pas la main; sonder son port et journaliser sa sortie.
         fd, logpath = tempfile.mkstemp(prefix="loom-serve-", suffix=".log")
         os.close(fd)
         logf = open(logpath, "w", encoding="utf-8", errors="replace")
@@ -579,8 +555,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
             ready = _wait_for_port(proc, host, port, ready_timeout)
             if ready:
                 report = _render_page(url, wait_selector, count_selectors)
-                # On LAISSE le serveur vivre (registre) : le modele peut tester d'autres pages,
-                # puis le fermer avec action='stop'. Le log reste ouvert (le serveur y ecrit).
+                # Transférer la propriété au registre pour les vérifications suivantes.
                 sid = _register_server(proc, url, logpath, logf)
                 handed_off = True
                 body = (
@@ -589,7 +564,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                 )
                 return untrusted(body, f"page {url}")
 
-            # Echec de démarrage : diag depuis le log, puis on tue et on nettoie.
+            # Utiliser le journal pour diagnostiquer un démarrage échoué.
             try:
                 logf.flush()
                 tail = Path(logpath).read_text(encoding="utf-8", errors="replace")[
@@ -613,9 +588,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                 f"page {url}",
             )
         finally:
-            # Sur TOUT chemin non-remis (erreur OU echec de démarrage) : tue le proc,
-            # ferme le log et supprime le temp. Le chemin 'ready' a transfere la propriete
-            # au registre (handed_off) -> on ne touche pas a logf/logpath.
+            # Nettoyer seulement si la propriété n'a pas été transférée au registre.
             if not handed_off:
                 if proc is not None:
                     try:
@@ -736,8 +709,7 @@ def _run_step(page, step: dict) -> dict:
     op = (step.get("op") or "none").strip().lower()
     selector = (step.get("selector") or "").strip()
     expect = step.get("expect") if isinstance(step.get("expect"), dict) else {}
-    # Une etape n'est une PREUVE que si elle porte une post-condition reelle (selector +
-    # check). Sans ca, l'etape passe « pour rien » -> traquee pour interdire la preuve vide.
+    # Une action sans post-condition ne constitue pas une preuve fonctionnelle.
     asserted = bool(
         (expect.get("selector") or "").strip() and (expect.get("check") or "").strip()
     )
@@ -834,8 +806,7 @@ def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
     errors = [t for (k, t) in console if k == "error"] + page_errors
     asserted = sum(1 for r in results if r.get("asserted"))
     steps_ok = bool(results) and all(r["ok"] for r in results)
-    # PREUVE NON VIDE : `ok` global exige au moins une post-condition reelle qui passe.
-    # Sinon une suite de clics sans `expect` se declarerait « jouable » a tort.
+    # Exiger au moins une post-condition empêche un faux succès fondé sur de simples clics.
     ok = (not errors) and steps_ok and asserted > 0
     note = (
         ""

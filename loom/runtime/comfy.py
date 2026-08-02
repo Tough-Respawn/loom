@@ -1,4 +1,3 @@
-# loom/runtime/comfy.py
 """Moteur ComfyUI géré par Loom : démarrage (Job Object kill-on-close), soumission
 d'un workflow API et récupération du PNG. HTTP uniquement (urllib), aucune dépendance.
 
@@ -41,7 +40,6 @@ class ComfyEngine:
         self._job = None
         self._lock = threading.Lock()
 
-    # --- processus --------------------------------------------------------
     def is_up(self, timeout: float = 3.0) -> bool:
         try:
             with urllib.request.urlopen(self.base + "/system_stats", timeout=timeout):
@@ -96,7 +94,6 @@ class ComfyEngine:
             if p is not None and p.poll() is None:
                 _terminate_tree(p)
 
-    # --- génération -------------------------------------------------------
     def _post(self, path: str, payload: dict, timeout: float = 30.0) -> dict:
         req = urllib.request.Request(
             self.base + path,
@@ -159,9 +156,7 @@ class ComfyEngine:
         -> chaque message donne une image différente, comme le « randomize » de l'UI.
         {IMAGE} (édition/i2v, ex. Kontext ou Wan i2v) : photo d'entrée uploadée puis
         référencée par son nom — requise si le template la déclare."""
-        # Sweep des doublons RÉSIDUELS d'anciennes générations (purge immédiate ratée :
-        # handle Windows tenu par ComfyUI au moment du unlink). Tout loom_* présent ici
-        # prédate ce job (générations sérialisées) -> suppression sûre, best-effort.
+        # Windows peut différer la suppression d'une sortie encore ouverte par ComfyUI.
         try:
             for stale in (self.dir / "output").glob("loom_*"):
                 try:
@@ -174,9 +169,6 @@ class ComfyEngine:
             '"{PROMPT}"', json.dumps(prompt, ensure_ascii=False)
         )
         wf = wf.replace('"{SEED}"', str(random.getrandbits(63)))
-        # {WIDTH}/{HEIGHT} (optionnels dans le template) : résolution DYNAMIQUE —
-        # l'appelant la dérive de la demande (ex. tag [format: portrait] du refiner),
-        # repli sur les valeurs du model.toml.
         wf = wf.replace('"{WIDTH}"', str(int(width or 1024)))
         wf = wf.replace('"{HEIGHT}"', str(int(height or 1024)))
         if '"{IMAGE}"' in wf:
@@ -198,7 +190,6 @@ class ComfyEngine:
         except (urllib.error.URLError, OSError) as exc:
             raise ComfyError(f"soumission à ComfyUI échouée : {exc}") from exc
         if "error" in sub or "prompt_id" not in sub:
-            # Nœud manquant / entrée invalide : ComfyUI détaille dans node_errors.
             detail = json.dumps(sub, ensure_ascii=False)[:300]
             raise ComfyError(f"workflow refusé par ComfyUI : {detail}")
         pid = sub["prompt_id"]
@@ -226,9 +217,7 @@ class ComfyEngine:
                     "génération échouée côté ComfyUI : "
                     + (msgs[0] if msgs else "?")[:200]
                 )
-            # Sortie = premier fichier produit, quel que soit le nœud d'écriture :
-            # SaveImage range sous "images", SaveWEBM/PreviewVideo sous d'autres clés —
-            # on scanne toute liste de dicts porteurs d'un "filename".
+            # Les nœuds image et vidéo rangent leurs fichiers sous des clés différentes.
             for out in entry.get("outputs", {}).values():
                 for lst in out.values():
                     if not isinstance(lst, list):
@@ -248,11 +237,7 @@ class ComfyEngine:
                         ) as resp:
                             ext = Path(im["filename"]).suffix or ".png"
                             payload = resp.read()
-                        # ComfyUI a écrit SA copie dans <comfy>/output : doublon inutile
-                        # (l'unique copie vit dans le dossier de session Loom) -> purgée
-                        # aussitôt récupérée. ComfyUI peut encore tenir un handle Windows
-                        # quelques instants -> retries ; en dernier recours le sweep du
-                        # prochain generate() (ci-dessus) rattrape le résidu.
+                        # Loom conserve sa copie; celle de ComfyUI est supprimée avec retries Windows.
                         dup = (
                             self.dir
                             / "output"

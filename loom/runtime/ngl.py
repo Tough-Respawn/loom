@@ -1,4 +1,3 @@
-# loom/runtime/ngl.py
 """Résolution UNIFIÉE du nombre de couches GPU à offloader (-ngl).
 
 Avant, deux implémentations divergentes coexistaient :

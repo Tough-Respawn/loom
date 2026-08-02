@@ -19,44 +19,27 @@ class Conversation:
     deferred_loaded: list[str] = field(default_factory=list)
     model: str = ""
     thinking: bool = True
-    # Session PRIVÉE : aucun octet ne part vers une API distante — la chaîne de
-    # routage des sous-agents (dispatch_models) est court-circuitée, tout reste
-    # sur le modèle de la conversation. Décision humaine, jamais devinée.
+    # Une session privée interdit tout routage distant ; seul l'utilisateur la déclare.
     local_only: bool = False
-    # Plan de tâches de manage_todos : par conversation (donc par session) et persisté
-    # ici -> survit au redémarrage, ne déborde plus d'une session à l'autre.
+    # Le plan persiste par session et ne doit jamais déborder dans une autre.
     todos: list[dict] = field(default_factory=list)
-    # Notes de write_note/read_note : mémoire DURABLE qui échappe à la microcompaction
-    # (laquelle purge les résultats d'outils). Le modèle y consigne ses trouvailles et
-    # relit sa note plutôt que de re-lire un fichier entier. Par session, persisté ici.
+    # Ces notes survivent à la microcompaction des résultats d'outils.
     notes: list[str] = field(default_factory=list)
-    # Objectif de complétion (commande /goal) : condition vérifiable qui maintient l'agent au
-    # travail jusqu'à ce qu'un évaluateur la juge atteinte (façon /goal de Claude Code). Vide =
-    # pas d'objectif. Effacé quand atteint. Par session, persisté ici.
+    # L'objectif persiste jusqu'à ce que son évaluateur le juge atteint.
     goal: str = ""
-    # Skills DÉSACTIVÉS pour cette session : retirés du catalogue et de use_skill. Vide = tous
-    # actifs (défaut, rétro-compat). Par session -> on module la surface de skills par projet.
+    # Une liste vide conserve tous les skills actifs pour cette session.
     disabled_skills: list[str] = field(default_factory=list)
-    # Overrides de skill AU NIVEAU SESSION : nom -> texte SKILL.md édité. N'écrit PAS le fichier
-    # sur disque (ça, c'est « enregistrer pour toutes les sessions »). Le catalogue et use_skill
-    # utilisent ce texte à la place du fichier pour cette session uniquement.
+    # Un override de session masque le fichier sans le modifier sur disque.
     skill_overrides: dict[str, str] = field(default_factory=dict)
-    # Compteurs de consommation RÉELS, cumulés sur toute la session (persistés). Une API sans
-    # état refacture TOUT le contexte en INPUT à chaque appel d'outil : `tokens_in` explose vs
-    # l'output visible. On somme donc input/output/coût sur TOUS les appels (pas par tour).
+    # Cumuler tous les appels : une API sans état refacture le contexte à chaque tour d'outil.
     tokens_in: int = 0
     tokens_out: int = 0
     tokens_cached: int = 0  # part de tokens_in servie par le cache de préfixe
     cost_usd: float = 0.0
     api_calls: int = 0
-    # Taille du contexte au DERNIER appel (prompt_tokens du dernier tour), PAS un cumul :
-    # c'est le remplissage courant de la fenêtre du modèle. Rapporté à la fenêtre (côté web)
-    # -> jauge « ctx X% » (proximité du seuil de microcompact). Le contexte grossit dans la
-    # boucle d'outils ; le dernier appel du tour = l'occupation réelle.
+    # Contrairement aux totaux, ce champ mesure seulement l'occupation du dernier appel.
     context_tokens: int = 0
-    # État du wizard /add-model (machine à états déterministe, cf. loom/web/wizard.py) :
-    # dict JSON-sérialisable persisté ici -> le parcours survit à un refresh de page.
-    # None = pas de wizard actif (défaut, rétro-compat).
+    # Persister le wizard pour qu'il survive à un rafraîchissement de page.
     wizard: dict | None = None
 
     def add_usage(
@@ -85,7 +68,7 @@ class Conversation:
         self.tokens_out += completion
         self.tokens_cached += cached
         self.api_calls += 1
-        # Occupation courante de la fenêtre = le prompt du DERNIER appel du FIL PRINCIPAL.
+        # Seul le dernier appel du fil principal définit l'occupation courante.
         if set_context:
             self.context_tokens = prompt
         pc = price_cached if price_cached > 0 else price_in

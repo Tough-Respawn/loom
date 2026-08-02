@@ -1,4 +1,3 @@
-# loom/web/routes/model_admin.py — sorti de models.py (comportement constant).
 from __future__ import annotations
 import shutil
 from pathlib import Path
@@ -7,7 +6,6 @@ from loom.web.routes.config import _regen_swap_yaml
 
 
 
-# ---- Commande /add-model : wizard déterministe d'ajout de modèle -----------------------
 
 
 def _list_remote_models(base_url: str, api_key: str) -> list[str] | None:
@@ -44,8 +42,7 @@ def _removable_models(S) -> list[dict]:
                 "label": f"{m['id']} — local, {size:.1f} Go sur disque",
             }
         )
-    # Distants : un dossier remote/<id>/ par modèle — si c'est le default_model,
-    # la confirmation avertit (repli boot sur le 1er modèle).
+    # Avertir avant de supprimer le modèle distant par défaut.
     default_model = ""
     if S.config_local_path and Path(S.config_local_path).exists():
         try:
@@ -63,8 +60,7 @@ def _removable_models(S) -> list[dict]:
                 f"({S.remote_model_names.get(mid, '?')}, remote/{mid}/)",
             }
         )
-    # Image/vidéo (ComfyUI) : seule la DÉFINITION Loom (model.toml + workflow.json)
-    # est supprimable — les poids vivent côté ComfyUI, partagés entre modèles.
+    # Supprimer seulement la définition Loom; les poids ComfyUI peuvent être partagés.
     for im in sorted(S.image_by_id.values(), key=lambda m: m.id):
         kind = "video" if im.id in S.video_model_ids else "image"
         items.append(
@@ -99,8 +95,7 @@ def _models_roots(S) -> list[str]:
     roots = getattr(S, "models_roots", None)
     if roots:
         return [str(r) for r in roots]
-    # Repli sûr : uniquement si models_dir suit la convention <racine>/local/text —
-    # sinon remonter de deux crans pointerait n'importe où.
+    # Ne remonter depuis models_dir que s'il suit la convention attendue.
     if S.models_dir:
         p = Path(S.models_dir)
         if p.name == "text" and p.parent.name == "local":
@@ -279,11 +274,7 @@ def _finish_install(S, sess, chat_lock, mid, mdir, job):
         det = f" ({', '.join(extras)})" if extras else ""
         msg = f"Modèle « {mid} » installé{det} — disponible dans le sélecteur."
     job.final_message = msg
-    # Écriture de la conversation sous le verrou de session pour ne pas courir contre
-    # une génération. Acquire à timeout COURT avec repli : on écrit de toute façon
-    # (le journal est append-only, le risque réel est borné) — et dans le cas
-    # synchrone (download instantané) le verrou est encore tenu par la requête du
-    # wizard, inutile d'attendre longtemps.
+    # Attendre brièvement le verrou; le journal append-only borne le risque de repli.
     got = chat_lock.acquire(timeout=2)
     try:
         conv = sess.conversation
@@ -295,17 +286,12 @@ def _finish_install(S, sess, chat_lock, mid, mdir, job):
             chat_lock.release()
 
 
-# ---- Routes : modèles (sélection, gestionnaire, machine) -------------------------------
-
-# ---- Modèles LOCAUX : liste + édition du tuning MACHINE (offload GPU) dans model.toml.
-# La définition (repo/filename/n_layers) est commune au modèle -> lecture seule ici ; le
-# tuning (context/n_gpu_layers/cpu_moe/n_cpu_moe) est propre à cette machine -> éditable.
+# La définition du modèle reste partagée; seuls les réglages machine sont éditables ici.
 _LOCAL_EDITABLE = {
     "context": "int",
     "n_gpu_layers": "int",
     "cpu_moe": "bool",
     "n_cpu_moe": "int",
-    # Microbatch/batch de prefill (banc 2026-07-19 : levier x2,9 sur MoE offloadé).
     "ubatch": "int",
     "batch": "int",
 }
@@ -342,8 +328,7 @@ def _remote_list(S):
                 "max_tokens": S.model_max_tokens.get(mid),
                 "vision": mid in S.vision_models,
                 "has_key": info["has_key"],
-                # Indice masqué (4 derniers car.) : l'utilisateur voit sa propre clé de
-                # façon partielle, jamais la clé entière renvoyée au client.
+                # Montrer seulement les quatre derniers caractères de la clé.
                 "key_hint": ("…" + key[-4:]) if key else "",
                 "managed": True,
             }

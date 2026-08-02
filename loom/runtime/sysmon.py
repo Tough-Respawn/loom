@@ -1,4 +1,3 @@
-# loom/runtime/sysmon.py
 """Monitoring système LIVE (CPU / RAM / GPU) pour l'indicateur affiché quand un modèle
 LOCAL est sélectionné. CPU/RAM via psutil (dégradation propre s'il manque).
 
@@ -26,10 +25,7 @@ try:  # psutil = dépendance ; absente -> métriques CPU/RAM à None, le reste m
 except ImportError:  # pragma: no cover
     psutil = None  # type: ignore[assignment]
 
-# CPU % : mesuré par un thread échantillonneur DÉDIÉ, pas à chaque requête. `cpu_percent`
-# a un état global UNIQUE par process : si plusieurs clients (onglets, polls) l'appellent en
-# `interval=None`, la fenêtre de mesure tombe à ~0 -> 0% faux. Un seul sampler qui boucle en
-# `interval=1.0` donne une valeur fiable toutes les ~1 s, que lisent tous les lecteurs.
+# Un échantillonneur unique évite que plusieurs clients raccourcissent la fenêtre CPU à zéro.
 _CPU_LOCK = threading.Lock()
 _cpu_val: dict = {"v": None}
 _cpu_started = {"on": False}
@@ -103,12 +99,7 @@ def _read_gpu_raw() -> dict | None:
     }
 
 
-# --- Repli GÉNÉRIQUE Windows (AMD / Intel) via les compteurs de performance -----------------
-# Script PowerShell auto-suffisant -> JSON {name, mem_total_mb, mem_used_mb, util}. Nom +
-# VRAM totale : WMI + registre (qwMemorySize, fiable au-delà de 4 Go, contrairement à
-# AdapterRAM). VRAM utilisée + utilisation : compteurs `GPU Adapter Memory` / `GPU Engine`
-# (agnostiques du vendeur, comme le Gestionnaire des tâches). Passé en -EncodedCommand
-# (base64 UTF-16LE) pour éviter tout souci de quoting.
+# Repli Windows agnostique; l'encodage UTF-16LE évite les erreurs de quoting PowerShell.
 _WIN_GPU_PS = r"""
 $ErrorActionPreference='SilentlyContinue'
 $best = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notmatch 'Basic Display|Remote|Meta|Parsec' } | Select-Object -First 1
@@ -166,8 +157,7 @@ def _read_gpu_windows_raw() -> dict | None:
 
 
 def _win_gpu_sampler() -> None:  # pragma: no cover - boucle daemon
-    # Échantillonne toutes les ~2,5 s, mais SEULEMENT si le widget est actif (une lecture a eu
-    # lieu depuis < 8 s) : pas de PowerShell perpétuel quand aucun modèle local n'est affiché.
+    # Ne lancer PowerShell que lorsque le widget a été consulté récemment.
     while True:
         if time.monotonic() - _win_last_req["t"] < 8.0:
             data = _read_gpu_windows_raw()

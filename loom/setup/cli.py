@@ -1,4 +1,3 @@
-# loom/setup/cli.py
 """Installeur interactif console : `uv run loom-setup`.
 
 Quatre étapes, chacune sur le même contrat HITL : état constaté → proposition
@@ -69,8 +68,6 @@ from loom.setup.steps import (
     swap_bin_status,
 )
 
-# Mêmes repères que serve.py : ce fichier vit dans loom/setup/, la racine du
-# repo est deux niveaux au-dessus du package.
 LOOM_DIR = Path(__file__).resolve().parent.parent  # = loom/ (le package)
 REPO_ROOT = LOOM_DIR.parent
 CONFIG_PATH = REPO_ROOT / "config" / "defaults.toml"
@@ -101,11 +98,7 @@ class Console:
         self._input = input_fn
         self._print = print_fn
         self.color = supports_color(sys.stdout) if color is None else color
-        # Chrono de progression : la ligne se ré-affiche chaque seconde avec le
-        # temps écoulé dans l'étape courante (une sonde de calibration peut rester
-        # muette plusieurs minutes — sans chrono, ça ressemble à un gel).
-        # Ticker seulement sur un vrai terminal : les fakes de tests restent
-        # synchrones et déterministes.
+        # Afficher un chrono sur TTY rend les longues sondes visibles sans perturber les tests.
         self._prog_lock = threading.Lock()
         self._prog_msg: str | None = None
         self._prog_t0 = 0.0
@@ -128,8 +121,7 @@ class Console:
             interrupted = self._live and self._prog_msg is not None
         if interrupted:
             self._print()  # clôt la ligne de progression, le chrono repart dessous
-        # Coloration LIGNE PAR LIGNE : le bilan arrive en un bloc multi-lignes,
-        # les règles (^…) ne matcheraient que la première sinon.
+        # Colorer ligne par ligne car les règles sont ancrées en début de ligne.
         if self.color:
             self._print("\n".join(colorize(line) for line in msg.split("\n")))
         else:
@@ -157,7 +149,7 @@ class Console:
             else:
                 stamp = ""
             line = f"  {msg}{stamp}"
-            # Efface la queue de l'ancienne ligne si la nouvelle est plus courte.
+            # Effacer le reliquat d'une ligne précédente plus longue.
             pad = " " * max(0, self._prog_len - len(line))
             self._prog_len = len(line)
             self._print(f"\r{line}{pad}", end="", flush=True)
@@ -194,8 +186,7 @@ class Console:
     def ask(self, prompt: str, default: str = "") -> str:
         if self.assume_yes:
             return default
-        # strip du BOM : stdin pipé depuis PowerShell préfixe la 1re ligne de
-        # ﻿ — invisible mais "﻿1" != "1". Sans effet au clavier.
+        # Retirer le BOM ajouté au premier stdin pipé par PowerShell.
         raw = self._input(self._prompt(f"  {prompt} ")).strip().strip("﻿").strip()
         return raw or default
 
@@ -238,7 +229,6 @@ class Deps:
     has_gpu_backend: object = bench_mod.has_gpu_backend
     cpu_physical: object = None  # () -> int|None (cœurs physiques)
     sleep: object = time.sleep
-    # Calibration topologique du contexte (topology.py) — injectables pour tests.
     gpu_vram_total_mb: object = topo_mod.gpu_vram_total_mb
     make_probe: object = topo_mod.ServerProbe  # (**kw) -> objet avec .run(ctx, depth)
 
@@ -289,7 +279,6 @@ def _real_cpu_physical() -> int | None:
         return None
 
 
-# ─────────────────────────────── Étapes ────────────────────────────────
 
 
 def step_detection(con: Console, report: SetupReport, deps: Deps):
@@ -297,9 +286,7 @@ def step_detection(con: Console, report: SetupReport, deps: Deps):
     plat = deps.detect_platform()
     hw = deps.detect_hardware()
     ram = deps.ram_available_mb()
-    # Avant le binaire, seule la sonde NVIDIA existe (elle décide du build CUDA à
-    # l'étape 2). Les autres GPU (AMD/Intel — Vulkan) sont confirmés juste après,
-    # par le binaire lui-même (--list-devices) : affichage honnête, pas « aucun ».
+    # Avant le binaire, seule la détection NVIDIA peut choisir le build CUDA.
     gpu = (
         f"{hw.gpu_name} ({hw.vram_free_mb} Mo VRAM libre)"
         if hw.has_gpu
@@ -326,7 +313,6 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
         f'  Config [server] bin = "{bin_name}" → introuvable (ni fichier, ni PATH).'
     )
 
-    # Un binaire d'un run précédent traîne peut-être déjà sous var/runtime/llama/.
     existing = deps.find_llama_server(RUNTIME_DIR)
     if existing is not None:
         version = deps.verify_binary(existing)
@@ -422,8 +408,7 @@ def step_swap(con: Console, report: SetupReport, deps: Deps, plat, raw_cfg):
     Vécu 2026-07-22 : jamais installé par le setup, la bascule mono->multi au
     2e /add-model plantait le serve au démarrage suivant (« binaire llama-swap
     introuvable »). Best-effort : un échec n'empêche pas le mono-modèle."""
-    # Pas de routeur sans serveur : si llama-server a été refusé/raté, on ne
-    # télécharge rien et on n'écrit pas de config.
+    # Sans llama-server, ne pas installer un routeur inutilisable.
     server_present, _ = server_bin_status(raw_cfg)
     if not server_present:
         report.add("swap", "ignore", "reporté (llama-server absent)")
@@ -564,8 +549,7 @@ def _download_model(
     if mmproj and not (Path(dest) / mmproj).is_file():
         filenames.append(mmproj)
 
-    # Garde-éveil pendant le téléchargement (même filet que serve.py : un GGUF de
-    # 15+ Go sans activité utilisateur ne doit pas être coupé par la veille).
+    # Empêcher la veille pendant les gros téléchargements sans activité utilisateur.
     from loom.runtime.stay_awake import StayAwake
 
     awake = StayAwake()
@@ -588,8 +572,7 @@ def _download_model(
         report.add("modele", "echec", f"téléchargement : {job.error}")
         return
     meta = finalize_model_toml(dest, Path(dest) / filename)
-    # Premier modèle de CETTE machine = son défaut local (sinon defaults.toml
-    # peut pointer un modèle du parc absent d'ici -> sélecteur UI fantôme).
+    # Le premier modèle présent sur cette machine devient son défaut local.
     set_default_model(PERSONAL_CONFIG_PATH, model_id)
     extra = " (MoE → cpu_moe = true)" if meta.get("expert_count") else ""
     con.say(f"  [ok] Modèle « {model_id} » installé{extra} — défaut de cette machine.")
@@ -599,9 +582,7 @@ def _download_model(
 def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
     con.say("")
     con.say("[3/4] Modèle")
-    # Un model.toml SANS son GGUF (Ctrl+C pendant le download) n'est PAS un
-    # modèle branché : le dire et proposer de finir, plutôt qu'un « rien à
-    # faire » mensonger contredit par le bench deux lignes plus bas.
+    # Un profil sans GGUF reste une installation incomplète à reprendre.
     missing = incomplete_models(raw_cfg, PACKAGE_MODELS)
     if missing:
         mid, folder, data = missing[0]
@@ -667,8 +648,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
         if not query:
             report.add("modele", "ignore", "recherche vide")
             return
-        # URL huggingface.co ou id org/repo collé tel quel : on court-circuite la
-        # recherche, l'inventaire des quants (probe_repo) validera le repo.
+        # Une URL ou un id explicite contourne la recherche, pas la validation du repo.
         repo = parse_hf_repo(query)
         if repo is not None:
             con.say(f"  → repo repéré : {repo}")
@@ -679,9 +659,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
                 con.say(f"  [échec] {exc}")
                 report.add("modele", "ignore", "recherche impossible (hors-ligne ?)")
                 return
-            # Filtre par le budget de CETTE machine : inutile de proposer un 397B
-            # à 1,6 Go de budget. Estimation depuis le nom (± large) ; la taille
-            # réelle des quants tranche après le choix.
+            # Filtrer grossièrement les familles impossibles avant de charger leurs quants.
             hits, hidden = filter_by_budget(hits, budget)
             if hidden:
                 con.say(
@@ -712,10 +690,7 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
         except (ValueError, IndexError):
             report.add("modele", "ignore", "choix invalide")
             return
-        # Le catalogue porte des FAMILLES (queries), pas des repos figés : le
-        # repo réel se résout en live (top téléchargements qui fit le budget).
-        # Erreur réseau/HF distinguée de « rien de jouable » : le message HF
-        # (diagnostic proxy inclus) remplace un « famille disparue ? » trompeur.
+        # Distinguer une panne réseau d'une famille réellement sans modèle jouable.
         try:
             repo = resolve_entry(entry, deps.search_models, budget)
         except HfCatalogError as exc:
@@ -809,7 +784,6 @@ def _set_model_context(gguf_path: Path, context: int, mecanisme: str) -> None:
     new_line = f"context = {context}"
     for i, line in enumerate(lines):
         code = line.split("#")[0].strip()
-        # `context = N` exactement — pas context_length ni un commentaire.
         if code.startswith("context") and code.replace(" ", "").startswith("context="):
             lines[i] = new_line
             if i == 0 or not lines[i - 1].strip().startswith("# context calibré"):
@@ -864,8 +838,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     server_bin = resolve_bin(bin_name)
     model = first_model_file(raw_cfg, PACKAGE_MODELS)
     if server_bin is None or model is None:
-        # Nommer CE qui manque : « binaire ou modèle » accusait le binaire même
-        # quand seul le GGUF manquait (téléchargement interrompu).
+        # Nommer précisément l'élément manquant dans le diagnostic.
         manque = []
         if server_bin is None:
             manque.append("le binaire llama-server")
@@ -887,8 +860,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
 
     import os
 
-    # Profil AGNOSTIQUE (binaire = source de vérité) + métadonnées GGUF : ils
-    # dimensionnent les candidats -ngl (et servent à la topologie plus bas).
+    # Le binaire et les métadonnées GGUF dimensionnent les candidats d'offload.
     hw = deps.detect_hardware(server_bin)
     try:
         meta = read_gguf_meta(gguf_path)
@@ -896,9 +868,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         meta = {}
 
     threads = bench_mod.thread_candidates(os.cpu_count() or 4, deps.cpu_physical())
-    # MoE (expert_count dans le header) : le bench mesure la config RUNTIME
-    # (denses sur GPU, experts en RAM via -ncmoe) — offloader tous les poids
-    # d'un 35B en VRAM OOMait le device (vécu Ornith Q8).
+    # Pour un MoE, mesurer l'offload réel avec experts en RAM plutôt qu'un impossible tout-GPU.
     moe = bool(meta.get("expert_count"))
     ngl, ncmoe = bench_mod.ngl_candidates(
         deps.has_gpu_backend(server_bin) and hw.has_gpu,
@@ -937,11 +907,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         report.add("bench", "echec", "sortie llama-bench vide")
         return
 
-    # ── Contexte : calibration TOPOLOGIQUE (topology.py) — pente MESURÉE entre
-    # deux chargements + échelle de vitesse en profondeur, avec les flags EXACTS
-    # de l'exécutant. Remplace l'ex-formule « KV théorique vs RAM », fausse d'un
-    # facteur 2 (q8_0 vs f16) à 5 (sliding-window) sur le parc réel (audit et
-    # sondes du 2026-07-18).
+    # Mesurer pente et débit avec les vrais flags évite les erreurs d'une formule KV théorique.
     import psutil
 
     vram_total = deps.gpu_vram_total_mb()
@@ -949,7 +915,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         meta, deps.has_gpu_backend(server_bin), vram_total
     )
     headroom = int((raw_cfg.get("server") or {}).get("gpu_kv_headroom_mb", 640) or 640)
-    # RAM TOTALE (déterministe), jamais la dispo du moment — audit P3.
+    # Utiliser la RAM totale rend la recommandation reproductible.
     ram_total_mb = int(psutil.virtual_memory().total // (1024 * 1024))
     budget = topo_mod.memory_budget_mb(topo, vram_total, ram_total_mb, headroom)
     model_toml = _read_model_toml(gguf_path)
@@ -959,17 +925,14 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         server_bin=str(server_bin),
         model_path=str(gguf_path),
         threads=best["threads"],
-        # MoE + GPU : doctrine mesurée du parc — attention sur GPU, experts en RAM.
+        # Un MoE sur petit GPU garde l'attention en VRAM et les experts en RAM.
         ngl=99 if (is_moe and topo != topo_mod.TOPO_RAM) else best["ngl"],
         topology=topo,
         mmproj_path=str(gguf_path.parent / mmproj_name) if mmproj_name else None,
         cpu_moe=bool(model_toml.get("cpu_moe", is_moe)),
         n_cpu_moe=model_toml.get("n_cpu_moe"),
     )
-    # ── Sonde d'isolation du cache AVANT la calibration : si ce modèle exige un
-    # 2e slot (cache hors du prompt-cache RAM natif -> perdu à chaque appel
-    # annexe), la calibration doit mesurer mémoire ET débits avec le KV
-    # réellement doublé — le conseilleur simule l'exécutant (P2).
+    # Mesurer l'isolation avant la calibration pour inclure le KV du second slot.
     con.progress("sonde d'isolation du cache (A -> pollution -> A)…")
     isolation: bool | None = None
     iso_detail = ""
@@ -1026,24 +989,18 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "tg_ts": round(best["tg_ts"], 2),
             "pp_ts": round(best["pp_ts"], 2),
             "context": context,
-            # La décision porte son MÉCANISME (audit P6) : on saura toujours
-            # pourquoi ce chiffre, et jusqu'où la vitesse a été vérifiée.
+            # Conserver le mécanisme rend la recommandation explicable.
             "context_mode": calib["mode"],
             "context_mecanisme": calib["mecanisme"],
             "context_pente_kb_tok": calib["slope_kb_tok"],
             "context_valide_jusqua": calib["valide_jusqua"],
         },
     }
-    # Dès que le GPU a été TESTÉ, la mesure a le dernier mot — 0 compris (un
-    # iGPU peut perdre contre le CPU) : sans l'écrire, l'auto-offload runtime
-    # (resolve_ngl) re-prendrait un GPU mesuré plus lent. SAUF pour un MoE :
-    # resolve_ngl (cpu_moe) ignore l'override, et un override GLOBAL issu d'une
-    # mesure MoE (999/0) polluerait les modèles denses installés ensuite.
+    # Persister même un zéro mesuré, sauf pour un MoE dont l'override global serait trompeur.
     if len(ngl) > 1 and not moe:
         values["override"]["n_gpu_layers"] = best["ngl"]
     set_local_values(PERSONAL_CONFIG_PATH, values)
-    # Vérité PAR MODÈLE : la pente est propre à chaque architecture — le contexte
-    # calibré s'écrit aussi dans le model.toml du modèle benché.
+    # La pente dépend de l'architecture; persister donc le contexte par modèle.
     _set_model_context(gguf_path, context, calib["mecanisme"])
     if isolation is not None:
         _set_model_cache_isolation(gguf_path, isolation, iso_detail)
@@ -1109,7 +1066,6 @@ def _usage_verdict(tg_ts: float, pp_ts: float) -> list[str]:
     return lines
 
 
-# ─────────────────────────────── main ────────────────────────────────
 
 
 def run(con: Console, deps: Deps) -> int:
@@ -1119,7 +1075,7 @@ def run(con: Console, deps: Deps) -> int:
         plat, hw, ram = step_detection(con, report, deps)
         raw_cfg = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
         step_binary(con, report, deps, plat, hw, raw_cfg)
-        # Relire la config entre chaque étape : la précédente a pu la modifier.
+        # Relire la config car chaque étape peut modifier la suivante.
         raw_cfg = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
         step_swap(con, report, deps, plat, raw_cfg)
         step_tooling(con, report, deps)
@@ -1167,7 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     ensure_utf8_stdio()
-    # Log frais à chaque run (on veut la session courante, pas l'historique).
+    # Le journal ne couvre que l'exécution courante.
     try:
         SETUP_LOG.parent.mkdir(parents=True, exist_ok=True)
         SETUP_LOG.write_text(

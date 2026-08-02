@@ -14,8 +14,7 @@ from loom.tools.web import WebSearchConfig
 # Le prompt système du chat vit dans loom/prompts/chat.system.md (source de vérité).
 DEFAULT_SYSTEM_PROMPT = CHAT_SYSTEM
 
-# Racine des modèles par défaut : dans le package (loom/models). Surchageable par
-# [storage] models_root (config/local.toml) — ex. E:/loom-models sur la machine du user.
+# `[storage] models_root` peut remplacer la racine embarquée des modèles.
 _PACKAGE_MODELS = Path(__file__).resolve().parent / "models"
 
 
@@ -31,7 +30,7 @@ class ChatConfig:
     max_retries: int = 6
     context_token_budget: int = 3000
     keep_recent_messages: int = 6
-    # Outils (boucle tool-use). enabled vide => aucun outil exposé.
+    # Une liste vide n'expose aucun outil.
     tools_enabled: list[str] = field(default_factory=list)
     # Schémas longue traîne chargés à la demande par tool_search. Kill-switch
     # désactivé par défaut jusqu'à validation A/B sur un modèle local.
@@ -42,33 +41,22 @@ class ChatConfig:
     # Ignorée quand la session est marquée local_only (données privées/sensibles).
     dispatch_models: list[str] = field(default_factory=list)
     workspace_dir: str = "."
-    # Cap par appel read_file (caractères). Volontairement BAS devant le contexte (24576
-    # tokens) : un seul gros fichier ne doit pas le faire déborder -> on lit par tranches
-    # (start_line). ~40000 car ≈ 10k tokens.
+    # Borner chaque lecture afin qu'un fichier seul ne sature pas le contexte.
     read_file_max_bytes: int = 40_000
-    # Timeout run_shell (s) : assez long pour npm install / next build (qui depassent 30s et se
-    # faisaient tuer -> cascade). La commande reste tuee au-dela (anti-hang).
+    # Laisser les builds longs finir, tout en conservant une borne anti-hang.
     shell_timeout: int = 180
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
-    # Keep-warm : sur Windows, un llama-server inactif se fait rogner son working-set par
-    # l'OS (pages des experts MoE évincées) -> 1re requête après une pause = lente (cold
-    # start). Un ping minimal (1 token) toutes les keepwarm_interval secondes, À L'IDLE
-    # seulement, garde le modèle chargé « chaud » sans verrouiller la RAM en dur. Pinge le
-    # modèle de la session active (jamais un autre -> pas de swap llama-swap intempestif).
+    # Sous Windows, un ping idle empêche l'éviction du working-set MoE. Cibler seulement
+    # la session active pour ne pas provoquer de swap.
     keepwarm_enabled: bool = True
     keepwarm_interval: int = 150
-    # Mémoire/identité : budget du bloc identité always-on injecté au prompt (SOUL/USER/MEMORY).
-    # SOUL+USER+MEMORY propres pèsent ~450 tokens : 600 laisse de la marge sans tronquer le
-    # durable (négligeable sur une fenêtre de 24576). Le projet-spécifique va en épisodique.
+    # Budget du bloc durable SOUL/USER/MEMORY injecté à chaque prompt.
     identity_max_tokens: int = 600
-    # Fiche projet `<workspace>/loom.md` (générée par /init) auto-injectée au system prompt.
-    # Budget distinct de l'identité : une fiche projet peut être plus dense (stack, arbo,
-    # commandes) sans rogner SOUL/USER/MEMORY.
+    # La fiche projet a son propre budget pour ne pas rogner l'identité durable.
     project_memory_max_tokens: int = 600
-    # Apprentissage (boucle fermée) : skills auto-appris + étape reflect post-tour.
+    # Boucle d'apprentissage et réflexion post-tour.
     learned_skills_dir: str = "var/skills_learned"
-    # Skills AJOUTÉS PAR L'UTILISATEUR depuis l'UI (« + nouveau ») : hors du package
-    # (loom/skills reste versionné/officiel), machine-locale comme les appris.
+    # Garder les skills utilisateur hors du package versionné.
     user_skills_dir: str = "var/skills_user"
     reflect_enabled: bool = True
     reflect_min_actions: int = 1
@@ -96,42 +84,23 @@ class ModelConfig:
     mmproj_filename: str = ""
     id: str = ""
     n_gpu_layers: int | None = None
-    # MoE offload : si True, garde attention + FFN dense sur GPU et bascule les experts
-    # ROUTÉS en RAM (--cpu-moe + -ngl 999). Rend un MoE 26-35B jouable sur 6 Go.
+    # Garder attention/dense sur GPU et placer les experts routés en RAM.
     cpu_moe: bool = False
-    # Offload MoE PARTIEL : N = nb de couches dont les experts vont en RAM ; les (total-N)
-    # restantes gardent leurs experts sur GPU (plus rapide, remplit la VRAM). Si défini,
-    # émet `--n-cpu-moe N` au lieu de `--cpu-moe` (qui, lui, offloade TOUTES les couches).
+    # `n_cpu_moe` offloade seulement N couches, contrairement à `cpu_moe`.
     n_cpu_moe: int | None = None
-    # Contexte propre au modèle (override le global). Un gros MoE = KV plus lourd -> on
-    # raccourcit (ex. 16384) là où les petits tiennent 24576.
+    # Un contexte par modèle peut remplacer la valeur globale selon son coût KV.
     context: int | None = None
-    # Microbatch (-ub) et batch (-b) de PREFILL propres au modèle : sur un MoE offloadé,
-    # un -ub plus gros amortit les passes d'experts CPU (banc 2026-07-19 : agents-a1
-    # -ub 2048 -b 4096 = prefill x2,9, décode intact) — contre des buffers VRAM plus
-    # gros, à valider par modèle. None = défauts serveur (512/2048).
+    # Des batchs de prefill plus grands amortissent le CPU mais consomment plus de VRAM.
     ubatch: int | None = None
     batch: int | None = None
-    # Isolation du cache de conversation par 2e slot : True quand la sonde du bench
-    # a MESURÉ que le cache de ce modèle ne survit pas à la pollution du slot par un
-    # autre prompt (mémoire hybride/SWA, exclue du prompt-cache RAM natif de
-    # llama-server -> re-prefill total au retour). serve monte alors --parallel à 2 :
-    # les appels annexes (titre, reflect, dispatch) s'isolent dans le 2e slot par
-    # similarité de préfixe et la conversation garde son cache (validé 2026-07-21 :
-    # 74 s -> 4-6 s par tour sur ornith). Coût : cache KV x2 (-c est multiplié).
+    # Un second slot isole les appels annexes lorsque le cache hybride/SWA ne survit
+    # pas à un autre préfixe, au prix d'un cache KV doublé.
     cache_isolation: bool = False
-    # Espacement minimal des checkpoints de contexte (--checkpoint-min-step, tokens).
-    # Ne concerne que les modèles qui EN CRÉENT (hybrides/SWA). Le défaut serveur
-    # (8192) laisse des « déserts » : une compaction qui diverge dedans retraite
-    # jusqu'à ~8k tokens (mesuré 39 s). Resserré (ex. 2048), le retraitement est
-    # borné à ~min_step (mesuré 13,3 s, sonde v4 2026-07-23). Coût : RAM des
-    # checkpoints survivants (~1 par fenêtre ; ornith = 63 Mio pièce). None = défaut.
+    # Rapprocher les checkpoints hybride/SWA borne le retraitement mais consomme plus de RAM.
     checkpoint_min_step: int | None = None
-    # Dossier du modèle (loom/models/<id>/) : porte le GGUF, le mmproj et profile.md.
-    # Rempli par la découverte ; les chemins GGUF se résolvent contre lui.
+    # La découverte remplit ce dossier, base des chemins GGUF et mmproj.
     dir: str = ""
-    # RÔLE en une ligne (model.toml `description`) : infobulle du sélecteur UI —
-    # aide à choisir quand le parc grossit.
+    # Description courte affichée dans le sélecteur.
     description: str = ""
 
 
@@ -150,34 +119,21 @@ class RemoteModelConfig:
     model: str  # id du modèle CÔTÉ provider (ex. "glm-4.6")
     api_key: str = ""  # clé en clair (préfère local.toml)…
     api_key_env: str = ""  # …ou nom d'une variable d'env qui la porte
-    # Fenêtre de contexte du modèle -> seuil de microcompact + jauge de remplissage (UI).
-    # RÉFLEXE à l'ajout d'un provider : la plupart des API (Z.ai, OpenAI) ne publient PAS le
-    # contexte via GET /models (schéma nu id/object/created/owned_by). La source de vérité est
-    # la DOC officielle du modèle -> web fetch/search la fenêtre réelle et mets-la ici (ex.
-    # glm-5.2 = 1M sur docs.z.ai, pas 200k). Certains providers l'exposent quand même via
-    # /models (OpenRouter context_length, vLLM max_model_len) : là Loom la lit tout seul
-    # (client.remote_context) et cette valeur ne sert que de repli.
+    # La plupart des providers omettent cette fenêtre dans `/models`; configurer la valeur
+    # officielle, utilisée comme repli pour la jauge et le microcompact.
     context: int | None = None
     max_tokens: int | None = None  # plafond de sortie/tour (défaut = global si absent)
     vision: bool = False  # le modèle accepte-t-il les images
-    # Tier de harnais : True (défaut) = modèle FORT -> prompt allégé, gardes de
-    # comportement coupées (décision 2026-07 : le scaffolding bride un modèle fort).
-    # False = distant FAIBLE (ex. GLM-4.7-Flash free, gabarit d'un local) -> harnais
-    # complet ; constaté live : sans les gardes, il annonce ses tool_calls sans agir.
+    # Un modèle fort reçoit un prompt allégé ; un faible garde les protections comportementales.
     strong: bool = True
-    # Une API hébergée rejette souvent un extra_body inconnu (chat_template_kwargs) ->
-    # par défaut on NE l'envoie PAS pour un modèle distant. Mets True seulement si
-    # l'endpoint gère ce champ (vLLM auto-hébergé…) pour piloter le thinking au template.
+    # N'activer les paramètres natifs que si l'endpoint distant les accepte.
     enable_thinking_param: bool = False
-    # Prix en $ / MILLION de tokens (input, output) chez le provider -> sert au compteur de
-    # coût RÉEL de la session. 0 = inconnu (coût affiché à 0). Le tarif dépend du modèle
-    # côté provider (ex. glm-5.2 chez Z.ai) : mets-le dans config/local.toml.
+    # Prix provider en dollars par million de tokens ; zéro signifie inconnu.
     price_in: float = 0.0
     price_out: float = 0.0
-    # Prix $ / M des tokens d'INPUT servis par le CACHE (hit de préfixe) — bien moins cher
-    # (ex. glm-5.2 : ~0.26 vs 1.40). 0 = pas de remise appliquée (coût = borne haute).
+    # Prix du cache d'entrée ; zéro conserve le tarif normal comme borne haute.
     price_cached: float = 0.0
-    # RÔLE en une ligne : infobulle du sélecteur UI.
+    # Description courte affichée dans le sélecteur.
     description: str = ""
 
 
@@ -211,46 +167,22 @@ class RuntimeConfig:
     override_threads: int | None
     chat: ChatConfig
     memory: MemoryConfig = field(default_factory=MemoryConfig)
-    # Slots de llama-server (--parallel). Loom est mono-flux -> 1 (cf. loom.config.toml).
-    # Modèles distants (API OpenAI-compatible) : s'ajoutent aux modèles locaux dans le
-    # sélecteur. Vide par défaut (tout-local) ; déclarés dans config/local.toml.
+    # Les modèles distants rejoignent les locaux dans le sélecteur.
     remote_models: list[RemoteModelConfig] = field(default_factory=list)
     mcp_servers: list[McpServerConfig] = field(default_factory=list)
     n_parallel: int = 1
-    # Cache souverain (save/restore du slot KV par tour) — OFF par défaut depuis le
-    # 2026-07-22 : sur llama-server récent (b10075+) il est soit nuisible (mémoire
-    # HYBRIDE : restore efface les checkpoints -> re-prefill TOTAL chaque tour, 66 s
-    # mesurés), soit inutile (modèles classiques : le prompt-cache RAM natif
-    # --cache-ram protège déjà, le save capture 0 token), soit cassé (save qui PEND
-    # sur le parc CUDA, 502). La protection du cache de conversation passe par le
-    # prompt-cache natif et, pour les modèles qui y échappent, par l'isolation des
-    # appels annexes dans un 2e slot (model.toml cache_isolation, mesuré au bench).
-    # True = réactiver l'ancien mécanisme (vieux llama-server sans cache RAM natif).
+    # Le save/restore par tour est désactivé : le cache RAM natif suffit aux modèles
+    # classiques et l'isolation de slot protège les hybrides.
     slot_kv: bool = False
-    # Reprise à CHAUD one-shot (roadmap 16, 2026-07-23) : save du slot en fin de
-    # tour (hors chemin critique) + restore UNIQUEMENT sur slot froid (serveur
-    # (re)démarré, modèle swappé, boot de loom.web) — jamais en rythme de
-    # croisière, contrairement à slot_kv. Évite le re-prefill de reprise
-    # (~60-85 s mesurés) pour ~0,6 s de restore.
+    # La reprise à chaud restaure seulement un slot froid, jamais à chaque tour.
     hot_resume: bool = False
-    # Le restore du binaire préserve-t-il la reprise partielle des modèles à
-    # mémoire hybride/SWA ? False (défaut) = binaire officiel NON patché : les
-    # hybrides (model.toml cache_isolation=true) sont EXCLUS de la reprise à
-    # chaud (leur restore perd les checkpoints -> re-prefill total, autant ne
-    # rien faire). True = build patchée (PR ggml-org #26004) ou officiel
-    # post-merge : tous les modèles y ont droit.
+    # Exclure les hybrides si le binaire ne préserve pas leurs checkpoints au restore.
     restore_safe: bool = False
-    # Marge VRAM (Mo) réservée hors couches offloadées : couvre le cache KV + les buffers
-    # de calcul. Plus elle est BASSE, plus on offloade de couches sur GPU (perf), mais trop
-    # bas -> débordement en mémoire partagée (Windows) qui écroule tout. À régler par machine.
+    # Réserver cette VRAM au cache KV et aux buffers pour éviter le spill partagé.
     gpu_kv_headroom_mb: int = 1024
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
-    # Racines des modèles ([storage] models_root : chaîne OU liste, ex.
-    # ["C:/loom-models", "E:/loom-models"] — même arbo local/{text,image,video} + remote
-    # sous chacune). Plusieurs racines = répartir le parc par vitesse de disque (gros
-    # modèles rechargés souvent sur NVMe, le reste sur disque externe). En cas d'id en
-    # double, la PREMIÈRE racine gagne. models_root/models_dir = la racine primaire
-    # (gabarit _TEMPLATE, replis legacy).
+    # Plusieurs racines permettent de répartir les modèles par disque ; la première
+    # occurrence d'un id gagne.
     models_root: Path = field(default_factory=lambda: _PACKAGE_MODELS)
     models_roots: list[Path] = field(default_factory=lambda: [_PACKAGE_MODELS])
     models_dir: Path = field(default_factory=lambda: _PACKAGE_MODELS)
@@ -260,9 +192,7 @@ class RuntimeConfig:
             if m.id == model_id:
                 return m
         if not self.models:
-            # Boot remote-only (parc local vide) : cfg.model / model_by_id n'ont pas de
-            # sens sans modèle local — erreur claire plutôt qu'un IndexError chez un
-            # consommateur (serve.py est censé avoir vérifié avant).
+            # Sans modèle local, ces accesseurs doivent échouer clairement.
             raise ValueError(f"aucun modèle local (demandé : {model_id!r})")
         return self.models[0]
 
@@ -301,8 +231,7 @@ def _discover_models(models_root: Path) -> list[ModelConfig]:
         return []
     out: list[ModelConfig] = []
     for folder in sorted(p for p in models_root.iterdir() if p.is_dir()):
-        # Dossiers préfixés '_' = gabarits/scaffolds (ex. _TEMPLATE), pas de vrais modèles :
-        # leur model.toml porte un repo placeholder (org/mon-modele-GGUF) -> 401 au fetch.
+        # Ignorer les dossiers de gabarit préfixés par `_`.
         if folder.name.startswith("_"):
             continue
         toml_path = folder / "model.toml"
@@ -453,9 +382,7 @@ def load_config(
         recall_summarize=bool(me.get("recall_summarize", True)),
         recall_summarize_threshold=int(me.get("recall_summarize_threshold", 5)),
     )
-    # Racines des modèles : [storage] models_root (chaîne OU liste) sinon le package
-    # (loom/models). Arbo UNIQUE sous chaque racine : local/{text,image,video}
-    # + remote + _TEMPLATE (pas de layout legacy — migration 2026-07-08).
+    # Utiliser la racine configurée, sinon l'arborescence embarquée.
     st = data.get("storage", {})
     raw_roots = st.get("models_root") or _PACKAGE_MODELS
     if not isinstance(raw_roots, list):
@@ -463,14 +390,11 @@ def load_config(
     models_roots = [Path(r).resolve() for r in raw_roots]
     models_root = models_roots[0]
     models_dir = models_root / "local" / "text"
-    # Les profils par modèle (models_profile) se résolvent contre ces racines partout
-    # (outils, app web) sans les faire circuler dans chaque signature.
+    # Partager ces racines avec les profils sans les propager dans chaque signature.
     from loom.runtime import models_profile as _mp
 
     _mp.set_models_root(models_roots)
-    # Découverte par dossier (<racine>/local/text/<id>/model.toml) sur CHAQUE racine,
-    # première racine gagnante en cas d'id en double ; repli sur l'ancien bloc
-    # [[models]] de la config si aucun dossier-modèle n'est présent (transition douce).
+    # Découvrir chaque racine dans l'ordre, puis replier sur l'ancien bloc `[[models]]`.
     models: list[ModelConfig] = []
     seen_ids: set[str] = set()
     for root in models_roots:
@@ -481,13 +405,8 @@ def load_config(
     models.sort(key=lambda m: m.id)
     if not models:
         models = [_parse_model(rm) for rm in data.get("models", [])]
-    # Distants : un DOSSIER par modèle (<racine>/remote/<id>/model.toml), découverts
-    # multi-racines comme les locaux. La table [remote] (defaults.toml, surchargée par
-    # local.toml via le deep-merge) porte les réglages standard appliqués à tous les
-    # distants ; le model.toml de chaque dossier surcharge. Les emplacements hérités
-    # ([[remote_models]] de local.toml, store JSON var/remote_models.json) sont repliés
-    # en dossiers ICI (idempotent) ; une entrée non migrable reste fusionnée en mémoire
-    # ce boot-ci (dégradation douce).
+    # Les dossiers distants surchargent les réglages communs. Migrer les anciens stores
+    # de façon idempotente et garder en mémoire toute entrée non migrable.
     from loom.runtime import model_store
 
     remote_base = {
@@ -498,9 +417,7 @@ def load_config(
     )
     remote_records = model_store.discover_remote(models_roots)
     seen_remote = {md["id"] for md in remote_records}
-    # Entrées [[remote_models]] encore dans la config de CE chargement (data a été
-    # lu AVANT la migration ; ou defaults de test, ou écriture impossible) + reliquats
-    # du store JSON : fusion en mémoire, le dossier prioritaire par id — zéro perte.
+    # Fusionner les reliquats hérités sans écraser un dossier prioritaire.
     for rm in data.get("remote_models", []):
         if isinstance(rm, dict) and rm.get("id") and rm["id"] not in seen_remote:
             seen_remote.add(rm["id"])
@@ -525,8 +442,7 @@ def load_config(
         )
     default_model = ch.get("default_model") or (models[0].id if models else "")
     if not models:
-        # Remote-only : un default_model configuré qui pointe un local disparu
-        # enverrait la session dans le vide -> retombe sur le premier distant.
+        # Replier un défaut local absent sur le premier modèle distant.
         if default_model not in {rm.id for rm in remote_models}:
             default_model = remote_models[0].id
     return RuntimeConfig(

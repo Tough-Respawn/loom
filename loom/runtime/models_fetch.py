@@ -1,4 +1,3 @@
-# loom/runtime/models_fetch.py
 """Garantit la présence locale d'un fichier GGUF (download si absent).
 
 Toute absence NON récupérable (repo gabarit jamais édité, repo privé/inexistant,
@@ -20,8 +19,7 @@ class ModelUnavailable(Exception):
     """GGUF absent en local ET non téléchargeable. Porte un message prêt à montrer."""
 
 
-# Repos placeholder du gabarit (loom/models/_TEMPLATE non édité). On les reconnaît pour
-# éviter un appel réseau voué au 401 et donner d'emblée la bonne consigne.
+# Refuser les placeholders évite une requête réseau vouée à l'échec.
 _PLACEHOLDER_REPOS = frozenset({"org/mon-modele-GGUF", "org/mon-modele-mmproj"})
 
 
@@ -55,7 +53,7 @@ def _missing_msg(
     if repo and not placeholder:
         lines.append(f"     (source attendue : https://huggingface.co/{repo})")
     if cause is not None:
-        # str(cause) HF est multi-lignes (aide + URL) : on ne garde que la 1re ligne utile.
+        # Les erreurs Hugging Face ajoutent souvent une aide multiligne peu lisible ici.
         head = str(cause).strip().splitlines()[0] if str(cause).strip() else ""
         lines.append(f"     cause : {type(cause).__name__}: {head}")
         hint = explain_network_error(cause)
@@ -74,16 +72,12 @@ def ensure_model(repo: str, filename: str, models_dir: str | Path) -> Path:
     target = models_dir / filename
     if target.exists():
         return target
-    # Présent mais pas encore vu plus haut : gabarit non édité -> consigne directe, zéro réseau.
     if not repo or repo in _PLACEHOLDER_REPOS:
         raise ModelUnavailable(
             _missing_msg(filename, target, repo, placeholder=repo in _PLACEHOLDER_REPOS)
         )
     try:
         hf_hub_download(repo_id=repo, filename=filename, local_dir=str(models_dir))
-    # hf_hub_download ne lève jamais ModelUnavailable (exception interne à ce module) :
-    # ce re-raise est théoriquement mort, mais on le garde par sécurité défensive au cas
-    # où un futur appelant lèverait une exception maison dans un wrapper.
     except ModelUnavailable:
         raise
     except (

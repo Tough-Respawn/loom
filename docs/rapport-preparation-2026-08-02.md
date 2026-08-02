@@ -32,12 +32,18 @@ environnement isolé ou de confiance.
    (`python -m tests.e2e.smoke_ui`) qui démarre et arrête ses serveurs lui-même.
 4. `README.md`, `loom.md`, `ETAT_PROJET.md`, `CHANGELOG.md` et la documentation E2E ont
    été remis en cohérence avec l'état réel du projet.
+5. Les commentaires du code ont été rendus plus sobres sur l'ensemble de `loom/`,
+   `tests/`, `evals/` et `scripts/`. L'inventaire est passé de **3 584 à 1 655 lignes**
+   de commentaires (**-54 %**) sans modification fonctionnelle : restent surtout les
+   raisons de sécurité, contraintes de concurrence/cache, compatibilité OS et invariants
+   de régression. Les historiques, séparateurs décoratifs et descriptions du code évident
+   ont été supprimés.
 
 ## Preuves rejouées
 
 | Contrôle | Commande | Résultat |
 |---|---|---|
-| Suite principale | `uv run pytest tests/ -q` | **533 tests passés** en 75,44 s |
+| Suite principale | `uv run pytest tests/ -q` | **533 tests passés** en 63,78 s |
 | Couverture | `uv run pytest tests/ --cov=loom --cov-report=term -q` | **60 %** (10 573 instructions, 4 226 non couvertes) |
 | Analyse statique | `uv run ruff check loom tests scripts evals` | **All checks passed** |
 | Harnais d'éval hors ligne | `uv run python -m evals.run_eval --self-test` | **SELF-TEST VERT** |

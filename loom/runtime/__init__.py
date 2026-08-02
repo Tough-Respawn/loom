@@ -1,4 +1,3 @@
-# loom/runtime/ — infrastructure de SERVICE du modèle (séparée du cœur agent).
 """Lancement et gestion du runtime llama.cpp : détection matériel, args llama-server,
 génération llama-swap, téléchargement et profils de modèles.
 

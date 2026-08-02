@@ -1,4 +1,3 @@
-// loom/web/static/tabs.js — issu du decoupage de app.js (comportement constant).
 import { ensureKbdCheatsheetButton } from "./kbd.js";
 import {
   focusedPane,
@@ -47,8 +46,7 @@ export function renderPaneHeads() {
     const t = state.tabs[p.sid];
     p.headTitle.textContent = t ? t.title || "session" : "—";
     p.headDot.className = "pane-dot " + (t && t.streaming ? "gen" : "idle");
-    // La classe de type vit sur le PANNEAU : ses variables d'accent re-thèment tout
-    // l'intérieur (composer, outils, focus…), pas seulement le bandeau.
+    // Porter le type sur le panneau propage son accent à tout son contenu.
     const mt = t ? modelType(t.model) : "";
     for (const c of [...p.el.classList])
       if (c.startsWith("mdl-")) p.el.classList.remove(c);
@@ -74,8 +72,6 @@ export function renderTabs() {
     el.title =
       (t.title || "session") +
       (t.model ? " — " + t.model : " — modèle par défaut");
-    // Split view : clic droit = menu (ouvrir à droite/en dessous…), glisser = déplacer
-    // l'onglet vers un panneau.
     el.addEventListener("contextmenu", (e) => openTabMenu(e, sid));
     wireSidDrag(el, () => sid);
     const dot = document.createElement("span");
@@ -102,7 +98,6 @@ export function renderTabs() {
   plus.textContent = "+";
   plus.title = "Nouvelle session (clic droit : importer une conversation .zip)";
   plus.addEventListener("click", newSessionTab);
-  // Clic droit = importer un export de session (le sélecteur de fichier s'ouvre).
   plus.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     let inp = document.getElementById("session-import-file");
@@ -121,8 +116,7 @@ export function renderTabs() {
     inp.click();
   });
   tabbarEl.append(plus);
-  // renderTabs remplace tout le contenu de la barre : le bouton d'aide doit donc
-  // être réinséré explicitement à chaque rendu (initialisation idempotente).
+  // Réinsérer le bouton d'aide après chaque remplacement de la barre.
   ensureKbdCheatsheetButton();
 }
 
@@ -318,8 +312,7 @@ export async function openTab(sid) {
 }
 
 export function setPaneSid(pane, sid) {
-  // Brouillon PAR ONGLET : on sauve le texte NON envoyé de l'onglet qu'on quitte,
-  // on charge celui de l'onglet affiché. Sinon la zone de saisie serait partagée.
+  // Sauvegarder le brouillon par onglet avant le changement.
   const prev = state.tabs[pane.sid];
   if (prev) prev.draft = pane.input.value;
   pane.sid = sid;
@@ -328,15 +321,11 @@ export function setPaneSid(pane, sid) {
   autosize(pane);
   pane.pin = true;
   hidePal(pane);
-  // Ligne d'activité : propre à l'onglet quitté — le timer du flux du NOUVEL onglet la
-  // repeindra dans les 500 ms s'il est en silence, sinon elle doit disparaître.
+  // Effacer l'activité; le flux du nouvel onglet la repeindra si nécessaire.
   setPaneActivity(pane, null);
   syncComposer(pane);
   renderPane(pane);
-  // state.active n'est PAS écrit ici : focusSingletonsFor est le SEUL écrivain du
-  // focus (bug du drop sur le panneau focus, même famille que 000d094).
-  // La disposition persistée porte les sids des feuilles : tout changement d'onglet
-  // affiché se sauve ici, LE point de mutation (idempotent, gestes utilisateur only).
+  // Centraliser l'écriture du focus et persister ici les changements de feuilles.
   savePanesLayout();
 }
 
@@ -346,18 +335,13 @@ export function focusSingletonsFor(sid) {
   const t = state.tabs[sid];
   state.active = sid;
   if (!t) return;
-  // Le serveur suit ce focus (pour /model, /tools, /reset, /pick-folder qui opèrent
-  // sur _cur). La rafale /machine_state part APRÈS la réponse : un tick immédiat
-  // lirait l'ANCIENNE session active côté serveur et re-basculerait le moniteur
-  // avec un état périmé (course vécue au switch d'onglet).
+  // Sonder la machine après l'activation évite de lire l'ancienne session serveur.
   if (_lastActivated !== sid) {
     _lastActivated = sid;
     postForm("/session/activate", { id: sid })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        // Vérité serveur à la bascule : le path affiché doit suivre CET onglet,
-        // pas un cache périmé. /session/activate renvoie l'état complet (workspace,
-        // model, title) précisément pour ça.
+        // Réhydrater depuis le serveur évite un workspace périmé à la bascule.
         if (d && d.workspace !== undefined) {
           t.workspace = d.workspace;
           if (d.title) t.title = d.title;
@@ -374,18 +358,15 @@ export function focusSingletonsFor(sid) {
       })
       .catch(() => {});
   }
-  // Synchronise les contrôles de la sidebar/topbar à cet onglet.
   const sel = document.getElementById("model-select");
   if (sel && t.model) sel.value = t.model;
-  // Teinte du sélecteur ET visibilité du moniteur système suivent l'onglet FOCUS
-  // immédiatement (un distant n'a pas besoin du moniteur).
+  // L'accent et le moniteur suivent immédiatement l'onglet focalisé.
   paintModelSelect();
   const think = document.getElementById("thinking-cb");
   if (think) think.checked = !!t.thinking;
   const lo = document.getElementById("local-only-cb");
   if (lo) lo.checked = !!t.localOnly;
-  // Le path suit CET onglet, même vide : sinon on garde l'affichage du path de
-  // l'onglet PRÉCÉDENT (vécu à la bascule d'onglet : le modèle suivait, le path non).
+  // Un workspace vide doit aussi remplacer celui de l'onglet précédent.
   set_loomWorkdir(t.workspace || "");
   try {
     localStorage.loomWorkdir = t.workspace || "";
@@ -399,7 +380,6 @@ export function focusSingletonsFor(sid) {
       done: !t.streaming,
     });
   else setMetrics(null, null, null);
-  // Surligne la session active dans la sidebar.
   document
     .querySelectorAll(".session-item")
     .forEach((li) => li.classList.remove("active"));
@@ -420,9 +400,7 @@ export function focusPane(target) {
   if (pane.sid) focusSingletonsFor(pane.sid);
   else state.active = null;
   renderTabs();
-  // Les boutons « envoyer » dépendent de state.active (source active = désactivé).
-  // Repeindre les deux panneaux concernés garde cet état visuel exact au changement
-  // de focus, sans rafraîchir les autres timelines.
+  // Repeindre seulement les deux panneaux dont l'état d'envoi change avec le focus.
   if (previous && previous !== pane) renderPane(previous);
   renderPane(pane);
 }
@@ -430,7 +408,7 @@ export function focusPane(target) {
 export function activateTab(sid) {
   const t = state.tabs[sid];
   if (!t) return;
-  // Déjà affiché dans un panneau -> on FOCUS ce panneau (pas de double affichage).
+  // Focaliser un panneau existant plutôt que dupliquer la session.
   const shown = paneShowing(sid);
   if (shown) {
     focusPane(shown);
@@ -449,12 +427,9 @@ export function closeTab(sid) {
   state.order = state.order.filter((s) => s !== sid);
   const showing = panesFor(sid);
   if (showing.length && state.panes.length > 1) {
-    // Split : fermer l'onglet ferme son (ses) panneau(x), les autres continuent.
     showing.forEach((p) => removePane(p));
   } else if (showing.length) {
-    // Vue simple : on bascule sur le dernier onglet restant (comportement historique).
-    // Via setPaneSid (pas de mutation à la main) : palette fermée, activité effacée,
-    // composer resynchronisé — le chemin manuel oubliait tout ça (bouton figé sur Stop).
+    // Passer par setPaneSid conserve tous les invariants visuels du changement d'onglet.
     const pane = showing[0];
     const next = state.order[state.order.length - 1] || null;
     if (next) activateTab(next);

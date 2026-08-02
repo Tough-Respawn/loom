@@ -100,8 +100,7 @@ def _tool_result_payload(
         "ok": ok,
         "preview": str(tool_content)[:300],
         "path": args.get("path"),
-        # Commande réellement lancée par run_shell : pour la VOIR dans la pastille
-        # (sinon on ne voit que le résultat, pas ce qui a tourné).
+        # Montrer la commande réelle dans la pastille, pas seulement son résultat.
         "cmd": args.get("command"),
         "detail": detail[:4000] if detail else None,
         "in_full": str(in_full)[:8000],
@@ -119,8 +118,7 @@ def _run_tools_parallel(
 
     _q: _queue.Queue = _queue.Queue()
     _res: dict = {}  # id -> (result, ok, args)
-    # Signale à l'UI un GROUPE parallèle -> rendu en « arène » côté à côté (animation
-    # des agents qui tournent en même temps), pas des pastilles empilées.
+    # Signaler le groupe pour que l'UI rende les appels parallèles côte à côte.
     yield (
         "parallel",
         {
@@ -186,8 +184,7 @@ def _run_tools_parallel(
     ) in tool_calls:  # résultats DANS L'ORDRE (messages `tool` cohérents pour l'API)
         name = tc["name"]
         r, okp, pargs = _res.get(tc["id"], ("(vide)", False, {}))
-        # Streak de troncature tenu ICI (mono-thread) et pas dans _pworker : st
-        # n'est pas protégé contre les écritures concurrentes des workers.
+        # Mettre à jour le streak ici : `st` n'est pas protégé entre workers.
         if str(r).startswith("erreur: arguments tronqués"):
             st["truncated_streak"] = st.get("truncated_streak", 0) + 1
         else:
@@ -216,8 +213,7 @@ def _run_tools_sequential(
     garde-fou P1.1 (1 write par tour), images inline différées, anti sur-vérification.
     Met à jour convo et st (executed, files_written, fail_count, verify_streak)."""
     wrote_this_turn = False  # P1.1 : un seul write_file/append_file par tour
-    # Images inline (read_image) à faire VOIR au modèle : différées après TOUS
-    # les résultats d'outils (les messages `tool` doivent rester contigus).
+    # Différer les images afin de garder les messages `tool` contigus.
     image_followups: list[dict] = []
     for tc in tool_calls:
         name = tc["name"]
@@ -228,12 +224,8 @@ def _run_tools_sequential(
             args = json.loads(tc["arguments"] or "{}")
             st["truncated_streak"] = 0
         except json.JSONDecodeError:
-            # Arguments tronqués (réponse coupée par max_tokens). NE PAS exécuter
-            # avec des args vides (erreur trompeuse 'path manquant') : signaler la
-            # troncature pour que le modèle réémette l'appel en plus court.
-            # Le streak est lu par _preventive_compaction : à saturation de fenêtre
-            # (completion étranglée), « plus court » ne suffit JAMAIS — 2 troncatures
-            # de suite déclenchent une compaction forcée avant l'appel suivant.
+            # Ne pas exécuter des arguments tronqués. Deux occurrences consécutives
+            # forcent la compaction, car une fenêtre saturée étrangle aussi la sortie.
             st["truncated_streak"] = st.get("truncated_streak", 0) + 1
             result = (
                 "erreur: arguments tronqués (réponse coupée). "
@@ -292,12 +284,11 @@ def _run_tools_sequential(
         action = decision.action if decision else "allow"
 
         if action == "deny":
-            # Garde-fou non contournable : jamais exécuté.
+            # Un refus de permission ne doit jamais atteindre l'outil.
             result = f"refusé par la politique de sécurité: {decision.reason}"
             ok = False
         elif action == "ask":
-            # Confirmation interactive : on signale l'UI puis on ATTEND la
-            # décision via `confirm` (bloquant). Refus par défaut sans confirm.
+            # La confirmation est bloquante et vaut refus sans callback.
             summary = str(args.get("command") or args.get("path") or "")
             yield (
                 "tool_request",
@@ -312,8 +303,7 @@ def _run_tools_sequential(
                 result = "refusé par l'utilisateur"
                 ok = False
         elif registry and registry.is_streaming(name):  # allow + streamant
-            # Outil streamant (dispatch_agent) : activité relayée EN DIRECT dans
-            # sa pastille, synthèse reconstruite (helper partagé avec le parallèle).
+            # Relayer l'activité des outils streamants puis reconstruire leur synthèse.
             result = "(le sous-agent n'a rien renvoyé)"
             for ek, ep in _stream_tool_events(registry, tc["id"], name, args):
                 if ek == "__result__":
@@ -325,9 +315,7 @@ def _run_tools_sequential(
             result = registry.run(name, args) if registry else "erreur: pas d'outils"
             ok = not result.startswith("erreur")
 
-        # read_image renvoie une image inline encodée : on ne met qu'un accusé
-        # TEXTE dans le message `tool` (pas de base64 géant), et on diffère le
-        # message `user` multimodal qui fera réellement VOIR l'image au modèle.
+        # Garder le base64 hors du message `tool`; l'image arrive ensuite en multimodal.
         if is_inline_image(result):
             caption, data_url = parse_inline_image(result)
             tool_content = f"[image « {caption} » chargée — fournie ci-dessous]"
@@ -335,11 +323,7 @@ def _run_tools_sequential(
             ok = True
         else:
             tool_content = result
-        # Anti SUR-VÉRIFICATION (informatif, jamais bloquant) : au-delà de
-        # _VERIFY_STREAK_NOTE checks navigateur VERTS d'affilée sans changement
-        # d'état entre-temps, le résultat le dit au modèle. On n'empêche RIEN
-        # (les checks restent exclus du non-progrès : re-prouver est légitime) ;
-        # on nomme la preuve déjà faite. Coupé pour un modèle fort (strong).
+        # Signaler, sans bloquer, les checks verts répétés sans changement d'état.
         st["verify_streak"] = _verify_streak_update(name, ok, st["verify_streak"])
         if (
             not strong
@@ -369,16 +353,14 @@ def _run_tools_sequential(
         )
         if name in _SERIAL_WRITE:
             wrote_this_turn = True
-        # Suivi pour l'audit de claim : une EXÉCUTION réelle (run_shell/dispatch,
-        # même en échec mais hors refus de permission) et les FICHIERS écrits.
+        # L'audit distingue une exécution réelle d'un refus de permission.
         if name in ("run_shell", "dispatch_agent") and not str(result).startswith(
             "refusé"
         ):
             st["executed"] = True
         if ok and name in _WRITE_TOOLS and args.get("path"):
             st["files_written"].add(args["path"])
-        # Cascade de bugs : on compte les échecs des outils d'EXÉCUTION/VÉRIF (pas les
-        # erreurs d'usage type ligne hors limite). Au 2e échec, on IMPOSE la méthode debug.
+        # Deux échecs d'exécution/vérification imposent la méthode de debug.
         if not ok and name in _BUG_SIGNAL_TOOLS:
             st["fail_count"] += 1
     convo.extend(image_followups)  # images vues au tour suivant

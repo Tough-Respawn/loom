@@ -1,4 +1,3 @@
-# loom/setup/topology.py
 """Calibration AGNOSTIQUE du contexte : découverte de topologie + pente MESURÉE.
 
 Remplace la formule « KV théorique vs RAM » de bench.py, fausse deux fois sur le
@@ -41,12 +40,10 @@ TOPO_MOE_HYBRIDE = "moe_hybride"  # experts en RAM, attention + KV en VRAM
 TOPO_GPU_DENSE = "gpu_dense"  # tout le modèle + KV en VRAM
 TOPO_RAM = "ram"  # pas de GPU exploitable : poids + KV en RAM
 
-# Marge RAM laissée à l'OS quand le KV vit en RAM (déterministe : sur la RAM TOTALE).
+# Réserver une marge fixe à l'OS lorsque le KV occupe la RAM.
 _OS_RAM_BUDGET_MB = 3072
-# Le décode doit garder au moins cette fraction du débit de référence — en dessous,
-# on considère le barreau invalide (spill/dégradation) et on garde le précédent.
+# Rejeter un barreau dont le débit révèle un spill ou une dégradation excessive.
 _TG_FLOOR_RATIO = 0.7
-# Fraction du contexte réellement REMPLIE par la sonde de profondeur.
 _DEPTH_FILL = 0.85
 _FLOOR_CTX = 4096
 _STEP_CTX = 2048
@@ -121,13 +118,10 @@ class ServerProbe:
     mmproj_path: str | None = None
     cpu_moe: bool = False
     n_cpu_moe: int | None = None
-    # Slots (--parallel) : la sonde SIMULE l'exécutant (P2) — si l'isolation par
-    # 2e slot a été jugée nécessaire, la calibration doit mesurer la mémoire et
-    # les débits avec le KV réellement doublé (build_server_args multiplie -c).
+    # Simuler le nombre réel de slots pour mesurer aussi le coût de l'isolation KV.
     n_parallel: int = 1
     port: int = 8131
     health_timeout_s: int = 600
-    # Injectables (tests) — défauts = implémentations réelles.
     popen: object = subprocess.Popen
     kill: object = None
     vram_mb: object = None
@@ -153,14 +147,12 @@ class ServerProbe:
             self.kill(proc)
             return
         if sys.platform == "win32":
-            # taskkill /T : llama-server n'a pas d'enfants, mais /T ne coûte rien.
             subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 capture_output=True,
                 timeout=30,
             )
             return
-        # POSIX : process unique lancé en direct — terminate propre, kill en secours.
         proc.terminate()
         try:
             proc.wait(timeout=10)
@@ -239,16 +231,12 @@ class ServerProbe:
             if depth_tokens:
                 phrase = "La pente mesurée vaut mieux que la formule du header. "
                 if not self.warmed_up:
-                    # 1er run de la session = caches froids, débits ÷2 : on purge.
+                    # Écarter le premier run dont les caches sont encore froids.
                     self._completion(phrase * 40, 16)
                     self.warmed_up = True
-                # Tokens/répétition MESURÉS auprès du serveur (/tokenize) — jamais
-                # estimés : la densité varie du simple au triple selon le tokenizer,
-                # et une estimation a réellement fait déborder le contexte (400) au
-                # premier test de vérité de ce module, le 2026-07-18.
+                # Mesurer la tokenisation réelle car sa densité varie fortement selon le modèle.
                 tok_per_rep = self._tokens_of(phrase)
-                # Ne jamais dépasser la fenêtre : profondeur bornée par le contexte
-                # moins la génération et une marge (template/BOS).
+                # Réserver la génération et le surcoût du template dans la fenêtre.
                 depth = min(depth_tokens, ctx - 96 - 256)
                 reps = max(4, depth // max(1, tok_per_rep))
                 resp = self._completion(phrase * reps, 96)
@@ -319,7 +307,6 @@ def calibrate(
     t0 = time.monotonic()
     model_limit = int(meta.get("context_length") or 32768)
 
-    # 1. Pente : deux chargements à vide, petits donc rapides.
     rungs = []
     for ctx in (8192, 16384):
         say(f"pente : chargement à ctx={ctx}…")
@@ -328,8 +315,7 @@ def calibrate(
     slope_bytes, base_mb = kv_slope(rungs)
     cap = capacity_ctx(slope_bytes, base_mb, budget_mb, model_limit)
 
-    # 2. Échelle de vitesse : barreaux géométriques ≤ capacité ; on ne recommande
-    # que du décode VÉRIFIÉ en profondeur — jamais l'extrapolation seule.
+    # Ne recommander que les profondeurs dont le débit a été réellement vérifié.
     vitesses: list[dict] = []
     tg_ref: float | None = None
     valide = 0
@@ -339,9 +325,7 @@ def calibrate(
         ladder = [cap]
     for ctx in ladder:
         elapsed = time.monotonic() - t0
-        # >= : un budget ATTEINT arrête (et budget 0 = aucun barreau, même quand
-        # l'horloge n'a pas encore tické — monotonic a ~15 ms de résolution sur
-        # Windows < 3.13, un `>` strict laissait passer toute l'échelle).
+        # `>=` garantit qu'un budget nul n'exécute aucun barreau malgré la résolution d'horloge.
         if elapsed >= time_budget_s:
             mecanisme = (
                 f"budget temps ({time_budget_s}s) — vitesse validée jusqu'à {valide}"
@@ -352,8 +336,7 @@ def calibrate(
         try:
             r = probe.run(ctx, depth)
         except Exception as exc:  # noqa: BLE001 - un barreau qui casse N'EST PAS fatal :
-            # il devient le mécanisme d'arrêt (dernier barreau sain conservé). Leçon du
-            # test de vérité du 2026-07-18 : un HTTPError tuait toute la calibration.
+            # Une sonde refusée termine l'échelle en conservant le dernier barreau sain.
             mecanisme = (
                 f"échec du barreau ctx={ctx} ({type(exc).__name__}: {exc}) — "
                 "dernier barreau sain conservé"

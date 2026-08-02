@@ -1,4 +1,3 @@
-// loom/web/static/render.js — issu du decoupage de app.js (comportement constant).
 export function _protectMath(raw) {
   const maths = [];
   const stash = (delim, tex) => {

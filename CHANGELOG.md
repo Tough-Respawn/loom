@@ -20,6 +20,12 @@
   en cohérence dans `README.md` et `loom.md`.
 - Rapport de préparation ajouté sous `docs/` avec preuves, limites et verdict.
 
+### Maintenance
+- **Commentaires rendus lean dans tout le code** : inventaire réduit de **3 584 à
+  1 655 lignes (-54 %)**. Les commentaires restants expliquent une raison, une contrainte
+  ou un piège réel ; les récits historiques, répétitions du code et séparateurs décoratifs
+  ont été retirés sans changement de comportement.
+
 ### Validation
 - **533 tests verts**, Ruff clean, self-test d'éval vert, couverture globale **60 %**.
 - Smoke Chromium autonome vert (HTTP 200, raccourcis, chat SSE, rendu, zéro erreur

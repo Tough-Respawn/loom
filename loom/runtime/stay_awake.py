@@ -1,4 +1,3 @@
-# loom/runtime/stay_awake.py
 """Empêche la mise en veille du système tant qu'une génération tourne.
 
 Quand Windows se met en veille, TOUS les processus sont suspendus (CPU coupé) : loom.web, le
@@ -53,7 +52,7 @@ class StayAwake:
             with self._lock:
                 keep = self._n > 0
             self._apply(keep)
-            # Ré-affirme toutes les 30 s, ou immédiatement si acquire/release a signalé.
+            # Réaffirmer périodiquement couvre les OS qui expirent cette demande.
             self._wake.wait(30)
             self._wake.clear()
 

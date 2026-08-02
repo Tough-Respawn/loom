@@ -1,7 +1,4 @@
-# Robustesse des outils face aux écritures « naturelles » d'un modèle (audit 2026-07-14).
-# Cause racine commune au bug `^` du calc : la frontière d'entrée (base.py) coerçait les
-# scalaires mais PAS les conteneurs JSON-string ni les enums. Ces tests figent les
-# corrections (coercition centrale + enum tolérant + calc/edit_file/read robustes).
+# Robustesse de la frontière d'outils face aux formes naturellement produites par un modèle.
 from __future__ import annotations
 
 import tempfile
@@ -22,7 +19,6 @@ from loom.tools.read import make_read_file
 from loom.tools.todo import make_manage_todos
 
 
-# ---------- base.py : coercition des conteneurs ----------
 
 
 def test_array_json_string_parsee():
@@ -46,7 +42,6 @@ def test_string_recoit_liste_jointe():
     assert out == {"cmd": "git status"}
 
 
-# ---------- base.py : coerce_enum ----------
 
 
 @pytest.mark.parametrize(
@@ -71,7 +66,7 @@ def test_coerce_enum_alias():
 
 
 def test_coerce_enum_inconnu_reste_tel_quel():
-    # On ne DEVINE pas : une valeur non résolue reste inchangée (l'outil rejettera).
+    # Ne pas deviner une valeur enum non résolue.
     assert coerce_enum("banane", ["pending", "done"]) == "banane"
 
 
@@ -90,7 +85,6 @@ def test_coerce_enum_top_level_via_schema():
     assert validate_and_coerce("remember", sch, {"kind": "USER"})["kind"] == "profile"
 
 
-# ---------- manage_todos : statuts tolérants + plan préservé ----------
 
 
 class _Conv:
@@ -122,7 +116,6 @@ def test_todo_statut_vraiment_invalide_rejete():
         todo.run({"todos": [{"content": "x", "status": "zzz"}]})
 
 
-# ---------- calc : cas de l'audit ----------
 
 
 @pytest.mark.parametrize(
@@ -157,7 +150,6 @@ def test_calc_virgule_message_actionnable():
     assert "POINT décimal" in str(e.value)
 
 
-# ---------- edit_file : fichier UTF-16 (défaut PowerShell) ----------
 
 
 def test_edit_file_utf16():
@@ -167,11 +159,9 @@ def test_edit_file_utf16():
     ef = make_edit_file(str(d))
     out = ef.run({"path": "ps.txt", "old_string": "bonjour", "new_string": "salut"})
     assert "modifié" in out
-    # Le fichier reste lisible et l'édition a pris.
     assert "salut monde" in f.read_text(encoding="utf-16")
 
 
-# ---------- read_file : alias offset/limit ----------
 
 
 def test_read_file_offset_limit_alias():
@@ -184,7 +174,6 @@ def test_read_file_offset_limit_alias():
     assert "L1\n" not in out  # ne repart PAS du début
 
 
-# ---------- Vague 2 : chemins (~/guillemets) ----------
 
 
 def test_resolve_expanduser():
@@ -200,7 +189,6 @@ def test_resolve_strip_guillemets():
     assert '"' not in str(got)
 
 
-# ---------- Vague 2 : détection d'hôte réseau (check_page sans schéma) ----------
 
 
 @pytest.mark.parametrize(
@@ -217,7 +205,6 @@ def test_looks_like_host(target, is_host):
     assert bool(_looks_like_host(target)) is is_host
 
 
-# ---------- Vague 2 : fetch_url domaine nu / schéma ----------
 
 
 def test_fetch_url_domaine_nu_et_schema(monkeypatch):
@@ -240,7 +227,6 @@ def test_fetch_url_domaine_nu_et_schema(monkeypatch):
         fu.run({"url": "ftp://x"})
 
 
-# ---------- Vague 3 : finitions (search récursif, read line_count, edit N→) ----------
 
 
 def test_find_files_recursif_par_defaut():
@@ -272,13 +258,10 @@ def test_edit_file_prefixe_numero_ligne_detecte():
     assert "N→" in str(e.value) or "préfixe" in str(e.value)  # pointe le piège N→
 
 
-# ---------- Vague 4 (session chasse-invest 14/07) : erreurs web/shell/skill actionnables ----------
 
 
 def test_fetch_url_remonte_statut_http_et_url_origine(monkeypatch):
-    # Un 403 anti-bot doit remonter le STATUT et l'URL D'ORIGINE — pas « page
-    # indisponible (hors-ligne) », et jamais l'URL à IP épinglée (session 14/07 :
-    # 100+ 403 SeLoger/Leboncoin illisibles, affichés https://52.222.201.14/...).
+    # Un 403 doit conserver le statut et l'URL lisible d'origine.
     import httpx
 
     import loom.tools.web as web
@@ -301,8 +284,7 @@ def test_fetch_url_remonte_statut_http_et_url_origine(monkeypatch):
 
 
 def test_fetch_page_web_search_garde_le_repli_snippet(monkeypatch):
-    # Le chemin web_search (raise_status par défaut) garde le repli silencieux
-    # sur snippet : un résultat de recherche qui 403 ne casse pas la recherche.
+    # Une page de résultat en 403 ne doit pas casser toute la recherche.
     import httpx
 
     import loom.tools.web as web
@@ -320,11 +302,7 @@ def test_fetch_page_web_search_garde_le_repli_snippet(monkeypatch):
 
 
 def test_curl_alias_powershell_hint(monkeypatch):
-    # `curl -s <url>` sous PowerShell 5.1 = alias d'Invoke-WebRequest -> erreur de
-    # binding « paramètres obligatoires absents » (18× dans la session du 14/07).
-    # La table unix-ismes ne couvrait que « commande inconnue ».
-    # Le hint n'existe que sous PowerShell : on SIMULE le shell, la suite doit
-    # passer sur n'importe quel OS hôte.
+    # Simuler PowerShell 5.1 où curl est un alias et échoue au binding.
     from types import SimpleNamespace
 
     import loom.tools.shell as shell
@@ -342,8 +320,7 @@ def test_curl_alias_powershell_hint(monkeypatch):
 
 
 def test_unix_ism_hint_stderr_francais(monkeypatch):
-    # Windows FR : « n'est pas reconnu » (pas « not recognized ») — le hint doit
-    # quand même se déclencher. Shell PowerShell simulé (suite agnostique à l'OS).
+    # Le diagnostic doit reconnaître aussi le message Windows français.
     from types import SimpleNamespace
 
     import loom.tools.shell as shell
@@ -361,8 +338,7 @@ def test_unix_ism_hint_stderr_francais(monkeypatch):
 
 
 def test_use_skill_nom_d_outil_redirige():
-    # use_skill('dispatch_agent') (vu en session) : dire que c'est un OUTIL à
-    # appeler directement, pas seulement « skill inconnu ».
+    # Distinguer une confusion outil/skill d'un skill inconnu.
     from loom.tools.skills import make_use_skill
 
     us = make_use_skill(lambda: [])
@@ -372,13 +348,10 @@ def test_use_skill_nom_d_outil_redirige():
     assert "outil" in msg and "dispatch_agent" in msg
 
 
-# ---------- Rationalisation 2026-07-15 : fetch_url params ----------
 
 
 def test_fetch_url_params_objet_encode(monkeypatch):
-    # Le modèle passe les query params en OBJET, l'outil encode (les valeurs
-    # dict/list sont JSON-sérialisées) — fini l'encodage %7B%22 à la main en
-    # PowerShell (44+ échecs dans la session chasse-invest sur l'API Bien'ici).
+    # L'outil doit encoder lui-même les paramètres structurés.
     import loom.tools.web as web
 
     seen = {}
@@ -403,11 +376,9 @@ def test_fetch_url_params_objet_encode(monkeypatch):
     assert "page=1" in seen["url"]
 
 
-# ---------- Rationalisation 2026-07-15 : check_page absorbe steps ----------
 
 
 def test_check_page_accepte_steps(monkeypatch):
-    # check_page avec `steps` joue le chemin interactif (ex-check_interactive).
     import loom.tools.browser as br
 
     seen = {}
@@ -448,19 +419,16 @@ def test_check_interactive_retire_du_catalogue():
 
     names = [t["name"] for t in AVAILABLE_TOOLS]
     assert "check_interactive" not in names
-    # et check_page expose bien `steps` dans son schéma
     import loom.tools.browser as br
 
     spec = br.make_check_page(".")
     assert "steps" in spec.parameters["properties"]
 
 
-# ---------- Rationalisation 2026-07-15 : B2 plugins hors défaut, B4 vision ----------
 
 
 def test_plugins_hors_du_set_par_defaut():
-    # Les 3 outils plugins (opérations de setup, jamais appelés par le modèle en
-    # usage réel) ne sont plus dans le set par défaut — restent activables.
+    # Les outils d'administration de plugins restent activables mais hors du défaut.
     import tomllib
 
     with open("config/defaults.toml", "rb") as f:
@@ -471,38 +439,30 @@ def test_plugins_hors_du_set_par_defaut():
 
 
 def test_read_image_absent_sans_vision():
-    # Modèle texte pur : read_image n'occupe pas 344 tokens de schéma pour
-    # répondre « je ne vois pas ». La décision 2026-07-09 (pas de repli vers un
-    # autre modèle) est préservée : l'outil disparaît, il ne bascule pas.
+    # Masquer le schéma vision sans basculer implicitement vers un autre modèle.
     from loom.tools import build_registry
 
     reg = build_registry(".", 1000, ["read_file", "read_image"], active_is_vision=False)
     names = [t["function"]["name"] for t in reg.openai_tools()]
     assert "read_image" not in names
     assert "read_file" in names
-    # Modèle vision : l'outil est là.
     reg2 = build_registry(".", 1000, ["read_file", "read_image"], active_is_vision=True)
     assert "read_image" in [t["function"]["name"] for t in reg2.openai_tools()]
 
 
 def test_read_image_gate_erreur_franche():
-    # L'outil gaté reste CONNU du registre : un appel (le system prompt le mentionne,
-    # le modèle peut le tenter) reçoit l'explication franche « pas la vision, propose
-    # un modèle VISION » — jamais un « outil inconnu » trompeur (vécu 2026-07-19 :
-    # glm-flash annonçait « je peux lire les images » puis échouait sans comprendre).
+    # Un outil vision masqué reste connu afin de fournir une erreur explicite.
     from loom.tools import build_registry
 
     reg = build_registry(".", 1000, ["read_file", "read_image"], active_is_vision=False)
     out = reg.run("read_image", {"path": "photo.jpg"})
     assert "outil inconnu" not in out
     assert "N'A PAS la vision" in out and "VISION" in out
-    # Un outil réellement inconnu garde l'ancien message récupérable.
     assert "outil inconnu" in reg.run("grep", {})
 
 
 def test_x_aliases_pas_serialises_au_modele():
-    # Les clés x_* (métadonnées de coercition) restent fonctionnelles côté
-    # validation mais ne partent PAS dans le schéma envoyé au modèle (bruit).
+    # Les métadonnées `x_*` servent à la validation mais restent hors du schéma modèle.
     from loom.tools.base import ToolSpec
 
     spec = ToolSpec(

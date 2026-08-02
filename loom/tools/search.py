@@ -1,4 +1,3 @@
-# loom/tools/search.py
 """Outils de LOCALISATION : find_files (glob), search_text (grep), list_dir (ls).
 
 Le réflexe n°1 d'un agent : un petit modèle ne connaît pas les chemins, il CHERCHE
@@ -41,9 +40,7 @@ def _rg_path() -> str | None:
     return None
 
 
-# Dossiers jamais parcourus : ils noient le résultat et étouffent le scan.
-# .claude : worktrees d'agents (chacun une copie COMPLÈTE du projet) + config interne
-# -> sans ça, find_files/search_text renvoient N duplicatas par fichier.
+# Ignorer les dossiers générés et worktrees qui dupliquent ou noient les résultats.
 _SKIP_DIRS = frozenset(
     {
         ".claude",
@@ -65,7 +62,6 @@ _SKIP_DIRS = frozenset(
         "site-packages",
     }
 )
-# Extensions considérées « texte » pour le grep par défaut (sans filtre glob).
 _TEXT_EXT = frozenset(
     {
         ".py",
@@ -114,10 +110,7 @@ def _glob_base_and_pattern(root: Path, pattern: str) -> tuple[Path, str]:
     """
     p = Path(pattern)
     if not p.is_absolute():
-        # Motif NU (juste un nom, ex '*.py') -> RÉCURSIF (**/), comme ripgrep/fd et l'attend
-        # un agent qui « cherche dans le projet » : avant, '*.py' ne matchait QUE la racine
-        # (src/a.py manqué), et de façon incohérente selon que ripgrep était là ou non. Un
-        # motif avec dossier ('src/*.js') ou déjà récursif ('**/x') est respecté tel quel.
+        # Un motif sans dossier est récursif, comme avec ripgrep ou fd.
         if "/" not in pattern and "\\" not in pattern and "**" not in pattern:
             pattern = "**/" + pattern
         return root.resolve(), pattern
@@ -242,7 +235,7 @@ def _rg_search(
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    # 0 = correspondances, 1 = aucune (tous deux valides) ; 2+ = erreur -> repli.
+    # Pour ripgrep, 1 signifie « aucune correspondance », pas une erreur.
     if proc.returncode not in (0, 1):
         return None
     out: list[str] = []
@@ -327,7 +320,7 @@ def make_search_text(
         if not pattern:
             raise ToolError("argument 'pattern' manquant")
         globf = (args.get("glob") or "").strip()
-        # Valide la regex tôt pour un message clair (rg fait le vrai match côté Rust).
+        # Valider tôt pour produire une erreur plus claire que celle du processus.
         try:
             re.compile(pattern)
         except re.error as exc:
@@ -386,9 +379,7 @@ def make_list_dir(workspace_dir: str, *, max_entries: int = 300) -> ToolSpec:
             raise ToolError(f"introuvable : {rel}")
         if not target.is_dir():
             raise ToolError(f"'{rel}' n'est pas un dossier (utilise read_file)")
-        # Préfixe = le dossier TEL QUE LE MODÈLE l'a demandé -> chaque entrée est un chemin
-        # directement copiable dans read_file/edit (pas un nom seul résolu, lui, contre le
-        # dossier de travail de la session, qui n'est PAS forcément celui-ci).
+        # Renvoyer des chemins copiables, relatifs au dossier demandé.
         prefix = (
             "" if rel in (".", "./", "") else rel.replace("\\", "/").rstrip("/") + "/"
         )

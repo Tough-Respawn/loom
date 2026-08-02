@@ -1,4 +1,3 @@
-# loom/tools/web.py
 """Outil web_search : recherche en ligne opportuniste, dégradée hors-ligne.
 
 Online-only : si le réseau est absent, l'outil renvoie un texte explicite
@@ -80,10 +79,9 @@ class WebSearchConfig:
     max_chars_per_page: int = 4000
 
 
-# --- indirections HTTP / extraction (points de monkeypatch) -------------
 
 
-# User-Agent navigateur par défaut : beaucoup de sites renvoient 403 au UA httpx nu.
+# Un User-Agent de navigateur évite les refus réservés aux clients HTTP nus.
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -132,8 +130,7 @@ def _httpx_get(url, params=None, headers=None, timeout=None, pin_ip=None):
         return client.send(req)
 
 
-# Cible d'impersonation par défaut quand le modèle passe juste `impersonate="chrome"`
-# (curl_cffi accepte l'alias "chrome" = dernier Chrome connu).
+# L'alias Chrome suit la dernière version connue de curl_cffi.
 _IMPERSONATE_DEFAULT = "chrome"
 
 
@@ -193,7 +190,6 @@ def _truncate(text: str, max_chars: int) -> str:
     return text
 
 
-# --- backends -----------------------------------------------------------
 
 
 def _search_searxng(query: str, cfg: WebSearchConfig) -> list[dict]:
@@ -250,10 +246,7 @@ def _search_ddgs(query: str, cfg: WebSearchConfig) -> list[dict]:
     try:
         from ddgs import DDGS
     except ImportError as exc:
-        # `ddgs` est une dépendance de BASE depuis le 2026-07-22 (l'ancien extra
-        # [web-search] était DÉSINSTALLÉ par tout `uv sync` standard -> panne
-        # cryptique en pleine session, vécu 2 fois). Ce filet ne devrait plus
-        # servir que sur un venv pas resynchronisé.
+        # Ce message couvre surtout un environnement virtuel qui n'a pas été resynchronisé.
         raise RuntimeError(
             "web_search indisponible : la lib `ddgs` n'est pas installée. "
             "Lance `uv sync` (elle est dans les dépendances de base), ou configure "
@@ -284,7 +277,6 @@ def _pick_backend(cfg: WebSearchConfig) -> str:
     return "ddgs"
 
 
-# --- API publique -------------------------------------------------------
 
 
 def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
@@ -298,9 +290,7 @@ def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
             try:
                 return _search_searxng(query, cfg)
             except (httpx.ConnectError, httpx.TimeoutException):
-                # Instance gérée arrêtée ? On la RELANCE (docker start, jamais de
-                # pull) et on retente UNE fois ; sinon repli ddgs en mode auto —
-                # SearXNG absent ne doit jamais priver l'utilisateur de recherche.
+                # Relancer une instance gérée une fois, puis laisser `auto` se rabattre sur DDGS.
                 from loom.runtime.searxng import ensure_running
 
                 if ensure_running(cfg.searxng_url):
@@ -344,9 +334,7 @@ def fetch_page(
     `impersonate` (ex. "chrome") : GET via curl_cffi + empreinte navigateur (passe
     Datadome/anti-bot) au lieu de httpx. Gestion du statut par CODE (pas d'exception
     httpx-spécifique) pour marcher avec les deux backends."""
-    # Suivi des redirections MANUEL et RE-VALIDÉ : http->https, / final, apex->www sont
-    # ultra-fréquents. Chaque saut repasse par _resolve_validated (anti-SSRF préservé :
-    # un 30x vers une IP interne est bloqué). Borné à 5 sauts.
+    # Revalider chaque redirection préserve la protection SSRF jusqu'à la cible finale.
     try:
         for _hop in range(5):
             reason, pin_ip = _resolve_validated(url)
@@ -361,8 +349,7 @@ def fetch_page(
                 continue
             if code >= 400:
                 if raise_status:
-                    # `url` = le saut courant sous sa forme NOM D'HÔTE (jamais l'IP
-                    # épinglée, illisible). Message actionnable pour le modèle.
+                    # Afficher le nom d'hôte lisible, pas l'IP épinglée en interne.
                     phrase = (
                         getattr(resp, "reason_phrase", None)
                         or getattr(resp, "reason", "")
@@ -375,9 +362,7 @@ def fetch_page(
                     )
                     raise ToolError(f"erreur HTTP {code} ({phrase}) sur {url}{extra}")
                 return snippet
-            # Réponse JSON (API) : trafilatura n'extrait que de l'HTML et renverrait
-            # vide -> on renvoie le corps BRUT (tronqué). Détection par content-type
-            # ET par le premier caractère (des API servent du JSON en text/plain).
+            # Certaines API servent du JSON en text/plain; inspecter aussi le premier caractère.
             ctype = (resp.headers.get("content-type") or "").lower()
             body = resp.text or ""
             if "json" in ctype or body.lstrip()[:1] in ("{", "["):
@@ -388,9 +373,7 @@ def fetch_page(
             return _truncate(text, cfg.max_chars_per_page)
         return snippet  # trop de redirections
     except _network_errors() as exc:
-        # Échec de VÉRIFICATION TLS (proxy d'entreprise) : en mode fetch_url
-        # (raise_status), un repli silencieux sur snippet vide serait illisible
-        # pour le modèle -> erreur explicite avec le diagnostic actionnable.
+        # Une erreur TLS doit rester explicite, notamment derrière un proxy d'entreprise.
         if raise_status:
             hint = explain_network_error(exc)
             if hint:
@@ -470,8 +453,7 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
 
     def _fetch_one(url: str, params, impersonate) -> str:
         url = _normalize_url(url)
-        # Query params en OBJET : l'outil encode (valeurs dict/list JSON-sérialisées) —
-        # le modèle ne fabrique plus de %7B%22 à la main (session 14/07, API Bien'ici).
+        # Sérialiser les valeurs structurées avant l'encodage des paramètres.
         if params:
             if not isinstance(params, dict):
                 raise ToolError("'params' doit être un objet {clé: valeur}")
@@ -495,7 +477,7 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
     def run(args: dict) -> str:
         impersonate = (args.get("impersonate") or "").strip() or None
         urls = args.get("urls")
-        # --- multi-URL concurrent : N pages en parallèle (curl_cffi = HTTP pur, léger) ---
+        # Les requêtes HTTP indépendantes peuvent être concurrentes.
         if urls:
             if not isinstance(urls, list):
                 raise ToolError("'urls' doit être une liste d'URLs")

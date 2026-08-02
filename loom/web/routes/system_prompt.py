@@ -1,4 +1,3 @@
-# loom/web/routes/system_prompt.py — helper de chat sorti de chat.py (comportement constant).
 from __future__ import annotations
 
 from loom.extend.skills import (
@@ -12,7 +11,6 @@ from loom.web.routes.helpers import (
 )
 from loom.web.routes.skills import _all_skills
 
-# ---- System prompt --------------------------------------------------------------------
 
 
 def _build_system_prompt(S, conv, workspace=None):
@@ -28,12 +26,7 @@ def _build_system_prompt(S, conv, workspace=None):
 
     catalog = render_catalog(skills)
 
-    # Identité always-on (SOUL/USER/MEMORY) EN TÊTE : c'est la définition qui FAIT FOI
-    # de qui est Loom (rôle, persona, style). Le mode d'emploi opérationnel (outils,
-    # règles) de chat.system.md vient APRÈS et s'y conforme - on ne plante plus un
-    # cadrage générique d'abord pour le corriger 12k caractères plus loin. Always-on =>
-    # survit toujours à la microcompaction/summarization (qui ne touchent que
-    # l'historique). Bornée par identity_max_tokens. Cf. design §5.6.
+    # Placer l'identité en tête la rend prioritaire et insensible à la compaction d'historique.
     _idblk = ""
 
     if S.identity_paths:
@@ -46,10 +39,7 @@ def _build_system_prompt(S, conv, workspace=None):
             max_tokens=S.settings["identity_max_tokens"],
         )
 
-    # TIER du harnais : un modèle DISTANT (API, non quantifié) se pilote seul -> prompt
-    # ALLÉGÉ (identité + outils + mémoire + sécurité), sans le scaffolding de comportement
-    # de chat.system.md qui ne sert qu'à un petit modèle local. Le flag `strong` sert
-    # aussi (plus bas) à couper les gardes de comportement dans la boucle d'outils.
+    # Un modèle distant fort garde identité, outils, mémoire et sécurité sans scaffolding local.
     strong = bool(
         conv.model
         and conv.model in S.remote_model_ids
@@ -60,8 +50,7 @@ def _build_system_prompt(S, conv, workspace=None):
 
     system_prompt = f"{_idblk}\n\n{base_prompt}" if _idblk else base_prompt
 
-    # Distant (strong) : la machine du provider encaisse le parallélisme -> on incite à
-    # GROUPER les sous-agents indépendants dans un même tour (ils tournent en parallèle).
+    # Les sous-agents distants indépendants gagnent à être groupés dans un même tour.
     if strong:
         system_prompt += (
             "\n\nParallélisme : quand plusieurs sous-tâches sont INDÉPENDANTES (auditer/"
@@ -73,11 +62,7 @@ def _build_system_prompt(S, conv, workspace=None):
     if catalog:
         system_prompt += f"\n\n{catalog}"
 
-    # Le modèle ignore par défaut sous quel backend il tourne (le prompt dit
-    # "Tu es Loom") -> il baratine quand on lui demande "quel modèle ?". On lui
-    # injecte son modèle courant pour qu'il réponde honnêtement. DISTANT vs LOCAL :
-    # sans ça un modèle servi par une API répétait « je tourne en local/offline sur
-    # llama.cpp » (la persona de Loom est « agent local ») -> confabulation d'infra.
+    # Injecter le backend courant évite les affirmations inventées sur l'infrastructure.
     if conv.model:
         if conv.model in S.remote_model_ids:
             _pm = S.remote_model_names.get(conv.model)
@@ -103,19 +88,10 @@ def _build_system_prompt(S, conv, workspace=None):
                 "honnêtement et directement (ce nom), sans esquiver."
             )
 
-    # Système : Loom détecte SEUL l'OS et injecte ses conventions (shell, commandes,
-    # chemins) -> le modèle produit du PowerShell sous Windows, du bash/unix sous
-    # macOS/Linux, sans qu'on code l'OS en dur dans le prompt. Source unique partagée
-    # avec run_shell (loom.runtime.platform_info) : jamais de divergence.
+    # Partager la détection d'OS avec run_shell garde les conventions cohérentes.
     system_prompt += "\n\n" + platform_detect().prompt_block()
 
-    # Dossier de travail courant : le modèle l'IGNORE sinon et le devine en sondant
-    # (git rev-parse à l'aveugle, list_dir…) -> tours gaspillés. On le lui dit, avec
-    # le réflexe anti-tâtonnement quand ce dossier n'est pas un repo git. Reste EN BAS
-    # (contexte volatil, près de l'action).
-    # Workspace de la session CIBLE (passé par /chat) ; à défaut, la session focus
-    # (amorçage). Sans ça, une génération sur l'onglet A pendant que la focus est B
-    # injectait le dossier de B dans le prompt de A.
+    # Garder le workspace volatil en fin de prompt et lié à la session cible.
     _ws = workspace if workspace is not None else _session(S).workspace
 
     system_prompt += (
@@ -127,14 +103,7 @@ def _build_system_prompt(S, conv, workspace=None):
         "même commande à l'identique."
     )
 
-    # Fiche projet auto-injectée : si `<workspace>/loom.md` existe (générée par /init),
-    # le modèle la reçoit d'office au lieu de re-sonder le projet à chaque session.
-    # Cache mtime (read_md) -> préfixe stable en session = prompt caching préservé ;
-    # suit le workspace courant (adoption/changement en cours de session). Les DEUX
-    # tiers la reçoivent (c'est de la mémoire, pas du scaffolding de comportement).
-    # L'en-tête la cadre en CONTEXTE (pas instructions, possiblement périmée) : une
-    # fiche est écrite en lisant le projet, un repo piégé ne doit pas pouvoir élever
-    # ses consignes au rang de system prompt.
+    # Injecter loom.md comme contexte non fiable, avec cache mtime pour stabiliser le préfixe.
     from loom.memory.identity import project_block
 
     _pm_blk = project_block(_ws, max_tokens=S.settings["project_memory_max_tokens"])
@@ -142,11 +111,7 @@ def _build_system_prompt(S, conv, workspace=None):
     if _pm_blk:
         system_prompt += f"\n\n{_pm_blk}"
 
-    # Objectif de session (/goal), en DIRECTIVE DOUCE : pas de juge externe qui te
-    # contredit (retiré - il recalait des preuves correctes). Tu restes seul maître de
-    # ta propre vérification : ne te déclare pas fini tant que l'objectif n'est pas
-    # ATTEINT ET PROUVÉ par tes exécutions (montre la sortie réelle) ; une fois prouvé,
-    # dis-le et arrête-toi. L'utilisateur l'efface avec « /goal clear ».
+    # L'objectif guide la vérification sans ajouter un juge externe contradictoire.
     if conv.goal:
         system_prompt += (
             f"\n\n# Objectif de session\nTant qu'il est actif, oriente ton travail vers "

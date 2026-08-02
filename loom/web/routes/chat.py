@@ -44,11 +44,7 @@ from loom.web.routes.maintenance import _post_turn_maintenance
 from loom.web.routes.models import _handle_add_model_command
 from loom.web.routes.system_prompt import _build_system_prompt
 
-# ---- Commandes /goal et /init (préambule de /chat) ------------------------------------
-
-# Catalogue des commandes slash du chat — SOURCE DE VÉRITÉ de la palette « / » du
-# composer (GET /commands). À tenir en phase avec les handlers ci-dessous : une
-# commande non listée ici est indécouvrable pour l'utilisateur.
+# Source de vérité de la palette; garder ce catalogue aligné avec les handlers.
 CHAT_COMMANDS = [
     {
         "name": "/add-model",
@@ -141,7 +137,6 @@ def _handoff_prompt(content: str, provenance: list[dict[str, str]]) -> str:
     )
 
 
-# ---- Route : /chat (génération SSE) -----------------------------------------------------
 
 
 def _register_chat_routes(app, S):
@@ -174,12 +169,9 @@ def _register_chat_routes(app, S):
         else:
             message = display_message
 
-        # Session CIBLE : par `session_id` (onglet) sinon la session focus. Chaque session a
-        # son verrou : une nouvelle soumission n'interrompt QUE la génération de SA session,
-        # les autres onglets continuent en parallèle.
+        # Chaque session possède son verrou pour préserver le parallélisme entre onglets.
         req_sid = (request.form.get("session_id") or "").strip()
-        # Un session_id EXPLICITE mais inconnu -> 404 (comme /fork, /compact) : sinon
-        # l'onglet enverrait silencieusement son message dans la session focus.
+        # Ne jamais rabattre un identifiant explicite invalide sur la session active.
         sess = _get_session(S, req_sid) if req_sid else _session(S)
         if sess is None:
             return Response("session introuvable", status=404)
@@ -200,9 +192,7 @@ def _register_chat_routes(app, S):
                 "handoff_id": handoff_id,
             }
 
-        # Le front emploie ce mode quand la cible streame déjà : on exige alors la
-        # mise en file. Si le tour vient juste de finir, 409 lui dit de relancer le
-        # même handoff sur le chemin SSE normal au lieu de laisser une note orpheline.
+        # Refuser un handoff sans génération active évite une note orpheline.
         queue_only = is_handoff and request.form.get("queue_only") == "1"
         if queue_only:
             if chat_lock.acquire(blocking=False):
@@ -220,17 +210,7 @@ def _register_chat_routes(app, S):
             )
 
         if not chat_lock.acquire(blocking=False):
-            # Le verrou de CETTE session est tenu. Deux cas se distinguent par
-            # cancel_event (posé par /cancel, effacé seulement à l'acquisition d'un
-            # nouveau tour) :
-            #  - STOP en cours (cancel_event posé) : la génération interrompue relâche
-            #    son verrou pendant son teardown. Un message RENVOYÉ après un stop ne
-            #    doit PAS partir en file (elle n'est drainée que par une génération
-            #    active, qui n'existe plus après l'arrêt -> message jamais généré). On
-            #    ATTEND la libération (bornée par interrupt_wait) puis on génère.
-            #  - vraie génération concurrente (cancel_event absent) : on ne l'interrompt
-            #    PAS, le message part en FILE D'ATTENTE (même mécanique que les notes en
-            #    vol), injecté au prochain point d'arrêt. L'annulation, c'est le stop.
+            # Après STOP, attendre le verrou; sinon mettre en file pour la génération active.
             if not (
                 cancel_event.is_set() and chat_lock.acquire(timeout=S.interrupt_wait)
             ):
@@ -239,7 +219,7 @@ def _register_chat_routes(app, S):
                         "file d'attente pleine — attendre le prochain point d'arrêt ou Stop",
                         status=429,
                     )
-                # La file est TEXTE-ONLY : d'éventuelles images jointes ne peuvent pas suivre.
+                # La file transporte seulement du texte.
                 queued_msg = (
                     "message mis en file d'attente (génération en cours) — il sera pris "
                     "en compte au prochain point d'arrêt"
@@ -254,10 +234,7 @@ def _register_chat_routes(app, S):
 
         cancel_event.clear()
 
-        # Anti-résurrection : entre la capture de `sess` (plus haut) et l'acquisition du
-        # verrou, un /session/delete concurrent a pu supprimer cette session. Maintenant
-        # qu'on tient le verrou, plus aucune suppression n'est possible -> si le dossier a
-        # disparu, on abandonne AVANT tout save() (qui la recréerait, session zombie).
+        # Revérifier après le verrou empêche de recréer une session supprimée entre-temps.
         if not S.session_store.session_dir(sid).exists():
             chat_lock.release()
             return Response("session supprimée", status=404)
@@ -268,42 +245,26 @@ def _register_chat_routes(app, S):
             return S.session_store.save(sess)
 
         if not is_handoff:
-            # Commande /add-model + wizard actif : le wizard déterministe capte TOUT
-            # message de la session tant qu'il est actif (y compris avant /goal — un
-            # « /goal » tapé en plein wizard est une réponse au wizard, pas une commande).
+            # Un wizard actif capture tout le texte jusqu'à sa fin.
             message, _wiz_resp = _handle_add_model_command(
                 S, message, conv, sess, save, chat_lock
             )
             if _wiz_resp is not None:
                 return _wiz_resp
 
-            # Commande /goal : pilote l'OBJECTIF de complétion de la session. La logique
-            # (pose/statut/efface) est factorisée dans _handle_goal_command, qui renvoie
-            # (message, response) : response non None = ack immédiat à retourner directement.
             message, _goal_resp = _handle_goal_command(
                 S, message, conv, save, chat_lock
             )
             if _goal_resp is not None:
                 return _goal_resp
 
-            # Commande /init : génère une fiche projet `loom.md` À LA RACINE DU DOSSIER
-            # de TRAVAIL de la session. Factorisé dans _handle_init_command (adopte un
-            # dossier cible si fourni, réécrit le message en consigne de génération).
             message = _handle_init_command(S, message, sess)
 
         title_message = display_message if is_handoff else message
 
-        # Plus de garde bloquant : un modèle texte-only ne reçoit PAS l'image inline (qui
+        # Ne pas injecter d'image inline dans un modèle sans projecteur vision.
 
-        # ferait planter un llama-server sans mmproj) — on la stocke sur disque et il l'inspecte
-
-        # via read_image, routé vers un modèle vision (cf. _build_user_content plus bas).
-
-        # Logs PAR SESSION (au même titre que session.json) : (1) trace des échanges modèle
-
-        # routée vers sessions/<id>/debug.log ; (2) copie du log serveur modèle global
-
-        # (var/logs/serve.log) dans la session — doublon assumé, pour tout avoir sous la main.
+        # Regrouper les traces agent et serveur dans le dossier de la session.
 
         _sdir = S.session_store.session_dir(sess.id)
 
@@ -320,22 +281,15 @@ def _register_chat_routes(app, S):
             except OSError:
                 pass
 
-        # Auto-adoption du dossier de travail : si le message désigne un dossier EXISTANT,
-
-        # la session l'adopte avant le tour -> run_shell tourne dedans et les chemins
-
-        # relatifs s'y résolvent, sans que l'utilisateur ait à pointer le dossier dans l'UI.
+        # Adopter un dossier explicite pour y résoudre les commandes et chemins relatifs.
 
         adopted_ws = None
 
-        # Un transfert apporte du CONTEXTE, pas une demande de changer le workspace :
-        # un chemin cité dans la réponse source ne doit jamais réaffecter la cible.
+        # Un transfert apporte du contexte, jamais un changement de workspace implicite.
         detected = None if is_handoff else _detect_workspace(message, S.workspace_dir)
 
         if detected:
-            # Un chemin INTERNE au projet courant n'est pas un changement de contexte :
-            # adopter casserait le cache KV (re-prefill intégral) pour rien — cf.
-            # _should_adopt (vécu 2026-07-19 : var/sessions/<id> cité comme simple info).
+            # Ne pas invalider le cache KV pour un chemin déjà interne au workspace.
             if detected != sess.workspace and _should_adopt(sess.workspace, detected):
                 sess.workspace = detected
 
@@ -355,8 +309,7 @@ def _register_chat_routes(app, S):
 
             save()
 
-            # Journal d'affichage temps réel : on y consigne le message user (le journal est la
-            # source de RÉ-AFFICHAGE au rechargement -> il doit être complet, user inclus).
+            # La timeline doit contenir le message utilisateur pour rejouer toute la vue.
             user_event = {
                 "content": display_message if is_handoff else message,
             }
@@ -369,10 +322,7 @@ def _register_chat_routes(app, S):
                 )
             S.session_store.append_event(sess.id, "user", user_event)
 
-            # Résumé auto pré-tour : DÉPLACÉ dans generate() (plus bas) pour être VISIBLE
-            # dans le stream (label d'activité « compaction… ») au lieu d'un blocage muet
-            # avant le 1er octet. Le prompt système ne dépend pas de l'historique -> on le
-            # construit ici sans attendre le résumé.
+            # La compaction reste dans le générateur afin d'être visible dans le flux.
             system_prompt, strong = _build_system_prompt(
                 S, conv, workspace=sess.workspace
             )
@@ -386,10 +336,7 @@ def _register_chat_routes(app, S):
             traceback.print_exc()
             return Response("erreur interne", status=500)
 
-        # --- Modèle IMAGE sélectionné : court-circuit de la boucle tool-use. Un message
-        # user = un prompt d'image = une image dans la conversation. Même GPU que le LLM
-        # local -> même sérialisation (_local_gen_lock) ; VRAM libérée (unload_local)
-        # avant la diffusion ; erreurs TOUJOURS lisibles (patron « génération interrompue »).
+        # Image et LLM partagent le GPU: sérialiser et libérer la VRAM avant diffusion.
         if conv.model in S.image_model_ids:
             _im = S.image_by_id[conv.model]
 
@@ -412,11 +359,7 @@ def _register_chat_routes(app, S):
                     S.local_gen_lock.acquire()
                     _img_held = True
                     S.local_busy["reason"] = "image"
-                    # Photo d'ENTRÉE (modèles d'édition, ex. Kontext) : un chemin de
-                    # fichier image dans le message est détecté, vérifié sur disque,
-                    # retiré du texte (le prompt ne doit porter que l'instruction) et
-                    # transmis au moteur ({IMAGE} du workflow). Chemins avec espaces :
-                    # entre guillemets.
+                    # Retirer le chemin de l'image pour ne garder que l'instruction d'édition.
                     src_image, msg_text = None, message
                     for cand in re.findall(
                         r'"([^"]+\.(?:png|jpe?g|webp|bmp))"', message, re.IGNORECASE
@@ -433,12 +376,7 @@ def _register_chat_routes(app, S):
                                 .strip()
                             )
                             break
-                    # Affinage du prompt (best-effort, JAMAIS bloquant) : le refiner
-                    # déclaré par le modèle image (model.toml, id d'un modèle Loom)
-                    # réécrit la demande — quelle que soit la langue — en prompt de
-                    # diffusion anglais. Séquence VRAM sûre : le refiner est servi par
-                    # llama-swap D'ABORD, puis déchargé (unload_local ci-dessous) —
-                    # LLM et diffusion ne co-résident jamais.
+                    # Le refiner est best-effort et doit être déchargé avant la diffusion.
                     prompt, refined = msg_text, False
                     if _im.refiner and _im.refiner in S.models:
                         yield _sse(
@@ -449,9 +387,7 @@ def _register_chat_routes(app, S):
                                 _im.refiner in S.remote_model_ids
                                 or _ensure_local_server(S, wait=90.0)
                             ):
-                                # Édition d'une photo : le refiner doit produire une
-                                # INSTRUCTION (quoi changer / quoi garder), pas une
-                                # description de scène — on le lui dit dans le message.
+                                # Pour une photo, demander une instruction plutôt qu'une description.
                                 _refine_in = (
                                     "[An input photo is attached; write an EDIT "
                                     "instruction: what to change, what must stay "
@@ -459,9 +395,7 @@ def _register_chat_routes(app, S):
                                     if src_image
                                     else msg_text
                                 )
-                                # Prompt système = règles générales + grammaire propre
-                                # au générateur (refine_hints du model.toml) : chaque
-                                # modèle a son style de prompt optimal.
+                                # Ajouter la grammaire propre au générateur ciblé.
                                 _refine_sys = IMAGE_REFINE_SYSTEM
                                 if _im.refine_hints:
                                     _refine_sys += (
@@ -488,16 +422,9 @@ def _register_chat_routes(app, S):
                                 "notice",
                                 text="affinage indisponible — prompt envoyé tel quel.",
                             )
-                    # FORMAT dynamique : le refiner termine par un tag
-                    # [format: portrait|landscape|square] dérivé de la demande —
-                    # extrait ici, retiré du prompt, converti en résolution. Absent
-                    # -> dimensions du model.toml (les workflows sans {WIDTH}/{HEIGHT}
-                    # ignorent simplement ces valeurs).
+                    # Convertir le tag de format du refiner en résolution du workflow.
                     gen_w, gen_h = _im.width, _im.height
-                    # Tag TOUJOURS retiré quelle que soit sa valeur (un petit modèle
-                    # invente parfois la sienne, ex. "full-body" : elle ne doit JAMAIS
-                    # fuir dans le prompt de diffusion) ; synonymes mappés, inconnu ->
-                    # dimensions par défaut.
+                    # Retirer même un tag inconnu pour qu'il ne fuite pas dans le prompt.
                     _fmt = re.search(
                         r"\[\s*format\s*:\s*([a-zà-ÿ -]+?)\s*\]\s*$",
                         prompt,
@@ -518,10 +445,7 @@ def _register_chat_routes(app, S):
                             gen_w, gen_h = 1216, 832
                         elif any(k in _f for k in ("square", "carr")):
                             gen_w, gen_h = 1024, 1024
-                    # Titre de session : une session image/vidéo mérite un nom comme
-                    # les autres. Inféré par le REFINER (encore résident — coût nul en
-                    # rechargement) ; sans refiner, _infer_title retombe sur le début
-                    # du message. Fait AVANT unload_local.
+                    # Titrer avant de décharger le refiner évite un rechargement.
                     if _sess.title == "Nouvelle session":
                         _title = _infer_title(S.client, _im.refiner or None, msg_text)
                         if _title:
@@ -540,10 +464,7 @@ def _register_chat_routes(app, S):
                         width=gen_w,
                         height=gen_h,
                     )
-                    # UNIQUE copie : dans le dossier de LA session (comme sa timeline).
-                    # Le média suit le cycle de vie de la session — la supprimer emporte
-                    # ses médias, aucun orphelin (décision user 2026-07-09 : fini les
-                    # duplications var/generated + workspace + output ComfyUI).
+                    # Une seule copie liée au cycle de vie de la session évite les orphelins.
                     name = f"loom_{int(time.time() * 1000)}{ext}"
                     media_dir = S.session_store.root / _sess.id / "generated"
                     media_dir.mkdir(parents=True, exist_ok=True)
@@ -555,15 +476,13 @@ def _register_chat_routes(app, S):
                             f"Image écrite : `{loc}`"
                         )
                     else:
-                        # Vidéo (webm/mp4) : le markdown image ne la lit pas — lien
-                        # cliquable, le navigateur la joue dans un onglet.
+                        # Les vidéos exigent un lien, contrairement aux images Markdown.
                         md = (
                             f"[vidéo générée — cliquer pour lire](/genimg/{_sess.id}/{name})\n\n"
                             f"Vidéo écrite : `{loc}`"
                         )
                     if refined:
-                        # Le prompt réellement envoyé au diffuseur, visible dans le fil :
-                        # l'utilisateur voit ce que l'affinage a fait de sa demande.
+                        # Rendre visible la transformation effectuée par le refiner.
                         md += f"\n\nPrompt affiné ({_im.refiner}) : `{prompt}`"
                     yield _finish(md)
                 except ComfyError as exc:
@@ -584,39 +503,22 @@ def _register_chat_routes(app, S):
             return Response(generate_image(), mimetype="text/event-stream")
 
         def generate():
-            # Empêche la mise en veille du système tant que CE tour génère (release au
-            # finally) : sans ça, une veille par inactivité gèle loom.web + llama.cpp et la
-            # génération meurt (« connexion perdue »). L'écran peut s'éteindre, le travail
-            # continue en arrière-plan.
+            # Empêcher la veille système pendant le tour, sans bloquer l'extinction de l'écran.
             S.stay_awake.acquire()
-            # Annulation de CETTE session, lue par _confirm (même thread de génération).
             S.confirm_local.ev = cancel_event
-            # Verrou modèle LOCAL : pris dans le try ci-dessous (avant le 1er appel modèle),
-            # libéré au finally. Distant -> jamais pris (vrai parallèle entre onglets).
+            # Le verrou global concerne seulement le serveur local à slot unique.
             _local_held = False
-            # Provenance portée par les bulles assistant produites en réponse au
-            # transfert courant. Une note-handoff injectée pendant un tour remplace
-            # cette valeur au point d'arrêt, afin que sa réponse puisse repartir plus
-            # tard avec toute la chaîne.
+            # Une note transférée remplace la provenance pour conserver toute la chaîne.
             response_provenance = list(provenance)
 
-            # Profil du modèle : correctifs déterministes (cadratins, guillemets
-
-            # typographiques) appliqués au texte streamé du chat. Le profil existe
-
-            # déjà pour les outils d'écriture (via tool_factory) ; on le recharge ici
-
-            # pour l'appliquer AUSSI aux réponses du modèle, pas seulement aux fichiers.
+            # Appliquer le profil aux réponses comme aux écritures d'outils.
 
             _profile = load_profile(conv.model) if conv.model else None
 
             if adopted_ws:  # informe l'UI que le dossier de travail a été adopté
                 yield _sse("workspace", path=adopted_ws)
 
-            # Démarrage AUTO du serveur modèle, RACONTÉ dans le fil : notices streamées
-            # pendant le démarrage de la stack puis le chargement du modèle — l'utilisateur
-            # voit que ça travaille au lieu de paniquer devant un silence. Fait DANS le
-            # générateur (pas avant la Response) pour que ces étapes s'affichent en direct.
+            # Démarrer dans le générateur rend chaque phase visible dans le flux.
             if conv.model and conv.model not in S.remote_model_ids:
                 _reachable, _running_txt = S.client.running_local(timeout=2.0)
                 if not _reachable:
@@ -626,19 +528,14 @@ def _register_chat_routes(app, S):
                     )
                     _t_srv = time.monotonic()
                     S.server_manager.start()
-                    # Attente pilotée par l'ÉTAT DU PROCESS, pas par un mur de temps :
-                    # un 35 Go à froid dépasse largement 90 s, et l'ancien message
-                    # prédisait « la génération va échouer » à tort (vécu 2026-07-21).
-                    # Stack vivante -> on attend en le disant (notice périodique) ;
-                    # stack MORTE -> vrai échec, on arrête d'attendre tout de suite.
+                    # Tant que la stack vit, attendre avec des notices plutôt qu'un délai fixe.
                     _deadline = time.monotonic() + 600.0  # garde-fou absolu
                     _last_notice = time.monotonic()
                     while time.monotonic() < _deadline and not cancel_event.is_set():
                         time.sleep(0.7)
                         _reachable, _running_txt = S.client.running_local(timeout=2.0)
                         if _reachable:
-                            # Étape TRACÉE (console debug) : chaque phase du tour porte
-                            # sa durée — plus jamais un « 1min52 » opaque (2026-07-19).
+                            # Tracer chaque phase rend les temps d'attente explicables.
                             log_event(
                                 "turn.step",
                                 etape="demarrage_serveur",
@@ -684,16 +581,10 @@ def _register_chat_routes(app, S):
             actions: list[str] = []  # trace compacte des outils (anti-amnésie)
 
             saved = False
-            # Persistance AU FIL DE L'EAU : au lieu de tout sauver une seule fois EN FIN de tour
-            # (un long audit interrompu/rechargé/relancé perdait TOUT), on met à jour EN PLACE
-            # l'unique message assistant du tour (réponse en cours + trace compacte des actions)
-            # et on sauve à CHAQUE étape marquante (outil terminé, flux de texte) + à la fin.
+            # Sauvegarder aux étapes marquantes limite les pertes lors d'une interruption.
             _turn = {"idx": None, "last": 0.0}
 
-            # Journal d'affichage TEMPS RÉEL : chaque événement visible est écrit à l'instant
-            # dans timeline.jsonl (append, zéro batch) -> rejouable au rechargement. On y met
-            # les événements qui reconstruisent la vue (raisonnement, texte, cartes d'outils) ;
-            # pas les compteurs (metrics/totals) ni les décorations live (tool_stream/args).
+            # La timeline persiste uniquement les événements nécessaires pour rejouer la vue.
             _TL = {
                 "reasoning",
                 "text",
@@ -713,9 +604,7 @@ def _register_chat_routes(app, S):
                 return _sse(event, **data)
 
             def _persist(final=False):
-                # On NE persiste pas les messages `tool` bruts (gonflerait le contexte + casserait
-                # le résumeur) : seulement le texte + la trace des actions. Un même tour = UN seul
-                # message assistant, mis à jour en place (pas de doublons).
+                # Garder une trace compacte des outils sans injecter leurs sorties brutes au contexte.
                 nonlocal saved
 
                 body = answer
@@ -728,9 +617,7 @@ def _register_chat_routes(app, S):
                 if not body:  # rien à dire ET rien fait -> pas de bulle vide
                     return
 
-                # Piloté par ÉVÉNEMENT (chaque outil terminé + fin), plus par un timer : le
-                # temps réel de l'affichage vient du journal `timeline.jsonl`, pas d'ici. Ce
-                # session.json ne porte que le contexte lean du modèle, inutile à chaque token.
+                # session.json porte le contexte; la timeline porte l'affichage temps réel.
                 if _turn["idx"] is None:
                     conv.add("assistant", body)
                     _turn["idx"] = len(conv.messages) - 1
@@ -740,28 +627,11 @@ def _register_chat_routes(app, S):
                 save()
                 saved = True
 
-            # Registre construit selon les outils activés pour CETTE conversation
+            # Lier le registre au workspace courant empêche les outils d'écrire à côté.
 
-            # (toggles UI) ET le workspace de la session active : sans ça les outils
-
-            # (write/edit/run_shell + sous-agent) retombent sur cfg.chat.workspace_dir
-
-            # et écrivent à côté du dossier ciblé.
-
-            # Résumé PRÉ-TOUR (proactif), DANS le stream pour être VISIBLE : si l'historique
-            # dépasse le budget, on émet le label d'activité « compaction… », on résume, on
-            # trace une carte, puis on efface le label. Gate `needs_summary` d'abord (sans
-            # appel modèle) pour ne montrer le label QUE si un résumé va vraiment tourner.
-            # Placé APRÈS le démarrage du serveur modèle (le résumé appelle le modèle).
-            # LOCAL UNIQUEMENT : un modèle DISTANT a une grande fenêtre et gère lui-même son
-            # contexte + son prefix-cache ; réécrire son historique casserait ce cache et
-            # coûterait des tokens pour rien. On ne compacte donc que le local.
+            # Compacter dans le flux, après démarrage, et seulement pour les modèles locaux.
             _is_local_model = bool(conv.model) and conv.model not in S.remote_model_ids
-            # SEUIL relatif à la FENÊTRE, pas le `context_budget` (3000) absolu : ce dernier
-            # est comparé à system_prompt + messages, or le prompt système SEUL fait ~11k
-            # tokens -> le seuil 3000 était TOUJOURS dépassé et la compaction partait à CHAQUE
-            # message (même « poursuis »), en appelant le modèle (lent). On la déclenche
-            # désormais seulement près de la saturation (même seuil que le microcompact).
+            # Un seuil relatif évite que le long prompt système déclenche une compaction constante.
             _, _pre_threshold = _model_limits(S, conv.model)
             if (
                 _is_local_model
@@ -775,8 +645,7 @@ def _register_chat_routes(app, S):
                     conv, S.client, _pre_threshold, S.settings["keep_recent"]
                 ):
                     save()
-                    # Jauge à jour TOUT DE SUITE (estimation ~3 car./token), sans attendre
-                    # l'usage réel du 1er appel du tour.
+                    # Estimer aussitôt la jauge; l'usage réel la corrigera au prochain appel.
                     conv.context_tokens = (
                         len(conv.system_prompt)
                         + sum(_msg_chars(m.get("content")) for m in conv.messages)
@@ -796,26 +665,16 @@ def _register_chat_routes(app, S):
 
             use_tools = registry is not None and len(registry)
 
-            # Limites du modèle courant (distant = sa grande fenêtre ; local = global).
-
             eff_max_tokens, eff_compact = _model_limits(S, conv.model)
 
-            # `strong` (tier distant=fort) est calculé plus haut, à la construction du prompt :
+            # Les modèles distants forts gardent seulement les garde-fous indispensables.
 
-            # il coupe ici les gardes de comportement (act_nudge, claim_audit, coupe non-progrès).
-
-            # On ne garde que outils + mémoire + sécurité. Un modèle local garde le harnais complet.
-
-            # Holder du stream distant EN COURS : rempli par _stream_model_turn à la création
-            # du stream, fermé par /cancel pour débloquer une itération figée (modèle distant
-            # lent/bloqué) -> verrou de session libéré de façon bornée. Vidé au finally.
+            # `/cancel` ferme le flux distant courant pour libérer rapidement le verrou de session.
             stream_holder: dict = {}
             S.active_streams[sess.id] = stream_holder
 
             def _make_source():
-                # Fabrique un flux de generation sur l'etat COURANT de la conversation.
-                # Rappele a la REPRISE (apres un STOP suivi d'une note en file) pour
-                # repartir de la note, meme prefixe (schemas d'outils compris).
+                # Reconstruire la source après STOP pour inclure une éventuelle note en file.
                 if use_tools:
                     return S.client.stream_chat_tools(
                         conv.to_messages(),
@@ -867,12 +726,7 @@ def _register_chat_routes(app, S):
 
             last_tok = None
 
-            # Auto-titre DÈS L'ENVOI (le titre dérive du MESSAGE, pas de la réponse). Pour un
-            # modèle DISTANT : on l'infère en tâche de fond tout de suite et on le pousse au
-            # client dès qu'il est prêt (interleavé), sans attendre la fin du tour -> l'onglet
-            # prend son vrai nom en ~1-2s même sur une génération longue. Pour un modèle LOCAL,
-            # on NE le fait PAS ici (llama-swap = 1 slot ; un appel concurrent contendrait avec
-            # la génération) : on garde le titrage en fin de tour, quand le slot est libre.
+            # Titrer le distant en arrière-plan; attendre la fin pour ne pas concurrencer le local.
             _titled = {"value": None, "emitted": False}
             _title_ready = threading.Event()
             _immediate_title = (
@@ -896,20 +750,14 @@ def _register_chat_routes(app, S):
                 ).start()
 
             try:
-                # Modèle LOCAL : llama-swap n'en sert qu'UN à la fois -> on sérialise via le
-                # verrou global (limitation machine connue, signalée à l'UI). Modèle DISTANT :
-                # pas de verrou -> cette session génère EN PARALLÈLE des autres onglets.
+                # Sérialiser le slot local unique; laisser les API distantes parallèles.
                 if conv.model and conv.model not in S.remote_model_ids:
                     if not S.local_gen_lock.acquire(blocking=False):
                         yield _sse("notice", text=_local_busy_notice(S))
                         S.local_gen_lock.acquire()
                     _local_held = True
                     S.local_busy["reason"] = "génération"
-                    # Un moteur image encore chargé tiendrait la VRAM que le LLM va
-                    # réclamer : le vider d'abord (best-effort, rapide si rien à vider).
-                    # Son cache RAM n'est gardé que si le LLM tient à côté (64 Go : oui ;
-                    # machine étroite : non, et on le DIT — l'utilisateur comprend
-                    # pourquoi la prochaine image rechargera depuis le disque).
+                    # Libérer la VRAM image; ne garder son cache RAM que si le LLM tient avec.
                     if _free_image_engines(S, _local_size_mb(S, conv.model)) is False:
                         yield _sse(
                             "notice",
@@ -920,15 +768,14 @@ def _register_chat_routes(app, S):
                             ),
                         )
 
-                # Boucle de REPRISE : un STOP avec une note en file relance un tour
-                # pour repartir de la note, au lieu de tout arreter.
+                # Après STOP, une note en file relance un nouveau tour.
                 while True:
                     source = _make_source()
                     interrupted = False
                     saw_compaction = False
                     stop_reason = ""
                     for kind, payload in source:
-                        # Titre distant prêt (thread de fond) -> on le pousse dès la 1re occasion.
+                        # Publier le titre distant dès qu'il est disponible.
                         if (
                             _immediate_title
                             and _title_ready.is_set()
@@ -942,18 +789,14 @@ def _register_chat_routes(app, S):
                                 )
 
                         if cancel_event.is_set():
-                            # Une nouvelle soumission demande l'arrêt : on stoppe net
-
-                            # et on persiste ce qui a déjà été généré.
+                            # Conserver le contenu déjà reçu lors d'une nouvelle soumission.
 
                             interrupted = True
 
                             break
 
                         if kind == "note":
-                            # Note en vol INJECTÉE par la boucle : on la PERSISTE telle
-                            # quelle (même contenu que ce que le modèle a vu) et on
-                            # l'affiche dans le fil à sa vraie position.
+                            # Persister la note injectée à la position réellement vue par le modèle.
                             if isinstance(payload, dict):
                                 note_text = str(payload.get("text", ""))
                                 note_display = str(payload.get("display", note_text))
@@ -996,22 +839,15 @@ def _register_chat_routes(app, S):
                             continue
 
                         if kind == "harness":
-                            # 3e voix : intervention du garde-fou Loom (relance, audit,
-                            # recentrage…). Ni toi ni le modèle -> bulle distincte,
-                            # persistée pour être rejouée au rechargement.
+                            # Distinguer la voix du garde-fou de celles du modèle et de l'utilisateur.
                             yield _tl("harness", **payload)
                             continue
 
                         if kind == "status":
-                            # Signal d'activité (ex. compaction en cours) : piloté vers le label
-                            # animé au-dessus du composer, comme « le modèle tourne ».
                             yield _sse("status", **payload)
 
                         elif kind == "context_estimate":
-                            # Compaction : la jauge de contexte est rafraîchie IMMÉDIATEMENT
-                            # (estimation), sans attendre l'usage réel du prochain appel — sinon
-                            # elle resterait au pic pendant tout l'appel suivant. L'usage réel du
-                            # tour d'après la corrigera de toute façon.
+                            # Estimer la jauge après compaction; le prochain usage la corrigera.
                             conv.context_tokens = int(payload.get("tokens", 0) or 0)
                             yield _sse("totals", **_totals(S, conv))
 
@@ -1023,8 +859,7 @@ def _register_chat_routes(app, S):
                                 payload = _profile.apply_to_text(payload)
                             answer += payload
 
-                            # Temps réel : le texte est journalisé à l'instant (rejouable). Le
-                            # session.json (contexte) se met à jour aux frontières d'outils + fin.
+                            # Journaliser chaque fragment pour rendre la vue rejouable.
                             text_data = {"text": payload}
                             if response_provenance:
                                 text_data["provenance"] = response_provenance
@@ -1062,11 +897,7 @@ def _register_chat_routes(app, S):
                             _persist()  # checkpoint contexte (event-driven) : l'outil vient de finir
 
                         elif kind == "usage":
-                            # Fin d'un tour : llama-server donne le prompt réel et le completion
-
-                            # EXACT (tool-calls inclus) -> on cumule envoyés/reçus à travers les
-
-                            # tours ET les outils, et on réconcilie le tour courant.
+                            # L'usage serveur inclut les appels d'outils et réconcilie le compteur live.
 
                             _p = payload.get("prompt_tokens", 0) or 0
                             _c = payload.get("completion_tokens", 0) or 0
@@ -1078,10 +909,7 @@ def _register_chat_routes(app, S):
 
                             cur_turn = 0
 
-                            # Cumul RÉEL de la session : chaque appel refacture tout le contexte en
-                            # INPUT -> on somme input/output/cache/coût sur TOUS les appels
-                            # (persisté), pas seulement le tour. C'est LA vraie somme facturée, et
-                            # `cached` mesure si le prompt caching du provider mord.
+                            # Additionner chaque appel reflète le coût réellement facturé du contexte.
                             _pin, _pout, _pcached = _price_of(S, conv.model)
                             conv.add_usage(_p, _c, _cached, _pin, _pout, _pcached)
 
@@ -1097,11 +925,7 @@ def _register_chat_routes(app, S):
                             yield _sse("totals", **_totals(S, conv))
 
                         elif kind == "sub_usage":
-                            # Conso d'un SOUS-AGENT (dispatch_agent) : ses tokens sont RÉELS et
-                            # facturés -> on les ajoute aux totaux de session (coût, N×, in/out/
-                            # cache). `set_context=False` : son prompt n'est PAS le contexte du fil
-                            # principal, on ne touche donc pas la jauge de remplissage ni les
-                            # métriques per-tour (sent/recv) qui décrivent le tour principal.
+                            # Compter le coût du sous-agent sans modifier la jauge du fil principal.
                             _sp = payload.get("prompt_tokens", 0) or 0
                             _sc = payload.get("completion_tokens", 0) or 0
                             _scached = payload.get("cached_tokens", 0) or 0
@@ -1121,22 +945,10 @@ def _register_chat_routes(app, S):
                             yield _tl("phase", **payload)
 
                         elif kind == "done":
-                            # Raison d'arrêt de la boucle (natural, repeat_stop,
-                            # loop_degenerate…) : nourrit la boucle de feedback de la
-                            # note de recentrage ci-dessous.
+                            # La raison d'arrêt pilote le réarmement du recentrage.
                             stop_reason = str(payload.get("reason", "") or "")
 
-                        # Compteur live : chaque delta (texte OU arguments d'un tool_call) =
-
-                        # 1 vrai token streamé par llama-server. On compte aussi tool_args
-
-                        # pour que le compteur avance pendant la génération d'un appel (gros
-
-                        # write_file inclus) au lieu de se figer. On affiche le cumul + un débit
-
-                        # mesuré sur la rafale courante ; le timer se réinitialise après >1s sans
-
-                        # token (pause d'exécution) pour que les tok/s reflètent la génération.
+                        # Mesurer le débit par rafale exclut les pauses d'exécution des outils.
 
                         if kind in ("reasoning", "content", "tool_args"):
                             now = time.monotonic()
@@ -1168,7 +980,7 @@ def _register_chat_routes(app, S):
                     if not interrupted:
                         break
 
-                    # STOP : on persiste le travail fait et on pose le marqueur.
+                    # Persister le travail partiel avant le marqueur d'interruption.
                     _persist(final=True)
                     conv.add(
                         "user",
@@ -1177,9 +989,7 @@ def _register_chat_routes(app, S):
                     )
                     save()
 
-                    # Note en file (remarque postee avant le STOP) : on REPART d'elle au
-                    # lieu de tout arreter -> on l'injecte comme message user et la boucle
-                    # while relance un tour pour y repondre. Sans note en file : vrai stop.
+                    # Une note en file transforme le STOP en reprise; sinon l'arrêt est définitif.
                     _pending = S.notes.drain(sess.id)
                     if not _pending:
                         return
@@ -1209,10 +1019,7 @@ def _register_chat_routes(app, S):
                     save()
                     cancel_event.clear()
 
-                # Feedback de la note de recentrage : troncature + tour fini PROPREMENT
-                # (stop naturel) = épisode GÉRÉ, on cesse de ré-injecter la note ;
-                # dérapage (non-progrès/boucle) = ré-armée ; tour sans troncature =
-                # remise à zéro (le prochain épisode aura sa note).
+                # Réarmer le recentrage seulement si la compaction finit encore en boucle.
                 if saw_compaction:
                     if stop_reason == "natural":
                         S.refocus_handled[sess.id] = True
@@ -1231,22 +1038,12 @@ def _register_chat_routes(app, S):
 
                 _persist(final=True)  # fin de tour : écriture finale garantie
 
-                # Cache souverain : le slot local contient LA conversation à cet
-                # instant précis -> on le sauve MAINTENANT (~ms), avant que le titre
-                # (inline ci-dessous) et le reflect (maintenance) ne l'écrasent ; la
-                # maintenance le RESTAURERA (~ms) au lieu de re-préfiller des minutes.
-                # session_id : sidecar meta pour la reprise à CHAUD one-shot
-                # (try_hot_resume ne restaure jamais le save d'une autre session).
+                # Sauvegarder le slot avant le titre et la maintenance qui peuvent l'écraser.
                 _kv_saved = S.client.save_slot(
                     conv.model, "turnend.kv", session_id=sess.id
                 )
 
-                # Apprentissage post-tour + restauration du cache : DÉPORTÉS dans un
-                # thread (cf. _post_turn_maintenance). Avant, reflect tournait ICI,
-                # avant le `done` -> l'UI restait sur « le modèle travaille » pendant
-                # un appel modèle entier, ET le cache KV de la conversation était
-                # écrasé -> re-prefill INTÉGRAL au message suivant (bug 2026-07-10).
-                # Le thread attend le verrou local (libéré à la fermeture du flux).
+                # Déporter la maintenance évite de retarder `done` et protège le cache du fil.
                 _do_reflect = (
                     S.settings["reflect_enabled"]
                     and S.reflect_stores is not None
@@ -1270,13 +1067,10 @@ def _register_chat_routes(app, S):
                     name="loom-post-turn",
                 ).start()
 
-                # Auto-titre : à la 1re vraie réponse, nommer la session (le modèle infère le
-                # sujet). On titre LA session de CETTE génération (`sess`), pas la session
-                # focus (_cur) — sinon, en multi-onglets concurrent, on titrerait la mauvaise.
+                # Titrer la session du flux, jamais la session actuellement focalisée.
 
                 if _immediate_title:
-                    # Distant : filet de secours si le thread de titre n'a pas fini avant la
-                    # fin de la boucle (ou tour sans événement) -> on l'attend brièvement.
+                    # Attendre brièvement le titre distant s'il n'a pas encore été publié.
                     if not _titled["emitted"]:
                         _title_ready.wait(timeout=8)
                         _titled["emitted"] = True
@@ -1287,7 +1081,7 @@ def _register_chat_routes(app, S):
                                 "session_title", id=sess.id, title=_titled["value"]
                             )
                 elif saved and sess.title == "Nouvelle session":
-                    # Local : titrage en fin de tour (slot llama-swap libre, pas de contention).
+                    # Titrer le local seulement lorsque son slot est libre.
                     _title = _infer_title(S.client, conv.model or None, title_message)
                     if _title:
                         sess.title = _title
@@ -1297,9 +1091,7 @@ def _register_chat_routes(app, S):
                 yield _sse("done")
 
             except GeneratorExit:
-                # Marqueur d'interruption AVANT la persistance finale : le tour
-                # suivant (celui qui a remplacé ce flux) saura que cette réponse
-                # est volontairement tronquée.
+                # Marquer la troncature avant la persistance destinée au tour suivant.
                 try:
                     conv.add(
                         "user",
@@ -1308,11 +1100,7 @@ def _register_chat_routes(app, S):
                     )
                 except Exception:  # noqa: BLE001 - marqueur best-effort
                     pass
-                # L'utilisateur a soumis un nouveau message : le client a fermé le
-
-                # flux. On persiste la réponse PARTIELLE déjà reçue, puis on relaie
-
-                # l'interruption (re-raise obligatoire pour le protocole générateur).
+                # Persister la réponse partielle puis relayer la fermeture du générateur.
 
                 _persist(final=True)  # client parti : écriture finale garantie
 

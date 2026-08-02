@@ -13,9 +13,7 @@ from typing import Any
 
 
 
-# --- Mode debug : trace l'échange avec le modèle (terminal + debug.log) ----------------
-# ACTIF PAR DÉFAUT : le trace par session est le premier outil de diagnostic de Loom, et
-# son coût est négligeable (fichiers texte, images masquées). LOOM_DEBUG=0 pour couper.
+# Le diagnostic par session est activé par défaut ; `LOOM_DEBUG=0` le coupe.
 _B64_RE = re.compile(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+")
 
 
@@ -38,18 +36,11 @@ def _trunc(text: str, limit: int) -> str:
     )
 
 
-# Fichier de log debug : permet d'inspecter l'échange modèle APRÈS coup (le terminal
-# n'est pas lisible à distance). Écrit en plus de stderr. Cible PARAMÉTRABLE : la web app
-# la pointe sur sessions/<id>/debug.log à chaque tour pour un trace PAR SESSION (au même
-# titre que session.json). Défaut global tant qu'aucune session n'est désignée.
-# client.py vit dans loom/agent/ : remonter de TROIS niveaux (loom/agent -> loom -> repo)
-# pour viser l'état machine sous var/logs/ (gitignored).
+# La web app redirige ce chemin global vers le log de chaque session.
 _DEBUG_LOG_DEFAULT = (
     Path(__file__).resolve().parent.parent.parent / "var" / "logs" / "loom-debug.log"
 )
-# Chemin du log debug PAR THREAD (donc par génération) : avec plusieurs sessions qui
-# génèrent EN PARALLÈLE, un chemin global entremêlerait leurs traces. Chaque requête /chat
-# (un thread) pose le sien via set_debug_log_path -> les logs restent séparés par session.
+# Un chemin thread-local empêche les générations parallèles d'entremêler leurs traces.
 _debug_local = threading.local()
 
 
@@ -105,10 +96,7 @@ def _debug(label: str, payload: Any, limit: int = 4000, terminal: bool = True) -
     _emit(_trunc(body, limit), terminal)
 
 
-# --- Flux d'événements STRUCTURÉ (façon Claude Code) : une ligne par événement, horodatée --
-# `<ISO-Z> [LEVEL] event key=val …`. Complète les blocs _debug (dump complet requête/réponse)
-# par une trace fine et lisible : timing (1er byte, durée d'outil), tokens, garde-fous, erreurs.
-# Même gate LOOM_DEBUG, même fichier (sessions/<id>/debug.log), best-effort.
+# Les événements structurés complètent les dumps avec timings, tokens et garde-fous.
 def _ts() -> str:
     """Horodatage ISO 8601 UTC à la milliseconde, suffixe Z (comme Claude Code)."""
     now = datetime.now(timezone.utc)
@@ -186,15 +174,10 @@ def _debug_messages(model: str, messages: list[dict]) -> None:
         extra = ""
         if m.get("tool_calls"):
             extra = " +tool_calls=" + json.dumps(m["tool_calls"], ensure_ascii=False)
-        # System prompt affiché EN ENTIER (on veut pouvoir l'inspecter : catalogue, dossier
-        # de travail, identité SOUL/USER/MEMORY) ; les autres messages (contenus de fichiers,
-        # sorties d'outils) restent bornés pour ne pas noyer le log.
+        # Garder le prompt système entier, mais borner les fichiers et sorties d'outils.
         cap = 40000 if m.get("role") == "system" else 1500
         lines.append(f"  [{m.get('role')}] {_trunc((content or '') + extra, cap)}")
-    # Dump complet RÉSERVÉ AU FICHIER : dans le terminal, la ligne compacte
-    # `turn.request model=… msgs=…` (log_event) suffit — le system prompt entier
-    # à chaque tour rendait la console intenable.
+    # Réserver le dump complet au fichier pour garder le terminal lisible.
     _debug("REQUETE -> modele", "\n".join(lines), limit=60000, terminal=False)
-    # Empreinte par message (rôle:longueur:md5-8) : diffable entre tours pour
-    # localiser une mutation de préfixe qui invalide le cache KV.
+    # L'empreinte par message localise les mutations de préfixe entre deux tours.
     _debug("CTX_EMPREINTE", context_fingerprint(messages), terminal=False)

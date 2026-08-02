@@ -43,7 +43,6 @@ from evals.harness import (
 _OUT = _RT.parent / "evals" / "out"
 
 
-# --- trajectoire -------------------------------------------------------------
 
 
 @dataclass
@@ -53,9 +52,7 @@ class Trajectory:
     final_text: str = ""
     reasoning: str = ""
     error: str | None = None
-    # Métriques de COÛT par run (le pass/fail seul cache un « ça passe mais en 11 tours
-    # et 38 appels ») : tours MODÈLE (un event usage par appel modèle) distincts des
-    # appels OUTILS, tokens réels, raison d'arrêt (event 'done' de la boucle), durée.
+    # Séparer tours modèle et appels d'outils révèle le coût derrière un simple succès.
     model_turns: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -67,11 +64,10 @@ class Trajectory:
     def n_tool_calls(self) -> int:
         return len(self.tool_calls)
 
-    # Rétro-compat des checks existants : n_turns a toujours compté les APPELS D'OUTILS.
+    # `n_turns` conserve son ancien sens d'appels d'outils.
     n_turns = n_tool_calls
 
 
-# --- prompts variantes -------------------------------------------------------
 
 
 def _git_show(rel: str) -> str:
@@ -95,7 +91,6 @@ def load_variants(which: str) -> dict:
     return {which: allv[which]}
 
 
-# --- un run ------------------------------------------------------------------
 
 
 def run_one(
@@ -112,7 +107,6 @@ def run_one(
     deferred_tools=False,
 ):
     """Exécute la boucle agentique sur un cas dans un workspace neuf ; renvoie la Trajectory."""
-    # Override du prompt sous-agent (lu par build_registry au moment de l'appel).
     import loom.prompts as _p
 
     _p.SUBAGENT_SYSTEM = sub_prompt
@@ -133,8 +127,7 @@ def run_one(
         mcp_hub=mcp_hub,
     )
     prompt = case.prompt.replace("{NOTES_PATH}", (ws / "docs" / "notes.md").as_posix())
-    # Cas à HISTORIQUE pré-rempli (saturation de contexte) : les vieux tours synthétiques
-    # précèdent la tâche, sans coûter leur génération live sur le modèle local.
+    # Préinjecter l'historique teste la saturation sans payer sa génération.
     messages = [
         *(getattr(case, "history", None) or []),
         {"role": "user", "content": prompt},
@@ -151,8 +144,7 @@ def run_one(
             thinking=False,
             max_iters=max_iters,
             permission=perm,
-            # Par cas : un seuil bas force la compaction préventive (cas saturation) ;
-            # None = comme avant (pas de compaction préventive sur le chemin d'éval).
+            # Un seuil par cas permet de forcer le chemin de compaction.
             compact_after_tokens=getattr(case, "compact_tokens", None),
         ):
             if kind == "content":
@@ -160,8 +152,7 @@ def run_one(
             elif kind == "reasoning":
                 traj.reasoning += payload
             elif kind == "usage":
-                # Un event usage par appel modèle (réel ou estimé) -> compteur de TOURS
-                # MODÈLE + cumul des tokens. L'usage estimé (provider muet) compte pareil.
+                # Chaque événement d'usage représente un tour modèle, réel ou estimé.
                 traj.model_turns += 1
                 traj.prompt_tokens += payload.get("prompt_tokens") or 0
                 traj.completion_tokens += payload.get("completion_tokens") or 0
@@ -169,9 +160,7 @@ def run_one(
             elif kind == "done":
                 traj.stop_reason = payload.get("reason") or ""
             elif kind == "tool_result":
-                # L'event `tool_call` ne porte que {id, name} ; les ARGUMENTS réels
-                # (path lu/écrit, commande shell) ne sont exposés que dans `tool_result`
-                # (clés `path` et `cmd`). On reconstruit les args d'ici.
+                # Reconstruire les arguments depuis `tool_result`, seul événement qui les expose.
                 args = {}
                 if payload.get("path") is not None:
                     args["path"] = payload["path"]
@@ -192,7 +181,6 @@ def run_one(
     return traj
 
 
-# --- juge LLM ----------------------------------------------------------------
 
 _JUDGE_SYS = (
     "Tu es un évaluateur STRICT et impartial du travail d'un agent. On te donne une tâche, "
@@ -246,7 +234,6 @@ def judge(client, model, case, traj) -> dict:
         }
 
 
-# --- agrégation & rapport ----------------------------------------------------
 
 
 def _critical(checks: dict) -> dict:
@@ -280,10 +267,7 @@ def run_variant(
             continue
         runs_data = []
         for k in range(runs):
-            # ignore_cleanup_errors : sous Windows, un processus lancé par l'agent
-            # (run_shell, navigateur de check_page) peut encore tenir le workspace au
-            # cleanup -> WinError 32 qui AVORTAIT toute l'éval. Un dossier temp orphelin
-            # est acceptable ; perdre le run ne l'est pas.
+            # Sous Windows, un handle tardif ne doit pas faire perdre tout le run d'évaluation.
             with tempfile.TemporaryDirectory(
                 prefix=f"loom_eval_{case.id}_", ignore_cleanup_errors=True
             ) as tmp:
@@ -424,7 +408,7 @@ def report(all_results: dict, runs: int):
             f"outils moy={_avg(s['tools'])}  tok in/out moy={_avg(s['tok_in'])}/"
             f"{_avg(s['tok_out'])}  durée moy={_avg(s['dur'])}s  stops: {stops}"
         )
-    # COÛT PAR CAS : « ce cas passe, mais à quel prix » — le pass/fail seul le cache.
+    # Afficher le coût par cas complète le verdict binaire.
     print("\nCOÛT PAR CAS (moyennes par variante) :")
     for cid in case_ids:
         for v in variants:
@@ -483,9 +467,7 @@ def pin_baseline(all_results: dict, runs: int, model: str) -> None:
                 "pass": sum(1 for r in rd if r["passed"]),
                 "runs": len(rd),
                 "model_turns": _mean(turns),
-                # Extrêmes PAR CAS : une moyenne avale les événements de queue (le run
-                # pathologique à 20 tours devient invisible dans une moyenne de 5) ;
-                # or c'est la queue qu'on surveille entre commits, pas le centre.
+                # Les extrêmes révèlent les runs pathologiques masqués par la moyenne.
                 "model_turns_minmax": [min(turns), max(turns)] if turns else [0, 0],
                 "tool_calls": _mean([r.get("n_tool_calls", 0) for r in rd]),
                 "prompt_tokens": _mean(toks),
@@ -508,7 +490,6 @@ def pin_baseline(all_results: dict, runs: int, model: str) -> None:
     print(f"Baseline épinglée : {path}")
 
 
-# --- self-test (sans modèle) -------------------------------------------------
 
 
 def _injection_tests() -> bool:
@@ -518,9 +499,7 @@ def _injection_tests() -> bool:
     compaction) ne se testent PAS en E2E : on ne force pas un modèle stochastique à
     produire un appel cassé à la demande. On injecte donc directement les payloads
     dans les fonctions de garde (même patron que les trajectoires synthétiques)."""
-    # Importe chaque garde-fou depuis son module propriétaire. Le harnais ne doit pas
-    # dépendre des réexports privés de la façade client.py : le découpage du client en
-    # modules de domaine avait supprimé certains de ces alias sans casser pytest.
+    # Importer depuis les modules propriétaires évite de dépendre d'alias privés de façade.
     from loom.agent.compaction import _force_fit, _microcompact_tools
     from loom.agent.guards import _verify_streak_update
     from loom.agent.streaming import _salvage_tool_calls, _scan_repeat
@@ -528,8 +507,7 @@ def _injection_tests() -> bool:
 
     checks: dict[str, bool] = {}
 
-    # 1. JSON d'appel TRONQUÉ (réponse coupée par max_tokens) : l'historique doit rester
-    #    sain ({}), sinon chaque requête suivante casse en 500 parse error (cascade).
+    # Un JSON tronqué ne doit jamais contaminer l'historique suivant.
     checks["JSON cassé -> args remis à {}"] = (
         _safe_args('{"path": "a.py", "old') == "{}"
     )
@@ -537,8 +515,7 @@ def _injection_tests() -> bool:
         _safe_args('{"path": "a.py"}') == '{"path": "a.py"}'
     )
 
-    # 2. Appel d'outil émis EN TEXTE (channel structuré vide) : le filet doit le
-    #    reconstruire depuis les deux formats connus (Hermes/JSON et XML-ish).
+    # Récupérer les appels d'outils textuels dans les deux formats tolérés.
     hermes = 'bla <tool_call>{"name": "read_file", "arguments": {"path": "x.py"}}</tool_call>'
     got = _salvage_tool_calls(hermes, "")
     checks["salvage Hermes/JSON"] = bool(got) and got[0]["name"] == "read_file"
@@ -551,8 +528,7 @@ def _injection_tests() -> bool:
         _salvage_tool_calls("bonjour, voilà.", "") == []
     )
 
-    # 3. Dégénérescence en BOUCLE (même longue ligne répétée) : coupe au seuil ; les
-    #    courtes lignes de code répétées (`},`) ne déclenchent pas.
+    # Couper les longues répétitions sans confondre la ponctuation répétée du code.
     counts: dict[str, int] = {}
     loop_line = "Je vais maintenant créer les fichiers du projet.\n"
     hit = None
@@ -565,7 +541,7 @@ def _injection_tests() -> bool:
     _, hit2 = _scan_repeat("},\n" * 50, counts2)
     checks["lignes courtes de code ignorées"] = hit2 is None
 
-    # 4. Microcompact : vide les VIEUX résultats d'outils, garde les N derniers intacts.
+    # La microcompaction préserve les résultats d'outils récents.
     convo = [
         {"role": "tool", "tool_call_id": str(i), "content": f"gros résultat {i}" * 50}
         for i in range(5)
@@ -575,8 +551,7 @@ def _injection_tests() -> bool:
         convo[4]["content"]
     )
 
-    # 4b. Microcompact SÉLECTIF : les petits résultats (preuves denses : erreur courte,
-    #     accusé d'écriture) SURVIVENT ; seuls les gros dumps sont vidés.
+    # Préserver les petites preuves denses et vider seulement les gros dumps.
     convo_s = [
         {
             "role": "tool",
@@ -593,14 +568,12 @@ def _injection_tests() -> bool:
         and convo_s[2]["content"] == "modifié : calc.py"
     )
 
-    # 5. Force-fit : converge TOUJOURS sous le budget (dernier recours anti-saturation),
-    #    sans jamais descendre sous 2 messages.
+    # Le force-fit doit converger sans supprimer les deux derniers messages.
     convo2 = [{"role": "user", "content": "x" * 20000} for _ in range(10)]
     ok_fit = _force_fit(convo2, "system", 5000)
     checks["force-fit converge sous budget"] = ok_fit and len(convo2) >= 2
 
-    # 5b. Force-fit SÉLECTIF : la TÂCHE COURANTE (dernier user, hors notes '[harnais')
-    #     reste INTACTE tant qu'il reste autre chose à réduire.
+    # Préserver la tâche courante tant qu'un autre contenu reste réductible.
     task = "Lis le fichier facts.txt et donne le code d'accès."
     convo3 = [
         {"role": "user", "content": "ballast archivé " * 2000},
@@ -613,9 +586,7 @@ def _injection_tests() -> bool:
         m.get("content") == task for m in convo3
     )
 
-    # 5d. Budget INATTEIGNABLE (prompt système seul > budget) : le pop ne doit NI
-    #     emporter la tâche NI laisser un tool orphelin — vécu en éval : convo réduite
-    #     à [assistant, tool] sans user -> 400 « Unable to generate parser » llama.cpp.
+    # Un budget impossible ne doit ni perdre la tâche ni laisser un message outil orphelin.
     convo5 = [
         {"role": "user", "content": "vieux tour " * 200},
         {"role": "assistant", "content": "vieille réponse " * 200},
@@ -641,8 +612,7 @@ def _injection_tests() -> bool:
         task_alive and not orphan
     )
 
-    # 5c. Force-fit clippe TÊTE+QUEUE : la fin d'un long contenu (conclusion, erreur)
-    #     survit au clip, pas seulement son début.
+    # Garder tête et fin préserve aussi les conclusions et messages d'erreur.
     convo4 = [
         {"role": "assistant", "content": "DEBUT " + "x" * 10000 + " FIN"},
         {"role": "user", "content": "tâche"},
@@ -653,8 +623,7 @@ def _injection_tests() -> bool:
         "FIN"
     )
 
-    # 6. Anti sur-vérification : le streak de checks verts monte, un changement d'état
-    #    ou un check raté le remet à zéro, une lecture n'y touche pas.
+    # Une mutation ou un échec réinitialise la série de vérifications vertes.
     s = 0
     for _ in range(4):
         s = _verify_streak_update("check_page", True, s)
@@ -681,7 +650,6 @@ def self_test():
     et exécute les tests d'injection des garde-fous du harnais."""
     guards_ok = _injection_tests()
     print("SELF-TEST des graders (aucun modèle requis)\n")
-    # Trajectoire synthétique « bon agent » minimale.
     traj = Trajectory(
         tool_calls=[
             ("read_file", {"path": "calc.py"}),
@@ -716,7 +684,6 @@ def self_test():
     return ok
 
 
-# --- main --------------------------------------------------------------------
 
 
 def main():
@@ -747,9 +714,7 @@ def main():
     perm = make_perm(cfg)
     only = set(args.cases.split(",")) if args.cases else None
 
-    # Garde-éveil : une éval complète dure des dizaines de minutes SANS input utilisateur ;
-    # la veille par inactivité suspend tout (vécu : runs nocturnes à 1693 s / 11919 s de
-    # timeouts fantômes). Même module que loom.web ; l'écran peut s'éteindre, pas le système.
+    # Empêcher la veille durant les longues évaluations sans activité utilisateur.
     from loom.runtime.stay_awake import StayAwake
 
     _awake = StayAwake()
@@ -804,8 +769,7 @@ def main():
         if mcp_hub is not None:
             mcp_hub.close()
     report(all_results, args.runs)
-    # Un run FILTRÉ (--cases) n'est pas une baseline : l'épingler écraserait le résumé
-    # complet du commit avec un partiel (vécu : repro d'un seul cas -> baseline mutilée).
+    # Ne jamais remplacer une baseline complète par un sous-ensemble filtré.
     if only:
         print("(baseline non épinglée : run partiel via --cases)")
     else:

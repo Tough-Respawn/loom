@@ -17,7 +17,6 @@ from loom.web.routes.helpers import _ctx, _ensure_local_server, _session, _total
 
 
 
-# ---- Skills ---------------------------------------------------------------------------
 
 
 def _all_skills(S) -> list:
@@ -92,24 +91,20 @@ def _index_context(S) -> dict:
         "sessions": sessions,
         "active_session": active_id,
         "permission_mode": S.settings["permission_mode"],
-        # État initial pour l'hydratation côté client (Preact). On échappe '<'
-        # pour ne pas pouvoir fermer la balise <script> depuis le contenu.
+        # Échapper `<` empêche le contenu hydraté de fermer sa balise script.
         "init_json": json.dumps(
             {
                 "messages": conv.messages,
                 "thinking": conv.thinking,
                 "local_only": conv.local_only,
                 "usage_totals": _totals(S, conv),
-                # Onglet initial : la session active (id/titre/modèle/workspace) + toutes
-                # les sessions (pour la sidebar). Le multi-onglets s'hydrate là-dessus.
+                # Hydrater l'onglet actif et la liste utilisée par la sidebar.
                 "active_session": active_id,
                 "title": sess.title,
                 "model": conv.model,
                 "workspace": ws,
                 "sessions": sessions,
-                # Racine des dossiers de session sur disque : le front en dérive
-                # root/<sid> (session.json, timeline.jsonl, debug.log) pour le menu
-                # contextuel d'onglet/panneau (chemin réel copiable).
+                # Le front dérive de cette racine les chemins copiables des sessions.
                 "sessions_root": str(S.session_store.root.resolve()),
             },
             ensure_ascii=False,
@@ -117,15 +112,12 @@ def _index_context(S) -> dict:
     }
 
 
-# ---- Routes : skills -------------------------------------------------------------------
 
 
 def _register_skill_routes(app, S):
     @app.post("/skills")
     def skills_update():
-        # Toggle des skills (façon /tools) : le formulaire porte les skills COCHÉS. Les
-        # décochés (tous les autres) deviennent `disabled_skills` de la session -> retirés
-        # du catalogue et de use_skill. Re-render le panneau (case maître incluse).
+        # Les skills absents du formulaire deviennent désactivés pour cette session.
         conv, save = _ctx(S)
         enabled = set(request.form.getlist("skill"))
         all_names = [s.name for s in _all_skills(S)]
@@ -135,8 +127,7 @@ def _register_skill_routes(app, S):
 
     @app.get("/skill")
     def skill_get():
-        # Source d'un skill pour l'éditeur : texte brut du SKILL.md, ou l'override de session
-        # s'il existe (ce que le modèle voit réellement pour cette session).
+        # Montrer l'override de session lorsqu'il masque le fichier global.
         conv, _ = _ctx(S)
         name = request.args.get("name", "")
         skill = next((s for s in _all_skills(S) if s.name == name), None)
@@ -156,9 +147,7 @@ def _register_skill_routes(app, S):
 
     @app.post("/skill/save")
     def skill_save():
-        # Enregistre l'édition d'un skill. scope=session -> override de session (n'écrit
-        # PAS le disque) ; scope=global -> écrit le SKILL.md pour TOUTES les sessions et
-        # lève l'override de session (le fichier fait désormais foi).
+        # Une édition globale remplace le fichier et supprime l'override de session.
         conv, save = _ctx(S)
         name = request.form.get("name", "")
         body = request.form.get("body", "")
@@ -180,9 +169,7 @@ def _register_skill_routes(app, S):
 
     @app.post("/skill/create")
     def skill_create():
-        # « + nouveau » : crée un squelette SKILL.md dans le dossier des skills USER
-        # (hors package : loom/skills reste l'officiel versionné) puis l'éditeur s'ouvre
-        # dessus. Le nom sert de slug de dossier -> alphanumérique/tirets uniquement.
+        # Créer les skills utilisateur hors du package versionné, avec un slug sûr.
         raw = (request.form.get("name") or "").strip().lower()
         slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
         if not slug or len(slug) < 3:
@@ -193,11 +180,7 @@ def _register_skill_routes(app, S):
             return {"error": f"un skill « {slug} » existe déjà"}, 409
         desc = (request.form.get("description") or "").strip()
         body = (request.form.get("body") or "").strip()
-        # Corps fourni par le drawer (écrit à la main ou généré par le modèle) : on le
-        # prend s'il porte déjà son frontmatter, sinon on l'enveloppe. Le nom du
-        # frontmatter est FORCÉ au slug (identité = dossier, cf. effective_skills) —
-        # sinon un skill créé dans `mon-skill/` pourrait se déclarer autrement et
-        # entrer en collision avec un skill existant.
+        # Forcer le nom au slug du dossier évite les collisions d'identité.
         fm_end = body.find("\n---", 3) if body.startswith("---") else -1
         if fm_end != -1:
             front_lines = [
@@ -211,7 +194,7 @@ def _register_skill_routes(app, S):
             if not content.endswith("\n"):
                 content += "\n"
         elif body.startswith("---"):
-            # Frontmatter jamais fermé : le chargeur retombera sur le nom du dossier.
+            # Un frontmatter incomplet retombera sur le nom du dossier.
             content = body if body.endswith("\n") else body + "\n"
         else:
             content = (
@@ -233,10 +216,7 @@ def _register_skill_routes(app, S):
 
     @app.post("/skill/generate")
     def skill_generate():
-        # « Générer » du drawer de création : le modèle de la session rédige le
-        # SKILL.md complet depuis la description. Modèle LOCAL : verrou non bloquant
-        # (une génération en cours a priorité) + save/restore du slot KV pour ne PAS
-        # sacrifier le cache de la conversation (cache souverain, cf. 2026-07-10).
+        # La génération locale cède la priorité au chat et restaure son slot KV ensuite.
         conv, _ = _ctx(S)
         desc = (request.form.get("description") or "").strip()
         if not desc:
@@ -251,8 +231,7 @@ def _register_skill_routes(app, S):
         if is_local:
             S.local_busy["reason"] = "skill"
         try:
-            # Serveur modèle éteint (bouton non cliqué, session neuve…) : on le démarre
-            # comme le fait le chat, au lieu de planter en Connection refused (vécu).
+            # Démarrer le serveur comme le chat s'il est encore éteint.
             if is_local and not _ensure_local_server(S, wait=45.0):
                 return {
                     "error": "serveur modèle indisponible (démarrage trop long) — "
@@ -284,7 +263,7 @@ def _register_skill_routes(app, S):
                 if saved:
                     S.client.restore_slot(model, "uigen.kv")
             text = "".join(chunks).strip()
-            # Dé-clôture un éventuel bloc ```...``` autour du fichier.
+            # Retirer un bloc Markdown éventuel autour du fichier généré.
             if text.startswith("```"):
                 text = text.split("\n", 1)[-1]
                 if text.rstrip().endswith("```"):
@@ -299,9 +278,7 @@ def _register_skill_routes(app, S):
 
     @app.post("/skill/delete")
     def skill_delete():
-        # Suppression (skills appris + ajoutés user UNIQUEMENT) : retire le dossier du
-        # skill, l'override et l'entrée disabled de la session courante. Les skills du
-        # package/plugins ne passent jamais ici (_skill_deletable) — pour eux : décocher.
+        # Seuls les skills utilisateur/appris sont supprimables; les autres se désactivent.
         conv, save = _ctx(S)
         name = request.form.get("name", "")
         skill = next((s for s in _all_skills(S) if s.name == name), None)

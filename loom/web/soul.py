@@ -1,4 +1,3 @@
-# loom/web/soul.py
 """L'Âme : export/import chiffré de l'état portable de Loom.
 
 Un fichier .soul = tar.gz (manifest + sessions + mémoire + identité + skills)
@@ -31,8 +30,7 @@ from loom.utils import now_iso
 
 MAGIC = b"LOOMSOUL1"
 _SALT_LEN, _NONCE_LEN = 16, 12
-# N=2^17 : ~128 Mo de RAM et ~100 ms par dérivation — c'est le prix d'UN essai
-# de passphrase pour un attaquant qui a volé le fichier. Ne pas baisser.
+# Ce coût scrypt ralentit chaque essai hors ligne; ne pas le réduire.
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**17, 8, 1
 
 IDENTITY_FILES = ("SOUL.md", "USER.md", "MEMORY.md")
@@ -82,8 +80,7 @@ _WORDS: list[str] | None = None
 
 
 def _wordlist() -> list[str]:
-    # Fusion FR+EN (~15.5k mots) : ~13,9 bits/mot -> 5 mots ≈ 69 bits d'entropie,
-    # et un dictionnaire d'attaque mono-langue ne couvre que la moitié des mots.
+    # Mélanger les deux langues augmente l'entropie et résiste aux dictionnaires monolingues.
     global _WORDS
     if _WORDS is None:
         data = Path(__file__).parent / "data"
@@ -126,9 +123,7 @@ def build_archive(paths: SoulPaths, session_ids: list[str]) -> bytes:
         for sid in session_ids:
             sdir = Path(paths.sessions_root) / sid
             if not (sdir / "session.json").exists():
-                # Session disparue entre l'affichage de la liste et le clic Exporter :
-                # ne pas la compter ni la lister — un récap/manifest qui annonce une
-                # session absente ferait croire à une sauvegarde qui n'existe pas.
+                # Ignorer une session supprimée entre la liste et l'export.
                 continue
             for fname in SESSION_FILES:
                 f = sdir / fname
@@ -138,9 +133,7 @@ def build_archive(paths: SoulPaths, session_ids: list[str]) -> bytes:
             counts["sessions"] += 1
         db = Path(paths.memory_db)
         if db.exists():
-            # Snapshot via l'API backup : copie COHÉRENTE même si Loom écrit la base
-            # au même moment (une copie de fichier à chaud peut embarquer un état
-            # transactionnel incohérent qui explosera à l'import sur l'autre machine).
+            # L'API backup garantit un snapshot cohérent pendant les écritures concurrentes.
             with tempfile.TemporaryDirectory() as td:
                 snap = Path(td) / "memory.db"
                 try:
@@ -213,7 +206,7 @@ def export_soul(
 
 
 def _updated_at(session_json: Path) -> str:
-    # ISO 8601 en +00:00 partout (loom.utils.now_iso) : comparaison lexicale valide.
+    # Les dates ISO UTC sont comparables lexicalement.
     try:
         return json.loads(session_json.read_text(encoding="utf-8")).get(
             "updated_at", ""
@@ -228,9 +221,7 @@ def _copy_session(src_dir: Path, dst_dir: Path) -> None:
         if (src_dir / fname).exists():
             shutil.copy2(src_dir / fname, dst_dir / fname)
         elif (dst_dir / fname).exists():
-            # Remplacement intégral : un timeline.jsonl local périmé ne doit pas
-            # survivre à un session.json plus récent qui arrive sans timeline
-            # (l'UI rejouerait un historique qui ne correspond plus au contexte).
+            # Supprimer une timeline absente de l'import évite de rejouer un état périmé.
             (dst_dir / fname).unlink()
 
 
@@ -278,8 +269,7 @@ def _merge_skills(src: Path, dst_root: Path) -> dict:
         if digest == _dir_digest(dst):
             rep["ignores"] += 1
             continue
-        # Homonyme divergent : import sous suffixe — sauf si un import précédent
-        # IDENTIQUE existe déjà (ré-import idempotent, pas de -importe-2 en rafale).
+        # Suffixer un homonyme divergent tout en gardant le réimport idempotent.
         alt, n = dst_root / f"{skill.name}-importe", 2
         while alt.exists() and _dir_digest(alt) != digest:
             alt = dst_root / f"{skill.name}-importe-{n}"
@@ -317,7 +307,6 @@ def _merge_memory(src_db: Path, dst_db: Path) -> dict:
             if dup:
                 rep["ignores"] += 1
             else:
-                # Les triggers episodes_ai maintiennent l'index FTS à l'insert.
                 dst.execute(
                     "INSERT INTO episodes (ts, kind, source, text) VALUES (?, ?, ?, ?)",
                     (ts, kind, source, text),
@@ -345,8 +334,7 @@ def _merge_identity(src: Path, dst_dir: Path, day: str) -> dict:
             dst.write_bytes(data)
             rep["poses"] += 1
         elif dst.read_bytes() != data:
-            # Jamais d'écrasement silencieux d'une âme par une autre : la version
-            # importée est posée à côté, le user arbitre.
+            # Conserver côte à côte les identités divergentes pour laisser l'utilisateur arbitrer.
             stem = fname.rsplit(".", 1)[0]
             side = dst_dir / f"{stem}.imported-{day}.md"
             if not side.exists() or side.read_bytes() != data:
@@ -378,9 +366,7 @@ def import_soul(paths: SoulPaths, soul_file, passphrase: str) -> dict:
         if manifest.get("version") != 1:
             raise SoulError(f"version d'archive inconnue : {manifest.get('version')!r}")
         day = str(manifest.get("date", ""))[:10] or "inconnu"
-        # Pré-validation AVANT toute écriture : une base mémoire corrompue ou d'un
-        # schéma inconnu doit annuler l'import ENTIER (« état local intact »), pas
-        # exploser en plein milieu après que les sessions ont déjà été fusionnées.
+        # Prévalider la mémoire rend l'import atomique face à un schéma inconnu ou corrompu.
         arc_db = tdp / "memory" / "memory.db"
         if arc_db.exists():
             try:
@@ -415,8 +401,7 @@ def import_soul(paths: SoulPaths, soul_file, passphrase: str) -> dict:
                 ),
             }
         except (sqlite3.Error, OSError, shutil.Error) as e:
-            # Filet résiduel (disque plein, permission...) : message honnête —
-            # la fusion a pu être partielle, on le dit au lieu d'un 500 muet.
+            # Après une erreur disque, signaler honnêtement qu'une fusion peut être partielle.
             raise SoulError(
                 f"fusion interrompue ({e}) — l'import peut être partiel, "
                 "relance-le une fois la cause corrigée (un ré-import est sans danger)"

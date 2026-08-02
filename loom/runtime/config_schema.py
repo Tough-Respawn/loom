@@ -20,7 +20,7 @@ from typing import TypedDict
 
 import tomlkit
 
-# Libellés lisibles des sections (ordre d'affichage = ordre du dict).
+# L'ordre définit celui de l'affichage.
 SECTION_LABELS = {
     "server": "Serveur (llama.cpp)",
     "override": "Override GPU / CPU",
@@ -31,10 +31,7 @@ SECTION_LABELS = {
     "permissions": "Permissions",
 }
 
-# type : int | float | bool | str | secret | select | list
-# layer : commun | systeme      nature : fixe | override | libre
-# applies : live (effet immédiat / prochain appel) | restart (relance llama/loom requise)
-# options = valeurs d'un select.
+# `applies` distingue les changements immédiats de ceux qui exigent un redémarrage.
 
 
 class SpecEntry(TypedDict, total=False):
@@ -55,7 +52,6 @@ class SpecEntry(TypedDict, total=False):
 
 
 SPEC: list[SpecEntry] = [
-    # -- server --
     {
         "section": "server",
         "key": "context",
@@ -116,7 +112,6 @@ SPEC: list[SpecEntry] = [
         "applies": "restart",
         "help": "Chemin de llama-swap sur cette machine.",
     },
-    # -- override --
     {
         "section": "override",
         "key": "n_gpu_layers",
@@ -137,7 +132,6 @@ SPEC: list[SpecEntry] = [
         "applies": "restart",
         "help": "Force le nombre de threads CPU. Vide = auto.",
     },
-    # -- chat --
     {
         "section": "chat",
         "key": "default_model",
@@ -309,7 +303,6 @@ SPEC: list[SpecEntry] = [
         "applies": "live",
         "help": "Délai max d'une commande shell (npm install/build).",
     },
-    # -- memory --
     {
         "section": "memory",
         "key": "recall_summarize",
@@ -330,7 +323,6 @@ SPEC: list[SpecEntry] = [
         "applies": "restart",
         "help": "Nb de hits au-delà duquel on résume le recall.",
     },
-    # -- web_search --
     {
         "section": "web_search",
         "key": "enabled",
@@ -412,7 +404,6 @@ SPEC: list[SpecEntry] = [
         "applies": "live",
         "help": "Troncature du contenu scrapé par page.",
     },
-    # -- permissions --
     {
         "section": "permissions",
         "key": "mode",
@@ -427,9 +418,7 @@ SPEC: list[SpecEntry] = [
 ]
 
 
-# Défauts du CODE (dataclasses) pour les params absents des DEUX fichiers -> la console montre
-# la vraie valeur effective, pas une case vide. Miroir des defaults de config.py/web.py ;
-# `None` = pas de valeur (ex. override auto-détecté) -> champ vide avec placeholder « auto ».
+# Afficher les valeurs réellement appliquées quand les deux fichiers les omettent.
 CODE_DEFAULTS = {
     ("server", "context"): 24576,
     ("server", "n_parallel"): 1,
@@ -470,8 +459,7 @@ CODE_DEFAULTS = {
 }
 
 
-# Paramètres AVANCÉS : repliés par défaut dans la console (rarement touchés). Garde la vue
-# initiale légère -> l'essentiel visible, le reste sous « Réglages avancés ».
+# Ces réglages rares restent repliés pour alléger la vue initiale.
 ADVANCED = {
     ("server", "n_parallel"),
     ("server", "port"),
