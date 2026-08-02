@@ -40,6 +40,9 @@ _SUBAGENT_EXCLUDED = {
     "list_plugins",
     "add_marketplace",
     "install_plugin",
+    # Un monitor appartient au fil principal qui reçoit ses événements ; un
+    # sous-agent éphémère ne possède ni file persistante ni UI où les injecter.
+    "monitor",
 }
 _SUBAGENT_TOOLS = [
     t["name"] for t in AVAILABLE_TOOLS if t["name"] not in _SUBAGENT_EXCLUDED
@@ -71,6 +74,9 @@ def build_registry(
     shell_timeout: int = 180,
     vision_describer=None,
     active_is_vision: bool = True,
+    deferred_tools: bool = False,
+    monitor_hub=None,
+    mcp_hub=None,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
@@ -136,6 +142,16 @@ def build_registry(
         specs.append(make_format_code(workspace_dir))
     if "run_shell" in enabled:
         specs.append(make_run_shell(workspace_dir, timeout=shell_timeout))
+    if "monitor" in enabled and monitor_hub is not None and conversation is not None:
+        from loom.tools.monitor import make_monitor
+
+        specs.append(
+            make_monitor(
+                monitor_hub,
+                session_id=getattr(conversation, "runtime_session_id", ""),
+                workspace_dir=workspace_dir,
+            )
+        )
     if "check_page" in enabled:
         from loom.tools.browser import make_check_page
 
@@ -197,6 +213,8 @@ def build_registry(
                 web_cfg=web_cfg,
                 active_model=active_model,
                 active_is_vision=active_is_vision,
+                deferred_tools=deferred_tools,
+                mcp_hub=mcp_hub,
             )
 
         # UNE machinerie pour les deux consommateurs : dispatch_agent (le modèle
@@ -274,10 +292,54 @@ def build_registry(
         if "list_plugins" in enabled:
             specs.append(make_list_plugins(plugins_root))
 
+    mcp_unavailable: dict[str, str] = {}
+    if mcp_hub is not None:
+        mcp_specs, mcp_unavailable, mcp_warnings = mcp_hub.build_specs()
+        specs.extend(mcp_specs)
+        if mcp_warnings:
+            from loom.agent.debuglog import log_event
+
+            for warning in mcp_warnings:
+                log_event("mcp.unavailable", level="WARN", msg=warning)
+
     from loom.runtime.models_profile import load_profile
 
     profile = load_profile(active_model) if active_model else None
-    registry = ToolRegistry(specs, profile=profile)
+    # Cœur toujours plein ; longue traîne consultable via tool_search. Le choix
+    # n'agit que si le kill-switch est actif, donc le défaut reste bit-identique.
+    core = {
+        "find_files",
+        "search_text",
+        "list_dir",
+        "read_file",
+        "write_file",
+        "append_file",
+        "edit_file",
+        "run_shell",
+        "manage_todos",
+    }
+    if deferred_tools:
+        for spec in specs:
+            spec.deferred = spec.deferred or spec.name not in core
+    else:
+        for spec in specs:
+            spec.deferred = spec.always_deferred
+
+    loaded = set(getattr(conversation, "deferred_loaded", []) or [])
+
+    def _save_loaded(names: set[str]) -> None:
+        if conversation is not None:
+            conversation.deferred_loaded = sorted(names)
+
+    registry = ToolRegistry(
+        specs,
+        profile=profile,
+        # Les outils MCP restent différés même si le kill-switch global des
+        # outils natifs est coupé : un serveur peut en annoncer des dizaines.
+        deferred_enabled=deferred_tools or any(s.always_deferred for s in specs),
+        deferred_loaded=loaded,
+        on_deferred_loaded=_save_loaded,
+    )
     # read_image gaté hors vision : le prompt système et les consignes d'images jointes
     # peuvent le mentionner — un appel doit recevoir l'explication FRANCHE de
     # make_read_image (proposer un modèle VISION), pas un « outil inconnu » trompeur
@@ -286,4 +348,6 @@ def build_registry(
         from loom.tools.read import VISION_UNAVAILABLE
 
         registry.mark_unavailable("read_image", VISION_UNAVAILABLE)
+    for name, reason in mcp_unavailable.items():
+        registry.mark_unavailable(name, reason)
     return registry

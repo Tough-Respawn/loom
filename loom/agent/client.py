@@ -44,6 +44,52 @@ from loom.agent.toolrun import _run_tools_parallel, _run_tools_sequential, _safe
 from loom.agent.toolsets import _DEBUG_FORCE, _PARALLEL_SAFE
 
 
+def _inject_monitor_events(provider, convo: list[dict]):
+    """Injecte les événements asynchrones comme de vrais résultats d'outil."""
+    if provider is None:
+        return 0
+    count = 0
+    for event in provider() or []:
+        call_id = f"monitor_event_{event['id']}"
+        assistant_message = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "monitor",
+                        "arguments": json.dumps(
+                            {
+                                "action": "event",
+                                "monitor_id": event["monitor_id"],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                }
+            ],
+        }
+        tool_message = {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": event["model_content"],
+        }
+        convo.extend((assistant_message, tool_message))
+        yield (
+            "monitor_event",
+            {
+                **event,
+                "tool_call_id": call_id,
+                "assistant_message": assistant_message,
+                "tool_message": tool_message,
+            },
+        )
+        count += 1
+    return count
+
+
 class LoomClient:
     def __init__(
         self,
@@ -1139,6 +1185,7 @@ class LoomClient:
         max_empty_retries: int = 2,
         strong: bool = False,
         notes_provider=None,
+        monitor_events_provider=None,
         refocus_note: bool = True,
         stream_holder: dict | None = None,
     ) -> Iterator[tuple[str, object]]:
@@ -1150,6 +1197,9 @@ class LoomClient:
         conversation (role user, préfixe explicite) et ré-émise en event ('note',
         texte injecté) pour que l'appelant la persiste/affiche. Une note ne stoppe
         jamais le tour — elle l'infléchit au prochain point d'arrêt.
+
+        `monitor_events_provider` draine les lignes de monitors aux mêmes points
+        d'arrêt, sous forme de résultats d'outil marqués comme données externes.
 
         Yield les mêmes tuples que stream_chat — ('reasoning'|'content', str) —
         plus ('tool_call', {id,name,arguments}) et ('tool_result', {id,name,ok,
@@ -1218,7 +1268,8 @@ class LoomClient:
                 refocus_note,
                 st,
             )
-            # Notes en vol injectées au point d'arrêt (juste avant l'appel modèle).
+            # Événements asynchrones + notes en vol, au même point d'arrêt.
+            yield from _inject_monitor_events(monitor_events_provider, convo)
             yield from _inject_notes(notes_provider, convo)
             kwargs = build_create_kwargs(
                 api_model,
@@ -1293,6 +1344,9 @@ class LoomClient:
                     max_act_nudges,
                     st,
                     notes_provider=notes_provider,
+                    async_events_injector=lambda: _inject_monitor_events(
+                        monitor_events_provider, convo
+                    ),
                 )
                 if st["action"] == "done":
                     return

@@ -28,6 +28,9 @@ def _register_session_routes(app, S):
     def reset() -> str:
         conv, save = _ctx(S)
 
+        if S.monitor_hub is not None:
+            S.monitor_hub.stop_session(_session(S).id)
+
         conv.reset()
 
         save()
@@ -270,6 +273,8 @@ def _register_session_routes(app, S):
                 continue
             ghost = _get_session(S, meta.id)
             if ghost is not None and not ghost.conversation.messages:
+                if S.monitor_hub is not None:
+                    S.monitor_hub.stop_session(meta.id)
                 S.session_store.delete(meta.id)
                 with S.gen_guard:
                     S.sessions_cache.pop(meta.id, None)
@@ -409,6 +414,8 @@ def _register_session_routes(app, S):
         if not lock.acquire(blocking=False):
             return Response("occupé : cette session génère — Stop d'abord", status=409)
         try:
+            if S.monitor_hub is not None:
+                S.monitor_hub.stop_session(sid)
             S.session_store.delete(sid)
 
             # Purge du cache d'OBJETS et du signal d'annulation : sans ça l'objet

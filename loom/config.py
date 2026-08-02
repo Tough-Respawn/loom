@@ -33,6 +33,9 @@ class ChatConfig:
     keep_recent_messages: int = 6
     # Outils (boucle tool-use). enabled vide => aucun outil exposé.
     tools_enabled: list[str] = field(default_factory=list)
+    # Schémas longue traîne chargés à la demande par tool_search. Kill-switch
+    # désactivé par défaut jusqu'à validation A/B sur un modèle local.
+    deferred_tools: bool = False
     # Chaîne de ROUTAGE des sous-agents (dispatch_agent), dans l'ordre d'essai
     # (ex. ["glm-flash", "glm-zai"] = gratuit puis payant) ; repli final implicite =
     # le modèle de la conversation. Vide = comportement historique (héritage).
@@ -179,6 +182,24 @@ class RemoteModelConfig:
 
 
 @dataclass
+class McpServerConfig:
+    """Serveur MCP tiers. La tranche courante exécute le transport stdio."""
+
+    name: str
+    transport: str = "stdio"
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+    timeout_s: float = 10.0
+    # None/True = dangereux (confirmation selon le mode global). False = serveur
+    # explicitement déclaré de confiance : appels autorisés sans confirmation.
+    danger_override: bool | None = None
+
+
+@dataclass
 class RuntimeConfig:
     models: list[ModelConfig]
     default_model: str
@@ -194,6 +215,7 @@ class RuntimeConfig:
     # Modèles distants (API OpenAI-compatible) : s'ajoutent aux modèles locaux dans le
     # sélecteur. Vide par défaut (tout-local) ; déclarés dans config/local.toml.
     remote_models: list[RemoteModelConfig] = field(default_factory=list)
+    mcp_servers: list[McpServerConfig] = field(default_factory=list)
     n_parallel: int = 1
     # Cache souverain (save/restore du slot KV par tour) — OFF par défaut depuis le
     # 2026-07-22 : sur llama-server récent (b10075+) il est soit nuisible (mémoire
@@ -327,6 +349,34 @@ def _parse_remote_model(d: dict) -> RemoteModelConfig:
     )
 
 
+def _parse_mcp_server(d: dict) -> McpServerConfig:
+    name = str(d.get("name", "")).strip()
+    if not name:
+        raise ValueError("mcp_servers: champ 'name' obligatoire")
+    transport = str(d.get("transport", "stdio")).strip().lower()
+    if transport not in ("stdio", "http"):
+        raise ValueError(f"serveur MCP '{name}' : transport attendu 'stdio' ou 'http'")
+    command = str(d.get("command", "")).strip()
+    url = str(d.get("url", "")).strip()
+    if transport == "stdio" and not command:
+        raise ValueError(f"serveur MCP '{name}' : champ 'command' obligatoire")
+    if transport == "http" and not url:
+        raise ValueError(f"serveur MCP '{name}' : champ 'url' obligatoire")
+    danger = d.get("danger_override")
+    return McpServerConfig(
+        name=name,
+        transport=transport,
+        command=command,
+        args=[str(v) for v in d.get("args", [])],
+        env={str(k): str(v) for k, v in dict(d.get("env", {})).items()},
+        url=url,
+        headers={str(k): str(v) for k, v in dict(d.get("headers", {})).items()},
+        enabled=bool(d.get("enabled", True)),
+        timeout_s=max(0.1, float(d.get("timeout_s", 10.0))),
+        danger_override=(None if danger is None else bool(danger)),
+    )
+
+
 def _parse_web_search(d: dict) -> WebSearchConfig:
     """Construit un WebSearchConfig depuis la table TOML [web_search]."""
     base = WebSearchConfig()
@@ -378,6 +428,7 @@ def load_config(
         context_token_budget=int(ch.get("context_token_budget", 3000)),
         keep_recent_messages=int(ch.get("keep_recent_messages", 6)),
         tools_enabled=list(tl.get("enabled", [])),
+        deferred_tools=bool(ch.get("deferred_tools", False)),
         dispatch_models=list(ch.get("dispatch_models", [])),
         workspace_dir=tl.get("workspace_dir", "."),
         read_file_max_bytes=int(tl.get("read_file_max_bytes", 40_000)),
@@ -458,6 +509,10 @@ def load_config(
     remote_models = [
         _parse_remote_model({**remote_base, **md}) for md in remote_records
     ]
+    mcp_servers = [_parse_mcp_server(md) for md in data.get("mcp_servers", [])]
+    mcp_names = [server.name for server in mcp_servers]
+    if len(set(mcp_names)) != len(mcp_names):
+        raise ValueError("mcp_servers: chaque 'name' doit être unique")
     # Boot « remote-only » : aucun modèle local mais au moins un distant -> models=[]
     # est toléré (loom.web sait discuter via l'API distante ; le serveur llama.cpp
     # local ne sert que les locaux et démarre à la demande). On ne lève que si NI
@@ -478,6 +533,7 @@ def load_config(
         models=models,
         default_model=default_model,
         remote_models=remote_models,
+        mcp_servers=mcp_servers,
         context=int(s["context"]),
         port=int(s["port"]),
         server_bin=s["bin"],

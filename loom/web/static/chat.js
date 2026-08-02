@@ -113,6 +113,17 @@ export async function sendChat(sid, text, images, options = {}) {
         if (asstId) { patch(asstId, { done: true }); asstId = null; }
         push({ kind: "harness", hkind: evt.kind, text: evt.text });
         break;
+      case "monitor_event":
+        if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
+        if (asstId) { patch(asstId, { done: true }); asstId = null; }
+        push({
+          kind: "monitor_event",
+          monitorId: evt.monitor_id,
+          description: evt.description,
+          text: evt.text,
+          final: !!evt.final,
+        });
+        break;
       case "parallel":
         // Groupe d'outils lancés EN PARALLÈLE (distant) : on clôt les bulles en cours et on
         // pose un marqueur « arène ». Les tool_call/tool_result suivants, dont l'id est dans

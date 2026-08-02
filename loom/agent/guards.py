@@ -105,6 +105,8 @@ def _intends_to_act(text: str, executed: bool) -> bool:
     if not executed and any(m in low for m in _ACT_CLAIM):
         return True
     return False
+
+
 _EXEC_CLAIM = (
     "a affiche",
     "a retourne",
@@ -239,6 +241,7 @@ def _dispatch_no_tool_calls(
     max_act_nudges: int,
     st: dict,
     notes_provider=None,
+    async_events_injector=None,
 ) -> Iterator[tuple[str, object]]:
     """Fin de tour SANS appel d'outil : boucle dégénérée -> continuation 'length' ->
     réponse vide -> audit de claim / act-nudge -> stop naturel. Issue via
@@ -375,6 +378,18 @@ def _dispatch_no_tool_calls(
         _debug(label, nudge)
         log_event("guard", kind=label)
         yield _loom_nudge(convo, label, nudge)
+        st["action"] = "continue"
+        return
+    # Événement de monitor arrivé PENDANT la génération finale : même règle que
+    # les notes en vol, on l'injecte avant d'accepter le stop naturel.
+    injected_events = yield from (
+        async_events_injector() if async_events_injector is not None else ()
+    )
+    if injected_events:
+        _debug(
+            "MONITOR_AU_STOP",
+            f"{injected_events} événement(s) au stop naturel -> relance",
+        )
         st["action"] = "continue"
         return
     # Note en vol arrivée PENDANT la génération finale (donc après le dernier

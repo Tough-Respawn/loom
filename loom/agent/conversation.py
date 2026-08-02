@@ -14,6 +14,9 @@ class Conversation:
     system_prompt: str
     messages: list[dict] = field(default_factory=list)
     active_tools: list[str] = field(default_factory=list)
+    # Schémas différés déjà chargés par tool_search. Persisté par conversation :
+    # une reprise après redémarrage ne redemande pas inutilement le même schéma.
+    deferred_loaded: list[str] = field(default_factory=list)
     model: str = ""
     thinking: bool = True
     # Session PRIVÉE : aucun octet ne part vers une API distante — la chaîne de
@@ -112,6 +115,7 @@ class Conversation:
         self.notes = []  # ...et notes vierges
         self.goal = ""  # ...et objectif effacé
         self.wizard = None  # wizard abandonné avec le fil
+        self.deferred_loaded = []
         # Compteur de consommation remis à zéro : le fil repart, le cumul aussi.
         self.tokens_in = 0
         self.tokens_out = 0
@@ -157,6 +161,7 @@ class Conversation:
             "system_prompt": self.system_prompt,
             "messages": self.messages,
             "active_tools": self.active_tools,
+            "deferred_loaded": self.deferred_loaded,
             "model": self.model,
             "thinking": self.thinking,
             "local_only": self.local_only,
@@ -181,6 +186,7 @@ class Conversation:
             system_prompt=data.get("system_prompt", default_system_prompt),
             messages=list(data.get("messages", [])),
             active_tools=list(data.get("active_tools", [])),
+            deferred_loaded=list(data.get("deferred_loaded", [])),
             model=data.get("model", ""),
             thinking=bool(data.get("thinking", True)),
             local_only=bool(data.get("local_only", False)),

@@ -99,7 +99,17 @@ def load_variants(which: str) -> dict:
 
 
 def run_one(
-    client, model, chat_prompt, sub_prompt, case, ws: Path, cfg, perm, max_iters
+    client,
+    model,
+    chat_prompt,
+    sub_prompt,
+    case,
+    ws: Path,
+    cfg,
+    perm,
+    max_iters,
+    mcp_hub=None,
+    deferred_tools=False,
 ):
     """Exécute la boucle agentique sur un cas dans un workspace neuf ; renvoie la Trajectory."""
     # Override du prompt sous-agent (lu par build_registry au moment de l'appel).
@@ -119,6 +129,8 @@ def run_one(
         sub_max_tokens=cfg.chat.max_tokens,
         permission=perm,
         active_model=model,
+        deferred_tools=deferred_tools,
+        mcp_hub=mcp_hub,
     )
     prompt = case.prompt.replace("{NOTES_PATH}", (ws / "docs" / "notes.md").as_posix())
     # Cas à HISTORIQUE pré-rempli (saturation de contexte) : les vieux tours synthétiques
@@ -248,7 +260,18 @@ def case_passed(checks: dict) -> bool:
 
 
 def run_variant(
-    client, model, name, prompts, cfg, perm, runs, max_iters, do_judge, only
+    client,
+    model,
+    name,
+    prompts,
+    cfg,
+    perm,
+    runs,
+    max_iters,
+    do_judge,
+    only,
+    mcp_hub=None,
+    deferred_tools=False,
 ):
     chat_p, sub_p = prompts
     results = {}  # case_id -> list[run dict]
@@ -267,7 +290,17 @@ def run_variant(
                 ws = Path(tmp)
                 case.setup(ws)
                 traj = run_one(
-                    client, model, chat_p, sub_p, case, ws, cfg, perm, max_iters
+                    client,
+                    model,
+                    chat_p,
+                    sub_p,
+                    case,
+                    ws,
+                    cfg,
+                    perm,
+                    max_iters,
+                    mcp_hub,
+                    deferred_tools,
                 )
                 checks = case.check(traj, ws)
                 jd = judge(client, model, case, traj) if do_judge else None
@@ -695,6 +728,14 @@ def main():
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--cases", default=None, help="ids séparés par des virgules")
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument(
+        "--mcp-fixture",
+        action="store_true",
+        help=(
+            "branche le serveur stdio hermétique sur la variante new seulement, "
+            "pour mesurer le coût agentique du catalogue MCP"
+        ),
+    )
     args = ap.parse_args()
 
     if args.self_test:
@@ -719,21 +760,49 @@ def main():
         f"juge={'non' if args.no_judge else 'oui'}\n"
     )
     variants = load_variants(args.variant)
-    all_results = {}
-    for name, prompts in variants.items():
-        print(f"--- VARIANTE {name} ---")
-        all_results[name] = run_variant(
-            client,
-            model,
-            name,
-            prompts,
-            cfg,
-            perm,
-            args.runs,
-            args.max_iters,
-            not args.no_judge,
-            only,
+    mcp_hub = None
+    if args.mcp_fixture:
+        import sys
+
+        from loom.config import _parse_mcp_server
+        from loom.tools.mcp import McpHub
+
+        fixture = _RT.parent / "tests" / "fake_mcp_server.py"
+        mcp_hub = McpHub(
+            [
+                _parse_mcp_server(
+                    {
+                        "name": "eval-fixture",
+                        "transport": "stdio",
+                        "command": sys.executable,
+                        "args": [str(fixture)],
+                        "timeout_s": 3.0,
+                        "danger_override": False,
+                    }
+                )
+            ]
         )
+    all_results = {}
+    try:
+        for name, prompts in variants.items():
+            print(f"--- VARIANTE {name} ---")
+            all_results[name] = run_variant(
+                client,
+                model,
+                name,
+                prompts,
+                cfg,
+                perm,
+                args.runs,
+                args.max_iters,
+                not args.no_judge,
+                only,
+                mcp_hub=mcp_hub if name == "new" else None,
+                deferred_tools=args.mcp_fixture,
+            )
+    finally:
+        if mcp_hub is not None:
+            mcp_hub.close()
     report(all_results, args.runs)
     # Un run FILTRÉ (--cases) n'est pas une baseline : l'épingler écraserait le résumé
     # complet du commit avec un partiel (vécu : repro d'un seul cas -> baseline mutilée).

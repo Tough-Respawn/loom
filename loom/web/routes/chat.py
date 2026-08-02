@@ -704,6 +704,7 @@ def _register_chat_routes(app, S):
                 "parallel",
                 "user",  # note en vol injectée : à sa vraie position au rechargement
                 "harness",  # intervention du garde-fou Loom (3e voix) : rejouable
+                "monitor_event",  # stdout asynchrone à sa vraie position
             }
 
             def _tl(event, **data):
@@ -828,6 +829,11 @@ def _register_chat_routes(app, S):
                         compact_after_tokens=eff_compact,
                         strong=strong,
                         notes_provider=lambda: S.notes.drain(sess.id),
+                        monitor_events_provider=(
+                            (lambda: S.monitor_hub.drain(sess.id))
+                            if S.monitor_hub is not None
+                            else None
+                        ),
                         refocus_note=not S.refocus_handled.get(sess.id, False),
                         stream_holder=stream_holder,
                     )
@@ -970,6 +976,22 @@ def _register_chat_routes(app, S):
                                 text=note_display,
                                 provenance=note_data.get("provenance"),
                                 handoff_id=note_data.get("handoff_id", ""),
+                            )
+                            continue
+
+                        if kind == "monitor_event":
+                            # Garde exactement la structure vue par le modèle : un
+                            # assistant.tool_call synthétique suivi du role=tool.
+                            conv.messages.extend(
+                                (payload["assistant_message"], payload["tool_message"])
+                            )
+                            save()
+                            yield _tl(
+                                "monitor_event",
+                                monitor_id=payload["monitor_id"],
+                                description=payload["description"],
+                                text=payload["text"],
+                                final=bool(payload.get("final", False)),
                             )
                             continue
 
