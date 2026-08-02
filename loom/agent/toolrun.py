@@ -237,9 +237,7 @@ def _run_tools_sequential(
                 {"id": tc["id"], "name": name, "ok": False, "preview": result},
             )
             continue
-        # Rail dur des outils différés : rendre l'erreur tool_search AVANT la
-        # permission. Un appel aveugle à un outil dangereux ne doit pas ouvrir
-        # une confirmation pour une commande qui ne sera de toute façon pas lancée.
+        # Outils différés : erreur tool_search AVANT la permission (pas de confirmation pour un appel qui ne partira pas).
         if registry and getattr(registry, "requires_schema", lambda _name: False)(name):
             result = registry.run(name, args)
             convo.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
@@ -248,9 +246,7 @@ def _run_tools_sequential(
                 _tool_result_payload(tc["id"], name, False, result, args),
             )
             continue
-        # P1.1 : sérialiser les écritures à gros contenu (1 par tour) -> évite le
-        # batch de N gros write_file/append_file qui sature max_tokens et tronque.
-        # Les éditions par bloc (edit/replace/insert) ne passent PAS par ici.
+        # Sérialise les écritures gros contenu (1/tour) : évite de saturer max_tokens ; les éditions par bloc n'y passent pas.
         if name in _SERIAL_WRITE and wrote_this_turn:
             result = (
                 "différé : un seul write_file/append_file par tour. Réémets "
@@ -268,17 +264,14 @@ def _run_tools_sequential(
                 },
             )
             continue
-        # MCP est tiers et donc dangereux par défaut (nom inconnu de la politique
-        # -> ask). Un serveur explicitement déclaré de confiance porte danger=False
-        # et contourne cette confirmation, sans affaiblir les autres outils.
+        # MCP tiers = dangereux par défaut (ask) ; un serveur de confiance (danger=False) contourne, sans toucher aux autres.
         trusted_mcp = bool(
             name.startswith("mcp_")
             and registry
             and not getattr(registry, "is_dangerous", lambda _name: True)(name)
         )
         decision = permission(name, args) if permission else None
-        # La confiance explicite supprime seulement la demande prudente due au
-        # statut tiers. Elle ne contourne jamais un refus global (deny_all).
+        # La confiance explicite lève l'ask dû au statut tiers, jamais un deny_all global.
         if trusted_mcp and decision is not None and decision.action == "ask":
             decision = None
         action = decision.action if decision else "allow"

@@ -14,8 +14,7 @@ class Conversation:
     system_prompt: str
     messages: list[dict] = field(default_factory=list)
     active_tools: list[str] = field(default_factory=list)
-    # Schémas différés déjà chargés par tool_search. Persisté par conversation :
-    # une reprise après redémarrage ne redemande pas inutilement le même schéma.
+    # Schémas différés déjà chargés (persistés) : pas re-demandés après redémarrage.
     deferred_loaded: list[str] = field(default_factory=list)
     model: str = ""
     thinking: bool = True

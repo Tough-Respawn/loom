@@ -32,13 +32,9 @@ class ChatConfig:
     keep_recent_messages: int = 6
     # Une liste vide n'expose aucun outil.
     tools_enabled: list[str] = field(default_factory=list)
-    # Schémas longue traîne chargés à la demande par tool_search. Kill-switch
-    # désactivé par défaut jusqu'à validation A/B sur un modèle local.
+    # Schémas longue traîne via tool_search ; kill-switch off par défaut (à valider A/B).
     deferred_tools: bool = False
-    # Chaîne de ROUTAGE des sous-agents (dispatch_agent), dans l'ordre d'essai
-    # (ex. ["glm-flash", "glm-zai"] = gratuit puis payant) ; repli final implicite =
-    # le modèle de la conversation. Vide = comportement historique (héritage).
-    # Ignorée quand la session est marquée local_only (données privées/sensibles).
+    # Routage dispatch_agent (ordre d'essai, repli = modèle de la conv) ; vide = héritage ; ignorée si local_only.
     dispatch_models: list[str] = field(default_factory=list)
     workspace_dir: str = "."
     # Borner chaque lecture afin qu'un fichier seul ne sature pas le contexte.
@@ -150,8 +146,7 @@ class McpServerConfig:
     headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     timeout_s: float = 10.0
-    # None/True = dangereux (confirmation selon le mode global). False = serveur
-    # explicitement déclaré de confiance : appels autorisés sans confirmation.
+    # None/True = dangereux (confirmation) ; False = serveur de confiance (sans confirmation).
     danger_override: bool | None = None
 
 
@@ -430,10 +425,7 @@ def load_config(
     mcp_names = [server.name for server in mcp_servers]
     if len(set(mcp_names)) != len(mcp_names):
         raise ValueError("mcp_servers: chaque 'name' doit être unique")
-    # Boot « remote-only » : aucun modèle local mais au moins un distant -> models=[]
-    # est toléré (loom.web sait discuter via l'API distante ; le serveur llama.cpp
-    # local ne sert que les locaux et démarre à la demande). On ne lève que si NI
-    # local NI distant — machine vierge, c'est maybe_bootstrap qui guide l'installeur.
+    # Remote-only toléré (models=[]) : on ne lève que si NI local NI distant (machine vierge -> installeur).
     if not models and not remote_models:
         raise ValueError(
             f"aucun modèle : crée <racine>/local/text/<id>/model.toml (local) ou "
