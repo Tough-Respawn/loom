@@ -227,6 +227,7 @@ AVAILABLE_TOOLS = [
     {"name": "edit_file", "label": "edit_file", "danger": True},
     {"name": "format_code", "label": "format_code", "danger": True},
     {"name": "run_shell", "label": "run_shell", "danger": True},
+    {"name": "monitor", "label": "monitor", "danger": True},
 ]
 
 
@@ -251,6 +252,14 @@ class ToolSpec:
     # relaie à l'UI EN DIRECT et reconstruit le résultat final. Sert à `dispatch_agent`
     # pour qu'on VOIE ce que fait le sous-agent. `run` reste le repli (1 bloc).
     run_stream: Callable[[dict], Iterator[tuple[str, object]]] | None = None
+    # Métadonnées internes. `danger` documente les outils à effet de bord (la
+    # décision effective reste centralisée dans loom.permissions). `deferred`
+    # retire seulement le schéma du préfixe : l'outil reste connu du registre.
+    danger: bool = False
+    deferred: bool = False
+    # Certains fournisseurs (MCP) peuvent annoncer des dizaines d'outils : leur
+    # schéma ne doit jamais gonfler le préfixe, même kill-switch global coupé.
+    always_deferred: bool = False
 
     def to_openai(self) -> dict:
         return {
@@ -268,7 +277,15 @@ class ToolSpec:
 class ToolRegistry:
     """Collection d'outils : expose les schémas et exécute par nom (sans lever)."""
 
-    def __init__(self, specs: list[ToolSpec], profile: "Profile | None" = None) -> None:
+    def __init__(
+        self,
+        specs: list[ToolSpec],
+        profile: "Profile | None" = None,
+        *,
+        deferred_enabled: bool = False,
+        deferred_loaded: set[str] | None = None,
+        on_deferred_loaded: Callable[[set[str]], None] | None = None,
+    ) -> None:
         self._specs = {s.name: s for s in specs}
         self._profile = (
             profile  # loom.runtime.models_profile.Profile | None (duck-typed)
@@ -278,6 +295,74 @@ class ToolRegistry:
         # system prompt et les consignes peuvent mentionner l'outil, le modèle reçoit
         # alors une explication actionnable, sans payer le schéma dans le contexte.
         self._unavailable: dict[str, str] = {}
+        self._deferred_enabled = bool(deferred_enabled)
+        self._deferred_loaded = (
+            deferred_loaded if deferred_loaded is not None else set()
+        )
+        self._on_deferred_loaded = on_deferred_loaded
+        if self._deferred_enabled:
+            self._specs["tool_search"] = self._make_tool_search()
+
+    def _deferred_specs(self) -> list[ToolSpec]:
+        return [s for s in self._specs.values() if s.deferred]
+
+    @staticmethod
+    def _one_line(spec: ToolSpec) -> str:
+        """Résumé compact et stable pour le catalogue de tool_search."""
+        first = " ".join(spec.description.strip().split())
+        for sep in (". ", "\n"):
+            if sep in first:
+                first = first.split(sep, 1)[0]
+        return first[:180].rstrip(" .")
+
+    def _make_tool_search(self) -> ToolSpec:
+        deferred = self._deferred_specs()
+        catalogue = (
+            "\n".join(f"- {spec.name} — {self._one_line(spec)}" for spec in deferred)
+            or "- aucun outil différé dans cette session"
+        )
+
+        def run(args: dict) -> str:
+            raw_names = args.get("names") or []
+            names = list(
+                dict.fromkeys(str(n).strip() for n in raw_names if str(n).strip())
+            )
+            known = {s.name: s for s in self._deferred_specs()}
+            unknown = [name for name in names if name not in known]
+            if unknown:
+                raise ToolError(
+                    "outil(s) différé(s) inconnu(s) : "
+                    + ", ".join(unknown)
+                    + ". Choisis parmi : "
+                    + ", ".join(known)
+                )
+            self._deferred_loaded.update(names)
+            if self._on_deferred_loaded is not None:
+                self._on_deferred_loaded(set(self._deferred_loaded))
+            payload = [known[name].to_openai()["function"] for name in names]
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+
+        return ToolSpec(
+            name="tool_search",
+            description=(
+                "Charge les schémas complets d'outils différés avant leur premier appel. "
+                "Tous les outils disponibles restent visibles ici ; appelle tool_search avec "
+                "les noms utiles, puis appelle ces outils normalement. Catalogue stable :\n"
+                + catalogue
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "names": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": [s.name for s in deferred]},
+                        "description": "Noms des outils dont charger le schéma complet.",
+                    }
+                },
+                "required": ["names"],
+            },
+            run=run,
+        )
 
     def mark_unavailable(self, name: str, reason: str) -> None:
         """Déclare un outil connu-mais-retiré : `run(name)` renverra `reason`."""
@@ -297,7 +382,14 @@ class ToolRegistry:
         self._specs[spec.name] = spec
 
     def openai_tools(self) -> list[dict]:
-        return [s.to_openai() for s in self._specs.values()]
+        # Option A : préfixe strictement fixe pendant la session. Les schémas
+        # différés sont rendus dans le résultat de tool_search, jamais réinjectés
+        # dans tools=[...] (sinon re-prefill/cache-bust au premier chargement).
+        return [
+            s.to_openai()
+            for s in self._specs.values()
+            if not (self._deferred_enabled and s.deferred)
+        ]
 
     def _unknown_tool(self, name: str) -> str:
         """Message d'outil inconnu RÉCUPÉRABLE : liste les outils réels et suggère le
@@ -316,6 +408,11 @@ class ToolRegistry:
             if name in self._unavailable:
                 return f"erreur: {self._unavailable[name]}"
             return self._unknown_tool(name)
+        if self.requires_schema(name):
+            return (
+                f"erreur: outil différé '{name}' — charge d'abord son schéma : "
+                f'tool_search(names=["{name}"]).'
+            )
         try:
             args = validate_and_coerce(name, spec.parameters, args)
             if self._profile is not None:
@@ -328,10 +425,23 @@ class ToolRegistry:
         except Exception as exc:  # noqa: BLE001 - on ne casse jamais la boucle
             return f"erreur inattendue: {exc}"
 
+    def requires_schema(self, name: str) -> bool:
+        spec = self._specs.get(name)
+        return bool(
+            self._deferred_enabled
+            and spec is not None
+            and spec.deferred
+            and name not in self._deferred_loaded
+        )
+
+    def is_dangerous(self, name: str) -> bool:
+        spec = self._specs.get(name)
+        return bool(spec and spec.danger)
+
     def is_streaming(self, name: str) -> bool:
         """Vrai si l'outil expose une exécution STREAMANTE (run_stream)."""
         spec = self._specs.get(name)
-        return bool(spec and spec.run_stream)
+        return bool(spec and spec.run_stream and not self.requires_schema(name))
 
     def run_stream(self, name: str, args: dict) -> Iterator[tuple[str, object]]:
         """Exécute un outil streamant en relayant ses events ; ne lève jamais (toute
@@ -340,6 +450,13 @@ class ToolRegistry:
         spec = self._specs.get(name)
         if spec is None or spec.run_stream is None:
             yield ("content", f"erreur: outil non streamant '{name}'")
+            return
+        if self.requires_schema(name):
+            yield (
+                "content",
+                f"erreur: outil différé '{name}' — charge d'abord son schéma : "
+                f'tool_search(names=["{name}"]).',
+            )
             return
         try:
             args = validate_and_coerce(name, spec.parameters, args)

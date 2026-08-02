@@ -268,6 +268,16 @@ SPEC: list[SpecEntry] = [
         "applies": "live",
         "help": "Nb minimal d'actions dans un tour pour déclencher reflect.",
     },
+    {
+        "section": "chat",
+        "key": "deferred_tools",
+        "label": "Schémas d'outils différés",
+        "layer": "commun",
+        "nature": "libre",
+        "type": "bool",
+        "applies": "restart",
+        "help": "Expose les outils longue traîne via tool_search afin d'alléger le préfixe.",
+    },
     # -- tools --
     {
         "section": "tools",
@@ -442,6 +452,7 @@ CODE_DEFAULTS = {
     ("chat", "keepwarm_interval"): 150,
     ("chat", "reflect_enabled"): True,
     ("chat", "reflect_min_actions"): 1,
+    ("chat", "deferred_tools"): False,
     ("tools", "workspace_dir"): ".",
     ("tools", "read_file_max_bytes"): 40000,
     ("tools", "shell_timeout"): 180,

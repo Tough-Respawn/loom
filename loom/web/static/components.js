@@ -366,6 +366,8 @@ export function Item({ it, userIndex, sid }) {
     case "harness":
       // 3e voix : le garde-fou Loom (ni toi ni le modèle). Identité visuelle propre.
       return html`<div class="harness-line"><span class="harness-tag">Loom${it.hkind ? html` <span class="harness-kind">· ${it.hkind}</span>` : ""}</span><span class="harness-text">${it.text}</span></div>`;
+    case "monitor_event":
+      return html`<div class="harness-line"><span class="harness-tag">⏱ monitor · ${it.description || it.monitorId}</span><span class="harness-text">${it.text}</span></div>`;
     default:
       return null;
   }

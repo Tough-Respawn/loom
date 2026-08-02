@@ -28,7 +28,7 @@ def _sse_events(body: bytes) -> list[dict]:
 def chat_env(tmp_env):
     """Factory : construit l'app complète autour d'un script FakeOAI donné."""
 
-    def build(scripts, handlers=None):
+    def build(scripts, handlers=None, monitor_hub=None):
         from loom.agent.client import LoomClient
 
         client = LoomClient("http://127.0.0.1:9/v1")
@@ -57,6 +57,7 @@ def chat_env(tmp_env):
             plugins_dir=str(tmp_env / "plugins"),
             remote_store_path=str(tmp_env / "remote_models.json"),
             tool_factory=lambda tools, ws, conv: registry,
+            monitor_hub=monitor_hub,
         )
         web = app.test_client()
         # Titre EXPLICITE : sinon un thread de titrage part en course et consomme
@@ -113,6 +114,49 @@ def test_chat_tool_call_sse_et_timeline(chat_env, tmp_env):
     seq = [e["event"] for e in tl]
     assert seq == ["user", "tool_call", "tool_result", "text"]
     assert tl[2]["data"]["name"] == "list_dir" and tl[2]["data"]["ok"] is True
+
+
+def test_monitor_event_sse_timeline_and_structured_persistence(chat_env, tmp_env):
+    class Hub:
+        def __init__(self):
+            self.sent = False
+
+        def drain(self, sid):
+            if self.sent:
+                return []
+            self.sent = True
+            return [
+                {
+                    "id": "evt1",
+                    "monitor_id": "mon1",
+                    "description": "build",
+                    "text": "tests verts",
+                    "model_content": "donnée externe balisée",
+                    "final": False,
+                }
+            ]
+
+    web, fake, _, sid = chat_env([turn_text("Bien reçu.")], monitor_hub=Hub())
+    r = web.post("/chat", data={"message": "surveille", "session_id": sid})
+    assert r.status_code == 200
+    events = _sse_events(r.data)
+    monitor_event = next(e for e in events if e["type"] == "monitor_event")
+    assert monitor_event["description"] == "build"
+    assert monitor_event["text"] == "tests verts"
+
+    saved = json.loads(
+        (tmp_env / "sessions" / sid / "session.json").read_text(encoding="utf-8")
+    )
+    messages = saved["conversation"]["messages"]
+    assistant = next(m for m in messages if m.get("tool_calls"))
+    tool = next(m for m in messages if m["role"] == "tool")
+    assert assistant["tool_calls"][0]["function"]["name"] == "monitor"
+    assert tool["content"] == "donnée externe balisée"
+    assert any(
+        e["event"] == "monitor_event"
+        for e in web.get(f"/session/{sid}/timeline").get_json()["events"]
+    )
+    assert any(m.get("tool_calls") for m in fake.calls[0]["messages"])
 
 
 def test_chat_verrou_relache_apres_le_tour(chat_env):

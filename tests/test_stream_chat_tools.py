@@ -40,6 +40,61 @@ def test_stop_naturel():
     assert usages and "estimated" not in usages[0]
 
 
+def test_monitor_event_injected_as_valid_tool_result():
+    client, fake = make_client([turn_text("événement pris en compte")])
+    event = {
+        "id": "evt1",
+        "monitor_id": "mon1",
+        "description": "build",
+        "text": "tests verts",
+        "model_content": "événement externe marqué",
+        "final": False,
+    }
+    pending = [event]
+    events, done = collect(
+        client.stream_chat_tools(
+            USER,
+            SYSTEM,
+            monitor_events_provider=lambda: [pending.pop(0)] if pending else [],
+        )
+    )
+    assert done["reason"] == "natural"
+    injected = only(events, "monitor_event")
+    assert injected[0]["monitor_id"] == "mon1"
+    messages = fake.calls[0]["messages"]
+    assistant = next(m for m in messages if m.get("tool_calls"))
+    tool = next(m for m in messages if m["role"] == "tool")
+    assert assistant["tool_calls"][0]["function"]["name"] == "monitor"
+    assert tool["tool_call_id"] == assistant["tool_calls"][0]["id"]
+    assert tool["content"] == "événement externe marqué"
+
+
+def test_monitor_event_arriving_during_final_generation_restarts_turn():
+    client, fake = make_client(
+        [turn_text("je pensais finir"), turn_text("événement traité")]
+    )
+    event = {
+        "id": "evt-late",
+        "monitor_id": "mon1",
+        "description": "build",
+        "text": "échec",
+        "model_content": "échec externe balisé",
+        "final": False,
+    }
+    drains = iter([[], [event], [], []])
+    events, done = collect(
+        client.stream_chat_tools(
+            USER,
+            SYSTEM,
+            monitor_events_provider=lambda: next(drains, []),
+        )
+    )
+    assert done["reason"] == "natural"
+    assert len(fake.calls) == 2
+    assert len(only(events, "monitor_event")) == 1
+    assert any(m["role"] == "tool" for m in fake.calls[1]["messages"])
+
+
 def test_kwargs_api_local():
     client, fake = make_client([turn_text("ok")])
     run(client)

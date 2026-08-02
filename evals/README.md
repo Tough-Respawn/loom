@@ -36,6 +36,8 @@ uv run python -m evals.run_eval --runs 5 --variant new
 uv run python -m evals.run_eval --runs 3 --no-judge        # graders code seuls
 uv run python -m evals.run_eval --cases edit_block,html_counter
 uv run python -m evals.run_eval --model qwen3.6-35b-a3b-abliterated
+# A/B spécifique MCP : old sans serveur, new avec le fixture stdio hermétique
+uv run python -m evals.run_eval --runs 3 --no-judge --mcp-fixture
 ```
 
 ## Sortie

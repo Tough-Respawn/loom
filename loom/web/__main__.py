@@ -185,6 +185,9 @@ def build_app(cfg):
             shell_timeout=cfg.chat.shell_timeout,
             vision_describer=None,
             active_is_vision=(_model in vision_model_ids),
+            deferred_tools=cfg.chat.deferred_tools,
+            monitor_hub=monitor_hub,
+            mcp_hub=mcp_hub,
         )
 
     # Amorce les outils de la conversation depuis la config au 1er lancement.
@@ -195,6 +198,14 @@ def build_app(cfg):
     # Migration douce : si aucune session n'existe mais qu'une ancienne conversation est
     # là, on l'importe comme première session pour ne pas perdre l'historique.
     data_root = Path(cfg.chat.history_path).resolve().parent
+
+    from loom.tools.monitor import MonitorHub
+
+    monitor_hub = MonitorHub(data_root / "logs" / "monitors")
+
+    from loom.tools.mcp import McpHub
+
+    mcp_hub = McpHub(cfg.mcp_servers)
 
     from loom.extend.plugins import plugins_root as _plugins_root
 
@@ -268,6 +279,7 @@ def build_app(cfg):
         vision_models=[m.id for m in cfg.models if m.mmproj_filename]
         + [rm.id for rm in cfg.remote_models if rm.vision],
         tool_factory=make_registry,
+        monitor_hub=monitor_hub,
         available_tools=AVAILABLE_TOOLS,
         permission=permission,
         permission_mode=cfg.permissions.mode,

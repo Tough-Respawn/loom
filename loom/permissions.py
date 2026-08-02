@@ -48,7 +48,7 @@ READ_TOOLS = frozenset(
         "submit_result",
     }
 )
-SHELL_TOOLS = frozenset({"run_shell", "serve_and_check"})
+SHELL_TOOLS = frozenset({"run_shell", "serve_and_check", "monitor"})
 # Outils d'INSTALLATION de plugins : clonent du code tiers + écrivent sur disque -> gardés
 # comme les écritures (ask par défaut). Le modèle peut proposer/lancer l'install, pas sans
 # accord en mode 'ask'.
@@ -173,6 +173,10 @@ def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
         return Decision("allow")
 
     if tool_name in SHELL_TOOLS:
+        # Lister/arrêter un monitor existant ne lance aucun nouveau code. Seul
+        # start suit exactement la barrière de run_shell.
+        if tool_name == "monitor" and args.get("action") in ("list", "stop"):
+            return Decision("allow")
         command = (args.get("command") or "").strip()
         if _is_hard_denied(command, cfg.deny_commands):
             return Decision("deny", "commande interdite par la politique de sécurité")

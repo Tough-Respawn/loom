@@ -55,6 +55,8 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
 - 🔌 **Plugins compatibles Claude Code** : Loom héberge son propre store (marketplaces +
   install + cache, même format que CC) ; installe **n'importe quel** plugin CC et ses **skills**
   deviennent disponibles au modèle local. (Hooks/agents : tranches suivantes.)
+- 🔗 **Client MCP stdio** : les outils de serveurs tiers configurés en TOML rejoignent
+  le registre sous `mcp_<serveur>_<outil>`, avec schémas chargés à la demande.
 - 🐛 **Skill de debug** intégré : méthode reproduire → localiser → cause racine → fix minimal
   → preuve forte → réécrire-si-pourri, déclenchée quand un bug apparaît.
 - 💭 **Raisonnement** : le « thinking » s'affiche dans un bloc animé, désactivable d'un clic.
@@ -96,6 +98,7 @@ premier modèle s'installent tout seuls via `loom-setup` (ou à la main :
 
 ```bash
 uv sync                      # dépendances + installe le package loom
+# ou : uv sync --extra mcp   # si [[mcp_servers]] est configuré
 uv run loom-setup            # installeur guidé : OS/GPU/RAM détectés, llama.cpp
                              # + un modèle qui fit — chaque action confirmée
 uv run python -m loom.web    # interface chat sur :8000
@@ -154,6 +157,9 @@ harness n'est **pas un bac à sable**.
 - **Plugins = code + instructions tiers.** Installer un plugin clone un repo et ses skills
   deviennent appelables par le modèle. L'install est gardée `ask` ; n'ajoute que des marketplaces
   de confiance.
+- **MCP = outils tiers puissants.** Leurs descriptions et résultats sont balisés comme données
+  non fiables, mais le serveur exécute du code hors de la deny-list de Loom. Ses appels demandent
+  confirmation ; ne mets `danger_override = false` que pour un serveur entièrement fiable.
 
 En clair : `ask` par défaut, et si tu veux l'autonomie `allow`, fais-le dans un environnement isolé.
 
@@ -171,6 +177,11 @@ Tout est dans [config/defaults.toml](config/defaults.toml) (`default_model`, con
 outils armés, permissions). Les réglages spécifiques à une machine (chemin du binaire, override
 GPU) vont dans [config/local.toml](config/local.toml) — gitignoré, à copier depuis
 `config/local.example.toml` et adapter à ta machine (les valeurs livrées sont un exemple, pas une référence).
+
+Pour un serveur MCP local, installe l'extra ci-dessus puis ajoute un bloc `[[mcp_servers]]`
+dans `config/local.toml` ; le gabarit commenté se trouve dans
+[`config/local.example.toml`](config/local.example.toml). La tranche actuelle prend en charge
+`transport = "stdio"` ; HTTP et sa gestion UI viendront ensuite.
 
 ### Calibration machine : mesurée, jamais supposée
 

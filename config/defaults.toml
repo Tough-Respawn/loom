@@ -90,6 +90,10 @@ context_token_budget = 5000
 # Messages récents laissés intacts lors du résumé
 keep_recent_messages = 6
 
+# Réduit le préfixe en gardant les outils cœur + tool_search. Reste désactivé
+# jusqu'à validation A/B locale (comportement agentique + cache de préfixe).
+deferred_tools = false
+
 # ================================= Outils ===================================
 [tools]
 
@@ -102,7 +106,7 @@ enabled = [
     "dispatch_agent", "run_workflow", "manage_todos", "write_note", "read_note",
     "recall", "remember",
     "write_file", "append_file", "edit_file",
-    "format_code", "run_shell",
+    "format_code", "run_shell", "monitor",
     "check_page", "serve_and_check",
     "use_skill",
     # Plugins (list_plugins, add_marketplace, install_plugin) : HORS du set par
@@ -127,6 +131,19 @@ fetch_pages = false
 
 # allow = write/edit/run_shell sans confirmation ; la deny-list dure reste active
 mode = "allow"
+
+# =========================== Serveurs MCP tiers =============================
+# Configuration machine à placer de préférence dans config/local.toml :
+#
+# [[mcp_servers]]
+# name = "fichiers-equipe"
+# transport = "stdio"
+# command = "uvx"
+# args = ["mon-serveur-mcp"]
+# env = { API_KEY = "secret-machine" }
+# enabled = true
+# timeout_s = 10
+# danger_override = false  # seulement si TOUT ce serveur est explicitement fiable
 
 # ============================= Modèles distants =============================
 # Ne se déclarent PAS ici (secrets). Gère-les via la console de l'UI (onglet Modèles
