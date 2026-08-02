@@ -94,3 +94,19 @@ def test_http_get_impersonate_delegue(monkeypatch):
     monkeypatch.setattr(web, "_httpx_get", lambda *a, **k: _Resp(200, "httpx"))
     assert web._http_get("https://x/y", impersonate="chrome").text == "imp"
     assert web._http_get("https://x/y").text == "httpx"
+
+
+def test_categorize_ip_nat64_depaquette_ipv4_embarquee():
+    # RFC 6052 : sur réseau IPv6-only/DNS64, tout site IPv4-only se résout en
+    # 64:ff9b::<ipv4>. La catégorie est celle de l'IPv4 EMBARQUÉE : un site
+    # public reste public (Python marque le préfixe is_reserved -> il était
+    # bloqué à tort), une cible interne embarquée reste bloquée (anti-SSRF).
+    import ipaddress
+
+    from loom.tools._net import categorize_ip
+
+    ip = lambda s: ipaddress.ip_address(s)  # noqa: E731
+    assert categorize_ip(ip("64:ff9b::8c52:7904")) == "public"  # 140.82.121.4
+    assert categorize_ip(ip("64:ff9b::7f00:1")) == "loopback"  # 127.0.0.1
+    assert categorize_ip(ip("64:ff9b::c0a8:101")) == "private"  # 192.168.1.1
+    assert categorize_ip(ip("64:ff9b::a9fe:a9fe")) == "link-local"  # 169.254.169.254
