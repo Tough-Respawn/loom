@@ -38,9 +38,7 @@ READ_TOOLS = frozenset(
     }
 )
 SHELL_TOOLS = frozenset({"run_shell", "serve_and_check", "monitor"})
-# Outils d'INSTALLATION de plugins : clonent du code tiers + écrivent sur disque -> gardés
-# comme les écritures (ask par défaut). Le modèle peut proposer/lancer l'install, pas sans
-# accord en mode 'ask'.
+# Install de plugins (clone tiers + écrit sur disque) : ask par défaut, comme les écritures.
 PLUGIN_TOOLS = frozenset({"add_marketplace", "install_plugin"})
 WRITE_TOOLS = frozenset(
     {
@@ -153,8 +151,7 @@ def evaluate(tool_name: str, args: dict, cfg: PermissionConfig) -> Decision:
         return Decision("allow")
 
     if tool_name in SHELL_TOOLS:
-        # Lister/arrêter un monitor existant ne lance aucun nouveau code. Seul
-        # start suit exactement la barrière de run_shell.
+        # list/stop d'un monitor ne lance aucun code ; seul start suit la barrière run_shell.
         if tool_name == "monitor" and args.get("action") in ("list", "stop"):
             return Decision("allow")
         command = (args.get("command") or "").strip()
