@@ -125,6 +125,11 @@ def _deps(tmp_path, **over):
         top_ram_processes=lambda limit=8: [
             {"name": "chrome.exe", "mb": 2310, "count": 14}
         ],
+        # Outillage agent SIMULÉ complet : sans ces fakes, step_tooling sonde la
+        # VRAIE machine (et install_playwright le réseau) -> tests machine-dépendants,
+        # constaté 2026-07-26 (3 échecs sur un poste sans l'outillage de l'auteur).
+        tool_checks=lambda: [],
+        install_playwright=lambda: (True, ""),
         sleep=lambda s: None,
     )
     base.update(over)
