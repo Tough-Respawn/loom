@@ -63,18 +63,28 @@ from-claude-to-local-haranessed-llm/
 
 ## Lancer / Tester
 
-Prérequis : `uv` + binaire `llama-server` (et `llama-swap` pour le multi-modèles) dans le PATH.
+Prérequis : `uv`. `loom-setup` installe le binaire llama.cpp adapté et le premier modèle.
 
 ```powershell
 uv sync                       # dépendances + installe le package loom
-# brancher un modèle : copier loom/models/_TEMPLATE en loom/models/<id>/ + éditer model.toml
-uv run loom/runtime/serve.py  # télécharge le GGUF au 1er run + sert sur :8080
+uv run loom-setup             # binaire + premier modèle + calibration machine
 uv run python -m loom.web     # UI chat sur :8000
 ```
 
-Deux processus : `serve.py` = moteur llama.cpp (lance llama-swap avec `-watch-config` → la console de l'UI peut régénérer le yaml et appliquer un changement de modèle local à chaud), `loom.web` = UI. Ouvrir http://127.0.0.1:8000. La plupart des réglages (permissions, budgets, keep-warm…) s'appliquent sans redémarrer loom.web.
+`loom.web` lance le moteur llama.cpp à la demande et l'arrête avec l'interface.
+`uv run loom/runtime/serve.py` reste disponible pour servir le moteur seul. Ouvrir
+http://127.0.0.1:8000. La plupart des réglages (permissions, budgets, keep-warm…)
+s'appliquent sans redémarrer loom.web.
 
-**Tests** : pas de suite pytest (choix produit). Vérification par smokes (`uv run python -c "..."`), `ruff`, et Playwright pour le rendu.
+**Tests** : suite pytest, analyse Ruff, self-test d'éval hors ligne et banc E2E Playwright.
+
+```powershell
+uv run pytest tests/ -q
+uv run ruff check loom tests scripts evals
+uv run python -m evals.run_eval --self-test
+```
+
+Le scénario navigateur isolé est décrit dans `tests/e2e/README.md`.
 
 **Évals** (serveur modèle doit tourner) :
 
@@ -101,11 +111,15 @@ uv run python -m evals.run_review_eval           # éval du skill code-review
 - **Mode permission livré à `allow`** : l'agent écrit et exécute du shell sans confirmation. La doc recommande de passer à `ask` (`config/defaults.toml` → `[permissions] mode`) hors environnement isolé.
 - **La deny-list n'est pas une frontière de sécurité** : elle bloque les formes évidentes (`rm -rf`, `format`, `dd if=`) mais un interpréteur (`python -c`) la contourne. Ne pas s'y fier contre un modèle hostile.
 - **Anti-SSRF + frontière de confiance** : `fetch_url`/`web_search` épingle l'IP et refuse les hôtes internes ; tout contenu externe est marqué DONNÉE (pas instruction). Défense en profondeur, pas garantie.
-- **Pas de suite de tests** : la non-régression repose sur smokes + ruff + Playwright + les évals, pas sur pytest.
-- **Pas de LICENSE** détectée à la racine.
-- **Banc d'éval complet** (juge LLM, métriques) : design figé (`docs/superpowers/specs/`), construction différée.
+- **Validation multi-niveaux** : pytest couvre le runtime et les routes ; Ruff couvre le
+  statique ; le self-test valide les graders sans modèle ; Playwright reste requis pour
+  les interactions et le rendu navigateur.
+- **Banc d'éval complet** : livré (graders code, juge LLM, historiques par commit).
+  Le `--self-test` est hors ligne ; les comparaisons de prompts exigent un serveur modèle.
 - **Éval** : `default_model` de config est un distant → forcer `--model qwen…` pour évaluer le local (seul à révéler une régression du prompt). Le jeu de cas **n'exerce pas `dispatch_agent`** → le prompt sous-agent n'est pas encore testé par l'A/B.
 - **Agnostique machine** : la taille des modèles chargeables et le contexte local sont bornés par le matériel hôte (VRAM/RAM), mesurés à la calibration — aucune spec de machine n'est une constante du projet. Les analyses liées à une machine (bancs, perf, sondes) restent en local (`docs/local/`, `var/`, `config/local.toml` — gitignorés) ; le versionné ne porte que mécaniques et principes.
-- **GPU non-NVIDIA pas encore détectés** : la détection (`hardware.py`, `sysmon.py`, topologie du setup) passe uniquement par `nvidia-smi` — Metal (macOS Apple Silicon) et AMD/Intel (Vulkan) tombent en CPU-only (`-ngl 0`) alors que le binaire llama.cpp livré saurait offloader. Dégradation propre mais perfs laissées sur la table ; tranche à faire le jour où un poste concerné existe.
+- **GPU multi-backends** : après installation du binaire, `llama-server --list-devices`
+  est la source de vérité pour CUDA, Vulkan (AMD/Intel/NVIDIA) et Metal ; `nvidia-smi`
+  n'est plus qu'un repli avant installation et pour la télémétrie NVIDIA riche.
 - **Tranches plugins à venir** : hooks (PostToolUse, exécute du code tiers → porte de confiance) et agents (personas dispatchables).
 - **Avant de proposer une piste** (orchestrateur, gating d'outils, édition par ligne, speculative decoding, sweeps batch…) : lire « Déjà essayé, rejeté » dans `ETAT_PROJET.md`. Plusieurs bonnes idées générales ont déjà été testées et falsifiées ici.

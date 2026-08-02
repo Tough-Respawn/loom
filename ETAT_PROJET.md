@@ -2,12 +2,13 @@
 
 <!-- RÔLE : suivi interne (livré, état technique, reste/pistes, conventions). Pitch public : README.md. Carte technique : loom.md. Historique versions : CHANGELOG.md. -->
 
-> Dernière mise à jour : 2026-07-31 — les 3 god-files (`client.py`, `routes.py`, `app.js`)
-> éclatés par domaine, PUIS vague 2 sur les monolithes de 2e génération (`routes/chat.py`
-> 1582→1098, `routes/models.py` 1182→639) ; tout mergé sur `master` (501 tests verts, ruff
-> clean, app.js vérifié navigateur). Voir [CHANGELOG.md](CHANGELOG.md) et
-> [docs/audit-dette.md](docs/audit-dette.md). Plus gros module restant : `routes/chat.py`
-> (~1098 L, dont la boucle SSE `_register_chat_routes` ~1000 L — dette structurelle, non urgente).
+> Dernière mise à jour : 2026-08-02 — audit de préparation après l'éclatement des
+> god-files. Le self-test d'éval a été reconnecté aux modules propriétaires et couvert
+> par pytest ; suite, Ruff, self-test et smoke web rejoués. Voir
+> [CHANGELOG.md](CHANGELOG.md), [docs/audit-dette.md](docs/audit-dette.md) et le
+> [rapport de préparation du 2026-08-02](docs/rapport-preparation-2026-08-02.md). Plus
+> gros module restant : `routes/chat.py` (~1098 L,
+> dont la boucle SSE `_register_chat_routes` ~1000 L — dette structurelle, non urgente).
 
 Agent IA **local, multimodal et offline** : un modèle open-source rendu réellement utile par
 un **harness tool-use** — la boucle qui lui donne des outils et la logique de les enchaîner.

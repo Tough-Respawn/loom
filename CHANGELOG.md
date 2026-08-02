@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-08-02 — audit de préparation
+
+### Corrections
+- **Self-test du banc d'éval réparé après le refactoring de `client.py`** : les
+  garde-fous sont importés depuis leurs modules propriétaires (`compaction`, `guards`,
+  `streaming`, `toolrun`) au lieu de dépendre de réexports privés de la façade.
+- **Non-régression pytest ajoutée** pour garantir que le self-test documenté reste
+  exécutable hors ligne, sans serveur ni modèle.
+
+### Documentation
+- Commandes de validation, statut du banc d'éval/SearXNG et prise en charge GPU remis
+  en cohérence dans `README.md` et `loom.md`.
+- Rapport de préparation ajouté sous `docs/` avec preuves, limites et verdict.
+
+### Validation
+- **533 tests verts**, Ruff clean, self-test d'éval vert, couverture globale **60 %**.
+- Smoke Chromium autonome vert (HTTP 200, raccourcis, chat SSE, rendu, zéro erreur
+  console) ; wheel et source `loom 0.1.0` construits avec succès.
+
+---
+
 ## 2026-07-31 — éclatement des god-files
 
 ### Refactoring
