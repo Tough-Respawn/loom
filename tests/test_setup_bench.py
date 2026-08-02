@@ -83,7 +83,7 @@ def test_run_llama_bench_parse_et_erreurs(tmp_path):
     )
 
     def fake_run(cmd, **kw):
-        assert "-o" in cmd and "json" in cmd
+        assert "-o" in cmd and "jsonl" in cmd
         return SimpleNamespace(returncode=0, stdout=payload, stderr="")
 
     rows = run_llama_bench("bench.exe", "m.gguf", [10], [0], runner=fake_run)
@@ -143,3 +143,21 @@ def test_run_llama_bench_passe_ncmoe():
 
     run_llama_bench("bench.exe", "m.gguf", [10], [0], runner=fake_run)
     assert "-ncmoe" not in seen["cmd"]
+
+
+def test_parse_bench_output_jsonl_et_tableau():
+    # La voie réelle streame du jsonl ; les runners injectés peuvent renvoyer un
+    # tableau json d'un bloc — les deux formats se parsent pareil.
+    from loom.setup.bench import _parse_bench_output
+
+    jsonl = (
+        '{"n_threads": 6, "n_gpu_layers": 99, "n_prompt": 128, "avg_ts": 43.2}\n'
+        '{"n_threads": 6, "n_gpu_layers": 99, "n_prompt": 0, "avg_ts": 3.1}\n'
+    )
+    rows = _parse_bench_output(jsonl)
+    assert rows == [
+        {"threads": 6, "ngl": 99, "kind": "pp", "ts": 43.2},
+        {"threads": 6, "ngl": 99, "kind": "tg", "ts": 3.1},
+    ]
+    assert _parse_bench_output("[]") == []
+    assert _parse_bench_output("") == []

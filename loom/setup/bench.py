@@ -22,9 +22,12 @@ from loom.runtime.hardware import recommend_gpu_layers
 
 # Charges courtes : sur une petite machine CPU, chaque token compte — on veut un
 # CLASSEMENT fiable (quel -t gagne), pas des chiffres de communiqué de presse.
+# 1 répétition suffit pour classer (retour utilisateur 2026-08-02 : la calibration
+# était vécue trop longue) — le bruit inter-runs ne change pas le gagnant, et un
+# re-run reste possible en supprimant [bench] de local.toml.
 BENCH_PROMPT = 128
 BENCH_GEN = 16
-BENCH_REPS = 2
+BENCH_REPS = 1
 
 # Marge RAM système (Mo) laissée libre à côté des poids + KV.
 _RAM_MARGIN_MB = 2048
@@ -131,6 +134,41 @@ def compute_context(
     return int(ctx)
 
 
+def _bench_row(r: dict) -> dict:
+    """Normalise une ligne brute llama-bench en {threads, ngl, kind, ts}."""
+    kind = "pp" if int(r.get("n_prompt", 0)) > 0 else "tg"
+    return {
+        "threads": int(r.get("n_threads", 0)),
+        "ngl": int(r.get("n_gpu_layers", 0)),
+        "kind": kind,
+        "ts": float(r.get("avg_ts", 0.0)),
+    }
+
+
+def _parse_bench_output(text: str) -> list[dict]:
+    """Parse la sortie llama-bench : jsonl (une ligne JSON par test) OU un
+    document json unique (tableau) — les deux formats circulent selon la voie
+    (streaming réel vs runner injecté des tests)."""
+    text = text.strip()
+    if not text:
+        return []
+    try:
+        raw = json.loads(text)
+        return [_bench_row(r) for r in raw]
+    except json.JSONDecodeError:
+        pass
+    rows = []
+    for line in text.splitlines():
+        line = line.strip().rstrip(",")
+        if not line or line in ("[", "]"):
+            continue
+        try:
+            rows.append(_bench_row(json.loads(line)))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("sortie llama-bench illisible (pas du JSON)") from exc
+    return rows
+
+
 def run_llama_bench(
     bench_bin: str | Path,
     model_path: str | Path,
@@ -139,12 +177,18 @@ def run_llama_bench(
     runner=subprocess.run,
     timeout: int = 1200,
     n_cpu_moe: int = 0,
+    progress=None,
 ) -> list[dict]:
     """Lance llama-bench sur toutes les combinaisons (une seule invocation :
     llama-bench croise les listes) et renvoie les lignes JSON normalisées :
     [{threads, ngl, kind: 'pp'|'tg', ts}]. Lève RuntimeError si le bench échoue.
     `n_cpu_moe` > 0 (MoE) : experts des n premières couches gardés en RAM
-    (-ncmoe), pour mesurer la même config que le runtime (--cpu-moe)."""
+    (-ncmoe), pour mesurer la même config que le runtime (--cpu-moe).
+
+    `progress(msg)` : rappelé à CHAQUE mesure terminée (sortie `-o jsonl` lue en
+    continu) — la calibration montre où elle en est au lieu d'un silence de
+    plusieurs minutes (retour utilisateur 2026-08-02). Voie réelle seulement :
+    un `runner` injecté (tests) reste synchrone, sans streaming."""
     cmd = [
         str(bench_bin),
         "-m",
@@ -160,32 +204,55 @@ def run_llama_bench(
         "-ngl",
         ",".join(str(g) for g in ngl),
         "-o",
-        "json",
+        "jsonl",
     ]
     if n_cpu_moe > 0:
         cmd += ["-ncmoe", str(n_cpu_moe)]
+    if runner is not subprocess.run:
+        # Voie testable : exécution d'un bloc via le runner injecté.
+        try:
+            res = runner(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"llama-bench a dépassé {timeout}s — abandonné") from exc
+        if res.returncode != 0:
+            tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
+            raise RuntimeError("llama-bench a échoué : " + " | ".join(tail))
+        return _parse_bench_output(res.stdout)
+    # Voie réelle : streaming ligne à ligne pour la progression live. Un timer
+    # tue le process au timeout (readline bloquant : pas d'autre garde-fou).
+    import threading
+
+    total = len(threads) * len(ngl) * 2  # pp + tg par combinaison
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    killer = threading.Timer(timeout, proc.kill)
+    killer.start()
+    rows: list[dict] = []
     try:
-        res = runner(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"llama-bench a dépassé {timeout}s — abandonné") from exc
-    if res.returncode != 0:
-        tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
+        for line in proc.stdout:
+            line = line.strip().rstrip(",")
+            if not line or line in ("[", "]"):
+                continue
+            try:
+                row = _bench_row(json.loads(line))
+            except (json.JSONDecodeError, ValueError):
+                continue  # lignes de log éventuelles au milieu du flux
+            rows.append(row)
+            if progress:
+                progress(
+                    f"mesure {len(rows)}/{total} : -t {row['threads']} "
+                    f"-ngl {row['ngl']} {row['kind']} {row['ts']:.1f} t/s"
+                )
+        stderr_txt = proc.stderr.read() if proc.stderr else ""
+        code = proc.wait()
+    finally:
+        killer.cancel()
+    if code != 0:
+        if not killer.is_alive() and code in (-9, 137):
+            raise RuntimeError(f"llama-bench a dépassé {timeout}s — abandonné")
+        tail = (stderr_txt or "").strip().splitlines()[-3:]
         raise RuntimeError("llama-bench a échoué : " + " | ".join(tail))
-    try:
-        raw = json.loads(res.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("sortie llama-bench illisible (pas du JSON)") from exc
-    rows = []
-    for r in raw:
-        kind = "pp" if int(r.get("n_prompt", 0)) > 0 else "tg"
-        rows.append(
-            {
-                "threads": int(r.get("n_threads", 0)),
-                "ngl": int(r.get("n_gpu_layers", 0)),
-                "kind": kind,
-                "ts": float(r.get("avg_ts", 0.0)),
-            }
-        )
     return rows
 
 

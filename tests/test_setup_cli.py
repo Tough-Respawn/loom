@@ -340,7 +340,7 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
     deps = _deps(
         tmp_path,
         ram_available_mb=lambda: 10_240,
-        run_bench=lambda b, m, t, g, n_cpu_moe=0: rows,
+        run_bench=lambda b, m, t, g, n_cpu_moe=0, progress=None: rows,
         find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
         has_gpu_backend=lambda sb: True,
         cpu_physical=lambda: 10,
