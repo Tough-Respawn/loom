@@ -1,4 +1,3 @@
-// loom/web/static/panes.js — issu du decoupage de app.js (comportement constant).
 import { focusedPane, opsFor, paneShowing, panesFor, renderMsgNav, renderPane, state, tab } from "./state.js";
 import { focusPane, setPaneSid } from "./tabs.js";
 import { SID_MIME, dropTabOnPane, openTabMenu, postForm, showToast, wireSidDrag } from "./panels.js";
@@ -209,11 +208,9 @@ export function addPane(sid, dir, target, before) {
 export function removePane(pane) {
   const i = state.panes.indexOf(pane);
   if (i < 0 || state.panes.length <= 1) return;
-  // Le focus suit l'IDENTITÉ du panneau focus, pas son index : retirer un panneau
-  // situé AVANT lui décalait tout et basculait focus + _cur serveur sur la mauvaise
-  // session (repro : A|B|C focus B, fermer A -> focus sautait sur C).
+  // Suivre l'identité du panneau évite que le focus glisse après une suppression.
   const keep = focusedPane();
-  // Brouillon sauvé avant de perdre le panneau (l'onglet reste ouvert dans la barre).
+  // Sauvegarder le brouillon avant de retirer le panneau.
   const t = state.tabs[pane.sid];
   if (t) t.draft = pane.input.value;
   const loc = leafOf(pane);
@@ -317,8 +314,7 @@ export function clearImages(pane) {
 
 export function palMatches(pane) {
   const v = pane.input.value;
-  // Palette uniquement sur le PREMIER mot d'un message qui commence par « / » :
-  // dès qu'un espace ou un retour ligne arrive, on est dans les arguments.
+  // La palette ne complète que le premier mot d'une commande slash.
   if (!v.startsWith("/") || /[\s\n]/.test(v)) return [];
   const tok = v.slice(1).toLowerCase();
   return CMDS.filter((c) => c.name.slice(1).toLowerCase().startsWith(tok));
@@ -354,7 +350,7 @@ export function renderPal(pane) {
       desc.className = "cmd-desc";
       desc.textContent = c.description;
       item.append(line, desc);
-      // mousedown (pas click) : ne pas voler le focus du textarea avant l'insertion
+      // `mousedown` conserve le focus du textarea pendant l'insertion.
       item.addEventListener("mousedown", (ev) => {
         ev.preventDefault();
         palPick(pane, c);
@@ -380,19 +376,15 @@ export function submitPane(pane) {
   const sid = pane.sid;
   const text = pane.input.value.trim();
   if (!text || !sid) return;
-  // Ferme la palette « / » : le clear programmatique du champ n'émet pas d'événement
-  // input, elle resterait ouverte sur du vide.
+  // Un clear programmatique n'émet pas `input`; fermer la palette explicitement.
   hidePal(pane);
   const t = tab(sid);
-  // Une réponse part (tapée OU cliquée) : les blocs de boutons en attente sont
-  // consommés — des boutons périmés ne doivent pas rester cliquables.
+  // Consommer les choix du wizard dès qu'une réponse part.
   if (t)
     for (const it of t.timeline)
       if (it.kind === "choices" && !it.decided)
         opsFor(sid).patch(it.id, { decided: true });
-  // Pièces jointes pendant une génération : la file /note est TEXTE-ONLY. On bloque
-  // net (rien n'est consommé) plutôt que de laisser l'image en attente partir avec
-  // le PROCHAIN message, auquel elle ne correspondrait plus.
+  // Refuser une pièce jointe en file texte évite qu'elle parte avec le message suivant.
   if (t?.streaming && pane.pendingImages.length) {
     showToast(
       "images impossibles pendant une génération — retire-les pour envoyer une note texte, ou Stop d'abord",
@@ -404,10 +396,7 @@ export function submitPane(pane) {
     t.histIdx = -1;
     t.draft = ""; // message parti -> brouillon vidé
   }
-  // NOTE EN VOL (« btw » natif) : pendant une génération, un message avec du texte
-  // NE l'interrompt plus — il part en file (/note) et la boucle l'injecte au prochain
-  // point d'arrêt (la bulle apparaît à ce moment-là, à sa vraie position). Pour
-  // interrompre : bouton Stop, puis envoyer.
+  // Pendant une génération, le texte devient une note; seul Stop interrompt le flux.
   if (t?.streaming) {
     pane.input.value = "";
     autosize(pane);
@@ -430,11 +419,9 @@ export function submitPane(pane) {
   pane.input.value = "";
   autosize(pane); // revient à 1 ligne après envoi
   clearImages(pane);
-  // Envoi sur l'onglet du panneau (flux concurrent) ; le bouton passe à Stop.
+  // Envoyer sur l'onglet propre au panneau.
   sendChat(sid, text, imgs).finally(() => {
-    // Ne re-focus que si l'utilisateur n'est pas parti taper AILLEURS : la fin d'un
-    // flux (parfois minutes plus tard) ne doit jamais voler le clavier d'un autre
-    // panneau — sinon la suite de sa phrase partait dans la mauvaise session.
+    // Ne jamais voler le clavier à un autre panneau après un long flux.
     const ae = document.activeElement;
     if (
       focusedPane() === pane &&
@@ -458,18 +445,16 @@ export function stopPane(pane) {
 
 export function wirePane(pane) {
   const input = pane.input;
-  // Focus du panneau au premier geste dedans (split view) — capture, avant les boutons.
+  // Capturer le focus du panneau avant les handlers de ses boutons.
   const takeFocus = (e) => {
-    // Cliquer « envoyer » dans un panneau source NON focus doit conserver le focus
-    // courant : c'est précisément lui qui désigne la cible nominale du handoff.
+    // Un handoff conserve le focus qui désigne sa cible.
     if (e?.target?.closest?.(".msg-send")) return;
     if (state.panes[state.focusedIdx] !== pane) focusPane(pane);
   };
   pane.el.addEventListener("pointerdown", takeFocus, true);
-  // Le focus panneau SUIT aussi le focus CLAVIER (Tab entre panneaux) : sinon coller
-  // une image ou les singletons topbar ciblaient un autre panneau que celui où on tape.
+  // Le focus clavier détermine aussi la cible des pièces jointes et contrôles globaux.
   pane.el.addEventListener("focusin", takeFocus);
-  // Scroll collant : on suit le bas seulement si l'utilisateur y est déjà.
+  // Suivre le bas seulement si l'utilisateur y était déjà.
   pane.wrap.addEventListener(
     "scroll",
     () => {
@@ -479,10 +464,7 @@ export function wirePane(pane) {
     },
     { passive: true },
   );
-  // Si l'onglet du panneau génère, SEUL un appui explicite sur le bouton « Stop »
-  // arrête (focus sur le bouton = clic ou activation clavier DU bouton). Un
-  // Entrée depuis le champ de saisie — surtout vide — ne doit JAMAIS couper une
-  // réflexion en cours (vécu 2026-07-10 : minutes de travail perdues).
+  // Seule une activation explicite de Stop interrompt une génération.
   pane.form.addEventListener("submit", (e) => {
     e.preventDefault();
     if (tab(pane.sid)?.streaming) {
@@ -497,9 +479,9 @@ export function wirePane(pane) {
     renderPal(pane);
   });
   input.addEventListener("blur", () => setTimeout(() => hidePal(pane), 120));
-  // historique ↑/↓ + Entrée pour envoyer — l'historique est PAR ONGLET (t.history).
+  // L'historique de saisie est propre à chaque onglet.
   input.addEventListener("keydown", (e) => {
-    // La palette ouverte capte la navigation AVANT l'historique et l'envoi.
+    // La palette ouverte a priorité sur l'historique et l'envoi.
     if (pane.palEl && !pane.palEl.hidden) {
       const m = palMatches(pane);
       if (e.key === "ArrowDown" && m.length) {
@@ -520,7 +502,7 @@ export function wirePane(pane) {
       }
       if ((e.key === "Tab" || e.key === "Enter") && m.length) {
         const sel = m[Math.min(pane.palIdx, m.length - 1)];
-        // Entrée sur une commande DÉJÀ complète = envoi normal ; sinon on complète.
+        // Envoyer une commande complète; sinon compléter la sélection.
         if (e.key === "Tab" || input.value.trim() !== sel.name) {
           e.preventDefault();
           palPick(pane, sel);
@@ -560,12 +542,11 @@ export function wirePane(pane) {
     pane.fileInput.value = ""; // permet de re-sélectionner le même fichier ensuite
   });
   pane.fileBtn.addEventListener("click", () => pane.fileInput.click());
-  // ✕ du bandeau : ferme le PANNEAU (l'onglet et la session restent dans la barre).
+  // Fermer le panneau sans fermer son onglet ni sa session.
   pane.el.querySelector(".pane-x")?.addEventListener("click", (e) => {
     e.stopPropagation();
     removePane(pane);
   });
-  // ⛶ / double-clic sur le bandeau : bascule plein écran de CE panneau.
   pane.el.querySelector(".pane-max")?.addEventListener("click", (e) => {
     e.stopPropagation();
     toggleMaximize(pane);
@@ -576,30 +557,22 @@ export function wirePane(pane) {
       if (e.target.closest("button")) return;
       toggleMaximize(pane);
     });
-    // Le bandeau est la POIGNÉE du panneau : le saisir-glisser déplace la zone de
-    // chat entière vers les zones directionnelles d'un autre panneau.
+    // Le bandeau sert de poignée pour déplacer le panneau entier.
     wireSidDrag(head, () => pane.sid);
-    // Clic droit sur le bandeau : même menu que l'onglet (split, chemin réel copiable).
     head.addEventListener("contextmenu", (ev) => openTabMenu(ev, pane.sid));
   }
-  // Déposer un ONGLET (glissé depuis la barre) ou un PANNEAU (par son bandeau) :
-  // zones DIRECTIONNELLES à la VS Code. L'overlay montre où il atterrit : centre =
-  // remplacer/échanger, bord = scinder de ce côté. Jamais de double affichage.
+  // Le centre échange; un bord scinde dans cette direction, sans double affichage.
   const overlay = pane.el.querySelector(".pane-overlay");
-  // Rect capturé à l'ENTRÉE du drag (il ne bouge pas pendant), zone repeinte
-  // seulement quand elle change — dragover tire à la cadence de la souris.
+  // Capturer le rectangle une fois et ne repeindre que si la zone change.
   let dragRect = null;
   let lastZone = null;
   let dragDepth = 0; // enter/leave comptés : les enfants traversés émettent des
-  // dragleave intermédiaires qui tuaient l'overlay en plein panneau (« il faut
-  // forcer pour qu'il propose », vécu 2026-07-19)
+  // Compter les entrées/sorties évite qu'un enfant masque l'overlay trop tôt.
   const zoneAt = (e) => {
     const r = dragRect || pane.el.getBoundingClientRect();
     const x = (e.clientX - r.left) / r.width;
     const y = (e.clientY - r.top) / r.height;
-    // Centre = seulement le CŒUR du panneau (40 % médians) ; partout ailleurs, le
-    // bord le PLUS PROCHE est proposé directement — plus besoin d'aller chercher
-    // l'extrême bord pour obtenir un split.
+    // Réserver le cœur à l'échange et proposer ailleurs le bord le plus proche.
     if (x > 0.3 && x < 0.7 && y > 0.3 && y < 0.7) return "center";
     const d = { left: x, right: 1 - x, top: y, bottom: 1 - y };
     return Object.keys(d).reduce((a, b) => (d[a] < d[b] ? a : b));
@@ -639,8 +612,7 @@ export function wirePane(pane) {
     overlay.style.width = g[2] + "%";
     overlay.style.height = g[3] + "%";
   });
-  // Ne clore le drag QUE quand on quitte vraiment le panneau (compteur à zéro) —
-  // pas à chaque frontière d'enfant traversée.
+  // Clore le drag seulement après la sortie réelle du panneau.
   pane.el.addEventListener("dragleave", () => {
     if (dragDepth > 0) dragDepth--;
     if (dragDepth === 0) endDrag();

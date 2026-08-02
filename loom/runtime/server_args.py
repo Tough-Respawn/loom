@@ -1,4 +1,3 @@
-# loom/runtime/server_args.py
 """Construction (pure) de la ligne de commande llama-server."""
 
 from __future__ import annotations
@@ -51,11 +50,7 @@ def build_server_args(
         "127.0.0.1",
         "--port",
         str(port),
-        # SÉMANTIQUE : `context` = fenêtre PAR SLOT (celle que le bench calibre
-        # et que l'utilisateur voit). llama-server répartit -c entre les slots
-        # -> on multiplie ici. Vécu 2026-07-22 : un -c doublé posé en dur dans
-        # la config avait été re-mesuré par /rebench comme une fenêtre mono-slot
-        # -> spill mémoire (0,8 t/s) et faux verdict de réduction.
+        # `context` est par slot, tandis que llama-server attend le total.
         "-c",
         str(context * max(1, n_parallel)),
         "--parallel",
@@ -64,28 +59,17 @@ def build_server_args(
         str(n_gpu_layers),
         "-t",
         str(threads),
-        # Active le chat-template Jinja tool-aware : nécessaire pour que le modèle
-        # émette des tool_calls structurés (boucle tool-use). Sans effet si aucun
-        # outil n'est passé dans la requête.
+        # Requis pour les appels d'outils structurés des templates llama.cpp.
         "--jinja",
     ]
-    # Offload MoE : garde attention + FFN dense sur GPU (-ngl élevé), bascule les experts
-    # ROUTÉS en RAM. `--n-cpu-moe N` n'offloade que N couches (garde le reste sur GPU ->
-    # remplit la VRAM, plus rapide) ; `--cpu-moe` les offloade TOUTES. Indispensable pour
-    # faire tenir un MoE 26-35B sur 6 Go.
+    # L'offload partiel conserve plus d'experts sur GPU et reste donc plus rapide.
     if n_cpu_moe is not None:
         args += ["--n-cpu-moe", str(n_cpu_moe)]
     elif cpu_moe:
         args.append("--cpu-moe")
     if gpu_tuning:
-        # Réglages GPU prouvés au banc : Flash-Attention (attention plus rapide +
-        # cache KV ~÷2), cache KV quantifié q8_0, gros batch de prompt, priorité
-        # process. Couplé au continuous batching (n_parallel auto), gain net en
-        # single-stream comme en parallèle.
-        # `ubatch`/`batch` PAR MODÈLE (model.toml) : sur un MoE offloadé, le prefill
-        # est borné par l'amortissement des passes d'experts CPU sur la taille du
-        # microbatch — un -ub plus gros le multiplie (mesuré au banc), au prix de
-        # buffers VRAM plus gros (à valider par modèle vs sa marge). Défauts inchangés.
+        # Ces valeurs mesurées privilégient le débit tout en bornant le cache KV.
+        # Les batchs par modèle permettent d'ajuster le compromis débit/VRAM.
         args += [
             "-fa",
             "on",
@@ -100,29 +84,15 @@ def build_server_args(
             "--prio",
             "2",
         ]
-        # Poids CPU (experts MoE) chargés en mémoire hôte PINNÉE au lieu de mmap :
-        # uploads GPU en DMA -> gain de prefill net, mesuré au banc — mais sur les
-        # dGPU CUDA du parc UNIQUEMENT. Sur mémoire UNIFIÉE (iGPU Vulkan), c'est
-        # un bug upstream (ggml-org/llama.cpp #18317 « Cannot Run Model with
-        # mmap = 0 », #14999 --no-mmap + MoE) et un crash vécu (Ornith 35B /
-        # Radeon 860M : ErrorOutOfDeviceMemory au CHARGEMENT) : mmap, le défaut
-        # officiel llama.cpp, est conservé.
+        # `--no-mmap` accélère les dGPU, mais peut épuiser la mémoire unifiée Vulkan.
         if not unified_memory:
             args.append("--no-mmap")
     if mmproj_path:
         args += ["--mmproj", str(mmproj_path), "--no-mmproj-offload"]
-    # Sauvegarde/restauration du cache KV du slot (API POST /slots/0?action=save|restore,
-    # fichiers sous ce dossier). Pilier du « cache souverain » : le slot est UNIQUE, tout
-    # appel non-conversationnel (sous-agent, reflect, titre) écrase le cache du fil ->
-    # on le sauve avant, on le restaure après (~ms au lieu de minutes de re-prefill ;
-    # mesuré 2026-07-10 : save 42 ms / restore 22 ms / reprise 11 tokens au lieu de 925,
-    # KV q8_0 supporté).
+    # Les appels annexes écrasent le slot unique; sa sauvegarde évite un nouveau prefill.
     if slot_save_dir:
         args += ["--slot-save-path", str(slot_save_dir)]
-    # Maillage des checkpoints de contexte PAR MODÈLE (hybrides/SWA) : borne le
-    # retraitement après une compaction au lieu du désert par défaut (8192).
-    # Mesuré (sonde v4 2026-07-23, ornith) : divergence à ~9k -> 39 s en défaut,
-    # 13,3 s avec min-step 2048.
+    # Un maillage plus serré borne le retraitement des modèles hybrides après compaction.
     if checkpoint_min_step is not None:
         args += ["--checkpoint-min-step", str(checkpoint_min_step)]
     return args

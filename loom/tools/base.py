@@ -1,4 +1,3 @@
-# loom/tools/base.py
 """Cœur des outils : erreur métier, spec, registre, résolution de chemin bornée.
 
 Un outil = un `ToolSpec` (nom, description, schéma JSON des arguments, fonction
@@ -29,16 +28,8 @@ class ToolError(Exception):
     """Erreur métier d'un outil, message en français montrable au modèle."""
 
 
-# --- Frontière d'entrée des outils : coercition tolérante + erreurs actionnables ------
-# Un petit modèle (4B) génère souvent un input mal typé ou mal nommé. Plutôt que de
-# laisser CHAQUE outil revérifier à la main (et rendre une erreur sèche que le modèle
-# réémet à l'identique → boucle), on normalise ICI, une fois, au niveau du registre :
-#   - coercition des fautes de type courantes ("5"→5, "true"→true) d'après le JSON Schema ;
-#   - sur un champ requis ABSENT, une erreur qui NOMME le champ et, si un champ inconnu
-#     proche a été fourni, suggère le renommage (file→path).
-# On ne touche PAS aux strings ni aux champs présents-mais-vides : les outils gardent
-# leurs propres vérifs sémantiques (path vide, plage de lignes, etc.) en défense en
-# profondeur. La coercition ne fait que RAPPROCHER l'input du schéma, jamais l'inverser.
+# Normaliser les écarts simples au schéma évite les boucles sur des erreurs peu explicites.
+# Les validations sémantiques restent propres à chaque outil.
 _TRUE_TOKENS = frozenset({"true", "1", "yes", "oui", "vrai", "on"})
 _FALSE_TOKENS = frozenset({"false", "0", "no", "non", "faux", "off"})
 
@@ -81,21 +72,17 @@ def _coerce_scalar(value: object, jtype: str) -> object:
                 return False
         return value
     if jtype == "string":
-        # Un scalaire isolé (nombre/booléen) là où une string est attendue : on
-        # stringifie (ex. path renvoyé comme nombre).
+        # Tolérer un scalaire isolé là où une chaîne est attendue.
         if isinstance(value, (int, float, bool)):
             return str(value)
-        # Liste de scalaires là où une string est attendue (ex. command=["git","status"]
-        # au lieu de "git status") : on joint par espace, la faute argv->ligne de commande.
+        # Tolérer un argv à la place d'une ligne de commande.
         if isinstance(value, list) and all(
             isinstance(x, (str, int, float, bool)) for x in value
         ):
             return " ".join(str(x) for x in value)
         return value
     if jtype == "array":
-        # Liste sérialisée en JSON-string ("[1,2,3]") : un petit modèle le fait souvent.
-        # On PARSE avant d'envelopper — sinon "[1,2,3]" devenait ['[1,2,3]'] (corruption
-        # silencieuse). On n'enveloppe qu'un vrai scalaire seul.
+        # Parser une liste JSON avant d'envelopper un vrai scalaire.
         if isinstance(value, str):
             s = value.strip()
             if s.startswith("["):
@@ -109,9 +96,7 @@ def _coerce_scalar(value: object, jtype: str) -> object:
             return [value]
         return value
     if jtype == "object":
-        # Objet sérialisé en JSON-string ('{"a":1}') là où un dict est attendu (ex.
-        # calculate `where`) : on parse, sinon l'outil recevait une str et plantait sur
-        # `.get` avec un message opaque.
+        # Parser les objets JSON transmis comme chaînes.
         if isinstance(value, str):
             s = value.strip()
             if s.startswith("{"):
@@ -163,15 +148,11 @@ def validate_and_coerce(name: str, schema: dict, args: dict) -> dict:
         spec = props.get(key)
         jtype = spec.get("type") if isinstance(spec, dict) else None
         v = _coerce_scalar(value, jtype) if jtype else value
-        # Enum top-level : normalise casse/tiret + alias déclarés dans le schéma
-        # (`x_aliases`). Un enum imbriqué (items d'un array, ex. todo.status) est
-        # traité par l'outil via coerce_enum — le schéma top-level ne le voit pas.
+        # Les enums imbriqués restent à la charge de l'outil.
         if isinstance(spec, dict) and spec.get("enum"):
             v = coerce_enum(v, spec["enum"], spec.get("x_aliases"))
         coerced[key] = v
-    # Requis ABSENT (clé manquante ou null) : on nomme le champ, on suggère un renommage
-    # si une clé inconnue PROCHE a été fournie (typo), et on liste les champs non reconnus
-    # restants (cas fréquent du 4B : 'file' au lieu de 'path', clés inventées).
+    # Suggérer une clé proche rend une faute de nom directement corrigeable.
     missing = [r for r in required if args.get(r) is None]
     if missing:
         unknown = [k for k in args if k not in props]
@@ -197,8 +178,7 @@ def validate_and_coerce(name: str, schema: dict, args: dict) -> dict:
     return coerced
 
 
-# Univers des outils proposés dans l'UI (activables par conversation). `danger`
-# marque ceux qui modifient le système (gardés par le mode permission).
+# `danger` signale les outils soumis au mode de permission.
 AVAILABLE_TOOLS = [
     {"name": "find_files", "label": "find_files", "danger": False},
     {"name": "search_text", "label": "search_text", "danger": False},
@@ -247,10 +227,7 @@ class ToolSpec:
     description: str
     parameters: dict  # JSON Schema des arguments
     run: Callable[[dict], str]
-    # Outil STREAMANT (optionnel) : au lieu de rendre une str d'un bloc, il yield les
-    # events de sa propre activité (mêmes tuples que stream_chat_tools). La boucle les
-    # relaie à l'UI EN DIRECT et reconstruit le résultat final. Sert à `dispatch_agent`
-    # pour qu'on VOIE ce que fait le sous-agent. `run` reste le repli (1 bloc).
+    # Le flux optionnel expose l'activité interne; `run` reste le repli atomique.
     run_stream: Callable[[dict], Iterator[tuple[str, object]]] | None = None
     # Métadonnées internes. `danger` documente les outils à effet de bord (la
     # décision effective reste centralisée dans loom.permissions). `deferred`
@@ -267,8 +244,7 @@ class ToolSpec:
             "function": {
                 "name": self.name,
                 "description": self.description,
-                # Les clés x_* (métadonnées internes, ex. x_aliases de coercition)
-                # ne partent pas au modèle : bruit de schéma sans valeur d'usage.
+                # Ne pas exposer au modèle les métadonnées internes du schéma.
                 "parameters": _strip_x_keys(self.parameters),
             },
         }
@@ -290,10 +266,7 @@ class ToolRegistry:
         self._profile = (
             profile  # loom.runtime.models_profile.Profile | None (duck-typed)
         )
-        # Outils RETIRÉS du registre avec une raison (ex. read_image gaté hors vision) :
-        # un appel renvoie cette raison au lieu d'un « outil inconnu » trompeur — le
-        # system prompt et les consignes peuvent mentionner l'outil, le modèle reçoit
-        # alors une explication actionnable, sans payer le schéma dans le contexte.
+        # Un outil masqué garde une erreur explicite sans charger son schéma en contexte.
         self._unavailable: dict[str, str] = {}
         self._deferred_enabled = bool(deferred_enabled)
         self._deferred_loaded = (
@@ -476,9 +449,7 @@ def _resolve_in_root(root: Path, rel: str) -> Path:
     Le garde-fou n'est plus le périmètre mais la deny-list dure de loom.permissions
     (rm -rf, format, …), incontournable même ici.
     """
-    # Nettoyage des écritures fréquentes d'un modèle : guillemets englobants (copiés
-    # d'une commande shell) et `~` (home). Sans ça, `"C:/x"` et `~/x` étaient résolus
-    # littéralement sous root -> « fichier introuvable » alors que le chemin était valide.
+    # Retirer les guillemets shell et développer `~` avant de résoudre le chemin.
     rel = rel.strip()
     if len(rel) >= 2 and rel[0] == rel[-1] and rel[0] in ("'", '"'):
         rel = rel[1:-1].strip()

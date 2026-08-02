@@ -18,10 +18,7 @@ import os
 import shutil
 from pathlib import Path
 
-# Champs persistés dans le model.toml d'un distant. `id` est le nom du DOSSIER, jamais
-# une clé du fichier. `api_key` est en clair sur une racine machine-owned (hors repo),
-# comme avant dans local.toml — jamais renvoyé tel quel au client. `api_key_env`
-# (clé via variable d'env, géré à la main) est lu mais jamais écrit par l'UI.
+# Les clés restent sur une racine machine-owned et ne sont jamais renvoyées au client.
 FIELDS = (
     "base_url",
     "model",
@@ -36,7 +33,7 @@ FIELDS = (
     "price_cached",
     "description",
 )
-# Champs acceptés en lecture (migrations + model.toml) : FIELDS + id + api_key_env.
+# Accepter les champs hérités pendant les migrations.
 KEEP = ("id", "api_key_env", *FIELDS)
 
 
@@ -176,10 +173,7 @@ def migrate_into_dirs(
     return leftovers
 
 
-# ---------------------------------------------------------------------------
-# Emplacements HÉRITÉS (store JSON + [[remote_models]] de local.toml) : ces fonctions
-# ne servent plus qu'aux migrations ci-dessus et au filet de /remove-model.
-# ---------------------------------------------------------------------------
+# Compatibilité avec les anciens stores, uniquement pour migration et suppression.
 
 
 def load(path: str | Path) -> list[dict]:
@@ -250,7 +244,7 @@ def delete_remote_in_toml(local_path: str | Path | None, model_id: str) -> bool:
     if idx is None:
         return False
     del arr[idx]
-    # Une liste vidée laisse un `remote_models = []` fantôme -> on retire la clé.
+    # Supprimer aussi la clé vide laissée par certaines anciennes configurations.
     if len(arr) == 0:
         del doc["remote_models"]
     p.write_text(tomlkit.dumps(doc), encoding="utf-8")

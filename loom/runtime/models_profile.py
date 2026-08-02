@@ -1,4 +1,3 @@
-# loom/runtime/models_profile.py
 """Profils par modèle : correctifs DÉTERMINISTES propres à chaque modèle, activés par un
 profile.md dans loom/models/<id>/. Le .md ne contient PAS de logique : son frontmatter
 ACTIVE des fixes déjà codés ici (registre curaté). Chaque modèle a ses travers ; on les
@@ -9,12 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-# Ce module vit dans loom/runtime/ : remonter de DEUX niveaux jusqu'à la racine loom/
-# où se trouve models/ (sinon on chercherait loom/runtime/models/, inexistant -> profils muets).
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
-# Racines EFFECTIVES : surchargées au chargement de la config ([storage] models_root,
-# chaîne ou liste, ex. ["C:/loom-models", "E:/loom-models"]) via set_models_root — les
-# appels à load_profile n'ont pas à les faire circuler. Première racine gagnante.
+# Les racines configurées sont partagées avec les appels qui chargent les profils.
 _ROOTS: list[Path] = [MODELS_DIR]
 
 
@@ -24,10 +19,9 @@ def set_models_root(root: Path | list[Path]) -> None:
     _ROOTS = [Path(r) for r in root] if isinstance(root, list) else [Path(root)]
 
 
-# Fichiers de PROSE : on n'y touche pas (les guillemets typographiques peuvent y être voulus).
+# Préserver la typographie volontaire des fichiers de prose.
 _PROSE_EXT = frozenset({".md", ".markdown", ".txt", ".rst"})
 _SMART_QUOTES = {"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"'}
-# Cadratin (em-dash U+2014) et demi-cadratin (en-dash U+2013) -> tiret ASCII.
 _DASHES = {"\u2014": "-", "\u2013": "-"}
 
 
@@ -51,13 +45,11 @@ def _normalize_dashes(content: str, suffix: str) -> str:
     return _normalize(content, suffix, _DASHES)
 
 
-# Registre curaté : nom de fix -> fonction (content, suffix) -> content.
 FIXES = {
     "normalize_quotes": _normalize_quotes,
     "normalize_dashes": _normalize_dashes,
 }
 
-# Outils d'écriture et les clés d'arguments qui portent du contenu à corriger.
 _CONTENT_KEYS = {
     "write_file": ("content",),
     "append_file": ("content",),

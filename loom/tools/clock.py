@@ -1,4 +1,3 @@
-# loom/tools/clock.py
 """Outil current_date : la date/heure RÉELLE, calculée à la demande.
 
 Un modèle ne connaît pas la date (coupure d'entraînement) et la confabule si on la

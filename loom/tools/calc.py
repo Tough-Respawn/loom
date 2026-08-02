@@ -1,4 +1,3 @@
-# loom/tools/calc.py
 """Outil calculate : arithmétique EXACTE + agrégats sur données tabulaires.
 
 Pourquoi : un LLM calcule « de tête » par prédiction de tokens et se trompe (vécu
@@ -27,7 +26,6 @@ from pathlib import Path
 
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
 
-# --- table (CSV / XLSX) ---------------------------------------------------
 
 
 class _Col:
@@ -52,7 +50,7 @@ def _to_number(cell) -> float | None:
         s = s.replace(sym, "")
     if not s:
         return None
-    # Décimale française : virgule SANS point -> point ; « 1.234,56 » -> 1234.56.
+    # Accepter les décimales françaises sans confondre le séparateur de milliers.
     if "," in s:
         s = s.replace(".", "").replace(",", ".") if s.count(",") == 1 else s
     try:
@@ -131,20 +129,13 @@ def _apply_where(headers, rows, where: dict) -> list[list]:
     return out
 
 
-# --- normalisation des écritures « modèle » -------------------------------
-# Un LLM écrit la puissance de dix façons (^ , exposants Unicode e²², ×, ÷, moins
-# Unicode −). Python ne connaît que ** , * , / , - -> on TRADUIT ces conventions en
-# syntaxe Python AVANT le parse, HORS des chaînes entre guillemets (un nom de colonne
-# « a^b » en mode fichier ne doit pas être réécrit). Objectif : que toute écriture
-# usuelle « juste marche », sans que le modèle ait à connaître notre grammaire.
+# Traduire les notations mathématiques usuelles hors des chaînes avant l'analyse Python.
 
-# Exposants Unicode -> chiffre/signe ASCII (⁰¹²³… ⁺ ⁻). Un run devient **(…).
 _SUPERSCRIPT = {
     "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5", "⁶": "6",
     "⁷": "7", "⁸": "8", "⁹": "9", "⁺": "+", "⁻": "-", "⁽": "(", "⁾": ")",
 }  # fmt: skip
 
-# Opérateurs/symboles Unicode -> équivalent ASCII Python.
 _UNICODE_OPS = {
     "×": "*", "·": "*", "⋅": "*", "∗": "*", "∙": "*",
     "÷": "/", "∕": "/", "⁄": "/",
@@ -176,7 +167,7 @@ def _normalize_expr(expr: str) -> str:
             i += 1
             continue
         if ch in _SUPERSCRIPT:
-            # Un run d'exposants Unicode (ex. « ²² » de e²²) -> **(22).
+            # Regrouper un exposant Unicode complet dans une puissance Python.
             j = i
             run = []
             while j < n and expr[j] in _SUPERSCRIPT:
@@ -190,7 +181,6 @@ def _normalize_expr(expr: str) -> str:
     return _rewrite_math_shorthand("".join(out))
 
 
-# Notation « raccourcie » d'un modèle, appliquée HORS chaînes (déjà séparées ci-dessus).
 _NUM = r"\d*\.?\d+"
 
 
@@ -198,16 +188,13 @@ def _rewrite_math_shorthand(s: str) -> str:
     """√ sans parenthèses, multiplication implicite, `%` postfixe (pourcentage). Chaque
     passe est bornée pour NE PAS casser un identifiant (log10) ni la notation
     scientifique (1e3) : cf. les lookarounds."""
-    # √ : √16 -> sqrt(16) ; √(x) -> sqrt(x) ; √ isolé -> sqrt
+    # La racine préfixe accepte un nombre ou une expression parenthésée.
     s = re.sub(r"√\s*\(", "sqrt(", s)
     s = re.sub(rf"√\s*({_NUM})", r"sqrt(\1)", s)
     s = s.replace("√", "sqrt")
-    # `%` postfixe = pourcentage : 20% -> (20*0.01). PAS quand un opérande suit (modulo :
-    # 10%3 reste 10%3) — d'où le lookahead négatif sur un chiffre/point/paren.
+    # `%` postfixe est un pourcentage; avec un opérande à droite, il reste un modulo.
     s = re.sub(rf"({_NUM})\s*%(?!\s*[\d.(])", r"(\1*0.01)", s)
-    # Multiplication implicite : 2pi -> 2*pi, 3(4+5) -> 3*(4+5), )(  -> )*( .
-    # Lookbehind : le nombre ne doit pas être la fin d'un identifiant (log10). Lookahead
-    # (?![eE][+-]?\d) : ne pas couper la notation scientifique 1e3 / 1.5e-3.
+    # La multiplication implicite doit préserver les identifiants et la notation scientifique.
     s = re.sub(
         rf"(?<![A-Za-z0-9_.])({_NUM})(?![eE][+-]?\d)\s*(?=[A-Za-z_(])", r"\1*", s
     )
@@ -215,10 +202,8 @@ def _rewrite_math_shorthand(s: str) -> str:
     return s
 
 
-# --- évaluateur AST -------------------------------------------------------
 
 _FUNCS = {
-    # arithmétique de base
     "abs": abs,
     "fabs": math.fabs,
     "round": round,
@@ -228,13 +213,11 @@ _FUNCS = {
     "sign": lambda x: (x > 0) - (x < 0),
     "copysign": math.copysign,
     "fmod": math.fmod,
-    # racines / arrondis
     "sqrt": math.sqrt,
     "cbrt": math.cbrt,
     "floor": math.floor,
     "ceil": math.ceil,
     "trunc": math.trunc,
-    # logs / exponentielles
     "log": math.log,  # log(x) naturel, ou log(x, base)
     "ln": math.log,
     "log10": math.log10,
@@ -242,14 +225,12 @@ _FUNCS = {
     "log1p": math.log1p,
     "exp": math.exp,
     "expm1": math.expm1,
-    # combinatoire / entiers
     "factorial": math.factorial,
     "gcd": math.gcd,
     "lcm": math.lcm,
     "comb": math.comb,
     "perm": math.perm,
     "hypot": math.hypot,
-    # trigonométrie
     "sin": math.sin,
     "cos": math.cos,
     "tan": math.tan,
@@ -267,7 +248,7 @@ _FUNCS = {
     "radians": math.radians,
 }
 
-# Agrégats : n'acceptent QUE des colonnes (mode fichier). `values` filtrés du non-num.
+# Les agrégats acceptent uniquement les colonnes et ignorent leurs valeurs non numériques.
 _AGGS = {
     "sum": lambda v: sum(v),
     "avg": lambda v: sum(v) / len(v) if v else 0.0,
@@ -341,7 +322,7 @@ def _eval_node(node, table):
             raise ToolError("appel non supporté")
         fname = node.func.id
         args = [_eval_node(a, table) for a in node.args]
-        # Agrégat sur colonne : sum("Débit"), count("Compte")…
+        # Une chaîne dans un agrégat désigne une colonne.
         if len(args) == 1 and isinstance(args[0], _Col):
             if fname not in _AGGS:
                 raise ToolError(
@@ -364,10 +345,7 @@ def _eval_node(node, table):
         raise ToolError(
             f"fonction non autorisée : {fname} (admises : {', '.join(sorted(_FUNCS))})"
         )
-    # Cas fréquent : une virgule décimale FR (« 1,5 ») ou un séparateur de milliers
-    # (« 1,000 ») fait lire l'expression comme un tuple par Python. Message actionnable
-    # plutôt que « syntaxe non supportée : Tuple » (la virgule ne sépare QUE les
-    # arguments de fonction ici).
+    # Expliquer explicitement les virgules que Python interprète comme tuple.
     if isinstance(node, ast.Tuple):
         raise ToolError(
             "virgule inattendue : utilise un POINT décimal (1.5, pas 1,5) et pas de "
@@ -391,7 +369,6 @@ def _fmt(value) -> str:
         return str(int(value))
     text = repr(value)
     if isinstance(value, float) and len(text) > 12:
-        # ASCII uniquement (consoles Windows cp1252 + préférence style du projet).
         return f"{text} (~ {value:,.4f})".replace(",", " ")
     return text
 
@@ -416,8 +393,7 @@ def calculate(
             rows = _apply_where(headers, rows, where)
         table = (headers, rows)
         info = f"  [{Path(file).name} : {len(rows)} ligne(s) considérée(s)]"
-    # Traduit ^, exposants Unicode, ×÷− etc. en syntaxe Python (l'affichage garde
-    # l'écriture ORIGINALE du modèle, plus lisible et sans ** qui grasseraient en markdown).
+    # Conserver l'expression originale à l'affichage malgré sa normalisation interne.
     normalized = _normalize_expr(expression)
     try:
         tree = ast.parse(normalized, mode="eval")

@@ -30,10 +30,7 @@ def _wizard_deps(S):
     from loom.runtime import hardware, hf_catalog
 
     hw = hardware.detect_hardware()
-    # Budget de CAPACITÉ : RAM TOTALE (le modèle courant sera déchargé par
-    # llama-swap avant le nouveau), et VRAM ajoutée SEULEMENT si discrète (sur
-    # mémoire unifiée elle EST la RAM -> 0, pas de double comptage). Corrige le
-    # « ne tiendra pas » erroné du 2026-07-23 (budget mesuré sur la dispo).
+    # Compter la VRAM seulement si elle est discrète pour ne pas doubler la mémoire unifiée.
     ram_total = hardware.ram_total_mb()
     vram_budget = hw.vram_total_mb if hw.vram_is_discrete else 0
     return SimpleNamespace(
@@ -65,8 +62,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
     if not (active or is_cmd or is_rm or is_rb):
         return message, None
 
-    # Étape AVANT transition : si c'était la saisie de la clé (r_key), le message
-    # EST la clé — on la MASQUE dans tout ce qui persiste (conversation, journal).
+    # Masquer une clé avant toute persistance ou journalisation.
     prev_step = (conv.wizard or {}).get("step") if active and not is_cmd else None
 
     try:
@@ -104,7 +100,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
         else:
             from types import SimpleNamespace
 
-            # Le banc charge le modèle lui-même : il lui faut la VRAM -> serveur off.
+            # Le banc doit récupérer la VRAM occupée par le serveur.
             S.server_manager.stop()
             _client_mark_all_cold(S)
             rb_job = SimpleNamespace(done=False, label="", final=None)
@@ -156,9 +152,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
     elif res.action and res.action["kind"] == "remove":
         a = res.action
         if a["model_kind"] in ("remote", "remote_config"):
-            # Un distant = son dossier remote/<id> (purgé sur TOUTES les racines) ;
-            # les emplacements hérités (local.toml, store JSON) sont nettoyés en
-            # filet, sans jamais recréer un fichier vide.
+            # Purger toutes les racines et les emplacements hérités sans les recréer.
             with S.toml_lock:
                 model_store.delete_remote_dir(_models_roots(S), a["id"])
                 if S.config_local_path:
@@ -204,8 +198,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                 extra_reply = f"\n✅ « {a['id']} » supprimé du disque et du sélecteur."
                 models_changed = True
             except PermissionError:
-                # Windows verrouille un GGUF chargé (mmap llama-server) : on ne
-                # touche à RIEN et on guide — pas de suppression partielle.
+                # Sous Windows, refuser toute suppression partielle d'un GGUF encore mappé.
                 extra_reply = (
                     f"\n❌ Fichiers de « {a['id']} » verrouillés — le modèle est "
                     "probablement CHARGÉ. Éteins le serveur modèle (ou charge un "
@@ -277,8 +270,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                 "\n(models_dir non configuré : installation locale indisponible)"
             )
         else:
-            # `root` : racine choisie à l'étape disque du wizard (multi-racines) ;
-            # sans elle, racine prioritaire = S.models_dir (<racine[0]>/local/text).
+            # Respecter le disque choisi par le wizard multi-racines.
             base = (
                 Path(a["root"]) / "local" / "text"
                 if a.get("root")
@@ -305,25 +297,20 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                 ),
             )
 
-    # Persistance APRÈS les actions : le résultat (✅/❌ d'extra_reply) fait partie
-    # de l'échange — sinon il n'existait qu'en SSE et disparaissait au rechargement
-    # du fil (vécu : « Suppression de … » sans verdict après F5).
+    # Persister après l'action pour conserver son verdict au rechargement.
     _persist_wizard_exchange(S, sess, conv, save, shown, res.reply + extra_reply)
 
     chat_lock.release()
 
     def _stream():
         yield _sse("text", text=res.reply + extra_reply)
-        # Boutons de réponse (confort : purs raccourcis de frappe, cf. wizard.choices).
         if res.choices:
             yield _sse("choices", options=res.choices)
-        # Un modèle vient d'être monté/retiré à chaud -> le front recharge le
-        # sélecteur (vécu : « disponible dans le sélecteur »… qui ne l'affichait pas).
+        # Recharger le sélecteur après un montage ou retrait à chaud.
         if models_changed:
             yield _sse("models")
         if rb_job is not None:
-            # Calibration en fond : progression live, verdict déjà PERSISTÉ par le
-            # worker (visible même si ce flux est coupé/onglet fermé).
+            # Le worker persiste le verdict même si le flux ou l'onglet disparaît.
             while not rb_job.done:
                 yield _sse("status", label=rb_job.label or "calibration en cours…")
                 time.sleep(2)
@@ -349,8 +336,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
 
 def _register_model_routes(app, S):
-    # Import TARDIF (rompt le cycle models<->chat au chargement : chat importe models
-    # au top, models n'a besoin de chat qu'ici, une fois, au montage des routes).
+    # Import tardif requis pour rompre le cycle avec les routes de chat.
     from loom.web.routes.chat import CHAT_COMMANDS
     from loom.web.routes.priming import _prime_async
 
@@ -364,22 +350,15 @@ def _register_model_routes(app, S):
 
         save()
 
-        # Mémorise ce choix : il devient le défaut des prochaines sessions / lancements.
+        # Le choix courant devient le défaut des prochaines sessions.
 
         S.session_store.set_default_model(model)
 
-        # Cycle de vie du modèle SUR LA MACHINE — invariant multi-onglets (2026-07-19) :
-        # au plus UN local chargé (llama-swap le garantit), les distants n'imposent
-        # AUCUNE limite. Sélectionner un DISTANT ne décharge donc PLUS le local : une
-        # autre session l'utilise peut-être (voire génère dessus — l'unload la tuait).
-        # Libérer la VRAM reste possible via les boutons « décharger / éteindre ».
+        # Sélectionner un distant ne doit pas décharger un local utilisé par un autre onglet.
         if model in S.remote_model_ids:
             pass
         elif model in S.image_model_ids:
-            # Modèle IMAGE : libérer la VRAM du LLM et préchauffer ComfyUI en fond
-            # (équivalent du warmup local : la 1re image n'attend pas le démarrage).
-            # SAUF si une génération LOCALE tourne (autre session) : on ne lui vole ni
-            # la VRAM ni le modèle — generate_image sérialisera au moment de générer.
+            # Préchauffer ComfyUI seulement si aucune génération locale ne possède la VRAM.
             def _prep_image(m=model):
                 if not S.local_gen_lock.acquire(blocking=False):
                     print(
@@ -399,10 +378,7 @@ def _register_model_routes(app, S):
                 target=_prep_image, daemon=True, name="loom-image-warmup"
             ).start()
         elif model:
-            # Modèle LOCAL : démarre le serveur s'il est éteint (démarrage auto), puis
-            # AMORCE le préfixe de la session (l'amorce charge le modèle ET remplit le
-            # slot KV avec le vrai préfixe — l'ancien ping warmup l'écrasait avec un
-            # préfixe poubelle). En fond : la réponse UI reste instantanée, le chip suit.
+            # Amorcer le vrai préfixe en fond après le démarrage du serveur local.
             _prime_async(S, _session(S), wait_server=90.0)
 
         return render_template(
@@ -415,9 +391,7 @@ def _register_model_routes(app, S):
             model_descriptions=S.model_descriptions,
         )
 
-    # ---- Gestionnaire de modèles (UI) : ajouter/tester/supprimer un modèle DISTANT à chaud,
-    # sans redémarrer. Un distant = URL + clé (rien en VRAM) -> l'ajout monte une route et met
-    # à jour les registres partagés en place. Persisté dans config/local.toml (source unique).
+    # Les modèles distants se montent à chaud depuis leur model.toml.
     @app.get("/commands")
     def commands():
         """Catalogue des commandes slash — consommé par la palette « / » du composer."""
@@ -454,7 +428,7 @@ def _register_model_routes(app, S):
             return {"error": "id, base_url et model sont requis"}, 400
         if mid in S.models and mid not in S.remote_model_ids:
             return {"error": f"'{mid}' est déjà un modèle local"}, 400
-        # Clé : si vide, on garde celle de la route montée (édition sans re-saisir).
+        # Une édition sans clé conserve celle déjà montée.
         key = (b.get("api_key") or "").strip() or S.client.remote_api_key(mid)
         rec = {
             "id": mid,
@@ -465,9 +439,7 @@ def _register_model_routes(app, S):
             "max_tokens": int(b["max_tokens"]) if b.get("max_tokens") else None,
             "vision": bool(b.get("vision")),
         }
-        # Un distant = un dossier remote/<id>/model.toml sur la racine prioritaire.
-        # Édition en place (tomlkit) : si le dossier vit sur une AUTRE racine, on
-        # l'édite là-bas plutôt que de créer un doublon masqué par la priorité.
+        # Modifier la racine existante évite un doublon masqué par la priorité.
         with S.toml_lock:
             dest = next(
                 (r for r in roots if model_store.remote_dir(r, mid).is_dir()),
@@ -486,7 +458,7 @@ def _register_model_routes(app, S):
             return {"error": f"modèle distant '{mid}' inconnu"}, 404
         with S.toml_lock:
             model_store.delete_remote_dir(roots, mid)
-            # Filets : emplacements hérités, sans jamais recréer un fichier vide.
+            # Nettoyer les emplacements hérités sans recréer de fichier vide.
             if S.config_local_path:
                 model_store.delete_remote_in_toml(S.config_local_path, mid)
             if S.remote_store_path and Path(S.remote_store_path).exists():
@@ -551,9 +523,7 @@ def _register_model_routes(app, S):
                 tp.write_text(tomlkit.dumps(doc), encoding="utf-8")
         except (ValueError, TypeError) as e:
             return {"ok": False, "error": str(e)[:120]}, 400
-        # Applique À CHAUD côté serveur modèle : régénère le yaml (llama-swap -watch-config le
-        # recharge) + décharge CE modèle -> il se relance avec le nouveau tuning au prochain
-        # usage, sans toucher au TOML à la main ni tout redémarrer.
+        # Régénérer puis décharger applique le nouveau tuning au prochain usage.
         applied = _regen_swap_yaml(S)
         if applied:
             threading.Thread(
@@ -565,18 +535,12 @@ def _register_model_routes(app, S):
 
     @app.get("/machine_state")
     def machine_state():
-        # État du modèle SUR LA MACHINE, pour l'indicateur UI. Vérité = llama-swap /running
-        # (best-effort ; le modèle peut aussi s'être déchargé seul via son TTL). On teste par
-        # sous-chaîne quel modèle est chargé, sans coupler au schéma JSON de llama-swap.
+        # L'état machine vient de `/running`, sans dépendre strictement de son schéma JSON.
         conv, _ = _ctx(S)
         model = conv.model
         remote = model in S.remote_model_ids
         reachable, running_txt = S.client.running_local()
-        # /running est parsé quand c'est possible : llama-swap distingue « starting »
-        # (chargement en cours) de « ready » (servable). Sans ça, le chip disait
-        # « chargé » dès le début du chargement, et un unload pendant « starting » est
-        # ignoré par llama-swap -> le bouton « décharger » doit se cacher à ce moment.
-        # Repli sous-chaîne si le JSON change (on reste découplé du schéma).
+        # Distinguer `starting` de `ready`; garder un repli texte si le JSON change.
         states: dict[str, str] = {}
         try:
             for entry in json.loads(running_txt).get("running", []):
@@ -607,26 +571,20 @@ def _register_model_routes(app, S):
             "model_loaded": model_loaded,
             "loading": model_loading,
             "any_loaded": any_loaded,
-            # Serveur GÉRÉ (lancé par loom.web) : conditionne le bouton « éteindre » —
-            # on ne propose jamais de tuer une stack lancée à la main hors Loom.
+            # Ne proposer l'arrêt que pour une stack lancée par Loom.
             "managed": S.server_manager.owns_running(),
             "starting": S.server_manager.starting,
         }
 
     @app.post("/machine/unload")
     def machine_unload():
-        # Déchargement À LA DEMANDE (bouton UI sous le chip machine) : libère la VRAM sans
-        # changer de modèle sélectionné. Synchrone : la réponse reflète le résultat réel
-        # (llama-swap tue le llama-server en ~1-2 s). Rechargé à la prochaine requête.
+        # Décharger libère la VRAM sans changer la sélection de la session.
         _client_mark_all_cold(S)
         return {"ok": S.client.unload_local()}
 
     @app.post("/machine/server/start")
     def machine_server_start():
-        # Trigger MANUEL (bouton « démarrer le serveur ») : lance sans bloquer la requête ;
-        # l'UI suit la progression via /machine_state (état « démarrage… »). Puis AMORCE
-        # du préfixe de la session active en fond : « démarrer » = « rendre prêt à
-        # répondre », premier message compris (il ne préfille plus que son delta).
+        # Démarrer en fond puis amorcer le préfixe rend aussi le premier message rapide.
         ok = S.server_manager.start()
         _ctx(S)  # garantit une session active avec un modèle valide
         _prime_async(S, _session(S), wait_server=90.0)
@@ -634,6 +592,5 @@ def _register_model_routes(app, S):
 
     @app.post("/machine/server/stop")
     def machine_server_stop():
-        # Éteint l'arbre complet (serve.py + llama-swap + llama-server) et libère RAM/VRAM.
-        # Ne concerne QUE l'instance gérée par loom.web (cf. managed dans /machine_state).
+        # Éteindre uniquement l'arbre géré par Loom.
         return {"ok": S.server_manager.stop()}

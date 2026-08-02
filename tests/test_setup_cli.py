@@ -1,5 +1,4 @@
-# Installeur loom-setup : parcours console complets avec Console scriptée et
-# effets de bord fakés (release GitHub figée, download no-op) — SANS réseau.
+# Parcours console complets avec effets externes simulés, sans réseau.
 import tomllib
 from types import SimpleNamespace
 
@@ -117,7 +116,6 @@ def _deps(tmp_path, **over):
         download_and_extract=fake_download,
         verify_binary=lambda p: "b5321" if p else None,
         probe_repo=lambda repo: list(_FILES),
-        # résolution live des entrées du catalogue : un repo 35B (fit large)
         search_models=lambda q: [
             {"repo_id": "org/Qwen3.6-35B-A3B-GGUF", "downloads": 9}
         ],
@@ -141,16 +139,12 @@ def test_parcours_complet_machine_vierge(monkeypatch, tmp_path):
     con, printed = _console(assume_yes=True)  # accepte tout, choix par défaut
     code = run(con, _deps(tmp_path))
     assert code == 0
-    # binaire : installé + config écrite
     local = tomllib.loads(
         (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
     )
     assert local["server"]["bin"].endswith("llama-server.exe")
-    # le premier modèle installé devient le défaut de CETTE machine
     assert local["chat"]["default_model"] == "qwen3.6-35b-a3b"
-    # modèle : model.toml écrit dans <package_models>/local/text/<id>/ avec mmproj.
-    # Le recommandé n°1 = l'entrée la plus gourmande qui tient (budget 25 904 Mo)
-    # -> famille 35B (min_budget 18 000), résolue en live sur le repo faké.
+    # Le premier choix doit être la famille la plus gourmande compatible avec le budget.
     mdir = tmp_path / "models" / "local" / "text" / "qwen3.6-35b-a3b"
     raw = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
     assert raw["filename"] == "m.Q4_K_M.gguf"
@@ -161,14 +155,12 @@ def test_parcours_complet_machine_vierge(monkeypatch, tmp_path):
 
 def test_relance_idempotente(monkeypatch, tmp_path):
     _patch_paths(monkeypatch, tmp_path)
-    # binaire déjà en place (chemin absolu existant dans local.toml)
     exe = tmp_path / "bin" / "llama-server.exe"
     exe.parent.mkdir()
     exe.write_bytes(b"")
     (tmp_path / "config" / "local.toml").write_text(
         f'[server]\nbin = "{str(exe).replace(chr(92), "/")}"\n', encoding="utf-8"
     )
-    # modèle déjà branché
     mdir = tmp_path / "models" / "local" / "text" / "deja-la"
     mdir.mkdir(parents=True)
     (mdir / "model.toml").write_text(
@@ -188,7 +180,6 @@ def test_relance_idempotente(monkeypatch, tmp_path):
 
 def test_refus_utilisateur(monkeypatch, tmp_path):
     _patch_paths(monkeypatch, tmp_path)
-    # réponses : "n" (refus binaire), "n" (pas de ménage RAM), "0" (passer le modèle)
     con, printed = _console(answers=["n", "n", "0"])
     code = run(con, _deps(tmp_path))
     assert code == 0  # un refus n'est PAS un échec
@@ -233,9 +224,7 @@ def test_recherche_filtree_par_budget_petite_machine(monkeypatch, tmp_path):
             "is_mmproj": False,
         }
     ]
-    # réponses : binaire déjà réglé -> rien ; modèle : budget 1604 -> seule
-    # l'entrée ~1.5B du catalogue tient (n°1), recherche libre = n°2 ; puis
-    # requête, repo 1 (le 1.5b), quant oui
+    # Avec ce budget, seule la famille 1.5B doit être proposée avant la recherche libre.
     exe = tmp_path / "llama-server.exe"
     exe.write_bytes(b"")
     (tmp_path / "config" / "local.toml").write_text(
@@ -255,7 +244,6 @@ def test_recherche_filtree_par_budget_petite_machine(monkeypatch, tmp_path):
     assert "1 résultat(s) masqué(s)" in out  # le 397B a disparu
     assert "397B" not in out.split("masqué")[1].split("Quel repo")[0]
     assert "~675 Mo mini" in out  # l'annotation d'estimation
-    # le 1.5b a bien été installé
     mdir = tmp_path / "models" / "local" / "text" / "qwen2.5-1.5b-instruct-q4_k_m"
     assert (mdir / "model.toml").exists()
 
@@ -269,14 +257,11 @@ def test_liberer_ram_avant_le_choix(monkeypatch, tmp_path):
     (tmp_path / "config" / "local.toml").write_text(
         f'[server]\nbin = "{str(exe).replace(chr(92), "/")}"\n', encoding="utf-8"
     )
-    # RAM : 5700 à la détection, puis 12000 après fermeture des applis
     values = iter([5_700, 12_000, 12_000])
 
     def fake_ram():
         return next(values)
 
-    # réponses : Entrée (=oui, machine serrée -> défaut O), Entrée (re-mesurer),
-    # "c" (continuer), "0" (passer — on teste la boucle, pas l'install)
     con, printed = _console(answers=["", "", "c", "0"])
     deps = _deps(
         tmp_path,
@@ -295,7 +280,6 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
     """Binaire + modèle en place -> le bench mesure et écrit threads/ngl/context
     dans local.toml (+ table [bench] pour l'idempotence)."""
     _patch_paths(monkeypatch, tmp_path)
-    # binaire réel sur disque (résolvable) + modèle avec GGUF téléchargé
     exe = tmp_path / "rt" / "llama-server.exe"
     exe.parent.mkdir()
     exe.write_bytes(b"")
@@ -317,15 +301,13 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         {"threads": 12, "ngl": 0, "kind": "pp", "ts": 22.0},
     ]
 
-    # Sonde topologique bouchonnée : mémoire linéaire (pente ~10,5 Ko/token),
-    # débits constants — la calibration doit valider chaque barreau <= capacité.
+    # La sonde linéaire doit valider chaque barreau sous la capacité.
     class _FakeProbe:
         def __init__(self, **kw):
             self.kw = kw
             self.n_parallel = kw.get("n_parallel", 1)
 
         def probe_isolation(self, ctx=4096):
-            # Cache survivant à la pollution (modèle classique) : retour ~= suffixe.
             return 600, 4
 
         def run(self, ctx, depth):
@@ -346,8 +328,7 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         cpu_physical=lambda: 10,
         gpu_vram_total_mb=lambda: 6_144,
         make_probe=_FakeProbe,
-        # VRAM > taille modèle (15 Go) : l'offload total (99) reste un candidat
-        # faisable — c'est lui que le bench doit élire et écrire en override.
+        # Une VRAM suffisante doit faire élire l'offload total.
         detect_hardware=lambda server_bin=None: HardwareProfile(
             True, "GPU 20Go", 20_000, 16, vram_is_discrete=True
         ),
@@ -359,9 +340,7 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
     )
     assert local["override"]["threads"] == 10
     assert local["override"]["n_gpu_layers"] == 99
-    # meta GGUF illisible -> limite modèle par défaut 32768 ; budget 6144-640 et
-    # pente ~10,5 Ko/tok portent bien au-delà -> borné par le modèle, vitesse
-    # validée à chaque barreau. La DÉCISION porte son mécanisme dans [bench].
+    # Sans métadonnée, la limite par défaut doit borner une capacité pourtant supérieure.
     assert local["server"]["context"] == 32_768
     assert local["bench"]["context_mode"] == "gpu_dense"
     assert local["bench"]["context_valide_jusqua"] == 32_768
@@ -370,14 +349,13 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         or "capacité" in local["bench"]["context_mecanisme"]
     )
     assert local["bench"]["tg_ts"] == 3.4
-    # Sonde d'isolation : verdict MESURÉ (survit : 4/600) écrit dans le model.toml.
+    # Persister le verdict mesuré d'isolation dans le profil.
     mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
     assert mt["cache_isolation"] is False
     out = "\n".join(printed)
     assert "cache survit à la pollution" in out
     assert "3.4 t/s" in out.replace(",", ".") or "3,4 t/s" in out
 
-    # relance : la table [bench] existe -> déjà calibré, rien ne tourne
     def no_bench(*a, **k):
         raise AssertionError("le bench ne doit pas re-tourner")
 
@@ -397,7 +375,6 @@ def test_aucun_asset_compatible(monkeypatch, tmp_path):
     assert "[manuel]" in out and "config/local.toml" in out
 
 
-# ── Modèle incomplet (Ctrl+C pendant le download) : honnêteté + reprise ──────
 
 
 def _modele_incomplet(tmp_path, monkeypatch):
@@ -444,8 +421,7 @@ def test_modele_incomplet_reprise_refusee(monkeypatch, tmp_path):
 
 
 def test_bench_saute_dit_ce_qui_manque(monkeypatch, tmp_path):
-    # Binaire présent, GGUF absent : le message doit nommer le GGUF, pas
-    # l'ambigu « binaire ou modèle ».
+    # Le diagnostic doit nommer le GGUF absent malgré un binaire valide.
     _modele_incomplet(tmp_path, monkeypatch)
     binp = tmp_path / "llama-server.exe"
     binp.write_bytes(b"")
@@ -457,8 +433,7 @@ def test_bench_saute_dit_ce_qui_manque(monkeypatch, tmp_path):
 
 
 def test_say_colorise_chaque_ligne():
-    # Le bilan arrive en UN bloc multi-lignes : chaque ligne doit être colorée
-    # (avant, seule la 1re ligne passait par les règles -> bilan tout blanc).
+    # Chaque ligne d'un bilan multiligne doit être colorée séparément.
     from loom.runtime.term import DIM, GREEN
 
     printed = []
@@ -472,8 +447,7 @@ def test_say_colorise_chaque_ligne():
 
 
 def test_recherche_accepte_une_url_hf(monkeypatch, tmp_path):
-    # Coller une URL (ou un id org/repo) court-circuite la recherche : le repo
-    # part directement à l'inventaire des quants.
+    # Une URL explicite doit ouvrir directement l'inventaire des quants.
     _patch_paths(monkeypatch, tmp_path)
     from loom.setup.catalog import budget_mb, fitting_entries
 
@@ -503,7 +477,6 @@ def test_recherche_accepte_une_url_hf(monkeypatch, tmp_path):
     assert report.outcomes[-1].status == "fait"
 
 
-# ── Routeur multi-modèles (llama-swap) : provisionné D'OFFICE par le setup ──
 
 
 def test_step_swap_installe_et_configure(monkeypatch, tmp_path):
@@ -540,7 +513,6 @@ def test_step_swap_installe_et_configure(monkeypatch, tmp_path):
     assert local["server"]["swap_bin"].endswith("llama-swap.exe")
     assert report.outcomes[-1].status == "fait"
 
-    # relance : configuré -> rien à faire (idempotent)
     raw = {"server": {"bin": str(exe), "swap_bin": local["server"]["swap_bin"]}}
     con2, printed2 = _console()
     cli.step_swap(con2, report, _deps(tmp_path), _PLAT, raw)

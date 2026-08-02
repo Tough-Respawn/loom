@@ -20,7 +20,6 @@ from loom.web.routes.helpers import (
 from loom.web.routes.priming import _prime_async
 from loom.web.routes.skills import _index_context
 
-# ---- Routes : sessions (fil, notes, fork, compaction) ---------------------------------
 
 
 def _register_session_routes(app, S):
@@ -35,7 +34,7 @@ def _register_session_routes(app, S):
 
         save()
 
-        # Le fil repart à neuf -> on efface aussi le journal d'affichage temps réel.
+        # Un nouveau fil ne doit pas rejouer l'ancienne timeline.
         S.session_store.clear_timeline(_session(S).id)
 
         return render_template("index.html", **_index_context(S))
@@ -52,12 +51,7 @@ def _register_session_routes(app, S):
         user_index = int(request.form.get("user_index", "-1"))
         ui_text = (request.form.get("text") or "").strip()
 
-        # Cible la session de l'ONGLET appelant (session_id), pas la session focus
-        # globale : avec la split view, le bouton « repartir » existe dans des panneaux
-        # non-focus, et la resynchro du focus (/session/activate) COURT contre ce POST —
-        # sans session_id, /fork pouvait tronquer une AUTRE session que celle affichée.
-        # Un session_id fourni mais INCONNU est une erreur franche : surtout pas de
-        # repli silencieux sur la session focus (ce serait re-tronquer la mauvaise).
+        # Cibler l'onglet appelant évite de tronquer une autre session en split view.
         req_sid = (request.form.get("session_id") or "").strip()
         if req_sid:
             sess = _get_session(S, req_sid)
@@ -76,18 +70,17 @@ def _register_session_routes(app, S):
                 ).strip()
             return str(content).strip()
 
-        # Trouve le N-ieme message user dans l'historique persiste
 
         user_msgs = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
 
         target_idx = None
         if 0 <= user_index < len(user_msgs):
             cand = user_msgs[user_index]
-            # L'index ne vaut que si le contenu correspond encore (pas de glissement).
+            # Un index n'est fiable que si le contenu correspond encore.
             if not ui_text or _as_text(msgs[cand].get("content", "")) == ui_text:
                 target_idx = cand
         if target_idx is None and ui_text:
-            # Index périmé (compaction) : dernier message user au MÊME contenu.
+            # Après compaction, rechercher le dernier message au même contenu.
             for i in reversed(user_msgs):
                 if _as_text(msgs[i].get("content", "")) == ui_text:
                     target_idx = i
@@ -110,7 +103,6 @@ def _register_session_routes(app, S):
         else:
             text = str(content)
 
-        # Tronque : garde jusqu'au message user (inclus), efface la suite
 
         conv.messages = msgs[: target_idx + 1]
 
@@ -134,9 +126,7 @@ def _register_session_routes(app, S):
             return Response("occupé : cette session génère déjà", status=429)
         try:
             conv = sess.conversation
-            # DÉTERMINISTE et INSTANTANÉ (aucun appel modèle -> pas de blocage de plusieurs
-            # minutes). Cible = prompt système (INCOMPRESSIBLE) + ~4000 car. (~1,3k tokens)
-            # de conversation : on clippe le reste de l'historique.
+            # La compaction manuelle reste déterministe et n'appelle aucun modèle.
             target_chars = len(conv.system_prompt) + 4000
             new_msgs, freed = S.client.compact_conversation(
                 conv.messages,
@@ -145,10 +135,7 @@ def _register_session_routes(app, S):
             )
             if freed:
                 conv.messages = new_msgs
-                # `freed` = tokens réellement libérés (delta de la conversation, le prompt
-                # système s'annule). On le RETRANCHE du ctx réel du dernier appel -> jauge à
-                # jour immédiatement ET exacte (pas une ré-estimation qui oublierait les
-                # schémas d'outils). L'usage réel du prochain tour confirmera au token près.
+                # Retrancher le delta préserve les coûts de schéma déjà inclus dans la jauge.
                 conv.context_tokens = max(0, conv.context_tokens - freed)
                 S.session_store.save(sess)
         finally:
@@ -157,18 +144,13 @@ def _register_session_routes(app, S):
 
     @app.post("/cancel")
     def cancel():
-        # Bouton Stop : pose le signal d'annulation de LA session ciblée (par session_id, sinon
-        # la session focus) -> SA boucle /chat s'arrête net et libère son verrou. Les AUTRES
-        # sessions (onglets) ne sont PAS touchées. Sans effet si rien ne tourne pour elle.
+        # Le STOP vise une session sans interrompre les autres onglets.
 
         req_sid = (request.form.get("session_id") or "").strip()
         sess = _get_session(S, req_sid) if req_sid else S.cur["session"]
         if sess is not None:
             _cancel_for(S, sess.id).set()
-            # Modèle distant lent/bloqué : cancel_event n'est lu qu'ENTRE deux chunks.
-            # Si l'itération du stream ne rend jamais la main, le finally qui relâche le
-            # verrou de session n'est jamais atteint. On FERME donc le stream en cours :
-            # close() lève httpx.ReadError (attrapée par la boucle) -> teardown borné.
+            # Fermer un stream distant figé rend son teardown et son verrou bornés.
             holder = S.active_streams.get(sess.id)
             if holder is not None and holder.get("stream") is not None:
                 _close(holder["stream"])
@@ -177,11 +159,7 @@ def _register_session_routes(app, S):
 
     @app.post("/note")
     def note():
-        # Note en vol (« btw » natif) : remarque envoyée PENDANT une génération.
-        # Mise en file par session ; la boucle tool-use l'injecte au prochain point
-        # d'arrêt (avant l'appel modèle suivant) SANS interrompre le tour. Si le
-        # tour se termine avant l'injection, la note reste en file et part au début
-        # du tour suivant — jamais perdue.
+        # Une note reste en file jusqu'au prochain point d'injection, même au tour suivant.
         text = (request.form.get("text") or "").strip()
         if not text:
             return {"error": "note vide"}, 400
@@ -200,7 +178,6 @@ def _register_session_routes(app, S):
             }, 429
         return {"ok": True, "queued": queued}
 
-    # --- Sessions : liste / nouvelle / bascule / suppression ---
 
     @app.get("/sessions")
     def sessions_list():
@@ -216,9 +193,7 @@ def _register_session_routes(app, S):
 
     @app.get("/session_state")
     def session_state():
-        # État CLIENT d'une session, pour OUVRIR un onglet sans recharger la page : messages,
-        # modèle, thinking, workspace, outils actifs, compteur. Le multi-onglets s'appuie
-        # dessus (chaque onglet hydrate sa session à l'ouverture).
+        # Renvoyer assez d'état pour hydrater un onglet sans recharger la page.
         sid = (request.args.get("id") or "").strip()
         sess = _get_session(S, sid)
         if sess is None:
@@ -234,7 +209,7 @@ def _register_session_routes(app, S):
             "model": conv.model,
             "active_tools": conv.active_tools,
             "usage_totals": _totals(S, conv),
-            # A-t-on un journal d'affichage à rejouer ? (sinon l'UI retombe sur `messages`).
+            # Sans timeline, l'UI retombe sur les messages persistés.
             "has_timeline": bool(S.session_store.read_timeline(sess.id)),
         }
 
@@ -261,10 +236,7 @@ def _register_session_routes(app, S):
 
         title = (request.form.get("title") or "").strip()
 
-        # Sessions FANTÔMES : créées puis jamais utilisées (« Nouvelle session » et
-        # zéro message) — balayées quand on en crée une nouvelle : elles ne font que
-        # polluer la sidebar. On épargne toute session dont le verrou de génération
-        # est tenu (un tour vient peut-être de démarrer).
+        # Supprimer les sessions vierges inactives sans toucher à celles qui génèrent.
         for meta in S.session_store.list():
             if meta.title != "Nouvelle session":
                 continue
@@ -288,13 +260,11 @@ def _register_session_routes(app, S):
 
         S.cur["session"] = sess
 
-        # Amorce du cache KV en fond (si le serveur modèle tourne déjà) : le préfixe
-        # statique de la session neuve se préfille pendant que l'utilisateur tape.
+        # Préremplir le préfixe en fond pendant que l'utilisateur tape.
         _prime_async(S, _ensure_model(S, sess), require_running=True)
 
         return {"id": sess.id, "title": sess.title, "workspace": sess.workspace}
 
-    # ---- Export / import de session (.zip clair, cf. SessionStore.export_zip) ----
 
     @app.get("/session/<sid>/export")
     def session_export(sid):
@@ -330,7 +300,6 @@ def _register_session_routes(app, S):
             sess = S.session_store.import_zip(data)
         except ValueError as exc:
             return {"error": str(exc)}, 400
-        # Même prise en charge qu'une session neuve : cache, focus, prime en fond.
         with S.gen_guard:
             S.sessions_cache[sess.id] = sess
         S.cur["session"] = sess
@@ -355,14 +324,10 @@ def _register_session_routes(app, S):
 
         S.cur["session"] = loaded
 
-        # Bascule = intention de reprendre CE fil : on ré-amorce son préfixe (fil
-        # complet) en fond si le serveur tourne, sans jamais le démarrer pour ça.
+        # Réamorcer en fond sans démarrer le serveur uniquement pour cette bascule.
         _prime_async(S, loaded, require_running=True)
 
-        # Renvoie l'état complet de la session activée : le front s'en sert pour
-        # rafraîchir l'affichage du path/workspace à CHAQUE bascule d'onglet.
-        # Sans ça, un onglet dont le workspace a changé (ou est vide) garde
-        # l'affichage du path de l'onglet précédent.
+        # Renvoyer le workspace évite de conserver celui de l'onglet précédent.
         return {
             "id": loaded.id,
             "title": loaded.title,
@@ -372,21 +337,14 @@ def _register_session_routes(app, S):
 
     @app.post("/session/workspace")
     def session_workspace():
-        # Réaffecte le dossier de travail de la SESSION ACTIVE (appelé par le sélecteur
-
-        # de dossier). Sans ça, choisir un dossier ne s'appliquerait qu'à la création
-
-        # d'une nouvelle session -> les outils continueraient de cibler l'ancien.
+        # Le sélecteur doit réaffecter la session existante, pas seulement les futures.
 
         ws = (request.form.get("workspace") or "").strip()
 
         if not ws:
             return Response("workspace manquant", status=400)
 
-        # Cible la session de l'ONGLET appelant (session_id), pas la session focus
-        # globale : avec le multi-onglets, _session() peut désigner un autre fil ->
-        # le dossier choisi s'écrivait ailleurs et le tour partait sur l'ancien
-        # workspace (bug constaté le 2026-07-10).
+        # Utiliser l'identifiant de l'onglet pour éviter une course avec le focus global.
         req_sid = (request.form.get("session_id") or "").strip()
         sess = _get_session(S, req_sid) if req_sid else _session(S)
         if sess is None:
@@ -402,14 +360,11 @@ def _register_session_routes(app, S):
     def session_delete():
         sid = (request.form.get("id") or "").strip()
 
-        # Vérifier l'existence AVANT de créer un verrou : _lock_for fait un setdefault,
-        # donc un id inconnu/invalide laisserait une entrée PERMANENTE dans sess_locks
-        # (qu'on ne retire plus) -> fuite mémoire sur POST répétés. 404 net si inconnue.
+        # Valider l'id avant `setdefault` évite des verrous orphelins.
         if _get_session(S, sid) is None:
             return Response("session introuvable", status=404)
 
-        # Refuser tant qu'une génération tourne sur CETTE session (verrou tenu) : une
-        # save en vol recréerait le dossier juste après la suppression (session zombie).
+        # Une sauvegarde en vol pourrait recréer une session supprimée.
         lock = _lock_for(S, sid)
         if not lock.acquire(blocking=False):
             return Response("occupé : cette session génère — Stop d'abord", status=409)
@@ -418,22 +373,16 @@ def _register_session_routes(app, S):
                 S.monitor_hub.stop_session(sid)
             S.session_store.delete(sid)
 
-            # Purge du cache d'OBJETS et du signal d'annulation : sans ça l'objet
-            # survivait en mémoire (helpers._get_session lit le cache d'abord) et pouvait
-            # réapparaître à la prochaine save.
+            # Purger l'objet en mémoire empêche sa réapparition lors d'une sauvegarde.
             with S.gen_guard:
                 S.sessions_cache.pop(sid, None)
                 S.sess_cancel.pop(sid, None)
 
-            # Si on supprime la session courante, on recharge l'active (ou on en crée une).
             if S.cur["session"] is not None and S.cur["session"].id == sid:
                 S.cur["session"] = None
                 _session(S)
         finally:
             lock.release()
-            # On NE retire PAS sess_locks[sid] : un /chat concurrent peut détenir une
-            # référence vers CE verrou (capturé avant l'acquisition). Le retirer ferait
-            # coexister deux verrous pour le même sid -> exclusion mutuelle rompue. Un
-            # Lock orphelin par session supprimée est un coût mémoire négligeable.
+            # Conserver le verrou évite que deux instances coexistent pendant une course.
 
         return {"ok": True}

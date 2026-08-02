@@ -1,7 +1,4 @@
-# Isolation du cache de conversation PAR MODÈLE (standard 2026-07-22, remplace le
-# « cache souverain » save/restore) : la sonde du bench mesure si le cache survit à
-# la pollution du slot (A -> B -> A) ; verdict dans model.toml (cache_isolation),
-# exploité par serve/swap (--parallel monté à 2 pour CE modèle seulement).
+# La sonde A→B→A décide si ce modèle exige un second slot isolé.
 from __future__ import annotations
 
 import tomllib
@@ -13,27 +10,22 @@ from loom.runtime.swap import _model_cmd
 from loom.setup.topology import TOPO_RAM, ServerProbe, isolation_needed
 
 
-# ── Verdict pur ──────────────────────────────────────────────────────────────
 
 
 def test_isolation_needed_bimodal():
-    # Hybride : le retour re-préfille l'essentiel -> isolation nécessaire.
     assert isolation_needed(600, 590) is True
-    # Classique : le prompt-cache natif recycle tout sauf le suffixe.
     assert isolation_needed(600, 5) is False
-    # Frontière 50 % (mesure bimodale en pratique : ~0 % ou ~100 %).
+    # La mesure est bimodale; 50 % sépare nettement les deux régimes.
     assert isolation_needed(100, 50) is True
     assert isolation_needed(100, 49) is False
 
 
 def test_isolation_needed_mesure_illisible_sans_verdict():
-    # 1er passage vide = sonde illisible : on n'impose JAMAIS un doublement de
-    # KV sans preuve.
+    # Ne jamais doubler le KV sur une sonde illisible.
     assert isolation_needed(0, 0) is False
     assert isolation_needed(0, 500) is False
 
 
-# ── Sonde A -> pollution -> A ────────────────────────────────────────────────
 
 
 def test_probe_isolation_sequence(monkeypatch):
@@ -52,7 +44,6 @@ def test_probe_isolation_sequence(monkeypatch):
 
     def fake_completion(prompt, n_predict, cache_prompt=False):
         seen.append((prompt, cache_prompt))
-        # 1er A : tout traité ; B : pollution ; retour A : 4 tokens (suffixe).
         n = {1: 600, 2: 610, 3: 4}[len(seen)]
         return {"timings": {"prompt_n": n}}
 
@@ -60,17 +51,15 @@ def test_probe_isolation_sequence(monkeypatch):
     monkeypatch.setattr(probe, "_completion", fake_completion)
     first, back = probe.probe_isolation()
     assert (first, back) == (600, 4)
-    # 3 appels, tous avec cache_prompt (sans lui la sonde ne mesure rien).
     assert [c for _, c in seen] == [True, True, True]
-    # B ne partage AUCUN préfixe avec A, et le retour re-commence par A.
+    # B ne doit partager aucun préfixe avec A pour polluer réellement le slot.
     a1, b, a2 = (p for p, _ in seen)
     assert not b.startswith(a1[:20])
     assert a2.startswith(a1)
 
 
 def test_probe_n_parallel_traverse_les_flags(monkeypatch):
-    # P2 (le conseilleur simule l'exécutant) : isolation jugée nécessaire ->
-    # la calibration doit charger avec --parallel 2 et le KV réellement doublé.
+    # Une isolation nécessaire doit être mesurée avec le KV réellement doublé.
     from loom.setup import topology as topo
 
     captured: dict = {}
@@ -95,7 +84,6 @@ def test_probe_n_parallel_traverse_les_flags(monkeypatch):
     assert captured["n_parallel"] == 2
 
 
-# ── Verdict -> config -> ligne de commande ───────────────────────────────────
 
 
 def test_resolve_parallel():
@@ -110,7 +98,7 @@ def test_model_toml_porte_cache_isolation():
     base = {"repo": "r/x", "filename": "x.gguf", "n_layers": 40, "size_mb": 100}
     m = _parse_model({**base, "cache_isolation": True}, "x")
     assert m.cache_isolation is True
-    # Absent -> False (jamais sondé = pas d'isolation imposée).
+    # Sans mesure, ne pas imposer l'isolation.
     assert _parse_model(base, "x").cache_isolation is False
 
 
@@ -131,7 +119,6 @@ def test_swap_cmd_monte_parallel_pour_le_modele_isole():
     assert "-c 8192" in sain
 
 
-# ── Écriture du verdict dans model.toml ──────────────────────────────────────
 
 
 def test_set_model_cache_isolation_ecrit_et_remplace(tmp_path):
@@ -148,7 +135,7 @@ def test_set_model_cache_isolation_ecrit_et_remplace(tmp_path):
     assert d["cache_isolation"] is True
     assert "sondé par le bench" in p.read_text(encoding="utf-8")
 
-    # Re-sonde avec verdict inverse : REMPLACE (ligne + stamp), pas de doublon.
+    # Une nouvelle sonde remplace le verdict et son horodatage.
     _set_model_cache_isolation(gguf, False, "retour 4/600 tokens retraités")
     txt = p.read_text(encoding="utf-8")
     d = tomllib.loads(txt)
@@ -164,7 +151,6 @@ def test_set_model_cache_isolation_sans_toml_ne_leve_pas(tmp_path):
     _set_model_cache_isolation(tmp_path / "absent.gguf", True, "d")  # no-op
 
 
-# ── slot_kv : OFF par défaut (standard 2026-07-22) ───────────────────────────
 
 
 def test_slot_kv_off_par_defaut_et_reactivable(tmp_path):
@@ -193,7 +179,7 @@ models_root = "{(tmp_path / "models").as_posix()}"
         encoding="utf-8",
     )
     assert load_config(defaults).slot_kv is False
-    # Réactivable explicitement (vieux llama-server sans prompt-cache RAM natif).
+    # Rester réactivable pour les anciens serveurs sans prompt-cache natif.
     local = tmp_path / "local.toml"
     local.write_text("[server]\nslot_kv = true\n", encoding="utf-8")
     assert load_config(defaults, local).slot_kv is True

@@ -1,10 +1,4 @@
-// loom/web/static/app.js
-// UI Loom — modèle déclaratif « état → vue » (Preact + htm, zéro build).
-//
-// Principe : UNE source de vérité (`state.timeline`, une liste d'items ordonnés).
-// Les événements SSE mutent l'état (création/maj par `id`), puis `render(App)`.
-// Plus aucune manipulation DOM manuelle → la classe de bugs (doublons/fantômes,
-// pills non rattachées) disparaît par construction. Validé par `node --check`.
+// UI déclarative Preact: les événements SSE mutent `state.timeline`, puis la vue se rend.
 
 import { initKbdCheatsheet } from "./kbd.js";
 import { _phRaf, loomWorkdir, set_CMDS, set__phRaf, set_loomWorkdir, set_machineUnloaded, set_skGenBusy } from "./shared.js";
@@ -43,8 +37,7 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     singleView();
   } else if (e.altKey && !e.ctrlKey && /^Digit[1-4]$/.test(e.code)) {
-    // !ctrlKey : AltGr (Windows) allume ctrl+alt à la fois — sans ce garde, taper
-    // ~ # { (AltGr+2/3/4 en AZERTY) volait le focus au lieu d'écrire le caractère.
+    // AltGr active Ctrl+Alt sous Windows et ne doit pas déclencher les raccourcis.
     const i = +e.code.slice(5) - 1;
     if (state.panes[i]) {
       e.preventDefault();
@@ -85,8 +78,7 @@ window.addEventListener("keydown", (e) => {
     state.order.push(sid);
     pane.sid = sid;
     state.active = sid;
-    // Async : si la session active a un journal temps réel, on remplace l'affichage par le
-    // REJEU (raisonnement + cartes d'outils, comme en direct) au lieu des simples bulles.
+    // Rejouer la timeline conserve le raisonnement et les cartes d'outils.
     (async () => {
       try {
         const tl = await (
@@ -126,7 +118,7 @@ renderPane(state.panes[0]);
     } else if (n.sid && known.has(n.sid) && !sids.includes(n.sid)) sids.push(n.sid);
   })(tree);
   if (sids.length < 2) return;
-  // Chargements en PARALLÈLE : 4 panneaux = le max des aller-retours, pas leur somme.
+  // Les panneaux indépendants peuvent se charger en parallèle.
   await Promise.all(sids.slice(0, 4).map(ensureTab));
   const seen = new Set();
   let reuse = state.panes[0]; // le panneau du boot est recyclé pour la 1re feuille
@@ -176,10 +168,7 @@ if (compactBtn) {
     const prev = compactBtn.textContent;
     compactBtn.disabled = true;
     compactBtn.textContent = "…";
-    // Feedback LISIBLE : un refus (429 = génération en cours) ou un « rien à compacter »
-    // clignotait 1,5 s et repartait -> on le ratait, d'où l'impression que « rien ne se
-    // passe ». On garde le message plus longtemps (surtout pour 429/erreur) et on le rend
-    // explicite. Pendant une génération, la compaction AUTO gère déjà le contexte.
+    // Garder les refus assez longtemps pour qu'ils soient lisibles.
     let msg = "erreur",
       hold = 3000;
     try {
@@ -221,8 +210,7 @@ window.addEventListener("keydown", (e) => {
 if (sessionNew) sessionNew.addEventListener("click", newSessionTab);
 
 document.querySelector(".session-list")?.addEventListener("click", (e) => {
-  // Suppression : un petit toast de confirmation SORT À DROITE de la session cliquée (pas en
-  // bas de l'écran) -> confirmation là où est la session.
+  // Ancrer la confirmation à la session concernée.
   const del = e.target.closest(".sess-del");
   if (del) {
     e.stopPropagation();
@@ -231,7 +219,7 @@ document.querySelector(".session-list")?.addEventListener("click", (e) => {
   }
   const pick = e.target.closest(".sess-pick");
   if (!pick) return;
-  // Ctrl+clic (ou Cmd) : multi-sélection pour suppression groupée, sans ouvrir l'onglet.
+  // Ctrl/Cmd+clic sélectionne sans ouvrir l'onglet.
   if (e.ctrlKey || e.metaKey) {
     e.preventDefault();
     toggleMultiSel(pick.dataset.id, pick.closest(".session-item"));
@@ -251,12 +239,7 @@ if (pickFolderBtn) {
       const r = await fetch("/pick-folder", { method: "POST" });
       const j = await r.json();
       if (j.path) {
-        // Applique le dossier à la session de CET onglet — session_id ciblé, comme
-        // /chat et /cancel : sans lui le back écrit dans la session focus globale,
-        // pas forcément celle de l'onglet (bug du 2026-07-10). Et la puce ne se met
-        // à jour qu'APRÈS confirmation serveur : avant, elle affichait le nouveau
-        // dossier même si le POST échouait -> le tour partait sur l'ancien dossier
-        // pendant que l'UI en montrait un autre.
+        // Mettre à jour la puce seulement après confirmation du workspace de cet onglet.
         const wsData = { workspace: j.path };
         if (state.active) wsData.session_id = state.active;
         const resp = await postForm("/session/workspace", wsData);
@@ -272,8 +255,7 @@ if (pickFolderBtn) {
         }
       }
     } catch (err) {
-      // Échec du POST : la puce N'A PAS changé (source de vérité = serveur) ;
-      // on la fait clignoter pour que l'échec soit VISIBLE, plus de console muette.
+      // Le serveur reste la source de vérité; signaler visuellement l'échec.
       console.warn("pick-folder:", err);
       if (workdirChip) {
         workdirChip.classList.add("err");
@@ -316,7 +298,6 @@ if (localOnlyCb) {
 
 if (resetBtn) {
   resetBtn.addEventListener("click", async () => {
-    // /reset opère sur la session focus (_cur = onglet actif via /session/activate).
     await fetch("/reset", { method: "POST" });
     const at = activeTab();
     if (at) {
@@ -326,7 +307,7 @@ if (resetBtn) {
       updateUsageMeter({});
       setMetrics(null, null, null);
     }
-    // Seuls les panneaux montrant CETTE session repeignent (pas les 3 autres du split).
+    // Repeindre uniquement les panneaux qui affichent cette session.
     scheduleRenderFor(state.active);
   });
 }
@@ -342,7 +323,7 @@ document.addEventListener("change", (e) => {
       .forEach((c) => (c.checked = on));
     postSkillsToggle();
   } else if (t.id === "model-select") {
-    // Mémorise le modèle sur l'onglet actif (sinon figé au switch), puis suit l'état machine.
+    // Mémoriser le modèle par onglet avant de suivre l'état machine.
     if (activeTab()) activeTab().model = t.value;
     set_machineUnloaded(false); // re-sélection = warmup relancé côté serveur
     scheduleMachineRefresh();

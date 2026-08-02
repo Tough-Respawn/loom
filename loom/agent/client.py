@@ -104,24 +104,17 @@ class LoomClient:
         self.model = model
         self.timeout = timeout
         self.max_retries = max_retries
-        # Serveur LOCAL : timeout de LECTURE long. Pendant un gros prefill (contexte
-        # recalculé après compaction : plusieurs minutes à ~200 t/s) ou un chargement de
-        # modèle, llama-server n'émet RIEN — c'est du travail légitime, pas une panne.
-        # Un read=120s coupait ces phases (ReadTimeout vécu). Connexion/écriture restent
-        # au timeout court : un serveur éteint doit échouer vite.
+        # Le prefill local peut rester silencieux plusieurs minutes ; seuls connexion et
+        # écriture doivent échouer rapidement quand le serveur est absent.
         self._client = OpenAI(
             base_url=base_url,
             api_key=api_key,
             timeout=httpx.Timeout(float(timeout), read=max(600.0, float(timeout))),
             max_retries=max_retries,
         )
-        # Routes vers des modèles DISTANTS (API OpenAI-compatible) : id de modèle ->
-        # {base_url, api_key, model, enable_thinking_param}. Tout modèle absent de cette
-        # table part vers l'endpoint LOCAL (_client). Un client openai par endpoint, monté
-        # une fois ici. Le reste du code appelle toujours `model=<id>` : le routage est interne.
+        # Les modèles absents de cette table utilisent l'endpoint local.
         self._routes: dict[str, dict] = {}
-        # Disjoncteur slot KV : modèles dont le save/restore a PENDU (hang serveur,
-        # cf. _slot_action) -> on n'essaie plus jusqu'au restart du process.
+        # Un échec durable de slot KV coupe les nouvelles tentatives jusqu'au redémarrage.
         self._slot_broken: set[str] = set()
         for rid, spec in (routes or {}).items():
             self._routes[rid] = {
@@ -136,8 +129,7 @@ class LoomClient:
                 "model": spec.get("model") or rid,
                 "enable_thinking_param": bool(spec.get("enable_thinking_param", False)),
             }
-        # Cache de la fenêtre de contexte découverte par provider (id Loom -> int|None).
-        # None mémorisé = provider interrogé mais muet -> on ne re-frappe pas l'API.
+        # `None` est aussi mis en cache pour ne pas réinterroger un provider muet.
         self._ctx_cache: dict[str, int | None] = {}
 
     def _resolve(self, model: str | None):
@@ -171,8 +163,7 @@ class LoomClient:
                     {"role": "system", "content": _SUMMARY_SYSTEM},
                     {"role": "user", "content": body},
                 ],
-                # 700 (et non 2000) : un résumé dense/télégraphique n'a pas besoin de plus,
-                # et sur un modèle local lent (~8 tok/s) 2000 tokens = plusieurs MINUTES.
+                # Un résumé dense tient en 700 tokens et reste abordable sur un modèle lent.
                 max_tokens=700,
                 temperature=0.2,
             )
@@ -184,8 +175,7 @@ class LoomClient:
                 msg=f"{type(exc).__name__}: {str(exc)[:120]}",
             )
             return ""
-        # Modèle « thinking » (Qwen/local) : le raisonnement peut précéder le contenu -> on
-        # ne garde que l'après-</think>.
+        # Un modèle « thinking » peut placer le contenu utile après `</think>`.
         if "</think>" in summary:
             summary = summary.split("</think>")[-1].strip()
         return summary.strip()
@@ -203,9 +193,8 @@ class LoomClient:
         cut = len(convo) - keep_recent
         if cut < 2:
             return 0  # trop peu de vieux tours (ou convo plus courte que keep_recent)
-        # Ne pas orpheliner un résultat d'outil : si la queue conservée débute par un
-        # role:tool dont l'appel part au résumé, on pousse ces tool vers le bloc résumé
-        # (certains providers rejettent un message tool sans tool_calls le précédant).
+        # Déplacer les `tool` initiaux avec leur appel : certains providers refusent
+        # les résultats d'outil orphelins.
         while cut < len(convo) and convo[cut].get("role") == "tool":
             cut += 1
         summary = self.summarize_slice(convo[:cut], model, budget_chars)
@@ -442,11 +431,8 @@ class LoomClient:
 
         if self.is_remote(model):
             return False  # distant : cache géré par le provider, pas de slot local
-        # Interrupteurs ([server] slot_kv / hot_resume, cf. config.py) :
-        # - slot_kv (legacy, OFF par défaut) autorise save ET restore par tour ;
-        # - hot_resume n'autorise que le SAVE en fin de tour — le restore n'y est
-        #   permis qu'en one-shot explicite (force=True, via try_hot_resume) ;
-        # - force court-circuite les deux (jamais le disjoncteur _slot_broken).
+        # `hot_resume` sauvegarde seulement ; son restore exige le one-shot `force=True`.
+        # `force` ne contourne jamais le disjoncteur du modèle.
         allowed = (
             force
             or getattr(self, "slot_kv_enabled", False)
@@ -474,11 +460,7 @@ class LoomClient:
                 _debug(f"SLOT_{action.upper()}", {"name": name, **body}, terminal=False)
                 return True
             except Exception as e:  # noqa: BLE001 - slot KV best-effort, jamais bloquant
-                # DISJONCTE (plus d'essais pour ce modèle) sur les échecs DURABLES :
-                # - timeout = hang serveur (vécu : ~60 s perdus par tour) ;
-                # - HTTP 501 = llama-server refuse (constaté 2026-07-10 : slot save NON
-                #   SUPPORTÉ quand un projecteur multimodal --mmproj est chargé — les
-                #   modèles vision retombent définitivement sur le ré-amorçage).
+                # Timeout et HTTP 501 sont durables : les retenter pénaliserait chaque tour.
                 code = getattr(e, "code", None)
                 if (
                     isinstance(e, TimeoutError)
@@ -487,13 +469,8 @@ class LoomClient:
                 ):
                     self._slot_broken.add(key)
                     if code == 501:
-                        # Cause racine CONFIRMÉE (2026-07-13, A/B même binaire b9442 :
-                        # qwen avec --mmproj -> 501, sans -> 200) : llama-server refuse
-                        # le save/restore de slot quand un projecteur MULTIMODAL est
-                        # chargé (« This feature is not supported by multimodal »).
-                        # Limitation upstream — pas un flag manquant (--slot-save-path
-                        # est bien passé). Le corps du 501 est joint pour distinguer
-                        # les causes si le serveur change.
+                        # llama.cpp peut refuser les slots avec `--mmproj`; garder le corps
+                        # permet de distinguer cette limite d'un futur 501 différent.
                         detail = ""
                         try:
                             detail = (e.read() or b"").decode("utf-8", "replace")[:120]
@@ -515,10 +492,8 @@ class LoomClient:
                         flush=True,
                     )
                     return False
-                # Échec d'un chemin INTERMÉDIAIRE (ex. route swap /upstream/… en
-                # mono-modèle direct -> 404 ATTENDU avant le repli /slots) :
-                # silencieux — un repli nominal loggé en ERR fait croire à un bug
-                # (vécu 2026-07-21). ERR seulement si le DERNIER chemin échoue.
+                # Un chemin intermédiaire peut échouer normalement avant le repli ; seul
+                # l'échec du dernier chemin mérite un log d'erreur.
                 if i == len(paths) - 1:
                     _debug(
                         f"SLOT_{action.upper()}_ERR", f"{path} : {e}", terminal=False
@@ -554,12 +529,7 @@ class LoomClient:
         minutes) : le prochain tour de la conversation ne préfille que son delta."""
         return self._slot_action(model, "restore", name, force=force)
 
-    # ---- Reprise à CHAUD one-shot (roadmap 16) --------------------------------
-    # Un restore n'a de sens qu'en ÉVÉNEMENT ponctuel — slot froid après un
-    # (re)démarrage du serveur, un swap de modèle ou un boot de loom.web — jamais
-    # par tour (le rythme de croisière est protégé par le prompt-cache natif +
-    # l'isolation 2e slot ; un restore par tour ajoutait un rollback par tour,
-    # mesuré 2026-07-23).
+    # Restaurer uniquement après un slot froid ; en rythme normal le cache natif suffit.
 
     def _warm_slots(self) -> set:
         """Modèles locaux dont le slot serveur contient (à notre connaissance) la
@@ -604,8 +574,7 @@ class LoomClient:
         if not model or self.is_remote(model):
             return False
         warm = self._warm_slots()
-        # Swap sortant : cibler M décharge le modèle précédent (llama-swap tue
-        # son process) -> son slot devient froid.
+        # Un swap sortant tue le processus précédent et refroidit son slot.
         last = getattr(self, "_last_local_model", None)
         if last not in (None, model):
             warm.discard(last)
@@ -697,12 +666,11 @@ class LoomClient:
                 },
                 {"role": "user", "content": prompt},
             ],
-            # Petite marge : si un backend ne sait pas couper le thinking, il a quand même la
-            # place de finir un raisonnement trivial ET d'émettre le titre.
+            # Garder une petite marge si le backend ne sait pas couper le thinking.
             "max_tokens": 96,
             "temperature": 0.3,
         }
-        # Conventions anti-thinking connues, dans l'ordre (chacune best-effort), puis appel nu.
+        # Essayer les conventions anti-thinking connues, puis un appel nu.
         attempts = (
             {"extra_body": {"thinking": {"type": "disabled"}}},  # Z.ai / GLM
             {
@@ -711,13 +679,11 @@ class LoomClient:
             {"extra_body": {"reasoning": {"enabled": False}}},  # OpenRouter
             {},  # modèle sans raisonnement / provider strict
         )
-        # Titre = cosmétique : ÉCHEC RAPIDE si le backend est lent/éteint (pas de retries en
-        # cascade qui feraient traîner la fin du tour). On retombe alors sur le repli message.
+        # Le titre est cosmétique : échouer vite puis utiliser le texte du message.
         fast = oai.with_options(max_retries=0, timeout=20)
         for extra in attempts:
             payload = {**base, **extra}
-            # 2e passe SANS temperature : certains providers la FIGENT par modèle/mode
-            # (Kimi/Moonshot : 400 « only 0.6/1 is allowed ») — la nôtre est cosmétique.
+            # Certains providers imposent leur température ; la seconde passe l'omet.
             for drop_temp in (False, True):
                 if drop_temp:
                     payload = {k: v for k, v in payload.items() if k != "temperature"}
@@ -729,8 +695,7 @@ class LoomClient:
                         return txt.splitlines()[0][:60].strip()
                     break  # réponse vide : cette variante ne donnera rien -> suivante
                 except (APIConnectionError, APITimeoutError):
-                    # Backend down/lent : inutile de tenter les autres variantes de param
-                    # (elles échoueront pareil) -> abandon, l'appelant fait le repli message.
+                    # Une panne de transport rend les autres variantes inutiles.
                     return ""
                 except Exception as e:  # noqa: BLE001 - param rejeté par ce backend
                     _debug("TITLE_ERR", str(e))
@@ -797,7 +762,7 @@ class LoomClient:
         )
         _debug_messages(kwargs["model"], kwargs["messages"])
         stream = oai.chat.completions.create(**kwargs)
-        # Exposé à /cancel pour fermer un stream figé (cf. _stream_model_turn).
+        # `/cancel` ferme ce stream pour débloquer une lecture distante figée.
         if stream_holder is not None:
             stream_holder["stream"] = stream
         reasoning, content = "", ""
@@ -835,11 +800,8 @@ class LoomClient:
         """Compaction PRÉVENTIVE avant l'appel modèle : microcompact des vieux
         résultats d'outils, puis force-fit si un résultat RÉCENT est géant (local).
         Ne stoppe jamais le tour ; met à jour st["refocus_done"]."""
-        # BACKSTOP TRONCATURE (session 2026-07-14) : 2 arguments d'outil tronqués de
-        # suite = la génération est étranglée par la fenêtre (prompt+completion ≈
-        # contexte), pas par la verbosité — « réémets plus court » ne débloquera
-        # jamais. On compacte de FORCE, même sans seuil configuré et même si
-        # l'estimation en caractères (qui peut sous-compter) reste sous le seuil.
+        # Deux arguments tronqués signalent une fenêtre saturée ; forcer la compaction
+        # car demander une sortie plus courte ne réduit pas l'entrée.
         if st.get("truncated_streak", 0) >= 2 and not self.is_remote(model):
             st["truncated_streak"] = 0
             _microcompact_tools(convo, keep_recent_tools)
@@ -866,14 +828,10 @@ class LoomClient:
                 },
             )
             yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
-        # Microcompact : si le contexte vivant approche la fenêtre, vider les vieux
-        # résultats d'outils AVANT d'appeler le modèle (évite l'overflow sur une
-        # chaîne longue). Estimation grossière ~4 car./token, comme loom.context.
+        # Vider les anciens résultats avant l'appel quand le contexte approche sa limite.
         if not compact_after_tokens:
             return
-        # ~3 car./token (et non 4) : code/TSX/JSON tokenise plus dense que de la prose.
-        # Surestimer fait déclencher la compaction PLUS TÔT — biais voulu (on ne vide
-        # que les vieux résultats), pour ne pas heurter la fenêtre par sous-comptage.
+        # Le code tokenise densément ; 3 caractères/token déclenche prudemment plus tôt.
         approx = (
             len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
         ) // 3
@@ -886,26 +844,16 @@ class LoomClient:
                 f"{cleared} résultat(s) d'outil allégé(s) (~{approx} tokens "
                 f"> seuil {compact_after_tokens}).",
             )
-            # Jauge à jour TOUT DE SUITE (sinon elle reste au pic tant que
-            # l'appel suivant n'a pas rendu son usage réel).
+            # Corriger la jauge avant que l'appel suivant fournisse son usage réel.
             yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
-        # ESCALADE PRÉVENTIVE : vider les vieux résultats ne suffit pas quand UN
-        # résultat RÉCENT est géant (ex. read_file d'un gros JSON minifié -> 74k
-        # car.) — le microcompact le GARDE (il fait partie des récents). Résultat :
-        # avant, on touchait quand même l'overflow (400 / pic à 100 %) et on ne
-        # rattrapait qu'en réactif. Ici, si ça déborde ENCORE, on FORCE-FIT AVANT
-        # l'appel -> plus jamais de 400. Local uniquement (le distant gère sa
-        # fenêtre lui-même).
+        # Un résultat récent géant survit au microcompact ; force-fit l'entrée locale
+        # avant l'appel pour éviter un overflow réactif.
         if (
             not self.is_remote(model)
             and _ctx_estimate(system_prompt, convo) > compact_after_tokens
         ):
-            # Budget PLANCHER = prompt système (incompressible) + un jeu de
-            # travail minimal. Sans lui, un seuil plus petit que le prompt
-            # système rend le budget INATTEIGNABLE : le force-fit détruit
-            # alors tout le travail récent À CHAQUE tour (résultat du dernier
-            # read compris) -> le modèle relit en boucle -> repeat_stop
-            # (vécu en éval, cas context_squeeze).
+            # Le plancher couvre le prompt incompressible et un minimum de travail ;
+            # sinon un budget impossible ferait supprimer puis relire le même contexte.
             _force_fit(
                 convo,
                 system_prompt,
@@ -952,21 +900,13 @@ class LoomClient:
         force_fits / refocus_done dans st."""
         kind = _classify_stream_error(exc)
         log_event("api.error", level="WARN", kind=kind, msg=str(exc)[:140])
-        # DÉBORDEMENT D'ENTRÉE : la requête (prompt + historique + résultats d'outils
-        # accumulés) dépasse la fenêtre de contexte. On NE crashe PAS et on ne demande
-        # PAS « écris plus court » (ça vise la sortie) : on COMPACTE DUR — on vide TOUS
-        # les vieux résultats d'outils (pas seulement au-delà des 4 derniers), de plus
-        # en plus agressivement à chaque retry — puis on RELANCE le même tour. Le modèle
-        # reprend avec SES messages (ce qu'il a déjà fait) intacts ; les gros résultats
-        # d'outils deviennent le placeholder _CLEARED_TOOL (qui dit de ne pas refaire).
+        # Un overflow d'entrée exige de compacter les résultats, pas de raccourcir la
+        # sortie. Conserver les messages du modèle évite de refaire le travail.
         if kind == "context_overflow":
-            # Jauge HONNÊTE : la requête qui vient d'échouer a dépassé la fenêtre,
-            # mais un 400 ne rend pas d'usage -> la jauge serait restée au dernier
-            # appel réussi (ex. 66 %), donnant l'impression qu'on compacte trop tôt.
-            # On pousse l'estimation du contexte VIVANT (qui a débordé) : la jauge
-            # monte au pic (~100 %) AVANT la compaction, puis redescend après.
+            # Un 400 ne fournit aucun usage : publier l'estimation qui a débordé avant
+            # la compaction pour que la jauge reste honnête.
             yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
-            # ÉTAGE 1-2 : vider les vieux résultats d'outils (sans LLM, sûr, gratuit).
+            # Commencer par vider les anciens résultats, sans appel LLM.
             if st["overflow_retries"] < max_overflow_retries:
                 st["overflow_retries"] += 1
                 keep = (
@@ -1003,18 +943,11 @@ class LoomClient:
                 )
                 st["action"] = "continue"
                 return
-            # ÉTAGE 3 : les tool results sont tous vidés et ça déborde encore -> ce
-            # sont les TOURS du modèle qui saturent. On RÉSUME les vieux tours en un
-            # bloc dense (anglais) et on poursuit, au lieu d'abandonner. Une seule
-            # fois (max_summaries) ; borné pour ne pas boucler.
-            # LOCAL UNIQUEMENT : un distant a une grande fenêtre + gère son propre
-            # contexte/cache ; on ne réécrit pas son historique (cache-bust). S'il
-            # déborde vraiment (rare), on tombe sur l'arrêt propre ci-dessous.
+            # Si les tours saturent encore, résumer une fois l'historique local. Ne pas
+            # réécrire celui d'un provider distant, afin de préserver son cache.
             if not self.is_remote(model) and st["summary_retries"] < max_summaries:
                 st["summary_retries"] += 1
-                # VISIBLE pendant le résumé (appel modèle bloquant, muet) : label
-                # d'activité « compaction… » comme « le modèle tourne », sinon
-                # l'UI paraît figée. Effacé dès que le tool_result/texte reprend.
+                # Signaler cet appel bloquant pour que l'UI ne paraisse pas figée.
                 yield ("status", {"label": "compaction du contexte (résumé)…"})
                 collapsed = self.summarize_old_turns(
                     convo, model, keep_recent=6, budget_chars=30000
@@ -1052,18 +985,12 @@ class LoomClient:
                     )
                     st["action"] = "continue"
                     return
-            # ÉTAGE 4 : FORCE-FIT déterministe (AUCUN LLM) — on ne s'arrête JAMAIS
-            # pour saturation. Le résumé a gardé des messages récents encore trop
-            # gros ? On CLIPPE le contexte vivant sous un budget qui RÉTRÉCIT à chaque
-            # passe (géométrique : contre l'erreur d'estimation chars/token et le cas
-            # où même clippé ça re-déborde), puis on relance. Converge toujours.
+            # Dernier recours déterministe : rétrécir géométriquement le contexte
+            # jusqu'à compenser l'erreur d'estimation caractères/token.
             st["force_fits"] += 1
             shrink = max(0.12, 0.7 ** st["force_fits"])
             base = compact_after_tokens or _ctx_estimate(system_prompt, convo) or 8000
-            # Même plancher « système + minimal » qu'au préventif : la pression
-            # géométrique s'applique au CONVO, pas à l'incompressible. Si le
-            # prompt système seul dépasse la vraie fenêtre, on finit sur l'arrêt
-            # context_irreducible (cas anormal), pas sur une destruction stérile.
+            # Appliquer la réduction à la conversation, jamais au prompt incompressible.
             budget = max(len(system_prompt) + 1500, int(base * 3 * shrink))
             _force_fit(convo, system_prompt, budget)
             if refocus_note and not st["refocus_done"]:
@@ -1096,9 +1023,7 @@ class LoomClient:
             if st["force_fits"] < 8:
                 st["action"] = "continue"
                 return
-            # Garde-fou ANTI-RUNAWAY : après 8 réductions géométriques (budget ~12 %
-            # du seuil), si ça déborde ENCORE, c'est dégénéré (prompt système ~ la
-            # fenêtre entière) — là seulement, on s'arrête pour ne pas boucler.
+            # Après huit réductions, le prompt est irréductible : arrêter plutôt que boucler.
             yield (
                 "content",
                 "\n[génération interrompue : contexte irréductible même après "
@@ -1108,9 +1033,7 @@ class LoomClient:
             yield ("done", {"reason": "context_irreducible"})
             st["action"] = "done"
             return
-        # OVERFLOW : tool_call vraisemblablement tronqué par max_tokens (5xx ou
-        # erreur sans statut). On NE crashe PAS : on demande de découper et on
-        # relance (reprise bornée par max_overflow_retries), sinon stop propre.
+        # Un tool-call tronqué peut être réémis en morceaux, avec retries bornés.
         if kind == "overflow":
             if st["overflow_retries"] >= max_overflow_retries:
                 yield (
@@ -1137,16 +1060,14 @@ class LoomClient:
             yield _loom_nudge(convo, "troncature", note)
             st["action"] = "continue"
             return
-        # Erreurs NON récupérables : pas un overflow -> message clair et stop net,
-        # PAS de « écris plus court » trompeur ni de retry voué à re-échouer.
+        # Les autres erreurs ne sont pas récupérables : expliquer puis arrêter net.
         reason = {
             "timeout": (
                 "le serveur a mis trop de temps à répondre (timeout) — souvent "
                 "un long recalcul de contexte (après compaction) ; relance, le "
                 "cache rend la reprise plus rapide."
             ),
-            # « injoignable » : dire QUOI lancer — loom.web tourne forcément (il
-            # affiche ce message), c'est le serveur MODÈLE qui manque (ou l'API).
+            # Loom web tourne déjà ici : indiquer explicitement le serveur modèle manquant.
             "connection": (
                 "API distante injoignable (réseau ou base_url à vérifier)."
                 if self.is_remote(model or self.model)
@@ -1227,14 +1148,10 @@ class LoomClient:
         servent comme stop_reason mesurable au lieu de pattern-matcher les textes.
         """
         convo = list(messages)
-        # Résolu une fois : le modèle est fixe pour tout l'appel. Route vers l'endpoint
-        # local ou distant selon l'id, et coupe les extra_body llama.cpp si distant.
+        # Résoudre une fois le modèle et les extensions natives pour tout l'appel.
         oai, api_model, native = self._resolve(model)
         tools = registry.openai_tools() if registry else None
-        # État PARTAGÉ de la boucle : compteurs/garde-fous mutés par les sous-
-        # générateurs privés. "action" porte l'issue posée par chaque helper :
-        # "continue" (relancer le tour), "done" (sortie — l'event terminal
-        # ('done', …) a déjà été yieldé) ou "proceed" (on poursuit le tour).
+        # Les sous-générateurs partagent ces compteurs et publient leur issue via `action`.
         st: dict = {
             "overflow_retries": 0,
             "summary_retries": 0,  # nb de compactions PAR RÉSUMÉ déjà tentées
@@ -1258,7 +1175,7 @@ class LoomClient:
         }
 
         for _ in range(max_iters):
-            # Compaction préventive (microcompact + force-fit) AVANT l'appel modèle.
+            # Compacter avant l'appel pour ne pas envoyer une entrée déjà trop grande.
             yield from self._preventive_compaction(
                 convo,
                 system_prompt,
@@ -1281,8 +1198,7 @@ class LoomClient:
                 native_extras=native,
             )
             _debug_messages(kwargs["model"], kwargs["messages"])
-            # Empreinte des OUTILS envoyés : rendus en tête de prompt par le
-            # template, toute variation entre tours casse le cache au token ~0.
+            # Une variation des outils, placés en tête de prompt, invalide tout le cache.
             _debug(
                 "TOOLS_EMPREINTE",
                 tools_fingerprint(kwargs.get("tools")),
@@ -1320,8 +1236,7 @@ class LoomClient:
             text, reasoning = st["text"], st["reasoning"]
 
             tool_calls = collector["tool_calls"]
-            # FILET : appel d'outil émis en TEXTE (channel structuré vide) ? On le récupère
-            # et on l'exécute, au lieu de s'arrêter sur un appel "raté".
+            # Récupérer un appel d'outil émis en texte si le canal structuré est vide.
             if not tool_calls:
                 salvaged = _salvage_tool_calls(text, reasoning)
                 if salvaged:
@@ -1331,8 +1246,7 @@ class LoomClient:
                         f"{len(salvaged)} appel(s) d'outil récupéré(s) du texte.",
                     )
             if not tool_calls:
-                # Fin de tour SANS outil : boucle dégénérée / continuation length /
-                # réponse vide / audit de claim, sinon stop naturel du modèle.
+                # Sans outil, traiter les gardes de fin avant d'accepter le stop naturel.
                 yield from _dispatch_no_tool_calls(
                     collector,
                     text,
@@ -1366,9 +1280,7 @@ class LoomClient:
                             "type": "function",
                             "function": {
                                 "name": tc["name"],
-                                # JSON sain dans l'historique : un appel tronqué (JSON
-                                # cassé) provoquerait un 500 'parse error' à CHAQUE tour
-                                # suivant -> cascade. _safe_args remet {} si invalide.
+                                # Assainir le JSON tronqué pour ne pas empoisonner les tours suivants.
                                 "arguments": _safe_args(tc["arguments"]),
                             },
                         }
@@ -1376,13 +1288,8 @@ class LoomClient:
                     ],
                 }
             )
-            # PARALLÉLISME (distant uniquement). Règle Loom : local = inline / 1 slot llama-swap
-            # -> on sérialise (un sous-agent local = même slot = zéro gain) ; distant = machine du
-            # provider -> on EXPLOITE la concurrence. Cas sûr : un tour n'appelant QUE des outils
-            # PARALLEL-SAFE (lectures, recherches, dispatch_agent) -> on les lance concurremment
-            # (1 thread chacun, activité relayée en direct via une file, résultats recollés DANS
-            # L'ORDRE). Dès qu'un outil non-safe est présent (écriture, shell, todo, vérif, image),
-            # ou en local, tout reste SÉQUENTIEL (garde-fous P1.1, confirm, ordre... préservés).
+            # Paralléliser seulement les outils sûrs sur un provider distant. Le local
+            # partage un slot, et tout effet de bord exige de conserver l'ordre.
             _seq_tool_calls = tool_calls
             _parallel = (
                 registry is not None
@@ -1402,8 +1309,7 @@ class LoomClient:
                 strong,
                 st,
             )
-            # Forçage debugging (déterministe) : le modèle n'appelle jamais use_skill seul ; à
-            # la 2e erreur d'exécution on injecte la méthode systématique, une seule fois par tour.
+            # Après deux erreurs, injecter une fois la méthode de debug que le modèle omet.
             if st["fail_count"] >= 2 and not st["debug_forced"]:
                 st["debug_forced"] = True
                 yield _loom_nudge(convo, "debug", _DEBUG_FORCE)

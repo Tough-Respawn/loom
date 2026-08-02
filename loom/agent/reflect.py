@@ -54,8 +54,7 @@ def validate_reflect_json(obj: Any) -> ReflectResult | None:
         name = str(s.get("name", "")).strip().lower()
         body = str(s.get("body", "")).strip()
         desc = str(s.get("description", "")).strip()
-        # Description OBLIGATOIRE : c'est elle qui s'affiche au catalogue et permet au modèle
-        # de RETROUVER le skill. Sans elle, le skill est invisible/indéclenchable -> on rejette.
+        # Sans description, le modèle ne peut pas retrouver le skill dans le catalogue.
         if _NAME_RE.match(name) and len(body) >= _MIN_SKILL_BODY and len(desc) >= 12:
             res.new_skills.append({"name": name, "description": desc, "body": body})
     for s in obj.get("improved_skills") or []:
@@ -64,8 +63,7 @@ def validate_reflect_json(obj: Any) -> ReflectResult | None:
         name = str(s.get("name", "")).strip()
         body = str(s.get("body", "")).strip()
         base = name.split(":", 1)[1] if ":" in name else ""
-        # MÊME validation kebab-case que new_skills sur la base : sans elle, un nom
-        # « learned:../../x » s'échapperait du dossier à l'écriture (traversée de chemin).
+        # La même validation bloque les traversées de chemin dans les skills appris.
         if (
             name.startswith("learned:")
             and _NAME_RE.match(base)
@@ -92,9 +90,7 @@ def _write_learned_skill(
     learned_dir: str, name: str, description: str, body: str, *, improve: bool
 ) -> None:
     base = name.split(":", 1)[1] if name.startswith("learned:") else name
-    # Défense en profondeur (traversée de chemin) : nom borné kebab-case ET dossier résolu
-    # confiné sous learned_dir. Le JSON de reflect vient du modèle (trajectoire potentiellement
-    # influencée par du contenu ingéré) -> on ne fait JAMAIS confiance au nom pour un chemin.
+    # Le JSON vient du modèle : valider le nom puis confiner le chemin résolu.
     if not _NAME_RE.match(base):
         return
     root = Path(learned_dir).resolve()

@@ -1,4 +1,3 @@
-# loom/runtime/searxng.py
 """SearXNG géré par Loom — recherche web FIABLE en self-host (pattern ComfyUI : un
 service externe que Loom installe et démarre à la demande, jamais indispensable —
 `web_search` retombe sur ddgs s'il est absent).
@@ -155,8 +154,7 @@ def install(port: int = DEFAULT_PORT) -> str | None:
             "[searxng] l'instance ne répond pas (docker logs loom-searxng pour voir)."
         )
         return None
-    # Câble la config Loom (couche locale, commentaires préservés) : le backend `auto`
-    # préfère alors SearXNG, ddgs reste le repli.
+    # En mode auto, SearXNG devient prioritaire et DDGS reste le repli.
     from loom.runtime.config_schema import set_value
     from loom.runtime.serve import CONFIG_PATH, PERSONAL_CONFIG_PATH
 

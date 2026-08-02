@@ -62,7 +62,7 @@ def _iter_events(stream: Any) -> Iterator[tuple[str, object]]:
         usage = getattr(chunk, "usage", None)
         if usage is not None:
             yield ("usage", _usage_dict(usage))
-        # Le chunk final d'include_usage porte `choices == []` : on le saute.
+        # Le chunk d'usage final n'a aucun choix.
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
@@ -87,37 +87,27 @@ def build_create_kwargs(
         "model": model,
         "messages": [{"role": "system", "content": system_prompt}, *messages],
         "stream": True,
-        # Demande l'usage réel (tokens) dans un chunk final ; ignoré si non supporté.
+        # Demander l'usage réel dans un chunk final, si le provider le supporte.
         "stream_options": {"include_usage": True},
     }
-    # max_tokens=None -> on l'OMET : le provider applique SA propre limite. Sert aux modèles
-    # DISTANTS sans cap explicite (leur machine n'a pas les contraintes du local 6 Go).
+    # Sans cap explicite, laisser le provider distant appliquer sa propre limite.
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if tools:
         kwargs["tools"] = tools
-    # extra_body = paramètres spécifiques au backend llama.cpp LOCAL. On ne les envoie PAS à
-    # une API distante (native_extras=False) : une API hébergée OpenAI-compatible rejette
-    # souvent un extra_body inconnu (400 sur repeat_penalty / chat_template_kwargs).
+    # Ne jamais envoyer les extensions llama.cpp à une API distante qui peut les refuser.
     if native_extras:
-        # Anti-boucle de dégénérescence : llama.cpp ne pénalise PAS la répétition par défaut,
-        # un modèle peut se verrouiller à répéter le même paragraphe à l'infini (observé :
-        # « Je vais créer les fichiers… » en boucle, ~30k tokens gaspillés). repeat_penalty /
-        # repeat_last_n sont natifs llama.cpp. Valeurs modérées (1.1 sur les 64 derniers
-        # tokens) : assez pour casser un cycle, pas pour gêner la répétition LÉGITIME du code.
+        # llama.cpp ne pénalise pas la répétition par défaut ; rester modéré pour ne
+        # pas gêner les motifs légitimes du code.
         extra_body: dict = {"repeat_penalty": 1.1, "repeat_last_n": 64}
         if not thinking:
-            # Désactive la réflexion préalable du modèle (chat template). Vérifié sur Gemma :
-            # réponse directe au lieu d'un long "Thinking Process". Champ non-standard OpenAI.
+            # Paramètre non standard du template local pour couper la réflexion préalable.
             extra_body["chat_template_kwargs"] = {"enable_thinking": False}
         kwargs["extra_body"] = extra_body
     return kwargs
 
 
-# Coupe-circuit anti-boucle (filet par-dessus le sampling) : une ligne « longue » répétée
-# autant de fois = dégénérescence du décodage. Seuils prudents pour ne pas couper du code
-# légitime : on ne compte que les lignes >= _LOOP_MIN_LEN car. (les phrases en boucle font
-# 30-40 car. ; les `},` / `</div>` du code sont ignorés), et il en faut _LOOP_THRESHOLD.
+# Ne compter que les longues lignes afin d'ignorer les motifs courts répétés du code.
 _LOOP_THRESHOLD = 10
 _LOOP_MIN_LEN = 24
 
@@ -148,8 +138,7 @@ def _turn_timing_fields(tim: dict, first_byte_ms: float | None) -> dict:
     tg_ms = float(tim.get("predicted_ms") or 0.0)
     tg_n = int(tim.get("predicted_n") or 0)
     out = {
-        # Tokens RÉUTILISÉS du cache KV : 0 = prefill entier repayé (préfixe qui a
-        # glissé ?), élevé = cache au travail — le diagnostic re-prefill en un chiffre.
+        # `cache_tok` rend visible une invalidation de préfixe et son re-prefill.
         "cache_tok": int(tim.get("cache_n") or 0),
         "prefill_s": round(pp_ms / 1000, 1),
         "prefill_tok": pp_n,
@@ -183,13 +172,11 @@ def _iter_turn(stream: Any, collector: dict) -> Iterator[tuple[str, str]]:
         usage = getattr(chunk, "usage", None)
         if usage is not None:
             yield ("usage", _usage_dict(usage))
-        # Extension llama-server : le chunk FINAL porte `timings` (prompt_ms/predicted_ms
-        # mesurés serveur) -> décomposition chiffrée du tour (turn.timing). Les providers
-        # distants ne l'émettent pas (champ absent, sans effet).
+        # llama-server ajoute ses timings au chunk final ; les providers distants l'omettent.
         _tim = getattr(chunk, "timings", None)
         if isinstance(_tim, dict) and _tim:
             collector["timings"] = _tim
-        # Chunk final d'include_usage : `choices == []`, rien d'autre à lire.
+        # Le chunk d'usage final ne contient rien d'autre.
         if not chunk.choices:
             continue
         choice = chunk.choices[0]
@@ -202,8 +189,7 @@ def _iter_turn(stream: Any, collector: dict) -> Iterator[tuple[str, str]]:
         if content:
             yield ("content", content)
             rep_buf += content
-        # Détection de dégénérescence (réflexion ET contenu) : on coupe net si une ligne
-        # se répète. Pas de tool_call dans ce cas -> on peut sortir sans rien perdre.
+        # Couper une ligne dégénérée avant qu'elle consomme le reste du contexte.
         if "looped" not in collector:
             rep_buf, looped = _scan_repeat(rep_buf, rep_counts)
             if looped:
@@ -216,16 +202,11 @@ def _iter_turn(stream: Any, collector: dict) -> Iterator[tuple[str, str]]:
             fn = getattr(tc, "function", None)
             if fn is not None and getattr(fn, "name", None):
                 slot["name"] = fn.name
-            # Annonce le DÉBUT de l'appel dès id+name connus, AVANT de streamer les
-            # arguments : la pastille existe déjà quand ses deltas d'arguments arrivent.
+            # Créer la pastille avant ses deltas d'arguments.
             if tc.index not in announced and slot["id"] and slot["name"]:
                 announced.add(tc.index)
                 yield ("tool_begin", {"id": slot["id"], "name": slot["name"]})
-            # Arguments streamés morceau par morceau (pour write_file le CONTENU du
-            # fichier ; pour tout outil ses paramètres). Chaque fragment est un vrai
-            # token généré par le modèle -> on le remonte (tool_args) pour que le
-            # compteur live avance et que la pastille montre la taille qui grossit, au
-            # lieu de rester muette pendant la génération de l'appel.
+            # Relayer les arguments pour alimenter le compteur et la taille de la pastille.
             if fn is not None and getattr(fn, "arguments", None):
                 slot["arguments"] += fn.arguments
                 if slot["id"]:
@@ -235,10 +216,8 @@ def _iter_turn(stream: Any, collector: dict) -> Iterator[tuple[str, str]]:
     collector["tool_calls"] = [acc[i] for i in sorted(acc)]
 
 
-# --- Filet : récupérer les appels d'outil émis en TEXTE ------------------------------
-# Certains modèles (surtout après une erreur d'outil) sortent l'appel DANS le texte au
-# lieu du canal structuré. Sans filet, tool_calls reste vide -> la boucle s'arrête sur un
-# appel "raté". On reconstruit depuis deux formats connus : Hermes/JSON et XML-ish.
+# Certains modèles émettent leurs appels dans le texte ; récupérer les formats Hermes
+# et XML-ish lorsque le canal structuré est vide.
 _TOOLCALL_BLOCK = re.compile(
     r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE
 )
@@ -271,7 +250,7 @@ def _salvage_tool_calls(text: str, reasoning: str) -> list[dict]:
 
     for inner in _TOOLCALL_BLOCK.findall(blob):
         inner = inner.strip()
-        # Hermes/JSON : {"name": "...", "arguments": {...}}
+        # Hermes/JSON.
         try:
             obj = json.loads(inner)
         except (json.JSONDecodeError, ValueError):
@@ -279,13 +258,13 @@ def _salvage_tool_calls(text: str, reasoning: str) -> list[dict]:
         if isinstance(obj, dict) and obj.get("name"):
             _emit(obj["name"], obj.get("arguments", {}))
             continue
-        # XML-ish : <function=nom> ... <parameter=clé>valeur</parameter> ...
+        # XML-ish.
         m = re.search(r"<function=([\w.\-]+)", inner)
         if m:
             params = {k: v.strip() for k, v in _PARAM_XML.findall(inner)}
             _emit(m.group(1), params)
 
-    # Fallback : <function=...>...</function> hors de tout <tool_call>.
+    # Accepter aussi une fonction XML-ish hors de `<tool_call>`.
     if not calls:
         for name, body in _FUNC_XML.findall(blob):
             params = {k: v.strip() for k, v in _PARAM_XML.findall(body)}
@@ -324,9 +303,7 @@ def _stream_model_turn(
     _t_req = time.monotonic()
     _first_ms: float | None = None
     stream = oai.chat.completions.create(**kwargs)
-    # Expose le stream à /cancel : il pourra le fermer pour débloquer une itération
-    # figée (modèle distant lent/bloqué). close() lève httpx.ReadError, rattrapée par
-    # l'appelant -> le verrou de session est libéré de façon bornée.
+    # Exposer le stream à `/cancel` pour libérer une lecture distante et son verrou.
     if stream_holder is not None:
         stream_holder["stream"] = stream
     try:
@@ -352,14 +329,12 @@ def _stream_model_turn(
         if stream_holder is not None:
             stream_holder["stream"] = None
         _close(stream)
-    # Décomposition CHIFFRÉE du tour (llama-server local seulement — `timings` absent
-    # chez les providers distants) : chargement / prefill / génération, chacun avec sa
-    # durée et son débit. Demande user 2026-07-19 : plus d'attente opaque.
+    # Décomposer les timings locaux en chargement, prefill et génération.
     _tim = collector.get("timings")
     if isinstance(_tim, dict) and _tim:
         log_event("turn.timing", **_turn_timing_fields(_tim, _first_ms))
     if not saw_usage:
-        # Provider sans include_usage : estimation pour garder ↑/↓ vivants.
+        # Estimer si le provider ne renvoie pas l'usage.
         yield (
             "usage",
             _estimate_usage(

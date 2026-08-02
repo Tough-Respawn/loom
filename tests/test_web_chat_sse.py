@@ -1,7 +1,4 @@
-# Caractérisation du chemin /chat COMPLET (la couture create_app <-> stream_chat_tools) :
-# vrai LoomClient branché sur un FakeOAI via une route distante (pas de bloc serveur
-# local), vrai flux SSE, vraie persistance session/timeline. C'est LE test qui doit
-# survivre aux refactors P2-1 et P2-3 ensemble.
+# Intégration complète de `/chat`: client simulé, SSE et persistance réelle.
 from __future__ import annotations
 
 import json
@@ -60,8 +57,7 @@ def chat_env(tmp_env):
             monitor_hub=monitor_hub,
         )
         web = app.test_client()
-        # Titre EXPLICITE : sinon un thread de titrage part en course et consomme
-        # le script FakeOAI (titrage immédiat des modèles distants, app.py ~1726).
+        # Un titre explicite empêche le thread de titrage de consommer le faux client.
         r = web.post("/session/new", data={"title": "session testée"})
         assert r.status_code == 200
         return web, fake, registry, r.get_json()["id"]
@@ -82,7 +78,6 @@ def test_chat_texte_simple_sse_et_persistance(chat_env, tmp_env):
     assert texte == "Bonjour humain."
     assert len(fake.calls) == 1
 
-    # persistance : session.json porte l'échange complet
     saved = json.loads(
         (tmp_env / "sessions" / sid / "session.json").read_text(encoding="utf-8")
     )
@@ -109,7 +104,6 @@ def test_chat_tool_call_sse_et_timeline(chat_env, tmp_env):
     tr = next(e for e in events if e["type"] == "tool_result")
     assert tr["name"] == "list_dir" and tr["ok"] is True
 
-    # la timeline persistée ({event, data}) reprend le tour complet (sous-ensemble _TL)
     tl = web.get(f"/session/{sid}/timeline").get_json()["events"]
     seq = [e["event"] for e in tl]
     assert seq == ["user", "tool_call", "tool_result", "text"]
@@ -160,12 +154,11 @@ def test_monitor_event_sse_timeline_and_structured_persistence(chat_env, tmp_env
 
 
 def test_chat_verrou_relache_apres_le_tour(chat_env):
-    # Après un tour terminé, la session accepte un nouveau /chat (pas de 202) :
-    # le finally du générateur relâche bien le verrou de session.
+    # Le générateur doit relâcher le verrou après consommation complète du flux.
     web, _, _, sid = chat_env([turn_text("un."), turn_text("deux.")])
     r1 = web.post("/chat", data={"message": "premier", "session_id": sid})
     assert r1.status_code == 200
-    # la réponse est STREAMÉE : le verrou n'est relâché qu'une fois le flux consommé
+    # Le verrou reste tenu tant que le flux n'est pas consommé.
     assert _sse_events(r1.data)[-1]["type"] == "done"
     r2 = web.post("/chat", data={"message": "second", "session_id": sid})
     assert r2.status_code == 200
@@ -173,10 +166,7 @@ def test_chat_verrou_relache_apres_le_tour(chat_env):
 
 
 def test_resend_apres_stop_genere_sans_202(chat_env):
-    # Bug STOP+reprise : après un STOP (cancel_event posé), le verrou de session reste
-    # tenu le temps du teardown de la génération interrompue. Un message RENVOYÉ pendant
-    # cette fenêtre NE DOIT PAS partir en file (202) — il attend la libération du verrou
-    # puis GÉNÈRE. Sans le fix, il tombe en 202 et n'est jamais généré (message perdu).
+    # Après STOP, attendre le teardown plutôt que mettre le nouveau message en file orpheline.
     import threading
     import time
 
@@ -187,7 +177,6 @@ def test_resend_apres_stop_genere_sans_202(chat_env):
     lock = _lock_for(S, sid)
     lock.acquire()  # génération en cours d'interruption : verrou encore tenu
     web.post("/cancel", data={"session_id": sid})  # STOP demandé sur CETTE session
-    # Le teardown de la génération interrompue relâche le verrou incessamment :
     threading.Thread(
         target=lambda: (time.sleep(0.3), lock.release()), daemon=True
     ).start()
@@ -197,12 +186,7 @@ def test_resend_apres_stop_genere_sans_202(chat_env):
 
 
 def test_cancel_ferme_le_stream_distant_bloque(chat_env):
-    # (3) hung-remote : sur un modèle distant bloqué au moment du STOP, cancel_event
-    # n'est lu qu'ENTRE deux chunks. Si l'itération du stream ne rend jamais la main
-    # (modèle distant lent/figé), le finally qui relâche le verrou de session n'est
-    # jamais atteint -> session morte (tout /chat suivant -> 202 pour toujours). /cancel
-    # doit FERMER le stream actif : close() lève httpx.ReadError, la boucle la classe en
-    # api_error, le finally s'exécute et le verrou est libéré de façon BORNÉE.
+    # `/cancel` doit fermer un stream distant figé pour rendre la libération du verrou bornée.
     import threading
 
     import httpx
@@ -252,12 +236,10 @@ def test_cancel_ferme_le_stream_distant_bloque(chat_env):
     t.start()
     assert bstream.started.wait(timeout=5), "le stream distant n'a jamais démarré"
 
-    # STOP : doit fermer le stream bloqué et libérer le verrou de façon bornée.
     assert web.post("/cancel", data={"session_id": sid}).status_code == 204
     t.join(timeout=5)
     assert not t.is_alive(), "le /chat bloqué ne s'est pas terminé après /cancel"
 
-    # Verrou relâché : un nouveau /chat GÉNÈRE (200), pas coincé en 202 pour toujours.
     r2 = web.post("/chat", data={"message": "reprends", "session_id": sid})
     assert r2.status_code == 200, (
         f"verrou de session non relâché après /cancel (reçu {r2.status_code})"
@@ -266,8 +248,7 @@ def test_cancel_ferme_le_stream_distant_bloque(chat_env):
 
 
 def test_note_en_vol_reste_202_sans_stop(chat_env):
-    # Garde-fou : SANS STOP en cours, un message envoyé pendant une génération active
-    # reste une note en vol (202). Le fix ne doit pas casser cette sémantique.
+    # Sans STOP, un message concurrent doit rester une note en vol.
     from loom.web.routes.helpers import _lock_for
 
     web, _, _, sid = chat_env([turn_text("x.")])
@@ -278,10 +259,7 @@ def test_note_en_vol_reste_202_sans_stop(chat_env):
 
 
 def test_chat_outils_dans_le_workspace_de_la_session_cible(tmp_env, monkeypatch):
-    # Anti-mélange d'onglets : /chat cible `sess` (session_id). Même si la session
-    # FOCUS change (autre onglet activé pendant la génération -> _session(S) renvoie une
-    # autre session), les OUTILS doivent tourner dans le workspace de la session CIBLE,
-    # jamais celui de la focus. Sans le fix, chat.py:650 lit _session(S).workspace.
+    # Les outils doivent suivre la session cible même si le focus change pendant le flux.
     from loom.agent.client import LoomClient
     from loom.agent.session import SessionStore
 
@@ -324,7 +302,6 @@ def test_chat_outils_dans_le_workspace_de_la_session_cible(tmp_env, monkeypatch)
 
     sidA = web.post("/session/new", data={"title": "A"}).get_json()["id"]
     web.post("/session/workspace", data={"session_id": sidA, "workspace": "C:/wsA"})
-    # une AUTRE session B, avec un workspace différent, que _session renverra (focus)
     sessB = _get_session(
         app.S, web.post("/session/new", data={"title": "B"}).get_json()["id"]
     )
@@ -340,11 +317,7 @@ def test_chat_outils_dans_le_workspace_de_la_session_cible(tmp_env, monkeypatch)
 
 
 def test_chat_ne_ressuscite_pas_une_session_supprimee(chat_env):
-    # Fenêtre de résurrection concurrente : /chat capture l'objet session AVANT
-    # d'acquérir son verrou. Un /session/delete peut supprimer entre-temps. On simule
-    # l'état résultant (dossier supprimé, objet encore en cache) : /chat, une fois le
-    # verrou acquis, doit détecter la disparition et ABANDONNER, sans que save() ne
-    # recrée la session.
+    # Une session supprimée avant l'acquisition du verrou ne doit pas être recréée par save().
     import shutil
 
     web, _, _, sid = chat_env([turn_text("ok.")])
@@ -358,9 +331,7 @@ def test_chat_ne_ressuscite_pas_une_session_supprimee(chat_env):
 
 
 def test_init_adopte_la_session_cible_pas_la_focus(tmp_env):
-    # /init <dir> doit adopter le dossier dans la session PASSÉE (cible capturée par
-    # /chat), pas dans S.cur (focus) : sinon un onglet activé pendant la génération
-    # détournerait l'adoption. Test unitaire du contrat de _handle_init_command.
+    # `/init` adopte le dossier dans la session cible, jamais dans le focus global.
     from types import SimpleNamespace
 
     from loom.agent.session import SessionStore
@@ -386,9 +357,7 @@ def test_init_adopte_la_session_cible_pas_la_focus(tmp_env):
 
 
 def test_prime_slot_utilise_le_workspace_de_la_session_cible(app):
-    # L'amorçage KV (_prime_slot) construit le prompt avec le workspace de la session
-    # CIBLE passée, pas celui de S.cur (focus) : sinon on amorce le cache avec le
-    # loom.md/dossier d'un autre onglet.
+    # L'amorçage KV doit utiliser le workspace de la session ciblée.
     from types import SimpleNamespace
 
     from loom.web.routes.priming import _prime_slot
@@ -425,18 +394,13 @@ def test_prime_slot_utilise_le_workspace_de_la_session_cible(app):
 
 
 def test_chat_id_explicite_inconnu_repond_404(web_sess):
-    # Un session_id EXPLICITE mais inconnu ne doit pas retomber en silence sur la
-    # session focus (l'onglet enverrait son message dans une autre session) : 404,
-    # comme /fork et /compact.
+    # Un identifiant explicite inconnu doit répondre 404, sans repli sur le focus.
     r = web_sess.post("/chat", data={"message": "x", "session_id": "deadbeefdead"})
     assert r.status_code == 404
 
 
 def test_stop_avec_note_en_file_repart_de_la_note(tmp_env):
-    # Scénario réel : le modèle part dans une direction ; l'utilisateur pousse une
-    # remarque (mise en file) PUIS appuie STOP. Le STOP coupe la réponse en cours, mais
-    # la génération doit ENCHAÎNER sur la note en file (repartir de la remarque), pas
-    # s'arrêter en laissant la note orpheline dans S.notes.
+    # Une note suivie de STOP doit relancer depuis cette note, pas la laisser orpheline.
     from types import SimpleNamespace as NS
 
     from loom.agent.client import LoomClient
@@ -448,7 +412,6 @@ def test_stop_avec_note_en_file_repart_de_la_note(tmp_env):
     holder = {}
 
     class MidCancelStream:
-        # Appel 1 : le modèle streame un bout, puis l'utilisateur pousse une note + STOP.
         def __iter__(self):
             yield chunk(content="je pars dans la ")
             holder["S"].notes.push(holder["sid"], "non, fais plutôt un bouton discret")
@@ -516,10 +479,7 @@ def test_stop_avec_note_en_file_repart_de_la_note(tmp_env):
 
 
 def test_chat_erreur_api_flux_error_generique(chat_env):
-    # Une exception NON-openai pendant la génération (ici : script épuisé) remonte
-    # jusqu'au try de generate() qui la capture : dernier event SSE = "error" avec
-    # message GÉNÉRIQUE (pas de fuite d'interne, cf. P3-4), et le flux se ferme sans
-    # exception côté client.
+    # Une erreur interne doit devenir un événement SSE générique sans fuite de détails.
     web, _, _, sid = chat_env([])
     r = web.post("/chat", data={"message": "salut", "session_id": sid})
     assert r.status_code == 200

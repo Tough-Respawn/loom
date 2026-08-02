@@ -1,4 +1,3 @@
-// loom/web/static/panels.js — issu du decoupage de app.js (comportement constant).
 import { focusedPane, paneShowing, state } from "./state.js";
 import { activateTab, closeTab, ensureTab, focusPane, setPaneSid } from "./tabs.js";
 import { addPane, removePane } from "./panes.js";
@@ -22,9 +21,7 @@ export function wireSidDrag(el, getSid) {
 }
 
 export function dropTabOnPane(sid, pane, other) {
-  // Sauve d'abord le brouillon VIVANT du panneau cible : dans l'échange ci-dessous,
-  // setPaneSid(other, mine) relit t.draft AVANT que setPaneSid(pane, sid) ne l'ait
-  // sauvé — sans cette ligne, le texte tapé non envoyé disparaissait de l'écran.
+  // Sauvegarder le brouillon avant l'échange empêche sa perte entre deux panneaux.
   const mineTab = state.tabs[pane.sid];
   if (mineTab) mineTab.draft = pane.input.value;
   if (other) setPaneSid(other, pane.sid);
@@ -88,16 +85,13 @@ export function openTabMenu(e, sid) {
     m.appendChild(b);
   };
   const full = state.panes.length >= 4;
-  // Une seule entrée : le split par défaut ouvre à droite, la DISPOSITION se règle
-  // ensuite au glissé-déposé (bandeau/onglet -> zones directionnelles) — plus simple
-  // que de choisir une direction dans un menu (retour user 2026-07-19).
+  // Ouvrir à droite par défaut; le glisser-déposer ajuste ensuite la disposition.
   add("Ouvrir en parallèle", () => splitWith(sid), full);
   const sep = document.createElement("div");
   sep.className = "ctx-sep";
   m.appendChild(sep);
   add("Remettre en vue simple", () => singleView(), state.panes.length <= 1);
-  // Chemin réel de la session (dossier logs/état) : affiché sélectionnable — cliquer
-  // dedans ne ferme PAS le menu (le closer n'agit que hors #tab-ctx) — + entrée copie.
+  // Garder le chemin sélectionnable sans fermer le menu contextuel.
   const dir = sessionDirPath(sid);
   if (dir) {
     const sep2 = document.createElement("div");
@@ -113,7 +107,6 @@ export function openTabMenu(e, sid) {
       showToast("chemin copié");
     });
   }
-  // Archive portable (session.json + timeline) : le serveur pousse le téléchargement.
   add("Exporter la conversation (.zip)", () => {
     window.location = "/session/" + encodeURIComponent(sid) + "/export";
   });
@@ -233,21 +226,17 @@ export function updateUsageMeter(t) {
   const outEl = document.getElementById("um-out");
   if (inEl) inEl.textContent = fmtTok(t.tokens_in);
   if (outEl) outEl.textContent = fmtTok(t.tokens_out);
-  // Taux de cache = part de l'input servie par le cache de préfixe. C'est LA mesure : haut
-  // (vert) = le prompt caching mord ; ~0 (rouge) = préfixe instable, on repaie tout plein pot.
+  // Le taux de cache mesure la part de l'entrée réellement servie depuis le préfixe.
   const cacheEl = document.getElementById("um-cache");
   if (cacheEl) {
     const pct = t.cache_pct || 0;
     cacheEl.textContent = t.tokens_in > 0 ? "· cache " + pct + "%" : "";
     cacheEl.classList.toggle("miss", t.tokens_in > 0 && pct < 20);
   }
-  // Nombre d'appels API = le MULTIPLICATEUR (le contexte est rejoué à chaque appel) : le
-  // levier d'optimisation n°1. « · 58× » se lit « input payé 58 fois ».
+  // Le nombre d'appels multiplie le coût d'un contexte rejoué.
   const callsEl = document.getElementById("um-calls");
   if (callsEl) callsEl.textContent = t.api_calls > 0 ? "· " + t.api_calls + "×" : "";
-  // Jauge de contexte : occupation COURANTE (prompt du dernier appel) / fenêtre du modèle.
-  // Répond à « à quel point le contexte est plein ». Ambre >=70%, rouge >=85% (la
-  // microcompaction élague les vieux résultats d'outils au-delà, cf. seuil serveur).
+  // La jauge compare le dernier prompt à la fenêtre du modèle.
   const ctxEl = document.getElementById("um-ctx");
   if (ctxEl) {
     const used = t.context_tokens || 0;
@@ -258,8 +247,7 @@ export function updateUsageMeter(t) {
       if (fill) fill.style.width = pct + "%";
       const pctEl = document.getElementById("um-ctx-pct");
       if (pctEl) pctEl.textContent = pct + "%";
-      // Source de la fenêtre : provider = le modèle distant fait autorité ; config = déclaré
-      // (le provider ne publie pas sa fenêtre, ex. Z.ai) ; local = notre limite d'allocation.
+      // Le provider fait autorité lorsqu'il publie sa fenêtre, sinon utiliser la config.
       const src =
         t.context_source === "provider"
           ? "fenêtre lue du provider (fait autorité)"
@@ -277,8 +265,7 @@ export function updateUsageMeter(t) {
       ctxEl.hidden = true;
     }
   }
-  // Coût volontairement PAS affiché : sans tarif réel il polluerait. Le backend le cumule
-  // toujours (cost_usd), prêt à réafficher quand on aura les vrais chiffres du provider.
+  // Masquer le coût sans tarif fiable, tout en continuant à le cumuler.
   usageMeter.hidden = !(t.api_calls > 0 || t.tokens_in > 0 || t.tokens_out > 0);
 }
 
@@ -407,13 +394,11 @@ export function openConfirmPop(row, labelText, onYes, align = "right") {
   pop.append(label, yes, no);
   document.body.appendChild(pop);
   if (align === "left") {
-    // Déplié vers la gauche de l'ancre (le drawer colle au bord droit de l'écran).
     pop.style.left = Math.max(6, r.left - pop.offsetWidth - 6) + "px";
   } else {
-    // Aligné sur la ligne : collé juste à sa droite (prolongement visuel).
     pop.style.left = r.right + 3 + "px";
   }
-  // Ferme au clic ailleurs (en phase capture pour ne pas rater les clics dans la sidebar).
+  // La phase capture garantit la fermeture même depuis la sidebar.
   setTimeout(() => document.addEventListener("click", _outsideDelClose, true), 0);
 }
 
@@ -479,12 +464,11 @@ export async function refreshMachineState() {
     hideActions();
     return "";
   }
-  // Moniteur système : visible UNIQUEMENT pour un modèle local (home), pas pour le cloud.
+  // Le moniteur machine n'a de sens que pour un modèle local.
   setSysmonVisible(d.mode === "home");
   let cls = "",
     text = "";
   if (d.mode === "remote") {
-    // Modèle distant : la machine ne porte pas le cerveau. On la veut libre.
     if (d.reachable && d.any_loaded) {
       cls = "busy";
       text = "machine · libération…";
@@ -494,7 +478,6 @@ export async function refreshMachineState() {
     }
   } else if (!d.reachable) {
     if (d.starting) {
-      // Serveur lancé par loom.web (auto ou bouton), pas encore joignable.
       cls = "busy";
       text = "machine · démarrage du serveur…";
     } else {
@@ -503,8 +486,7 @@ export async function refreshMachineState() {
     }
   } else if (d.model_loaded) {
     if (machineUnloaded) {
-      // Unload demandé mais llama-swap n'a pas fini de tuer le llama-server (~2 s) :
-      // état transitoire BUSY pour que le suivi continue jusqu'au vrai état final.
+      // Garder un état transitoire jusqu'à la fin réelle du déchargement.
       cls = "busy";
       text = "machine · libération…";
     } else {
@@ -512,8 +494,7 @@ export async function refreshMachineState() {
       text = "machine · " + d.model + " chargé";
     }
   } else if (d.loading) {
-    // état « starting » réel de llama-swap (le chargement peut prendre 1-3 min).
-    // Un chargement en cours invalide un déchargement manuel antérieur.
+    // Un chargement actif annule visuellement un ancien déchargement demandé.
     set_machineUnloaded(false);
     cls = "busy";
     text = "machine · " + d.model + " chargement…";
@@ -526,9 +507,7 @@ export async function refreshMachineState() {
   }
   chip.className = "machine-chip " + cls;
   chip.textContent = text;
-  // Actions contextuelles : chaque bouton n'apparaît que quand il a du sens.
-  // « décharger » : un modèle local occupe réellement la VRAM — PAS pendant un
-  // chargement (llama-swap ignore l'unload d'un modèle en état « starting »).
+  // Ne proposer le déchargement que lorsque llama-swap peut réellement l'honorer.
   if (unloadBtn)
     unloadBtn.hidden = !(
       d.mode === "home" &&
@@ -537,11 +516,9 @@ export async function refreshMachineState() {
       !d.loading &&
       !machineUnloaded
     );
-  // « démarrer le serveur » : modèle local sélectionné, serveur éteint, pas déjà en route.
   if (startBtn)
     startBtn.hidden = !(d.mode === "home" && !d.reachable && !d.starting);
-  // « éteindre le serveur » : seulement l'instance GÉRÉE par loom.web (jamais une stack
-  // lancée à la main dans un terminal).
+  // Ne jamais proposer d'éteindre une stack lancée hors de Loom.
   if (stopBtn) stopBtn.hidden = !(d.reachable && d.managed);
   return cls;
 }
@@ -598,8 +575,7 @@ export async function openSkillEditor(name) {
     if (skDesc)
       skDesc.textContent =
         (d.origin ? "[" + d.origin + "] " : "") + (d.description || "");
-    // Bouton Supprimer : seulement pour les skills gérés par l'utilisateur
-    // (appris / ajoutés) — jamais le package ni les plugins.
+    // Seuls les skills gérés par l'utilisateur sont supprimables.
     const dbtn = document.getElementById("skdr-delete");
     if (dbtn) dbtn.hidden = !d.deletable;
     if (skBody) skBody.value = d.source || "";
@@ -637,7 +613,6 @@ export async function saveSkill(scope) {
         scope === "global"
           ? "enregistré pour toutes les sessions ✓"
           : "appliqué à cette session ✓";
-    // Rafraîchit le panneau (badge override) sans changer les cases cochées.
     postSkillsToggle();
   } catch (err) {
     if (skStatus) skStatus.textContent = "erreur : " + err;
@@ -693,7 +668,7 @@ export function openSkillCreator() {
   if (skDesc)
     skDesc.textContent =
       "[user] nouveau skill — décris-le puis Générer, ou écris le SKILL.md";
-  // Reprise du brouillon (jamais de page blanche imposée) + état de génération.
+  // Restaurer le brouillon et son état de génération.
   if (skNameInput) skNameInput.value = skDraft.name;
   if (skGenDesc) skGenDesc.value = skDraft.desc;
   if (skBody) skBody.value = skDraft.body;
@@ -773,7 +748,6 @@ export function smDrawSpark(canvas, data, color) {
       i ? ctx.lineTo(x, y(v)) : ctx.moveTo(x, y(v));
     });
   };
-  // aire sous la courbe (dégradé) + ligne
   path();
   ctx.lineTo(x0 + (data.length - 1) * step, h);
   ctx.lineTo(x0, h);
@@ -889,8 +863,7 @@ export function paintModelSelect() {
   const opt = sel.options[sel.selectedIndex] || sel.options[0];
   const m = opt.className.match(/opt-(\w+)/);
   sel.className = m && m[1] !== "home" ? "sel-" + m[1] : "";
-  // Moniteur système : utile quand la MACHINE travaille (local/image/vidéo),
-  // superflu sur un distant — bascule immédiate, /machine_state confirme après.
+  // Basculer immédiatement le moniteur; l'état machine confirmera ensuite.
   if (typeof setSysmonVisible === "function")
     setSysmonVisible(!(m && m[1] === "remote"));
 }

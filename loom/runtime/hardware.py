@@ -1,4 +1,3 @@
-# loom/runtime/hardware.py
 """Détection hardware et recommandation de réglages d'offload GPU.
 
 Détection GPU AGNOSTIQUE : la source de vérité est le binaire llama.cpp installé
@@ -170,12 +169,10 @@ class HardwareProfile:
     gpu_name: str | None
     vram_free_mb: int
     cpu_threads: int
-    # Champs remplis par la détection agnostique (--list-devices).
+    # Renseignés par la détection agnostique `--list-devices`.
     vram_total_mb: int = 0
     backend: str | None = None
-    # Vrai quand la VRAM est prouvée DISCRÈTE (nvidia-smi / CUDA) : seul cas où
-    # l'additionner à la RAM dans un budget a un sens. Un iGPU Vulkan déclare la
-    # RAM partagée comme sa mémoire -> la sommer double-compterait.
+    # La VRAM partagée d'un iGPU ne doit pas être ajoutée une seconde fois à la RAM.
     vram_is_discrete: bool = False
 
     @property
@@ -184,7 +181,6 @@ class HardwareProfile:
         return self.vram_free_mb if self.vram_is_discrete else 0
 
 
-# «   Vulkan0: AMD Radeon(TM) 860M Graphics (36682 MiB, 34848 MiB free) »
 _DEVICE_RE = re.compile(
     r"^\s*([A-Za-z]+)(\d+):\s+(.+?)\s+\((\d+)\s+MiB,\s+(\d+)\s+MiB free\)\s*$"
 )
