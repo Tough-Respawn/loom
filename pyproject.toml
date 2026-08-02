@@ -30,6 +30,11 @@ dependencies = [
     "truststore>=0.10",
 ]
 
+[project.optional-dependencies]
+# Client MCP : optionnel car aucun coût/runtime tant qu'aucun serveur tiers
+# n'est configuré. La v1 est la branche stable correspondant à l'API ClientSession.
+mcp = ["mcp>=1.27,<2"]
+
 [project.scripts]
 # Installeur guidé : binaire llama.cpp + premier modèle. `uv run loom-setup`
 loom-setup = "loom.setup.cli:main"

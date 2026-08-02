@@ -28,6 +28,16 @@ workspace_dir = "C:/Users/<toi>/Documents"
 # Modèle chargé au démarrage (id d'un modèle local ou distant ci-dessous)
 default_model = "glm-distant"
 
+# Serveur d'outils tiers local (décommente et adapte ; secrets dans ce fichier gitignoré).
+# [[mcp_servers]]
+# name = "exemple"
+# transport = "stdio"
+# command = "uvx"
+# args = ["mon-serveur-mcp"]
+# env = { API_KEY = "..." }
+# enabled = true
+# timeout_s = 10
+
 # ============================= Modèles distants =============================
 # Les distants ne vivent PAS ici : un dossier par modèle, comme les locaux —
 #   <models_root>/remote/<id>/model.toml   (gabarit : loom/models/_TEMPLATE/remote-model.toml)

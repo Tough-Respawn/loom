@@ -45,6 +45,12 @@ class Session:
     created_at: str = ""
     updated_at: str = ""
 
+    def __post_init__(self) -> None:
+        # Identifiant runtime non sérialisé sur Conversation : les outils liés à
+        # un processus (monitor) retrouvent leur file/session sans dupliquer l'id
+        # dans session.json.
+        self.conversation.runtime_session_id = self.id
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -157,6 +163,7 @@ class SessionStore:
         # est refusé net plutôt que de laisser _file() sortir de root.
         if not _SID_RE.fullmatch(session.id or ""):
             raise ValueError(f"id de session invalide : {session.id!r}")
+        session.conversation.runtime_session_id = session.id
         session.updated_at = _now_iso()
         f = self._file(session.id)
         f.parent.mkdir(parents=True, exist_ok=True)
