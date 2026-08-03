@@ -18,6 +18,20 @@
 - **`log_event` ne peut plus interrompre un tour de génération** : l'horodatage passe par
   `_ts_prefix()`, qui ne lève jamais — le contrat best-effort du module (`_emit`) n'était
   pas respecté par les appels à `_ts()`.
+- **La reprise à chaud n'est plus perdue au démarrage du serveur.** `try_hot_resume`
+  consommait son essai unique AVANT la tentative : un refus de connexion (serveur pas
+  encore à l'écoute) était compté comme un vrai échec et la reprise perdue pour toute la
+  période froide. Le refus est désormais distingué — le slot redevient froid et le tour
+  suivant retente. Un vrai échec continue de consommer l'essai (le disjoncteur qui évite
+  une tempête de retries reste intact).
+
+### Diagnostic
+- **`serve.log` reçoit enfin la sortie du serveur modèle.** llama-swap lance llama-server
+  lui-même et retient sa sortie dans ses propres tampons : le fichier ne contenait que les
+  lignes de llama-swap, alors que l'interface y renvoyait l'utilisateur en cas de panne.
+  `capture_upstream_log()` rapatrie la fin de `/logs` dans `serve.log` au moment où le
+  serveur est constaté mort, et le message indique combien de lignes ont été copiées — ou
+  dit franchement que le journal est injoignable.
 
 ### Diagnostic
 - **Les blocs de dump sont horodatés** (`REQUETE`, `HOT_RESUME`, `SLOT_RESTORE_ERR`…).

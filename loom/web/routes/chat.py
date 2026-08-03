@@ -137,8 +137,6 @@ def _handoff_prompt(content: str, provenance: list[dict[str, str]]) -> str:
     )
 
 
-
-
 def _register_chat_routes(app, S):
     @app.post("/handoff")
     @app.post("/chat")
@@ -564,9 +562,21 @@ def _register_chat_routes(app, S):
                                 "dans un moment (détails : var/logs/serve.log)."
                             )
                         else:
+                            # Rapatrier le journal de llama-swap AVANT d'y renvoyer :
+                            # serve.log ne reçoit que les lignes de llama-swap, jamais
+                            # celles de llama-server (qu'il garde dans ses tampons).
+                            # Sans ça le message pointait vers un fichier vide.
+                            from loom.runtime.serve import capture_upstream_log
+
+                            _n = capture_upstream_log(S.client.local_server_root())
                             _txt = (
                                 "le serveur modèle s'est ARRÊTÉ pendant le démarrage "
-                                "— la génération va échouer (cause : var/logs/serve.log)."
+                                "— la génération va échouer (cause : var/logs/serve.log"
+                                + (
+                                    f", {_n} lignes du serveur modèle y ont été copiées)."
+                                    if _n
+                                    else ", journal du serveur modèle injoignable)."
+                                )
                             )
                         yield _sse("notice", text=_txt)
                 if _reachable and conv.model not in _running_txt:
