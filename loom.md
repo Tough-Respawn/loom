@@ -15,7 +15,7 @@ Le pari architectural : pas d'orchestrateur déterministe, pas de rail de réfle
 - **Web/UI** : Flask + Preact/htm (zéro build, libs vendorées en `loom/web/static/`), streaming SSE, markdown, MathJax (LaTeX offline). Multi-onglets (une session par onglet, génération concurrente pour les distants), console de configuration (édition des TOML à chaud), gestionnaire de modèles (locaux + distants, ajout/édition sans redémarrer), compteur tokens/cache + jauge de remplissage du contexte, moniteur système (CPU/RAM/GPU) pour les modèles locaux.
 - **SDK** : `openai` (client API), `httpx`, `huggingface-hub` (téléchargement des GGUF).
 - **Ingestion docs** : `pypdf`, `openpyxl`, `python-docx`, `trafilatura`.
-- **Vérification rendu** : `playwright` (headless, `check_page` / `check_interactive`).
+- **Vérification rendu** : `playwright` (headless, `check_page` / `serve_and_check`).
 - **Lint/format** : `ruff` (présent au runtime pour l'outil `format_code`).
 - **Mémoire** : SQLite FTS5 (provider local).
 - **Recherche web** (optionnel, dégradé offline) : `ddgs`.
@@ -36,11 +36,11 @@ from-claude-to-local-haranessed-llm/
 │   │   ├── session.py         #   sessions persistantes (titre inféré)
 │   │   ├── inline_image.py    #   vision (screenshot collé)
 │   │   └── reflect.py         #   capitalisation post-tour (mémoire)
-│   ├── tools/                 # ~23 outils appelés par le modèle
+│   ├── tools/                 # 25 outils activés par défaut, plus options/MCP
 │   │   ├── search.py fs.py read.py      # localiser/lire (find_files, search_text, list_dir, read_file [texte+PDF/xlsx/docx], read_image)
 │   │   ├── shell.py format.py           # exécuter (run_shell), formater (ruff/prettier)
 │   │   ├── web.py                       # web_search, fetch_url (anti-SSRF)
-│   │   ├── browser.py                   # check_page, check_interactive (Playwright)
+│   │   ├── browser.py                   # check_page, serve_and_check (Playwright)
 │   │   ├── todo.py agent.py note.py memory.py  # manage_todos, dispatch_agent, write/read_note, recall/remember
 │   │   ├── skills.py plugins.py         # use_skill, list/add/install plugins
 │   │   └── trust.py                     # frontière de confiance (ingestion)
