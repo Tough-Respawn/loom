@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-08-03 — observabilité et robustesse au démarrage
+
+### Corrections
+- **Un modèle local incomplet n'empêche plus Loom de démarrer.** `/add-model` écrit
+  `model.toml` AVANT la fin du téléchargement (`n_layers` se lit dans le GGUF) ; une
+  installation interrompue laissait un `KeyError` remonter jusqu'au chargement de la
+  config, donc plus d'interface du tout — y compris pour réparer le modèle fautif.
+  `_discover_models` ignore désormais un dossier illisible en disant sur stderr **lequel**
+  et **pourquoi**. Loom démarre même si tous les modèles locaux sont cassés.
+- **`log_event` ne peut plus interrompre un tour de génération** : l'horodatage passe par
+  `_ts_prefix()`, qui ne lève jamais — le contrat best-effort du module (`_emit`) n'était
+  pas respecté par les appels à `_ts()`.
+
+### Diagnostic
+- **Les blocs de dump sont horodatés** (`REQUETE`, `HOT_RESUME`, `SLOT_RESTORE_ERR`…).
+  Sans date, ils étaient impossibles à replacer sur une chronologie : un post-mortem
+  (serveur modèle arrêté pendant un téléchargement) s'est heurté à des blocs indatables.
+  L'horodatage ouvre la ligne, ce qui permet de **fusionner par tri** le log de session et
+  le repli global — les deux se partagent la trace selon le thread émetteur.
+
+### Tests
+- 8 non-régressions : découverte tolérante (dossier incomplet, TOML invalide, tout cassé)
+  et chronologie (bloc horodaté et greppable, tri conjoint blocs/événements, silence sous
+  `LOOM_DEBUG=0`, horloge défaillante non bloquante).
+
+---
+
 ## 2026-08-02 — audit de préparation
 
 ### Corrections

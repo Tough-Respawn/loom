@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -232,8 +233,20 @@ def _discover_models(models_root: Path) -> list[ModelConfig]:
         toml_path = folder / "model.toml"
         if not toml_path.exists():
             continue
-        d = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-        m = _parse_model(d, default_id=folder.name)
+        # Un modèle ILLISIBLE est ignoré, pas fatal : /add-model écrit le toml AVANT
+        # la fin du téléchargement (n_layers vient du GGUF), et une installation
+        # interrompue laissait Loom refusant de démarrer — KeyError au chargement de
+        # la config, donc plus d'interface du tout pour réparer (vécu 2026-08-03).
+        try:
+            d = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+            m = _parse_model(d, default_id=folder.name)
+        except Exception as exc:  # noqa: BLE001 - un dossier cassé ne doit pas tout bloquer
+            print(
+                f"[loom] modele ignore : {folder.name} — {toml_path} illisible "
+                f"({type(exc).__name__}: {exc}). Complete-le ou supprime le dossier.",
+                file=sys.stderr,
+            )
+            continue
         m.dir = str(folder)
         out.append(m)
     return out
