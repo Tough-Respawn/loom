@@ -120,6 +120,9 @@ class ServerProbe:
     n_cpu_moe: int | None = None
     # Simuler le nombre réel de slots pour mesurer aussi le coût de l'isolation KV.
     n_parallel: int = 1
+    # Batchs de prefill sondés par probe_ubatch (None = défauts llama-server).
+    ubatch: int | None = None
+    batch: int | None = None
     port: int = 8131
     health_timeout_s: int = 600
     popen: object = subprocess.Popen
@@ -209,6 +212,8 @@ class ServerProbe:
             n_parallel=self.n_parallel,
             cpu_moe=self.cpu_moe,
             n_cpu_moe=self.n_cpu_moe,
+            ubatch=self.ubatch,
+            batch=self.batch,
         )
         proc = self.popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t0 = time.monotonic()

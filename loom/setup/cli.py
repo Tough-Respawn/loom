@@ -279,8 +279,6 @@ def _real_cpu_physical() -> int | None:
         return None
 
 
-
-
 def step_detection(con: Console, report: SetupReport, deps: Deps):
     con.say("[1/4] Détection du système")
     plat = deps.detect_platform()
@@ -821,6 +819,39 @@ def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> No
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _set_model_ubatch(gguf_path: Path, ubatch: int, batch: int, detail: str) -> None:
+    """Écrit les batchs de prefill MESURÉS par la sonde d'ubatch dans le model.toml
+    (vérité par modèle : l'optimum dépend de l'architecture et du quant). Remplace
+    les lignes existantes ou les ajoute, sans toucher au reste du fichier."""
+    p = Path(gguf_path).parent / "model.toml"
+    if not p.is_file():
+        return
+    lines = p.read_text(encoding="utf-8").splitlines()
+    stamp = f"# ubatch/batch élus par la sonde de prefill — {detail}"
+    wanted = {"ubatch": f"ubatch = {ubatch}", "batch": f"batch = {batch}"}
+    done: set[str] = set()
+    for i, line in enumerate(lines):
+        code = line.split("#")[0].strip().replace(" ", "")
+        for key, new_line in wanted.items():
+            if code.startswith(f"{key}="):
+                lines[i] = new_line
+                done.add(key)
+    missing = [wanted[k] for k in ("ubatch", "batch") if k not in done]
+    if missing:
+        lines += ["", stamp] + missing
+    else:
+        # Les deux lignes existaient : poser (ou rafraîchir) le tampon au-dessus
+        # de la première d'entre elles.
+        for i, line in enumerate(lines):
+            if line.split("#")[0].strip().replace(" ", "").startswith("ubatch="):
+                if i > 0 and lines[i - 1].strip().startswith("# ubatch/batch élus"):
+                    lines[i - 1] = stamp
+                else:
+                    lines.insert(i, stamp)
+                break
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     """[4/4] Bench du matériel avec le VRAI modèle : mesure -t (et -ngl si backend
     GPU), calcule le contexte qui tient en RAM, écrit le tout dans local.toml."""
@@ -980,6 +1011,22 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     con.progress_end()
     context = calib["context"]
 
+    # Sonde d'ubatch sur la MÊME sonde serveur que la calibration (flags exacts,
+    # aucune dépendance à llama-bench) : un seul levier à la fois, ajouté au couple
+    # threads/ngl déjà gagnant, sur un prompt assez long pour que le levier existe
+    # (à 128 tokens tout tient dans un micro-batch : aucun effet mesurable).
+    con.progress("sonde ubatch (prefill sur prompt long)…")
+    try:
+        from dataclasses import replace as _dc_replace
+
+        ub_res = bench_mod.probe_ubatch(
+            lambda ub, b: _dc_replace(probe, ubatch=ub, batch=b),
+            progress=lambda m: con.progress(f"sonde ubatch : {m}"),
+        )
+    except Exception:  # noqa: BLE001 - sonde best-effort, jamais fatale
+        ub_res = None
+    con.progress_end()
+
     values = {
         "server": {"context": context},
         "override": {"threads": best["threads"]},
@@ -996,12 +1043,38 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "context_valide_jusqua": calib["valide_jusqua"],
         },
     }
+    # Repli MACHINE : un modèle ajouté plus tard n'est jamais benché et tombait sur les
+    # constantes aveugles de llama-server. On n'écrit QUE ce qui a été mesuré.
+    if ub_res:
+        values["server"]["ubatch"] = ub_res["ubatch"]
+        values["server"]["batch"] = ub_res["batch"]
+        values["bench"]["ubatch"] = ub_res["ubatch"]
+        values["bench"]["batch"] = ub_res["batch"]
+        values["bench"]["ubatch_pp_ts"] = ub_res["pp_ts"]
+        values["bench"]["ubatch_mesures"] = ub_res["mesures"]
+    # `checkpoint_min_step` n'est PAS mesurable par llama-bench (il gouverne la
+    # compaction en session, pas un débit). Défaut RAISONNÉ, réservé aux modèles à
+    # mémoire hybride que la sonde d'isolation vient de détecter : le défaut serveur
+    # (8192) y laisse des déserts -> compaction profonde à ~8k tokens retraités
+    # (39 s mesurés) contre ~2k à 2048 (13,3 s). Étiqueté comme non mesuré.
+    if isolation is not None:
+        values["server"]["checkpoint_min_step"] = 2048
+        values["bench"]["checkpoint_min_step_origine"] = (
+            "défaut raisonné (NON mesuré) — modèle à mémoire hybride détecté"
+        )
     # Persister même un zéro mesuré, sauf pour un MoE dont l'override global serait trompeur.
     if len(ngl) > 1 and not moe:
         values["override"]["n_gpu_layers"] = best["ngl"]
     set_local_values(PERSONAL_CONFIG_PATH, values)
     # La pente dépend de l'architecture; persister donc le contexte par modèle.
     _set_model_context(gguf_path, context, calib["mecanisme"])
+    if ub_res:
+        _set_model_ubatch(
+            gguf_path,
+            ub_res["ubatch"],
+            ub_res["batch"],
+            f"{ub_res['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens",
+        )
     if isolation is not None:
         _set_model_cache_isolation(gguf_path, isolation, iso_detail)
     gpu_txt = f", offload GPU -ngl {best['ngl']}" if best["ngl"] > 0 else ""
@@ -1013,6 +1086,17 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         f"  [ok] context={context} ({topo}, pente {calib['slope_kb_tok']} Ko/token "
         f"mesurée, vitesse validée jusqu'à {calib['valide_jusqua']} tokens)"
     )
+    if ub_res:
+        gain = (
+            f", +{ub_res['gain_pct']:.0f} % de prefill"
+            if ub_res.get("gain_pct")
+            else ""
+        )
+        con.say(
+            f"  [ok] ubatch={ub_res['ubatch']} / batch={ub_res['batch']} "
+            f"({ub_res['pp_ts']:.1f} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens{gain}) "
+            "— défaut machine pour les modèles ajoutés ensuite"
+        )
     con.say(f"     mécanisme : {calib['mecanisme']}")
     for line in _usage_verdict(best["tg_ts"], best["pp_ts"]):
         con.say(line)
@@ -1064,8 +1148,6 @@ def _usage_verdict(tg_ts: float, pp_ts: float) -> list[str]:
         "modèle distant ([[remote_models]]) pour les gros chantiers."
     )
     return lines
-
-
 
 
 def run(con: Console, deps: Deps) -> int:

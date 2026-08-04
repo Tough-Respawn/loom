@@ -151,9 +151,13 @@ def build_launch(
         cpu_moe=cfg.model.cpu_moe,
         n_cpu_moe=cfg.model.n_cpu_moe,
         slot_save_dir=slots_dir(),
-        ubatch=cfg.model.ubatch,
-        batch=cfg.model.batch,
-        checkpoint_min_step=cfg.model.checkpoint_min_step,
+        # Repli MACHINE, même précédence que `context` : le modèle gagne, la machine
+        # sert de défaut mesuré, la constante aveugle ne sert qu'en dernier recours.
+        ubatch=cfg.model.ubatch or cfg.default_ubatch,
+        batch=cfg.model.batch or cfg.default_batch,
+        checkpoint_min_step=(
+            cfg.model.checkpoint_min_step or cfg.default_checkpoint_min_step
+        ),
     )
 
 
@@ -241,6 +245,9 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         override_n_gpu_layers=cfg.override_n_gpu_layers,
         slot_save_dir=slots_dir(),
         n_parallel=cfg.n_parallel,
+        default_ubatch=cfg.default_ubatch,
+        default_batch=cfg.default_batch,
+        default_checkpoint_min_step=cfg.default_checkpoint_min_step,
     )
     write_swap_yaml(swap, SWAP_YAML)
     args = [

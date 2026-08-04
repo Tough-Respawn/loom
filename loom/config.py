@@ -162,6 +162,14 @@ class RuntimeConfig:
     override_n_gpu_layers: int | None
     override_threads: int | None
     chat: ChatConfig
+    # Repli MACHINE des réglages mesurés, sur le modèle de `context` : un modèle
+    # fraîchement ajouté n'est jamais benché et tombait sur des constantes aveugles
+    # (ubatch 512, batch 2048, pas de plafond de checkpoint) alors que la machine
+    # avait déjà ses valeurs mesurées ailleurs. Le model.toml reste PRIORITAIRE :
+    # ceci n'est pas une surcharge, c'est un défaut informé au lieu d'un défaut aveugle.
+    default_ubatch: int | None = None
+    default_batch: int | None = None
+    default_checkpoint_min_step: int | None = None
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     # Les modèles distants rejoignent les locaux dans le sélecteur.
     remote_models: list[RemoteModelConfig] = field(default_factory=list)
@@ -466,6 +474,9 @@ def load_config(
         gpu_kv_headroom_mb=int(s.get("gpu_kv_headroom_mb", 1024)),
         override_n_gpu_layers=o.get("n_gpu_layers"),
         override_threads=o.get("threads"),
+        default_ubatch=s.get("ubatch"),
+        default_batch=s.get("batch"),
+        default_checkpoint_min_step=s.get("checkpoint_min_step"),
         chat=chat,
         memory=memory,
         permissions=parse_permissions(data),
