@@ -26,6 +26,12 @@
   une tempête de retries reste intact).
 
 ### Diagnostic
+- **Un téléchargement de modèle est enfin visible.** Il se faisait entièrement en tâche de
+  fond, serveur allumé, sans le moindre signal — ni interface, ni journal. Une ligne `DDL`
+  apparaît maintenant dans le moniteur système (barre + Go + modèle), **uniquement pendant
+  un transfert**, et `download.progress` est tracé par pas de 5 %. Toute l'information
+  existait déjà : octets reçus dans le `.incomplete` de Hugging Face, cible dans `size_mb`
+  — personne ne faisait la division.
 - **`serve.log` reçoit enfin la sortie du serveur modèle.** llama-swap lance llama-server
   lui-même et retient sa sortie dans ses propres tampons : le fichier ne contenait que les
   lignes de llama-swap, alors que l'interface y renvoyait l'utilisateur en cas de panne.

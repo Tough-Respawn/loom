@@ -62,6 +62,57 @@ def _missing_msg(
     return "\n".join(lines)
 
 
+def downloads_in_progress(models) -> list[dict]:
+    """Téléchargements de GGUF EN COURS, lus sur le disque — rien à instrumenter.
+
+    Hugging Face écrit dans `<dossier>/.cache/huggingface/download/*.incomplete` puis
+    matérialise le fichier final. Un `.incomplete` présent alors que le GGUF manque =
+    téléchargement en cours (ou interrompu, reprenable au même endroit).
+
+    Tout existait déjà : les octets reçus dans le `.incomplete`, la cible dans
+    `size_mb`. Personne ne faisait la division, donc un téléchargement de 23 Go était
+    100 % invisible — ni interface, ni journal (vécu 2026-08-03).
+
+    Note Windows : `os.path.getsize` renvoie la VRAIE taille d'un fichier en cours
+    d'écriture (mesuré) ; c'est l'énumération PowerShell qui sert une valeur périmée.
+    """
+    out: list[dict] = []
+    for m in models:
+        base = getattr(m, "dir", None)
+        filename = getattr(m, "filename", "")
+        if not base or not filename:
+            continue
+        base = Path(base)
+        if (base / filename).exists():
+            continue  # déjà matérialisé : plus rien en cours
+        cache = base / ".cache" / "huggingface" / "download"
+        if not cache.is_dir():
+            continue
+        biggest = 0
+        try:
+            for f in cache.iterdir():
+                if f.suffix == ".incomplete" and f.is_file():
+                    biggest = max(biggest, f.stat().st_size)
+        except OSError:
+            continue
+        if biggest <= 0:
+            continue
+        total_mb = int(getattr(m, "size_mb", 0) or 0)
+        done_mb = biggest // (1024 * 1024)
+        out.append(
+            {
+                "id": getattr(m, "id", "?"),
+                "filename": filename,
+                "done_mb": done_mb,
+                "total_mb": total_mb,
+                # None si la taille cible est inconnue : le front affiche les Go bruts
+                # plutôt qu'un pourcentage inventé.
+                "pct": round(done_mb / total_mb * 100, 1) if total_mb > 0 else None,
+            }
+        )
+    return out
+
+
 def ensure_model(repo: str, filename: str, models_dir: str | Path) -> Path:
     """Renvoie le chemin local du GGUF, en le téléchargeant depuis HF si absent.
 
