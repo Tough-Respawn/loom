@@ -425,6 +425,7 @@
     .sm-bar { flex: 1; height: 5px; background: var(--bg-elev); border-radius: 3px; overflow: hidden; }
     .sm-bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width .35s ease; }
     .sm-bar-fill.sm-vram { background: var(--warn); }
+    .sm-bar-fill.sm-dl { background: var(--accent, #5b9d7e); }
     .sm-foot {
       display: flex; justify-content: space-between; margin-top: 1px;
       color: var(--text-faint); font-size: 9.5px; font-variant-numeric: tabular-nums;
@@ -1448,6 +1449,12 @@
       <div class="sm-bar"><div class="sm-bar-fill sm-vram" id="sm-vram-fill"></div></div>
       <span class="sm-val" id="sm-vram-val">–</span>
     </div>
+    <div class="sm-bar-row" id="sm-dl-row" hidden>
+      <span class="sm-label">DDL</span>
+      <div class="sm-bar"><div class="sm-bar-fill sm-dl" id="sm-dl-fill"></div></div>
+      <span class="sm-val" id="sm-dl-val">–</span>
+    </div>
+    <div class="sm-foot" id="sm-dl-name" hidden></div>
     <div class="sm-foot"><span id="sm-temp"></span><span id="sm-power"></span></div>
   </div>
 

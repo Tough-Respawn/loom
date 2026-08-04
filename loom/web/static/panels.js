@@ -815,6 +815,36 @@ export async function sysmonTick() {
   } else {
     setTxt("sm-gpu-name", "GPU indisponible");
   }
+  smRenderDownload(d.downloads);
+}
+
+// Un téléchargement de modèle se fait en tâche de fond, serveur allumé : rien ne le
+// signalait. La ligne n'apparaît QUE pendant un transfert, et disparaît à la fin.
+function smRenderDownload(list) {
+  const row = document.getElementById("sm-dl-row");
+  const name = document.getElementById("sm-dl-name");
+  if (!row) return;
+  const d = (list || [])[0];
+  if (!d) {
+    row.hidden = true;
+    if (name) name.hidden = true;
+    return;
+  }
+  row.hidden = false;
+  const fill = document.getElementById("sm-dl-fill");
+  if (fill) fill.style.width = (d.pct == null ? 0 : d.pct) + "%";
+  const go = (mb) => (mb / 1024).toFixed(1);
+  setTxt(
+    "sm-dl-val",
+    d.pct == null
+      ? go(d.done_mb) + "G"
+      : Math.round(d.pct) + "% " + go(d.done_mb) + "/" + go(d.total_mb) + "G",
+  );
+  if (name) {
+    name.hidden = false;
+    name.textContent =
+      "téléchargement · " + d.id + ((list || []).length > 1 ? " (+" + (list.length - 1) + ")" : "");
+  }
 }
 
 export function setSysmonVisible(on) {
