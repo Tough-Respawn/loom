@@ -10,8 +10,6 @@ from loom.web.routes.helpers import _ctx
 from loom.web.routes.skills import _index_context
 
 
-
-
 # ---- Routes : socle (index, statiques, toggles) ---------------------------------------
 
 
@@ -128,10 +126,38 @@ def _register_misc_routes(app, S):
 
         return {"path": path}
 
+    _dl_logged: dict[str, int] = {}
+
     @app.get("/sysmon")
     def sysmon_metrics():
         # Métriques système LIVE (CPU/RAM/GPU) pour le moniteur affiché avec un modèle LOCAL.
         # nvidia-smi + psutil ; champs à None si une source manque (le front s'adapte).
+        from loom.agent.debuglog import log_event
+        from loom.runtime.models_fetch import downloads_in_progress
         from loom.runtime.sysmon import read_metrics
 
-        return read_metrics()
+        out = read_metrics()
+        # Un téléchargement se fait en tâche de fond, serveur allumé, sans que rien ne
+        # le signale. On le greffe ici : c'est la sonde déjà interrogée en continu.
+        try:
+            dl = downloads_in_progress(S.local_model_specs)
+        except Exception:  # noqa: BLE001 - le moniteur ne doit jamais tomber
+            dl = []
+        out["downloads"] = dl
+        # Trace journal, mais SEULEMENT par pas de 5 % : la sonde tourne toutes les
+        # 1,2 s, en journaliser chaque passage noierait le fichier.
+        for d in dl:
+            pct = int(d["pct"] or 0)
+            if pct >= _dl_logged.get(d["id"], -1) + 5:
+                _dl_logged[d["id"]] = pct
+                log_event(
+                    "download.progress",
+                    model=d["id"],
+                    pct=pct,
+                    done_mb=d["done_mb"],
+                    total_mb=d["total_mb"],
+                )
+        for done in [k for k in _dl_logged if k not in {d["id"] for d in dl}]:
+            _dl_logged.pop(done, None)
+            log_event("download.done", model=done)
+        return out
