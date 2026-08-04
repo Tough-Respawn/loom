@@ -16,10 +16,27 @@ from loom.web.app import (
 from loom.web.routes.config import _regen_swap_yaml
 from loom.web.routes.helpers import _client_mark_all_cold, _ctx, _engine_for, _session
 
-from loom.web.routes.model_admin import _LOCAL_EDITABLE, _check_workflow, _finish_install, _forget_image, _forget_remote, _image_base_dir, _image_dir_state, _install_roots, _list_remote_models, _model_kind, _models_payload, _models_roots, _mount_image, _mount_remote, _persist_wizard_exchange, _rebenchable_models, _remote_list, _removable_models
+from loom.web.routes.model_admin import (
+    _LOCAL_EDITABLE,
+    _check_workflow,
+    _finish_install,
+    _forget_image,
+    _forget_remote,
+    _image_base_dir,
+    _image_dir_state,
+    _install_roots,
+    _list_remote_models,
+    _model_kind,
+    _models_payload,
+    _models_roots,
+    _mount_image,
+    _mount_remote,
+    _persist_wizard_exchange,
+    _rebenchable_models,
+    _remote_list,
+    _removable_models,
+)
 from loom.web.routes.rebench import _REBENCH, _rebench_worker
-
-
 
 
 def _wizard_deps(S):
@@ -119,7 +136,11 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
         else:
             import tomllib
 
-            from loom.setup.cli import _set_model_cache_isolation, _set_model_context
+            from loom.setup.cli import (
+                _set_model_cache_isolation,
+                _set_model_context,
+                _set_model_ubatch,
+            )
 
             mdir = Path(spec["dir"])
             mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
@@ -131,6 +152,11 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                     gguf, a["isolation"], a.get("isolation_detail", "")
                 )
                 applied += f" + cache_isolation={'true' if a['isolation'] else 'false'}"
+            if a.get("ubatch"):
+                _set_model_ubatch(
+                    gguf, a["ubatch"], a["batch"], a.get("ubatch_detail", "")
+                )
+                applied += f" + ubatch={a['ubatch']}/batch={a['batch']}"
             spec["context"] = a["context"]
             S.model_contexts[a["id"]] = a["context"]
             _regen_swap_yaml(S)
