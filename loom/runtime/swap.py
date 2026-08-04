@@ -21,6 +21,11 @@ def _model_cmd(
     override_n_gpu_layers: int | None = None,
     slot_save_dir: str | None = None,
     n_parallel: int = 1,
+    # Repli MACHINE, même précédence que `context` : le modèle gagne, la machine
+    # sert de défaut mesuré, la constante aveugle ne sert qu'en dernier recours.
+    default_ubatch: int | None = None,
+    default_batch: int | None = None,
+    default_checkpoint_min_step: int | None = None,
 ) -> str:
     base = (
         model.dir or models_dir
@@ -47,9 +52,9 @@ def _model_cmd(
         cpu_moe=model.cpu_moe,
         n_cpu_moe=model.n_cpu_moe,
         slot_save_dir=slot_save_dir,
-        ubatch=model.ubatch,
-        batch=model.batch,
-        checkpoint_min_step=model.checkpoint_min_step,
+        ubatch=model.ubatch or default_ubatch,
+        batch=model.batch or default_batch,
+        checkpoint_min_step=model.checkpoint_min_step or default_checkpoint_min_step,
         # L'isolation du cache est une propriété du modèle, pas de la machine.
         n_parallel=resolve_parallel(n_parallel, model.cache_isolation),
     )
@@ -65,6 +70,9 @@ def build_swap_config(
     override_n_gpu_layers: int | None = None,
     slot_save_dir: str | None = None,
     n_parallel: int = 1,
+    default_ubatch: int | None = None,
+    default_batch: int | None = None,
+    default_checkpoint_min_step: int | None = None,
 ) -> dict:
     return {
         "models": {
@@ -78,6 +86,9 @@ def build_swap_config(
                     override_n_gpu_layers,
                     slot_save_dir=slot_save_dir,
                     n_parallel=n_parallel,
+                    default_ubatch=default_ubatch,
+                    default_batch=default_batch,
+                    default_checkpoint_min_step=default_checkpoint_min_step,
                 )
             }
             for m in models

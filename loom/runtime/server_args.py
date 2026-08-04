@@ -87,6 +87,14 @@ def build_server_args(
         # `--no-mmap` accélère les dGPU, mais peut épuiser la mémoire unifiée Vulkan.
         if not unified_memory:
             args.append("--no-mmap")
+    else:
+        # Hors profil GPU, honorer quand même des batchs EXPLICITES (mesurés par la
+        # sonde ou posés dans model.toml) : ils étaient silencieusement ignorés sur
+        # les topologies CPU, sonde comprise — mesurer deux configs identiques.
+        if batch:
+            args += ["-b", str(batch)]
+        if ubatch:
+            args += ["-ub", str(ubatch)]
     if mmproj_path:
         args += ["--mmproj", str(mmproj_path), "--no-mmproj-offload"]
     # Les appels annexes écrasent le slot unique; sa sauvegarde évite un nouveau prefill.

@@ -6,6 +6,44 @@
 
 ---
 
+## 2026-08-03 — calibration : repli machine, sonde d'ubatch sur llama-server
+
+### Fonctionnalités
+- **Repli MACHINE des réglages mesurés** (`[server].ubatch` / `batch` /
+  `checkpoint_min_step`), sur le modèle de `context` : un modèle ajouté par
+  `/add-model` n'est jamais benché et tombait sur les constantes aveugles de
+  llama-server (ubatch 512 : 61 % de prefill perdus, mesuré 2026-07-21). Le
+  `model.toml` reste prioritaire ; la machine n'est qu'un défaut informé.
+- **La sonde d'ubatch tourne sur le VRAI llama-server** (via `ServerProbe`, comme la
+  calibration du contexte) et non plus sur `llama-bench` — absent des builds maison
+  qui ne compilent que la cible serveur (vécu : `build-vulkan` sans `llama-bench`,
+  la sonde ne tournait jamais). Mesure avec les flags exacts de l'exécutant, sur un
+  prompt de 4096 tokens (à 128, tout tient dans un micro-batch : aucun effet).
+  Élue au setup ET au `/rebench` — un modèle déjà installé se calibre sans
+  réinstaller ; verdict appliqué dans son `model.toml` sur confirmation.
+- Le setup écrit le couple élu en repli machine, et `checkpoint_min_step = 2048`
+  comme **défaut raisonné explicitement étiqueté NON mesuré**, réservé aux modèles
+  à mémoire hybride détectés par la sonde d'isolation.
+
+### Corrections
+- **Des batchs explicites étaient ignorés hors profil GPU** : `build_server_args`
+  n'émettait `-ub`/`-b` que sous `gpu_tuning`. Un `ubatch` mesuré ou posé dans
+  `model.toml` était silencieusement perdu sur une topologie CPU — sonde comprise,
+  qui aurait mesuré deux configs identiques.
+- **L'amorçage du cache KV ne tourne plus pendant une calibration** : le banc arrête
+  le serveur modèle pour récupérer la VRAM, mais `running_local()` répond « vivant »
+  dès que llama-swap (le routeur) décroche — le garde passait, `warm_context`
+  échouait en rafale (`Connection error`), et pire, les amorçages à `wait_server`
+  REDÉMARRAIENT un serveur contre le banc, faussant la mesure.
+
+### Tests
+- 16 non-régressions : repli machine (priorité modèle, repli partiel, comportement
+  inchangé sans repli), sonde d'ubatch (élection, gain, base gagnante, sonde muette
+  sur échec, flags transmis au serveur, écriture model.toml idempotente), garde de
+  calibration (détection, saut avant tout démarrage).
+
+---
+
 ## 2026-08-03 — observabilité et robustesse au démarrage
 
 ### Corrections

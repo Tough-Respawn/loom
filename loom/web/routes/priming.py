@@ -66,6 +66,19 @@ def _prime_slot(S, sess) -> bool:
         return False
 
 
+def _calibration_en_cours() -> bool:
+    """Vrai pendant un `/rebench`. Le banc ARRÊTE le serveur modèle pour récupérer la
+    VRAM, puis enchaîne ses propres chargements. Amorcer pendant ce temps est au mieux
+    une rafale de `Connection error` dans le journal — `running_local()` répond « vivant »
+    dès que llama-swap, qui n'est que le routeur, décroche — et au pire un serveur
+    RELANCÉ par `wait_server` qui dispute la RAM au banc et fausse la mesure
+    (constaté 2026-08-03 pendant la calibration d'ornith-q5)."""
+    from loom.web.routes.rebench import _REBENCH
+
+    job = _REBENCH.get("job")
+    return job is not None and not getattr(job, "done", True)
+
+
 def _prime_async(S, sess, *, wait_server: float = 0.0, require_running: bool = False):
     """Amorce le cache KV en FOND (thread daemon) dès qu'un modèle local devient la
     cible du prochain tour : le prefill du préfixe se paie pendant le temps mort
@@ -89,6 +102,11 @@ def _prime_async(S, sess, *, wait_server: float = 0.0, require_running: bool = F
 
     def _run():
         try:
+            # AVANT tout démarrage de serveur : une calibration a la priorité absolue
+            # sur la machine, et `wait_server` en relancerait un contre elle.
+            if _calibration_en_cours():
+                print("[prime] calibration en cours — amorçage sauté", flush=True)
+                return
             if wait_server > 0:
                 if not _ensure_local_server(S, wait=wait_server):
                     print(
