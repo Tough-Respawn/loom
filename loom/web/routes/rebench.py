@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 
-
-
 # ---- /rebench : recalibration topologique d'un LOCAL TEXTE (loom.setup réutilisé) ----
 
 # Un seul rebench à la fois : la mesure sature CPU/GPU et exige la VRAM libre.
@@ -92,12 +90,28 @@ def _run_calibration(S, spec, progress):
     calib["isolation"] = isolation
     calib["isolation_detail"] = iso_detail
     calib["isolation_avant"] = bool(mt.get("cache_isolation", False))
+    # Sonde d'ubatch sur la MÊME sonde serveur (flags exacts, n_parallel inclus) :
+    # un modèle installé par /add-model n'a jamais eu la sienne — c'est ici qu'il
+    # la rattrape, sans réinstaller.
+    try:
+        from dataclasses import replace as _dc_replace
+
+        calib["ubatch_probe"] = bench_mod.probe_ubatch(
+            lambda ub, b: _dc_replace(probe, ubatch=ub, batch=b),
+            progress=progress,
+        )
+    except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
+        calib["ubatch_probe"] = None
+    calib["ubatch_avant"] = mt.get("ubatch")
+    calib["batch_avant"] = mt.get("batch")
     return calib, gguf
 
 
 def _rebench_worker(S, sess, chat_lock, mid, job):
     """Thread du job : mesure, verdict comparé, message PERSISTÉ + état b_apply si
     une application a du sens. `job.done` posé EN DERNIER (le stream lit final)."""
+    from loom.setup import bench as bench_mod
+
     spec = next((m for m in S.local_model_specs if m.get("id") == mid), None)
     try:
         calib, _gguf = _run_calibration(
@@ -119,10 +133,27 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 f"sonde d'isolation : cache survit à la pollution "
                 f"({calib['isolation_detail']}) -> 1 slot suffit."
             )
-        if new == current and not iso_change:
+        ub = calib.get("ubatch_probe")
+        ub_change = bool(ub) and (
+            calib.get("ubatch_avant") != ub["ubatch"]
+            or calib.get("batch_avant") != ub["batch"]
+        )
+        if ub is None:
+            ub_line = "sonde ubatch : illisible (réglage inchangé)."
+        else:
+            gain = (
+                f" (+{ub['gain_pct']:.0f} % vs ubatch 512)"
+                if ub.get("gain_pct")
+                else ""
+            )
+            ub_line = (
+                f"sonde ubatch : prefill optimal à ub={ub['ubatch']} / b={ub['batch']} "
+                f"({ub['pp_ts']:.0f} t/s{gain})."
+            )
+        if new == current and not iso_change and not ub_change:
             msg = (
                 f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
-                f"mesuré {new} ({calib['mecanisme']}).\n{iso_line}\n"
+                f"mesuré {new} ({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n"
                 "Rien à changer."
             )
             wiz = None
@@ -140,11 +171,14 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                     "cache_isolation → "
                     + ("true (2 slots)" if iso else "false (1 slot)")
                 )
+            if ub_change:
+                av = calib.get("ubatch_avant") or "défaut"
+                changes.append(f"ubatch {av} → {ub['ubatch']} (b={ub['batch']})")
             msg = (
                 f"Verdict pour « {mid} » : " + " · ".join(changes) + "\n"
                 f"(pente {calib['slope_kb_tok']} Ko/token, vitesse validée "
                 f"jusqu'à {calib['valide_jusqua']} tokens)\n"
-                f"mécanisme : {calib['mecanisme']}\n{iso_line}\n"
+                f"mécanisme : {calib['mecanisme']}\n{iso_line}\n{ub_line}\n"
                 "Tape « oui » pour appliquer — toute autre réponse laisse tout "
                 "en l'état."
             )
@@ -158,6 +192,13 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 # sans l'autre recréerait un couple (fenêtre, KV) jamais mesuré.
                 "isolation": iso if iso_change else None,
                 "isolation_detail": calib.get("isolation_detail", ""),
+                "ubatch": ub["ubatch"] if ub_change else None,
+                "batch": ub["batch"] if ub_change else None,
+                "ubatch_detail": (
+                    f"{ub['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens"
+                    if ub_change
+                    else ""
+                ),
             }
     except (RuntimeError, ValueError) as exc:
         msg = f"❌ Recalibration de « {mid} » échouée : {exc} — config inchangée."

@@ -11,8 +11,6 @@ from pathlib import Path
 from typing import Any
 
 
-
-
 # Le diagnostic par session est activé par défaut ; `LOOM_DEBUG=0` le coupe.
 _B64_RE = re.compile(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+")
 
@@ -92,7 +90,13 @@ def _debug(label: str, payload: Any, limit: int = 4000, terminal: bool = True) -
         if isinstance(payload, str)
         else json.dumps(payload, ensure_ascii=False, indent=2, default=str)
     )
-    _emit(f"\n===== [LOOM_DEBUG] {label} =====", terminal)
+    # Horodater l'EN-TÊTE : sans date, un bloc de dump est impossible à replacer
+    # sur une chronologie (post-mortem du 2026-08-03 : serveur mort en cours de
+    # téléchargement, HOT_RESUME/SLOT_RESTORE_ERR indatables). L'horodatage ouvre
+    # la ligne pour que ces blocs se FUSIONNENT par tri avec les lignes
+    # `log_event`, y compris quand les deux moitiés atterrissent dans des fichiers
+    # différents (log de session vs repli global, selon le thread émetteur).
+    _emit(f"\n{_ts_prefix()}===== [LOOM_DEBUG] {label} =====", terminal)
     _emit(_trunc(body, limit), terminal)
 
 
@@ -101,6 +105,16 @@ def _ts() -> str:
     """Horodatage ISO 8601 UTC à la milliseconde, suffixe Z (comme Claude Code)."""
     now = datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _ts_prefix() -> str:
+    """Préfixe horodaté terminé par une espace, ou chaîne vide si l'horloge défaille.
+    Le debug est best-effort (cf. `_emit`) : mieux vaut une ligne sans date qu'un
+    tour de génération interrompu."""
+    try:
+        return _ts() + " "
+    except Exception:  # noqa: BLE001 - best-effort, jamais bloquant
+        return ""
 
 
 def _fmt_val(v) -> str:
@@ -118,7 +132,7 @@ def log_event(event: str, level: str = "DEBUG", **fields) -> None:
     """Écrit une ligne d'événement structurée. No-op si LOOM_DEBUG désactivé ; ne lève jamais."""
     if not _debug_on():
         return
-    line = f"{_ts()} [{level}] {event}"
+    line = f"{_ts_prefix()}[{level}] {event}"
     if fields:
         line += " " + " ".join(f"{k}={_fmt_val(val)}" for k, val in fields.items())
     _emit(line)

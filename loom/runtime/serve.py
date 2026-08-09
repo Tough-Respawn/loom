@@ -55,6 +55,37 @@ def _log(msg: str) -> None:
         pass
 
 
+def capture_upstream_log(root: str, lines: int = 120) -> int:
+    """Rapatrie dans serve.log la fin du journal tamponné de llama-swap (`/logs`).
+
+    llama-swap lance llama-server LUI-MÊME et retient sa sortie dans ses propres
+    tampons : `serve.log` ne reçoit que les lignes de llama-swap, jamais celles du
+    serveur modèle. Un démarrage raté n'y laissait donc AUCUNE trace, alors que
+    l'interface y renvoyait l'utilisateur (vécu 2026-08-03 : « cause :
+    var/logs/serve.log » sur un fichier de 0 octet).
+
+    Renvoie le nombre de lignes rapatriées, 0 si le journal est injoignable.
+    Ne lève jamais : c'est du diagnostic, il ne doit pas aggraver la panne."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(root.rstrip("/") + "/logs", timeout=5) as resp:
+            body = resp.read().decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 - diagnostic best-effort
+        return 0
+    tail = [ln for ln in body.splitlines() if ln.strip()][-lines:]
+    if not tail:
+        return 0
+    try:
+        SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(SERVE_LOG, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"\n--- journal llama-swap ({len(tail)} dernières lignes) ---\n")
+            fh.write("\n".join(tail) + "\n")
+    except OSError:
+        return 0
+    return len(tail)
+
+
 def resolve_mmproj_path(
     mmproj_filename: str, models_dir: Path, repo: str = ""
 ) -> str | None:
@@ -120,9 +151,13 @@ def build_launch(
         cpu_moe=cfg.model.cpu_moe,
         n_cpu_moe=cfg.model.n_cpu_moe,
         slot_save_dir=slots_dir(),
-        ubatch=cfg.model.ubatch,
-        batch=cfg.model.batch,
-        checkpoint_min_step=cfg.model.checkpoint_min_step,
+        # Repli MACHINE, même précédence que `context` : le modèle gagne, la machine
+        # sert de défaut mesuré, la constante aveugle ne sert qu'en dernier recours.
+        ubatch=cfg.model.ubatch or cfg.default_ubatch,
+        batch=cfg.model.batch or cfg.default_batch,
+        checkpoint_min_step=(
+            cfg.model.checkpoint_min_step or cfg.default_checkpoint_min_step
+        ),
     )
 
 
@@ -210,6 +245,9 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         override_n_gpu_layers=cfg.override_n_gpu_layers,
         slot_save_dir=slots_dir(),
         n_parallel=cfg.n_parallel,
+        default_ubatch=cfg.default_ubatch,
+        default_batch=cfg.default_batch,
+        default_checkpoint_min_step=cfg.default_checkpoint_min_step,
     )
     write_swap_yaml(swap, SWAP_YAML)
     args = [

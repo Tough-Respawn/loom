@@ -256,6 +256,61 @@ def run_llama_bench(
     return rows
 
 
+#: Prompt de la sonde d'ubatch. DOIT dépasser largement le plus grand ubatch testé :
+#: sur le prompt de 128 tokens du bench principal, tout tient dans un seul micro-batch
+#: et le levier n'a AUCUN effet mesurable. Les +61 % mesurés le 2026-07-21 l'ont été
+#: sur 4096 tokens.
+UBATCH_PROBE_PROMPT = 4096
+#: Contexte de la sonde : assez grand pour loger le prompt + génération + template.
+UBATCH_PROBE_CTX = 8192
+#: Couples (ubatch, batch) sondés. `batch` doit rester >= `ubatch`.
+UBATCH_CANDIDATES = ((512, 2048), (2048, 4096))
+
+
+def probe_ubatch(make_probe, progress=None) -> dict | None:
+    """Élit (ubatch, batch) au prefill MESURÉ, via le VRAI llama-server.
+
+    `make_probe(ubatch, batch)` renvoie une sonde exposant `.run(ctx, depth) ->
+    ProbeResult` (cf. topology.ServerProbe) — donc les flags EXACTS de l'exécutant
+    (--cpu-moe, -fa, mmproj…), et aucune dépendance à llama-bench : un build maison
+    qui ne livre que llama-server reste sondable (vécu 2026-08-03, build-vulkan
+    sans llama-bench -> la sonde ne tournait jamais).
+
+    Un seul levier à la fois : on ne croise pas ubatch avec threads/ngl, on l'ajoute
+    au vainqueur. Coût borné — un prefill de 4096 tokens par candidat.
+
+    Renvoie {ubatch, batch, pp_ts, gain_pct, mesures} ou None si la mesure échoue
+    (le bench reste alors muet plutôt que d'écrire une valeur inventée)."""
+    say = progress or (lambda _m: None)
+    mesures: dict[int, float] = {}
+    for ub, b in UBATCH_CANDIDATES:
+        say(f"sonde ubatch {ub} (prefill {UBATCH_PROBE_PROMPT} tokens)…")
+        try:
+            r = make_probe(ub, b).run(UBATCH_PROBE_CTX, UBATCH_PROBE_PROMPT)
+        except Exception:  # noqa: BLE001 - une sonde qui casse n'est PAS fatale
+            continue
+        pp = getattr(r, "pp_ts", None)
+        if pp:
+            mesures[ub] = float(pp)
+    if not mesures:
+        return None
+    ub_best = max(mesures, key=lambda k: mesures[k])
+    batch_best = next(b for u, b in UBATCH_CANDIDATES if u == ub_best)
+    # Gain rapporté à la LIGNE DE BASE (premier candidat = le défaut llama-server),
+    # pour que le journal dise ce que la sonde a fait gagner, pas juste un débit brut.
+    base_ub = UBATCH_CANDIDATES[0][0]
+    gain = None
+    if base_ub in mesures and mesures[base_ub] > 0 and ub_best != base_ub:
+        gain = round((mesures[ub_best] / mesures[base_ub] - 1) * 100, 1)
+    return {
+        "ubatch": ub_best,
+        "batch": batch_best,
+        "pp_ts": round(mesures[ub_best], 2),
+        "gain_pct": gain,
+        "mesures": {str(k): round(v, 2) for k, v in mesures.items()},
+    }
+
+
 def pick_best(rows: list[dict]) -> dict | None:
     """Meilleure combinaison (threads, ngl) : la GÉNÉRATION (tg) tranche — c'est
     la vitesse vécue ; le prefill (pp) départage. Renvoie

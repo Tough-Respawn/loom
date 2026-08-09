@@ -17,22 +17,30 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
 ## Ce que ça fait
 
 - 💬 **Chat web** local (Flask + Preact/htm, zéro build) avec **streaming SSE** et markdown.
-- 🧰 **~23 outils** exposés au modèle, regroupés par usage :
+- 🧰 **25 outils activés par défaut** (selon `config/defaults.toml`), regroupés par usage :
   - **Localiser** : `find_files` (glob), `search_text` (grep), `list_dir`.
   - **Lire** : `read_file` (texte, et PDF / Excel / Word → texte extrait automatiquement),
     `read_image` (voir une image du disque : capture, schéma).
+  - **Utilitaires** : `calculate`, `current_date`.
   - **Planifier / déléguer** : `manage_todos` (bloc-notes de plan), `dispatch_agent`
-    (sous-agent à contexte isolé qui fait un gros chantier et ne renvoie qu'une synthèse).
+    (sous-agent à contexte isolé qui fait un gros chantier et ne renvoie qu'une synthèse),
+    `run_workflow` (script Python qui orchestre plusieurs sous-agents).
+  - **Notes et mémoire** : `write_note`, `read_note`, `remember`, `recall`.
   - **Modifier / créer** : `write_file`, `append_file`, `edit_file`
     (remplacement exact-unique), `format_code` (ruff Python / prettier web).
   - **Exécuter** : `run_shell` (PowerShell/bash, garde-fou deny-list, tue l'arbre au timeout).
+    `monitor` suit une commande de fond et injecte ses événements dans la conversation.
   - **Web** : `web_search`, `fetch_url` (dégradés proprement hors-ligne).
   - **Vérifier le rendu** : `check_page` (charge une page HTML headless, exécute le JS,
     renvoie erreurs console + un **diagnostic de localisation** si la page hang),
-    `check_interactive` (joue des clics/saisies réels + post-conditions DOM pour PROUVER
-    qu'une page est jouable).
-  - **Skills / plugins** : `use_skill` (charge un skill du catalogue), `list_plugins`,
-    `add_marketplace`, `install_plugin`.
+    `serve_and_check` (démarre puis vérifie une application servie localement, et la garde
+    active pour les vérifications suivantes).
+  - **Skills** : `use_skill` (charge un skill du catalogue).
+- **Outils optionnels** : `list_plugins`, `add_marketplace` et `install_plugin` sont
+  implémentés, mais désactivés dans la configuration livrée. Ajoute-les à `[tools].enabled`
+  pour les exposer au modèle. `read_image` nécessite aussi un modèle vision.
+- **Schémas différés** : si `deferred_tools = true` (ou si un serveur MCP est configuré),
+  `tool_search` permet de charger le schéma complet d'un outil différé avant son premier appel.
 - 🧭 **Boucle agentic, pas déterministe** : l'arrêt suit le **stop naturel** du modèle (il
   répond sans appel d'outil → fini). Par-dessus, des **garde-fous** non-bloquants : plafond de
   tours et détecteur de non-progrès (anti-boucle). *Pas de mur de temps* (retiré : il

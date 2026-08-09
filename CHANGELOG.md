@@ -6,6 +6,91 @@
 
 ---
 
+## 2026-08-03 — calibration : repli machine, sonde d'ubatch sur llama-server
+
+### Fonctionnalités
+- **Repli MACHINE des réglages mesurés** (`[server].ubatch` / `batch` /
+  `checkpoint_min_step`), sur le modèle de `context` : un modèle ajouté par
+  `/add-model` n'est jamais benché et tombait sur les constantes aveugles de
+  llama-server (ubatch 512 : 61 % de prefill perdus, mesuré 2026-07-21). Le
+  `model.toml` reste prioritaire ; la machine n'est qu'un défaut informé.
+- **La sonde d'ubatch tourne sur le VRAI llama-server** (via `ServerProbe`, comme la
+  calibration du contexte) et non plus sur `llama-bench` — absent des builds maison
+  qui ne compilent que la cible serveur (vécu : `build-vulkan` sans `llama-bench`,
+  la sonde ne tournait jamais). Mesure avec les flags exacts de l'exécutant, sur un
+  prompt de 4096 tokens (à 128, tout tient dans un micro-batch : aucun effet).
+  Élue au setup ET au `/rebench` — un modèle déjà installé se calibre sans
+  réinstaller ; verdict appliqué dans son `model.toml` sur confirmation.
+- Le setup écrit le couple élu en repli machine, et `checkpoint_min_step = 2048`
+  comme **défaut raisonné explicitement étiqueté NON mesuré**, réservé aux modèles
+  à mémoire hybride détectés par la sonde d'isolation.
+
+### Corrections
+- **Des batchs explicites étaient ignorés hors profil GPU** : `build_server_args`
+  n'émettait `-ub`/`-b` que sous `gpu_tuning`. Un `ubatch` mesuré ou posé dans
+  `model.toml` était silencieusement perdu sur une topologie CPU — sonde comprise,
+  qui aurait mesuré deux configs identiques.
+- **L'amorçage du cache KV ne tourne plus pendant une calibration** : le banc arrête
+  le serveur modèle pour récupérer la VRAM, mais `running_local()` répond « vivant »
+  dès que llama-swap (le routeur) décroche — le garde passait, `warm_context`
+  échouait en rafale (`Connection error`), et pire, les amorçages à `wait_server`
+  REDÉMARRAIENT un serveur contre le banc, faussant la mesure.
+
+### Tests
+- 16 non-régressions : repli machine (priorité modèle, repli partiel, comportement
+  inchangé sans repli), sonde d'ubatch (élection, gain, base gagnante, sonde muette
+  sur échec, flags transmis au serveur, écriture model.toml idempotente), garde de
+  calibration (détection, saut avant tout démarrage).
+
+---
+
+## 2026-08-03 — observabilité et robustesse au démarrage
+
+### Corrections
+- **Un modèle local incomplet n'empêche plus Loom de démarrer.** `/add-model` écrit
+  `model.toml` AVANT la fin du téléchargement (`n_layers` se lit dans le GGUF) ; une
+  installation interrompue laissait un `KeyError` remonter jusqu'au chargement de la
+  config, donc plus d'interface du tout — y compris pour réparer le modèle fautif.
+  `_discover_models` ignore désormais un dossier illisible en disant sur stderr **lequel**
+  et **pourquoi**. Loom démarre même si tous les modèles locaux sont cassés.
+- **`log_event` ne peut plus interrompre un tour de génération** : l'horodatage passe par
+  `_ts_prefix()`, qui ne lève jamais — le contrat best-effort du module (`_emit`) n'était
+  pas respecté par les appels à `_ts()`.
+- **La reprise à chaud n'est plus perdue au démarrage du serveur.** `try_hot_resume`
+  consommait son essai unique AVANT la tentative : un refus de connexion (serveur pas
+  encore à l'écoute) était compté comme un vrai échec et la reprise perdue pour toute la
+  période froide. Le refus est désormais distingué — le slot redevient froid et le tour
+  suivant retente. Un vrai échec continue de consommer l'essai (le disjoncteur qui évite
+  une tempête de retries reste intact).
+
+### Diagnostic
+- **Un téléchargement de modèle est enfin visible.** Il se faisait entièrement en tâche de
+  fond, serveur allumé, sans le moindre signal — ni interface, ni journal. Une ligne `DDL`
+  apparaît maintenant dans le moniteur système (barre + Go + modèle), **uniquement pendant
+  un transfert**, et `download.progress` est tracé par pas de 5 %. Toute l'information
+  existait déjà : octets reçus dans le `.incomplete` de Hugging Face, cible dans `size_mb`
+  — personne ne faisait la division.
+- **`serve.log` reçoit enfin la sortie du serveur modèle.** llama-swap lance llama-server
+  lui-même et retient sa sortie dans ses propres tampons : le fichier ne contenait que les
+  lignes de llama-swap, alors que l'interface y renvoyait l'utilisateur en cas de panne.
+  `capture_upstream_log()` rapatrie la fin de `/logs` dans `serve.log` au moment où le
+  serveur est constaté mort, et le message indique combien de lignes ont été copiées — ou
+  dit franchement que le journal est injoignable.
+
+### Diagnostic
+- **Les blocs de dump sont horodatés** (`REQUETE`, `HOT_RESUME`, `SLOT_RESTORE_ERR`…).
+  Sans date, ils étaient impossibles à replacer sur une chronologie : un post-mortem
+  (serveur modèle arrêté pendant un téléchargement) s'est heurté à des blocs indatables.
+  L'horodatage ouvre la ligne, ce qui permet de **fusionner par tri** le log de session et
+  le repli global — les deux se partagent la trace selon le thread émetteur.
+
+### Tests
+- 8 non-régressions : découverte tolérante (dossier incomplet, TOML invalide, tout cassé)
+  et chronologie (bloc horodaté et greppable, tri conjoint blocs/événements, silence sous
+  `LOOM_DEBUG=0`, horloge défaillante non bloquante).
+
+---
+
 ## 2026-08-02 — audit de préparation
 
 ### Corrections

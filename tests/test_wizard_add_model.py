@@ -137,6 +137,10 @@ def test_rebench_apply_oui_et_annulation():
         # Un verdict absent ne doit pas modifier l'isolation existante.
         "isolation": None,
         "isolation_detail": "",
+        # Idem pour la sonde d'ubatch : absente = réglage inchangé.
+        "ubatch": None,
+        "batch": None,
+        "ubatch_detail": "",
     }
     r = wizard.step(st, "non", deps())
     assert r.state is None and r.action is None and "inchangé" in r.reply
