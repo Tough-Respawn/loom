@@ -50,6 +50,20 @@ def git_head_sha() -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+def git_dirty() -> bool:
+    """True si le worktree porte des modifications (une campagne « new » mesure
+    alors du code non commité : la baseline doit le savoir). False si git
+    indisponible — l'information est alors simplement absente, pas fausse."""
+    r = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return bool(r.stdout.strip()) if r.returncode == 0 else False
+
+
 def load_eval_config():
     """Charge la config Loom depuis les fichiers standard.
 
@@ -78,4 +92,4 @@ def make_client(cfg, model: str) -> tuple[LoomClient, str]:
 
 def make_perm(cfg):
     """Renvoie la callable de permission (name, args) -> bool."""
-    return lambda name, a: evaluate(name, a, cfg.permissions)  # noqa: E731
+    return lambda name, a: evaluate(name, a, cfg.permissions)
