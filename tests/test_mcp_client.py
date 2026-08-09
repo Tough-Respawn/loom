@@ -112,6 +112,50 @@ def test_dead_server_never_blocks_registry_build(tmp_path):
         hub.close()
 
 
+def _pid_alive(pid: int) -> bool:
+    """Sonde de vivacité PORTABLE d'un processus (test seulement).
+
+    Windows : `os.kill(pid, 0)` ne sonde pas — il TERMINE un processus vivant
+    (TerminateProcess) et lève OSError WinError 87 sur un PID mort. On sonde donc
+    via OpenProcess + GetExitCodeProcess (STILL_ACTIVE=259). POSIX : kill(pid, 0)
+    classique ; PermissionError = vivant mais pas à nous."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        # Signatures EXPLICITES : sans restype=HANDLE, ctypes infère un int 32
+        # bits et peut tronquer un HANDLE sur un Windows 64 bits.
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False  # PID inexistant (ERROR_INVALID_PARAMETER, 87) -> mort
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def test_hung_handshake_is_bounded_and_process_is_reaped(tmp_path):
     pid_file = tmp_path / "mcp.pid"
     cfg = _config(
@@ -133,9 +177,7 @@ def test_hung_handshake_is_bounded_and_process_is_reaped(tmp_path):
     pid = int(pid_file.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_alive(pid):
             break
         stat = Path(f"/proc/{pid}/stat")
         if stat.exists() and stat.read_text(encoding="utf-8").split()[2] == "Z":
@@ -143,6 +185,25 @@ def test_hung_handshake_is_bounded_and_process_is_reaped(tmp_path):
         time.sleep(0.02)
     else:
         pytest.fail(f"le processus MCP bloqué {pid} n'a pas été terminé")
+
+
+def test_transport_unicode_sans_utf8_herite_du_parent(tmp_path):
+    """HERMÉTICITÉ Windows : « écho » doit traverser le transport même quand
+    l'environnement N'impose PAS l'UTF-8. On simule le PIRE cas hérité
+    (PYTHONUTF8=0 + PYTHONIOENCODING=cp1252, prioritaires sur ceux du parent
+    dans le merge d'env du hub) : c'est le fixture qui doit se reconfigurer en
+    UTF-8 lui-même, jamais compter sur l'env du processus parent. Sans le
+    reconfigure, « écho » arrive en mojibake et « ✓ » fait planter l'écriture."""
+    cfg = _config(env={"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"})
+    hub = McpHub([cfg])
+    try:
+        registry = _registry(hub, tmp_path)
+        echo = public_tool_name(cfg.name, "echo-tool")
+        registry.run("tool_search", {"names": [echo]})
+        out = registry.run(echo, {"text": "héhé ✓"})
+        assert "écho tiers: héhé ✓" in out
+    finally:
+        hub.close()
 
 
 def test_server_dies_during_session_then_cached_tools_become_unavailable(tmp_path):
@@ -213,12 +274,8 @@ def test_mcp_tool_crosses_the_real_chat_sse_path(tmp_path):
     public = public_tool_name(cfg.name, "echo-tool")
     fake = FakeOAI(
         [
-            turn_tools(
-                [("search_1", "tool_search", json.dumps({"names": [public]}))]
-            ),
-            turn_tools(
-                [("mcp_1", public, json.dumps({"text": "depuis SSE"}))]
-            ),
+            turn_tools([("search_1", "tool_search", json.dumps({"names": [public]}))]),
+            turn_tools([("mcp_1", public, json.dumps({"text": "depuis SSE"}))]),
             turn_text("appel MCP terminé"),
         ]
     )
@@ -262,9 +319,7 @@ def test_mcp_tool_crosses_the_real_chat_sse_path(tmp_path):
         web = app.test_client()
         created = web.post("/session/new", data={"title": "MCP E2E"})
         sid = created.get_json()["id"]
-        response = web.post(
-            "/chat", data={"message": "teste MCP", "session_id": sid}
-        )
+        response = web.post("/chat", data={"message": "teste MCP", "session_id": sid})
         events = [
             json.loads(line[6:])
             for line in response.data.decode("utf-8").splitlines()
