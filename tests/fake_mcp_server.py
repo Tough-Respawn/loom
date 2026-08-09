@@ -12,7 +12,6 @@ import os
 import sys
 import time
 
-
 TOOLS = [
     {
         "name": "echo-tool",
@@ -47,13 +46,26 @@ TOOLS = [
 ]
 
 
+def _force_utf8_stdio() -> None:
+    """Le client MCP décode le flux en UTF-8 ; sous Windows, sans PYTHONUTF8
+    hérité, stdout serait dans le codepage ANSI (cp1252) et « écho » arriverait
+    en mojibake. Le fixture se configure LUI-MÊME : l'herméticité du test ne
+    doit jamais dépendre de l'environnement du parent."""
+    for stream in (sys.stdin, sys.stdout):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
 def reply(request_id, result) -> None:
     payload = {"jsonrpc": "2.0", "id": request_id, "result": result}
+    # ensure_ascii=False est VOULU : le test doit exercer le transport Unicode
+    # réel (é, ✓…), pas des échappements \uXXXX.
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
 def main() -> None:
+    _force_utf8_stdio()
     if pid_file := os.environ.get("LOOM_MCP_TEST_PID_FILE"):
         with open(pid_file, "w", encoding="utf-8") as handle:
             handle.write(str(os.getpid()))
