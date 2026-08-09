@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -161,6 +162,14 @@ class RuntimeConfig:
     override_n_gpu_layers: int | None
     override_threads: int | None
     chat: ChatConfig
+    # Repli MACHINE des réglages mesurés, sur le modèle de `context` : un modèle
+    # fraîchement ajouté n'est jamais benché et tombait sur des constantes aveugles
+    # (ubatch 512, batch 2048, pas de plafond de checkpoint) alors que la machine
+    # avait déjà ses valeurs mesurées ailleurs. Le model.toml reste PRIORITAIRE :
+    # ceci n'est pas une surcharge, c'est un défaut informé au lieu d'un défaut aveugle.
+    default_ubatch: int | None = None
+    default_batch: int | None = None
+    default_checkpoint_min_step: int | None = None
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     # Les modèles distants rejoignent les locaux dans le sélecteur.
     remote_models: list[RemoteModelConfig] = field(default_factory=list)
@@ -232,8 +241,20 @@ def _discover_models(models_root: Path) -> list[ModelConfig]:
         toml_path = folder / "model.toml"
         if not toml_path.exists():
             continue
-        d = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-        m = _parse_model(d, default_id=folder.name)
+        # Un modèle ILLISIBLE est ignoré, pas fatal : /add-model écrit le toml AVANT
+        # la fin du téléchargement (n_layers vient du GGUF), et une installation
+        # interrompue laissait Loom refusant de démarrer — KeyError au chargement de
+        # la config, donc plus d'interface du tout pour réparer (vécu 2026-08-03).
+        try:
+            d = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+            m = _parse_model(d, default_id=folder.name)
+        except Exception as exc:  # noqa: BLE001 - un dossier cassé ne doit pas tout bloquer
+            print(
+                f"[loom] modele ignore : {folder.name} — {toml_path} illisible "
+                f"({type(exc).__name__}: {exc}). Complete-le ou supprime le dossier.",
+                file=sys.stderr,
+            )
+            continue
         m.dir = str(folder)
         out.append(m)
     return out
@@ -453,6 +474,9 @@ def load_config(
         gpu_kv_headroom_mb=int(s.get("gpu_kv_headroom_mb", 1024)),
         override_n_gpu_layers=o.get("n_gpu_layers"),
         override_threads=o.get("threads"),
+        default_ubatch=s.get("ubatch"),
+        default_batch=s.get("batch"),
+        default_checkpoint_min_step=s.get("checkpoint_min_step"),
         chat=chat,
         memory=memory,
         permissions=parse_permissions(data),
