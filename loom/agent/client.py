@@ -462,6 +462,17 @@ class LoomClient:
             except Exception as e:  # noqa: BLE001 - slot KV best-effort, jamais bloquant
                 # Timeout et HTTP 501 sont durables : les retenter pénaliserait chaque tour.
                 code = getattr(e, "code", None)
+                # Un serveur pas ENCORE à l'écoute (connexion refusée) n'est pas un
+                # échec du slot : la tentative n'a pas eu lieu. Le signaler permet à
+                # try_hot_resume de ne pas brûler son essai unique sur une course au
+                # démarrage (vécu 2026-08-03 : WinError 10061, reprise à chaud perdue
+                # alors que le serveur arrivait deux secondes plus tard).
+                self._slot_unreachable = code is None and (
+                    isinstance(e, (ConnectionError, OSError))
+                    or "refus" in str(e).lower()
+                    or "refused" in str(e).lower()
+                    or "10061" in str(e)
+                )
                 if (
                     isinstance(e, TimeoutError)
                     or "timed out" in str(e).lower()
@@ -599,8 +610,18 @@ class LoomClient:
                 terminal=False,
             )
             return False
+        self._slot_unreachable = False
         ok = self.restore_slot(model, "turnend.kv", force=True)
-        _debug("HOT_RESUME", {"model": model, "ok": ok}, terminal=False)
+        if not ok and getattr(self, "_slot_unreachable", False):
+            # Le serveur n'écoutait pas encore : l'essai n'a pas eu lieu, donc il ne
+            # doit pas être décompté. Le slot redevient froid et le tour suivant
+            # retentera — sinon la reprise à chaud est perdue pour toute la période.
+            warm.discard(model)
+        _debug(
+            "HOT_RESUME",
+            {"model": model, "ok": ok, "serveur_injoignable": self._slot_unreachable},
+            terminal=False,
+        )
         return ok
 
     def warm_context(

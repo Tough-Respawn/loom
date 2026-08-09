@@ -99,8 +99,6 @@ def step(state: dict, text: str, deps) -> WizardResult:
     return fn(state, t, deps)
 
 
-
-
 def _step_kind(state, t, deps):
     low = t.lower()
     if t == "1" or low.startswith("local"):
@@ -121,8 +119,6 @@ def _step_kind(state, t, deps):
     return WizardResult(
         state, "Réponds 1 (local), 2 (distant), 3 (image) ou 4 (vidéo), ou /cancel."
     )
-
-
 
 
 def _step_r_id(state, t, deps):
@@ -232,8 +228,6 @@ def _step_r_adv(state, t, deps):
         "— disponible dans le sélecteur.",
         {"kind": "upsert_remote", "record": record},
     )
-
-
 
 
 def start_remove(deps) -> WizardResult:
@@ -372,6 +366,9 @@ def _step_b_apply(state, t, deps):
             # Appliquer ensemble le contexte et l'isolation mesurés ensemble.
             "isolation": state.get("isolation"),
             "isolation_detail": state.get("isolation_detail", ""),
+            "ubatch": state.get("ubatch"),
+            "batch": state.get("batch"),
+            "ubatch_detail": state.get("ubatch_detail", ""),
         },
     )
 
@@ -470,8 +467,6 @@ def _step_i_workflow(state, t, deps):
         "workflow_path": path,
     }
     return WizardResult(None, f"Création de « {state['id']} »…" + warn, action)
-
-
 
 
 def _search(query, deps):
