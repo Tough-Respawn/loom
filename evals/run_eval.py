@@ -26,10 +26,8 @@ import re
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
-
-from loom.agent.conversation import Conversation
-from loom.tools import AVAILABLE_TOOLS, build_registry
 
 from evals.cases import CASES
 from evals.harness import (
@@ -39,10 +37,71 @@ from evals.harness import (
     make_client,
     make_perm,
 )
+from loom.agent.conversation import Conversation
+from loom.tools import AVAILABLE_TOOLS, build_registry
 
 _OUT = _RT.parent / "evals" / "out"
 
 
+def new_campaign_dir(sha: str | None = None, stamp: str | None = None) -> Path:
+    """Dossier UNIQUE d'une campagne : out/runs/<sha>_<horodatage>[-N].
+
+    PREUVES CONSERVÉES : deux campagnes ne s'écrasent JAMAIS, même commit et même
+    seconde comprises (suffixe -N par création exclusive). L'échec windows_shell
+    2/3 du 2026-07-24 est indiagnosticable parce que out/<variante>/ était écrasé
+    à chaque campagne — ce dossier par run corrige ça. Transcripts détaillés +
+    report.json + campaign.json du run SEULEMENT ; les baselines compactes restent
+    dans out/history/ (résumés versionnés, séparés des transcripts). out/runs/ est
+    couvert par le .gitignore existant (evals/out/*) : rien de gros n'est
+    versionné. Les transcripts contiennent les cas d'éval (publics) et les SORTIES
+    DU MODÈLE : aucune garantie TECHNIQUE d'absence de secrets dans ces sorties —
+    c'est le gitignore qui les garde hors dépôt, pas un filtrage ; ne pas les
+    publier tels quels."""
+    from datetime import datetime
+
+    base = _OUT / "runs"
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = stamp or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    name = f"{sha or 'nosha'}_{stamp}"
+    n = 1
+    while True:
+        d = base / (name if n == 1 else f"{name}-{n}")
+        try:
+            d.mkdir(parents=False, exist_ok=False)
+            return d
+        except FileExistsError:
+            n += 1
+
+
+def write_campaign_meta(
+    run_dir: Path,
+    *,
+    sha: str,
+    dirty: bool,
+    model: str,
+    variants: list[str],
+    runs: int,
+    cases: set[str] | None,
+    judge: bool,
+) -> None:
+    """campaign.json : les conditions EXACTES de la campagne, à côté de ses
+    transcripts (sans le diff complet — `dirty` suffit à savoir si la variante
+    « new » mesurait du code non commité)."""
+    from datetime import datetime
+
+    meta = {
+        "sha": sha or "",
+        "dirty": bool(dirty),
+        "model": model,
+        "variants": list(variants),
+        "runs": runs,
+        "cases": sorted(cases) if cases else None,
+        "judge": bool(judge),
+        "date": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    (run_dir / "campaign.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 @dataclass
@@ -68,8 +127,6 @@ class Trajectory:
     n_turns = n_tool_calls
 
 
-
-
 def _git_show(rel: str) -> str:
     return git_show(rel).strip()
 
@@ -89,8 +146,6 @@ def load_variants(which: str) -> dict:
     if which == "both":
         return allv
     return {which: allv[which]}
-
-
 
 
 def run_one(
@@ -181,7 +236,6 @@ def run_one(
     return traj
 
 
-
 _JUDGE_SYS = (
     "Tu es un évaluateur STRICT et impartial du travail d'un agent. On te donne une tâche, "
     "un critère de réussite, et la trace de ce que l'agent a fait. Tu juges UNIQUEMENT "
@@ -234,8 +288,6 @@ def judge(client, model, case, traj) -> dict:
         }
 
 
-
-
 def _critical(checks: dict) -> dict:
     """Checks bloquants = ceux dont le nom ne commence pas par '_' (informatifs)."""
     return {k: v for k, v in checks.items() if not k.startswith("_")}
@@ -259,6 +311,7 @@ def run_variant(
     only,
     mcp_hub=None,
     deferred_tools=False,
+    run_dir: Path | None = None,
 ):
     chat_p, sub_p = prompts
     results = {}  # case_id -> list[run dict]
@@ -305,7 +358,7 @@ def run_variant(
                         "judge": jd,
                     }
                 )
-                _save_transcript(name, case.id, k, traj, checks, jd)
+                _save_transcript(run_dir, name, case.id, k, traj, checks, jd)
                 mark = "ok" if runs_data[-1]["passed"] else "XX"
                 print(
                     f"  [{name}] {case.id} run{k + 1}/{runs} [{mark}] "
@@ -319,8 +372,11 @@ def run_variant(
     return results
 
 
-def _save_transcript(variant, case_id, k, traj, checks, jd):
-    d = _OUT / variant
+def _save_transcript(run_dir: Path | None, variant, case_id, k, traj, checks, jd):
+    """Transcript détaillé d'UN run de cas, sous le dossier de campagne (jamais
+    écrasé d'une campagne à l'autre). `run_dir` None (appel hors campagne) ->
+    repli sur l'ancien emplacement out/<variante>/."""
+    d = (run_dir / variant) if run_dir is not None else (_OUT / variant)
     d.mkdir(parents=True, exist_ok=True)
     lines = [f"# {variant} / {case_id} / run {k + 1}", ""]
     lines.append("## Outils appelés")
@@ -342,7 +398,7 @@ def _save_transcript(variant, case_id, k, traj, checks, jd):
     (d / f"{case_id}_run{k + 1}.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def report(all_results: dict, runs: int):
+def report(all_results: dict, runs: int, run_dir: Path | None = None):
     """all_results : {variant: {case_id: [run...]}}. Imprime un tableau comparatif."""
     variants = list(all_results.keys())
     print("\n" + "=" * 70)
@@ -433,11 +489,16 @@ def report(all_results: dict, runs: int):
                 f"{_avg([r.get('completion_tokens', 0) for r in rd])} "
                 f"durée={_avg([r.get('duration_s', 0.0) for r in rd])}s  stops: {stops}"
             )
-    _OUT.mkdir(parents=True, exist_ok=True)
-    (_OUT / "report.json").write_text(
-        json.dumps(all_results, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print(f"\nDétail : {_OUT}\\report.json + transcripts par variante.")
+    # Le rapport JSON vit avec les transcripts de SA campagne (preuves conservées) ;
+    # out/report.json reste une copie « dernier run » pour les habitudes existantes.
+    out_dir = run_dir if run_dir is not None else _OUT
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(all_results, ensure_ascii=False, indent=2)
+    (out_dir / "report.json").write_text(payload, encoding="utf-8")
+    if run_dir is not None:
+        _OUT.mkdir(parents=True, exist_ok=True)
+        (_OUT / "report.json").write_text(payload, encoding="utf-8")
+    print(f"\nDétail : {out_dir}\\report.json + transcripts par variante.")
 
 
 def pin_baseline(all_results: dict, runs: int, model: str) -> None:
@@ -445,7 +506,7 @@ def pin_baseline(all_results: dict, runs: int, model: str) -> None:
     persistante par commit. L'A/B git HEAD vs disque mesure le delta du diff COURANT ;
     l'historique épinglé mesure la DÉRIVE sur des semaines (re-run même commit = remplacé).
     Résumé seul (pass + coûts moyens par cas), pas les transcripts : diff-able et léger."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from evals.harness import git_head_sha
 
@@ -480,7 +541,7 @@ def pin_baseline(all_results: dict, runs: int, model: str) -> None:
     hist.mkdir(parents=True, exist_ok=True)
     payload = {
         "sha": sha,
-        "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "date": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "model": model,
         "runs": runs,
         "cases": cases_summary,
@@ -488,8 +549,6 @@ def pin_baseline(all_results: dict, runs: int, model: str) -> None:
     path = hist / f"{sha}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Baseline épinglée : {path}")
-
-
 
 
 def _injection_tests() -> bool:
@@ -684,8 +743,6 @@ def self_test():
     return ok
 
 
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=3)
@@ -748,6 +805,21 @@ def main():
             ]
         )
     all_results = {}
+    from evals.harness import git_dirty, git_head_sha
+
+    sha = git_head_sha()
+    run_dir = new_campaign_dir(sha or None)
+    write_campaign_meta(
+        run_dir,
+        sha=sha,
+        dirty=git_dirty(),
+        model=model,
+        variants=list(variants),
+        runs=args.runs,
+        cases=only,
+        judge=not args.no_judge,
+    )
+    print(f"Campagne : {run_dir}\n")
     try:
         for name, prompts in variants.items():
             print(f"--- VARIANTE {name} ---")
@@ -764,11 +836,12 @@ def main():
                 only,
                 mcp_hub=mcp_hub if name == "new" else None,
                 deferred_tools=args.mcp_fixture,
+                run_dir=run_dir,
             )
     finally:
         if mcp_hub is not None:
             mcp_hub.close()
-    report(all_results, args.runs)
+    report(all_results, args.runs, run_dir)
     # Ne jamais remplacer une baseline complète par un sous-ensemble filtré.
     if only:
         print("(baseline non épinglée : run partiel via --cases)")
