@@ -152,8 +152,23 @@ def validate_and_coerce(name: str, schema: dict, args: dict) -> dict:
         if isinstance(spec, dict) and spec.get("enum"):
             v = coerce_enum(v, spec["enum"], spec.get("x_aliases"))
         coerced[key] = v
+
     # Suggérer une clé proche rend une faute de nom directement corrigeable.
-    missing = [r for r in required if args.get(r) is None]
+    # Un None explicite reste traité comme manquant (contrat historique de tous les
+    # outils : path/command/content null -> erreur immédiate), SAUF si le champ est
+    # déclaré `type: "null"` — sémantique JSON Schema de required (présence de la
+    # clé), nécessaire à la sortie structurée (submit_result) qui peut exiger un
+    # champ nullable. Aucun outil du registre ne déclare "null" : comportement
+    # inchangé pour eux.
+    def _null_ok(r: str) -> bool:
+        spec = props.get(r)
+        return isinstance(spec, dict) and spec.get("type") == "null"
+
+    missing = [
+        r
+        for r in required
+        if r not in args or (args.get(r) is None and not _null_ok(r))
+    ]
     if missing:
         unknown = [k for k in args if k not in props]
         matched: set[str] = set()
@@ -256,7 +271,7 @@ class ToolRegistry:
     def __init__(
         self,
         specs: list[ToolSpec],
-        profile: "Profile | None" = None,
+        profile: Profile | None = None,
         *,
         deferred_enabled: bool = False,
         deferred_loaded: set[str] | None = None,

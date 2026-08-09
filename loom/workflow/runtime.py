@@ -144,9 +144,79 @@ def _compile(source: str):
         raise WorkflowError(_syntax_message(exc)) from exc
 
 
+# Sous-ensemble de types partagé avec la validation stricte de submit_result
+# (loom.tools.agent._schema_faults) : la FORME est refusée ici, AVANT l'appel
+# modèle ; les VALEURS sont validées là-bas, au retour du sous-agent.
+_SUPPORTED_TYPES = frozenset(
+    {"string", "integer", "number", "boolean", "object", "array", "null"}
+)
+
+
+def _check_schema_node(node: dict, where: str) -> None:
+    """Valide RÉCURSIVEMENT la forme d'un nœud du sous-ensemble supporté.
+    Toute faute lève WorkflowError actionnable — un schéma malformé imbriqué
+    (ex. `required: 3`) ne doit jamais atteindre l'API ni _schema_faults."""
+    jtype = node.get("type")
+    if jtype is not None and (
+        not isinstance(jtype, str) or jtype not in _SUPPORTED_TYPES
+    ):
+        raise WorkflowError(
+            f"agent(schema=…) : `type` non supporté en {where} : {jtype!r} "
+            f"(supportés : {', '.join(sorted(_SUPPORTED_TYPES))})."
+        )
+    enum = node.get("enum")
+    if enum is not None and (not isinstance(enum, list) or not enum):
+        raise WorkflowError(
+            f"agent(schema=…) : `enum` en {where} doit être une liste NON vide "
+            f"(`enum: []` n'accepterait aucune valeur), reçu {enum!r}."
+        )
+    ap = node.get("additionalProperties")
+    if ap is not None and not isinstance(ap, bool):
+        raise WorkflowError(
+            f"agent(schema=…) : `additionalProperties` en {where} : seul un booléen "
+            f"est supporté (la forme schéma ne l'est pas), reçu {type(ap).__name__}."
+        )
+    props = node.get("properties")
+    if props is not None and not isinstance(props, dict):
+        raise WorkflowError(
+            f"agent(schema=…) : `properties` en {where} doit être un objet."
+        )
+    required = node.get("required")
+    if required is not None:
+        if not isinstance(required, list) or not all(
+            isinstance(r, str) for r in required
+        ):
+            raise WorkflowError(
+                f"agent(schema=…) : `required` en {where} doit être une liste de noms "
+                "(chaînes)."
+            )
+        unknown = [r for r in required if r not in (props or {})]
+        if unknown:
+            raise WorkflowError(
+                f"agent(schema=…) : `required` en {where} cite des champs absents de "
+                f"`properties` : {', '.join(unknown)}."
+            )
+    items = node.get("items")
+    if items is not None:
+        if not isinstance(items, dict):
+            raise WorkflowError(
+                f"agent(schema=…) : `items` en {where} doit être un objet-schéma."
+            )
+        _check_schema_node(items, f"{where}.items")
+    if isinstance(props, dict):
+        for k, sub in props.items():
+            if not isinstance(sub, dict):
+                raise WorkflowError(
+                    f"agent(schema=…) : le schéma de `{where}.{k}` doit être un objet."
+                )
+            _check_schema_node(sub, f"{where}.{k}")
+
+
 def _validate_schema(schema) -> None:
     """Refuse un `schema` malformé AVANT l'appel API, avec un message que le modèle
-    peut corriger.
+    peut corriger. Racine : objet avec `properties` non vide ; puis validation
+    RÉCURSIVE de la forme (types supportés, required liste de chaînes ⊆ properties,
+    items objet, enum non vide, additionalProperties booléen) via _check_schema_node.
 
     Pourquoi ça mérite du code : `schema` devient les `parameters` de l'outil
     submit_result, donc un schéma invalide part tel quel à l'API, qui rejette l'appel
@@ -187,6 +257,7 @@ def _validate_schema(schema) -> None:
             f"agent(schema=…) : `required` cite des champs absents de `properties` : "
             f"{', '.join(map(str, unknown))}."
         )
+    _check_schema_node(schema, "racine")
 
 
 class _Run:

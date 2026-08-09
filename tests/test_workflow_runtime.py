@@ -110,6 +110,49 @@ def test_schema_malforme_arrete_le_run_au_lieu_de_rendre_none():
         ({"type": "object"}, "properties"),
         ({"type": "object", "properties": {"a": {}}, "required": "a"}, "liste"),
         ({"type": "object", "properties": {"a": {}}, "required": ["b"]}, "absents"),
+        # Fautes IMBRIQUÉES : refusées récursivement AVANT l'appel modèle
+        # (sans ça, `required: 3` imbriqué finissait en « erreur inattendue »
+        # au moment de la validation des valeurs).
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "a": {
+                        "type": "object",
+                        "properties": {"b": {"type": "string"}},
+                        "required": 3,
+                    }
+                },
+            },
+            "liste de noms",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "a": {
+                        "type": "object",
+                        "properties": {"b": {}},
+                        "required": ["b", 3],
+                    }
+                },
+            },
+            "chaînes",
+        ),
+        ({"type": "object", "properties": {"a": {"enum": []}}}, "enum"),
+        (
+            {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "additionalProperties": {},
+            },
+            "booléen",
+        ),
+        ({"type": "object", "properties": {"a": {"type": "foo"}}}, "non supporté"),
+        (
+            {"type": "object", "properties": {"a": {"type": "array", "items": 3}}},
+            "items",
+        ),
     ]:
         with pytest.raises(WorkflowError, match=motif):
             _run(src, args=bad)

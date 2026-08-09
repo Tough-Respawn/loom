@@ -46,18 +46,112 @@ _SUBMIT_INSTRUCTION = (
     "write the result as plain text: only the `submit_result` call is recorded."
 )
 
+# Validation STRICTE de submit_result — sous-ensemble JSON Schema NOMMÉ, pas un
+# validateur complet. Supporté (= ce que les scripts de workflow exposent) :
+# - type : string | integer | number | boolean | object | array | null ;
+# - object : properties, required (PRÉSENCE de la clé, comme en JSON Schema —
+#   un requis déclaré `type: "null"` accepte explicitement None) ;
+# - additionalProperties : SEULE la forme `false` est supportée (la forme
+#   schéma ne l'est pas) ; absent -> champs inconnus permis, comme en JSON Schema ;
+# - array : items ;
+# - enum (liste non vide — `enum: []` est un schéma invalide, refusé en amont
+#   par loom.workflow.runtime._validate_schema).
+# Tout le reste (anyOf/oneOf/allOf, format, pattern, minimum…) est IGNORÉ.
+# La FORME du schéma est validée récursivement AVANT l'appel au sous-agent
+# (_validate_schema) ; _schema_faults reste néanmoins défensif : un schéma
+# malformé qui passerait quand même est ignoré champ à champ, JAMAIS une exception.
+# Réservé à submit_result : les autres outils gardent la tolérance de
+# validate_and_coerce (coercition best-effort, jamais de refus de type).
+_TYPE_CHECKS = {
+    "string": lambda v: isinstance(v, str),
+    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "boolean": lambda v: isinstance(v, bool),
+    "object": lambda v: isinstance(v, dict),
+    "array": lambda v: isinstance(v, list),
+    "null": lambda v: v is None,
+}
+
+
+def _schema_faults(value: object, schema: dict, path: str) -> list[str]:
+    """Écarts de `value` au sous-ensemble supporté de `schema`, en chemins
+    exploitables (ex. `bugs[2].confidence`). Ne lève jamais : liste vide = conforme."""
+    if not isinstance(schema, dict):
+        return []
+    faults: list[str] = []
+    jtype = schema.get("type")
+    if (
+        isinstance(jtype, str)
+        and jtype in _TYPE_CHECKS
+        and not _TYPE_CHECKS[jtype](value)
+    ):
+        # Type faux : inutile de descendre dans une structure qui n'en est pas une.
+        return [f"{path} : {jtype} attendu, reçu {value!r} ({type(value).__name__})"]
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum and value not in enum:
+        faults.append(f"{path} : valeur hors enum {enum}, reçu {value!r}")
+    if isinstance(value, dict):
+        props = schema.get("properties")
+        props = props if isinstance(props, dict) else {}
+        required = schema.get("required")
+        # `required` = PRÉSENCE de la clé (sémantique JSON Schema) : un None
+        # explicite est présent — c'est le check de type qui tranchera sa validité.
+        for r in required if isinstance(required, list) else []:
+            if isinstance(r, str) and r not in value:
+                faults.append(
+                    f"{path}.{r} : champ requis manquant"
+                    if path
+                    else f"{r} : champ requis manquant"
+                )
+        for k, v in value.items():
+            child = f"{path}.{k}" if path else str(k)
+            if k in props:
+                faults.extend(_schema_faults(v, props[k], child))
+            elif schema.get("additionalProperties") is False:
+                faults.append(
+                    f"{child} : champ non déclaré (additionalProperties=false)"
+                )
+    elif isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            for i, v in enumerate(value):
+                faults.extend(_schema_faults(v, items, f"{path}[{i}]"))
+    return faults
+
 
 def make_submit_result(schema: dict, sink: list) -> ToolSpec:
     """Outil de SORTIE : ses `parameters` SONT le schéma demandé par l'appelant.
 
     C'est le mécanisme de sortie structurée de Loom. Pas de `response_format` :
-    llama.cpp ne le supporte pas uniformément selon le modèle, et ça dupliquerait
-    une validation qu'on a déjà — `validate_and_coerce` valide et coerce le schéma
-    d'un outil gratuitement, y compris les fautes de type d'un petit modèle
-    ("5"->5, '{"a":1}'->dict). Le sous-agent remplit l'outil, on capture les args.
+    llama.cpp ne le supporte pas uniformément selon le modèle. La coercition de
+    premier niveau de `validate_and_coerce` s'applique d'abord ("5"->5,
+    '{"a":1}'->dict), PUIS `_schema_faults` valide strictement le résultat final
+    (récursif, sous-ensemble nommé ci-dessus). Une non-conformité lève ToolError :
+    l'erreur repart dans la boucle du sous-agent, qui corrige et rappelle —
+    aucune boucle de retry dédiée, ce sont les garde-fous de tours existants
+    qui bornent.
+
+    CONTRAT :
+    - le PREMIER appel valide gagne ; tout appel suivant est refusé (ToolError)
+      sans écraser le résultat enregistré ;
+    - aucun appel valide -> sink vide -> l'appelant (run_workflow) rend None,
+      contrat d'échec inchangé.
     """
 
     def run(args: dict) -> str:
+        if sink:
+            raise ToolError(
+                "résultat déjà enregistré (le premier appel valide fait foi) — "
+                "ne rappelle plus submit_result, termine ta réponse."
+            )
+        faults = _schema_faults(args, schema, "")
+        if faults:
+            shown = " ; ".join(faults[:6])
+            more = f" (+{len(faults) - 6} autres)" if len(faults) > 6 else ""
+            raise ToolError(
+                f"résultat non conforme au schéma : {shown}{more}. "
+                "Corrige ces champs et rappelle submit_result."
+            )
         sink.append(args)
         return "ok: résultat enregistré. Termine maintenant (ne réémets aucun appel)."
 
@@ -65,8 +159,10 @@ def make_submit_result(schema: dict, sink: list) -> ToolSpec:
         name="submit_result",
         description=(
             "Reports your final result in structured form. Call this exactly once, "
-            "when your task is complete. This is the ONLY way your result is "
-            "recorded — plain text is discarded."
+            "when your task is complete: the FIRST valid call is recorded, any "
+            "further call is rejected. A non-conforming result returns an error "
+            "naming the faulty fields — fix them and call again. This is the ONLY "
+            "way your result is recorded — plain text is discarded."
         ),
         parameters=schema,
         run=run,
