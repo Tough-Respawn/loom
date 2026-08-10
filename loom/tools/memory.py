@@ -94,7 +94,15 @@ def make_recall(provider, *, summarize=None, threshold: int = 5) -> ToolSpec:
         if not hits:
             return "(aucun souvenir pertinent)"
         if summarize is not None and len(hits) >= threshold:
-            return summarize(query, hits)
+            # Un résumeur LLM peut rendre du vide (stop silencieux, vécu 2026-08-10 :
+            # « Synthèse mémoire : » nu) ou lever (API distante) : les hits sont là,
+            # on se replie sur le rendu brut plutôt que de perdre l'information.
+            try:
+                summary = summarize(query, hits)
+            except Exception:  # noqa: BLE001 - le repli brut vaut mieux qu'une erreur
+                summary = ""
+            if summary and summary.strip():
+                return summary
         out, total = [], 0
         for h in hits:
             line = f"- {h.text}" + (f"  [{h.source}]" if h.source else "")
