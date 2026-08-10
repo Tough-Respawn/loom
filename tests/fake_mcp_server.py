@@ -65,10 +65,13 @@ def reply(request_id, result) -> None:
 
 
 def main() -> None:
-    _force_utf8_stdio()
+    # Le fichier pid s'écrit EN PREMIER : le test hung-handshake tue ce processus
+    # dès timeout_s (0.2 s) — tout travail placé avant l'écriture (constaté avec
+    # le reconfigure UTF-8) rouvre la fenêtre où le kill précède le pid sous charge.
     if pid_file := os.environ.get("LOOM_MCP_TEST_PID_FILE"):
         with open(pid_file, "w", encoding="utf-8") as handle:
             handle.write(str(os.getpid()))
+    _force_utf8_stdio()
     if "--hang-before-init" in sys.argv:
         time.sleep(30)
     for line in sys.stdin:

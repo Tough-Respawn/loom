@@ -15,7 +15,7 @@ _TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z ")
 
 
 def _lines(path):
-    return [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    return [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
 def test_bloc_de_dump_est_horodate(tmp_path, monkeypatch):
@@ -25,7 +25,7 @@ def test_bloc_de_dump_est_horodate(tmp_path, monkeypatch):
 
     _debug("HOT_RESUME", {"model": "ornith", "ok": False}, terminal=False)
 
-    entete = next(l for l in _lines(log) if "LOOM_DEBUG" in l)
+    entete = next(ln for ln in _lines(log) if "LOOM_DEBUG" in ln)
     assert _TS.match(entete), f"en-tête non horodatée : {entete!r}"
     # Le label reste greppable tel quel : les outils existants ne cassent pas.
     assert "[LOOM_DEBUG] HOT_RESUME" in entete
@@ -42,7 +42,7 @@ def test_blocs_et_evenements_se_trient_ensemble(tmp_path, monkeypatch):
     _debug("SLOT_RESTORE_ERR", "connexion refusee", terminal=False)
     log_event("api.error", level="WARN", kind="connection")
 
-    dates = [l[:24] for l in _lines(log) if _TS.match(l)]
+    dates = [ln[:24] for ln in _lines(log) if _TS.match(ln)]
     assert len(dates) == 3, f"attendu 3 lignes datées, obtenu {len(dates)}"
     assert dates == sorted(dates), "l'ordre chronologique n'est pas préservé"
 

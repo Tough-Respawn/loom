@@ -138,7 +138,7 @@ def test_set_model_ubatch_ecrit_et_remplace(tmp_path):
     # Idempotent : une seconde écriture ne duplique ni lignes ni tampon.
     _set_model_ubatch(gguf, 1024, 2048, "nouvelle mesure")
     txt = mt.read_text(encoding="utf-8")
-    lignes = [l.split("=")[0].strip() for l in txt.splitlines() if "=" in l]
+    lignes = [ln.split("=")[0].strip() for ln in txt.splitlines() if "=" in ln]
     assert lignes.count("ubatch") == 1 and lignes.count("batch") == 1
     assert txt.count("élus par la sonde") == 1
 
