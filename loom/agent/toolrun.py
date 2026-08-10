@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-from __future__ import annotations
 import json
 import threading
 import time
 from collections.abc import Iterator
+
+from loom.agent.debuglog import log_event
+from loom.agent.guards import _VERIFY_STREAK_NOTE, _verify_streak_update
 from loom.agent.inline_image import (
     image_user_message,
     is_inline_image,
     parse_inline_image,
 )
-
-from loom.agent.debuglog import log_event
-from loom.agent.guards import _VERIFY_STREAK_NOTE, _verify_streak_update
 from loom.agent.toolsets import (
     _BROWSER_CHECKS,
     _BUG_SIGNAL_TOOLS,
@@ -58,6 +57,12 @@ def _stream_tool_events(registry, tc_id: str, name: str, args: dict):
     L'appelant route les events vers son canal (yield direct ou queue de thread)."""
     parts: list[str] = []
     for sub_kind, sub_payload in registry.run_stream(name, args):
+        # Contrat ST-02 : la télémétrie des sous-agents (agent_id, chronologie)
+        # remonte TELLE QUELLE jusqu'à la route chat (SSE + timeline). Elle ne
+        # nourrit ni la ligne d'activité ni la synthèse.
+        if isinstance(sub_kind, str) and sub_kind.startswith("subagent_"):
+            yield (sub_kind, sub_payload)
+            continue
         line = _sub_activity_line(sub_kind, sub_payload)
         if line:
             yield ("tool_stream", {"id": tc_id, "text": line})
@@ -353,7 +358,10 @@ def _run_tools_sequential(
             st["executed"] = True
         if ok and name in _WRITE_TOOLS and args.get("path"):
             st["files_written"].add(args["path"])
-        # Deux échecs d'exécution/vérification imposent la méthode de debug.
-        if not ok and name in _BUG_SIGNAL_TOOLS:
-            st["fail_count"] += 1
+        # Deux échecs CONSÉCUTIFS d'exécution/vérification imposent la méthode de
+        # debug. Un check vert prouve que la chaîne précédente est réparée et remet
+        # le compteur à zéro ; sinon deux diagnostics indépendants finissent par
+        # produire un faux « plusieurs erreurs s'enchaînent ».
+        if name in _BUG_SIGNAL_TOOLS:
+            st["fail_count"] = st["fail_count"] + 1 if not ok else 0
     convo.extend(image_followups)  # images vues au tour suivant

@@ -356,11 +356,28 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 11. **Régénérer le llama-swap.yaml au démarrage de loom.web** — actuellement un
    `model.toml` édité n'est pris en compte qu'après `regenerate_swap_yaml()` manuel
    ou une édition via la console config (gotcha mesuré le 2026-07-10).
-12. **Observabilité des sous-agents** (note user 2026-07-10) : les logs de session
-    (debug.log/timeline) ne montrent RIEN de l'activité d'un `dispatch_agent` — le
-    sous-agent est une boîte noire (on voit l'appel et le résultat final, pas ses
-    tours/outils intermédiaires). Tracer sa conversation (fichier dédié par dispatch
-    ou événements préfixés dans le debug.log de la session parente).
+12. ~~Observabilité des sous-agents~~ (note user 2026-07-10) : **LIVRÉ le 2026-08-09
+    (ST-02)**. Chaque délégation (dispatch_agent ET run_workflow, même contrat) porte
+    un `agent_id` stable et émet `subagent_start/tool_call/tool_result/usage/end`
+    (modèle demandé ET résolu — la relève de tier se lit dans `usage.model`/`end.model`,
+    tokens cumulés, raison d'arrêt, durée). Persisté dans timeline.jsonl (rejouable au
+    rechargement), rendu en carte UI par ouvrier (état, modèle, outil courant, durée,
+    tokens) avec chronologie dépliable. Limites : chronologie bornée
+    (SUBAGENT_EVENT_CAP=200 mirrors, surplus compté ; aperçus 160 car., jamais les
+    arguments), statut `cancelled` réservé à ST-03, télémétrie pure (rien n'entre
+    dans le contexte du parent ni dans le prompt — cache intact). Validé E2E réel
+    (preuves : `evals/out/runs/st02-observation-20260809/`). **ST-03 (annulation
+    ciblée) LIVRÉE le 2026-08-09** : POST `/session/<sid>/subagent/<aid>/cancel`
+    (idempotente), annulation COOPÉRATIVE observée entre deux événements de la
+    sous-boucle (aucun thread tué), `run_shell` long interrompu via `_kill_tree`
+    (aucun orphelin), un seul `subagent_end` même en course (la fin naturelle
+    gagne), parent et frères intacts, `dispatch_agent` rend un résultat explicite
+    « annulé » / `agent()` de workflow rend None, bouton « arrêter » sur la carte
+    (running → arrêt… → arrêté, rejoué au rechargement), stop global inchangé.
+    Validé E2E réel (preuves : `evals/out/runs/st03-observation-20260809/`).
+    Stories ordonnées et portes go/no-go :
+    [`docs/superpowers/specs/2026-08-09-inspirations-oh-my-pi-stories.md`](docs/superpowers/specs/2026-08-09-inspirations-oh-my-pi-stories.md)
+    (mesure dispatch → observabilité → annulation ; LSP et worktrees conditionnels).
 13. **Erreurs-info vs vraies erreurs** (note user 2026-07-10) : `run_shell` préfixe
     `erreur: exit 1` des résultats qui sont des INFORMATIONS exploitables (« not a git
     repository », fichier absent, grep sans match = exit 1) → le modèle les traite en

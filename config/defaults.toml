@@ -102,6 +102,9 @@ deferred_tools = false
 enabled = [
     "find_files", "search_text", "list_dir",
     "read_file", "read_image", "calculate", "current_date",
+    # Intelligence de code (Python only) : outils DIFFÉRÉS — jamais dans le
+    # préfixe, chargés via tool_search quand le modèle en a besoin.
+    "code_outline", "code_diagnostics",
     "web_search", "fetch_url",
     "dispatch_agent", "run_workflow", "manage_todos", "write_note", "read_note",
     "recall", "remember",

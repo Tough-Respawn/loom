@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import time
 from pathlib import Path
 
 from loom.permissions import _is_hard_denied
@@ -109,9 +110,18 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 def make_run_shell(
-    workspace_dir: str, timeout: int = 180, max_output: int = 8000
+    workspace_dir: str,
+    timeout: int = 180,
+    max_output: int = 8000,
+    cancel_event=None,
 ) -> ToolSpec:
-    """Outil run_shell borné au workspace, deny-list dure, timeout (tue l'arbre) et troncature."""
+    """Outil run_shell borné au workspace, deny-list dure, timeout (tue l'arbre) et troncature.
+
+    `cancel_event` (ST-03, threading.Event | None) : posé par l'annulation ciblée
+    d'un sous-agent. Observé PENDANT l'exécution (attente par tranches) : une
+    commande longue est interrompue par le MÊME mécanisme que le timeout
+    (_kill_tree — tout l'arbre de processus, aucun orphelin), sans attendre la
+    fin ni le timeout. None (fil principal, évals) : comportement historique."""
     root = Path(workspace_dir)
 
     def run(args: dict) -> str:
@@ -146,6 +156,11 @@ def make_run_shell(
             proc = subprocess.Popen(
                 _shell_argv(command),
                 cwd=str(root),
+                # run_shell est explicitement non interactif. Sans DEVNULL, un outil
+                # comme psql peut hériter de la console du serveur, attendre un mot
+                # de passe pendant tout le long timeout et survivre à un redémarrage.
+                # Les pipelines écrits dans `command` restent internes au shell.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 encoding="utf-8",
@@ -156,7 +171,30 @@ def make_run_shell(
         except OSError as exc:
             raise ToolError(f"impossible de lancer le shell : {exc}") from exc
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            if cancel_event is None:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            else:
+                # Attente par tranches : le poll (0.2 s) observe l'annulation
+                # ciblée sans changer la sémantique du timeout global.
+                deadline = time.monotonic() + timeout
+                while True:
+                    try:
+                        stdout, stderr = proc.communicate(timeout=0.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if cancel_event.is_set():
+                            _kill_tree(proc)
+                            try:
+                                proc.communicate(timeout=5)
+                            except Exception:  # noqa: BLE001 - reap best-effort
+                                pass
+                            return (
+                                "erreur: commande interrompue — annulation de "
+                                "l'ouvrier demandée par l'utilisateur (processus "
+                                "et descendance tués)."
+                            )
+                        if time.monotonic() >= deadline:
+                            raise subprocess.TimeoutExpired(command, timeout) from None
         except subprocess.TimeoutExpired:
             _kill_tree(proc)
             try:

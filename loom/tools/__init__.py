@@ -65,6 +65,7 @@ def build_registry(
     deferred_tools: bool = False,
     monitor_hub=None,
     mcp_hub=None,
+    cancel_event=None,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
 
@@ -72,6 +73,9 @@ def build_registry(
     `permission` : politique relayée à la sous-boucle (même sécurité qu'au principal).
     `conversation` : requise pour manage_todos (son plan vit dans `conversation.todos`,
     par session et persisté). Absente -> pas de manage_todos (cas du sous-agent).
+    `cancel_event` (ST-03) : posé quand ce registre équipe UN sous-agent — run_shell
+    l'observe pour interrompre une commande longue à l'annulation ciblée. Le fil
+    principal n'en passe jamais (l'arrêt global existant reste son mécanisme).
     """
     # Les imports tardifs évitent les cycles entre le registre et ses outils.
     from loom.tools.fs import (
@@ -123,8 +127,22 @@ def build_registry(
         from loom.tools.format import make_format_code
 
         specs.append(make_format_code(workspace_dir))
+    # Intelligence de code (ST-06, Python only) : specs always_deferred — jamais
+    # dans le préfixe, chargés à la demande via tool_search (pattern MCP).
+    if "code_outline" in enabled:
+        from loom.tools.code import make_code_outline
+
+        specs.append(make_code_outline(workspace_dir))
+    if "code_diagnostics" in enabled:
+        from loom.tools.code import make_code_diagnostics
+
+        specs.append(make_code_diagnostics(workspace_dir))
     if "run_shell" in enabled:
-        specs.append(make_run_shell(workspace_dir, timeout=shell_timeout))
+        specs.append(
+            make_run_shell(
+                workspace_dir, timeout=shell_timeout, cancel_event=cancel_event
+            )
+        )
     if "monitor" in enabled and monitor_hub is not None and conversation is not None:
         from loom.tools.monitor import make_monitor
 
@@ -185,8 +203,10 @@ def build_registry(
         # Le sous-agent doit suivre les conventions de l'OS du fil principal.
         _sub_system = SUBAGENT_SYSTEM + "\n\n" + _platform_detect().prompt_block()
 
-        def _build_sub_registry() -> ToolRegistry:
-            # Omettre le client interdit les dispatchs imbriqués.
+        def _build_sub_registry(cancel_event=None) -> ToolRegistry:
+            # Omettre le client interdit les dispatchs imbriqués. `cancel_event`
+            # (ST-03) : fourni PAR DÉLÉGATION par le runner — arme le run_shell
+            # de CE sous-agent, jamais celui d'un frère ni du parent.
             return build_registry(
                 workspace_dir,
                 max_bytes,
@@ -196,6 +216,7 @@ def build_registry(
                 active_is_vision=active_is_vision,
                 deferred_tools=deferred_tools,
                 mcp_hub=mcp_hub,
+                cancel_event=cancel_event,
             )
 
         # Dispatch et workflows partagent routage, cache et politique de permission.
@@ -211,6 +232,8 @@ def build_registry(
             local_only=dispatch_local_only,
             compact_for=sub_compact_for,
             model_roles=dispatch_model_roles,
+            # ST-03 : le ciblage (session_id, agent_id) d'une annulation.
+            session_id=getattr(conversation, "runtime_session_id", "") or "",
         )
         if "dispatch_agent" in enabled:
             specs.append(

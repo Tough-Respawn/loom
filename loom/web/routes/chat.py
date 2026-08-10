@@ -606,6 +606,13 @@ def _register_chat_routes(app, S):
                 "user",  # note en vol injectée : à sa vraie position au rechargement
                 "harness",  # intervention du garde-fou Loom (3e voix) : rejouable
                 "monitor_event",  # stdout asynchrone à sa vraie position
+                # ST-02 : identité + chronologie des sous-agents, corrélées par
+                # agent_id — rejouables au rechargement, jamais dans le prompt.
+                "subagent_start",
+                "subagent_tool_call",
+                "subagent_tool_result",
+                "subagent_usage",
+                "subagent_end",
             }
 
             def _tl(event, **data):
@@ -953,6 +960,11 @@ def _register_chat_routes(app, S):
 
                         elif kind == "phase":
                             yield _tl("phase", **payload)
+
+                        elif kind.startswith("subagent_"):
+                            # Télémétrie des ouvriers (contrat ST-02) : SSE + timeline,
+                            # aucun effet sur le contexte ni sur le cache.
+                            yield _tl(kind, **payload)
 
                         elif kind == "done":
                             # La raison d'arrêt pilote le réarmement du recentrage.

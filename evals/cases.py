@@ -16,9 +16,9 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 
 @dataclass
@@ -32,7 +32,6 @@ class EvalCase:
     history: list | None = None
     # Un seuil bas force le chemin de compaction pour ce cas.
     compact_tokens: int | None = None
-
 
 
 _SUCCESS_RE = re.compile(
@@ -82,7 +81,6 @@ def edit_file_failures(traj) -> int:
     return sum(
         1 for r in traj.tool_results if r.get("name") == "edit_file" and not r.get("ok")
     )
-
 
 
 _CALC_PY = """\
@@ -219,8 +217,6 @@ def _seed_pyproj(ws: Path) -> None:
         p.write_text(content, encoding="utf-8")
 
 
-
-
 def _check_edit_block(traj, ws: Path) -> dict:
     edited_by_block = used(traj, "edit_file")
     not_lazy_rewrite = not any(
@@ -257,8 +253,8 @@ def _check_html(traj, ws: Path) -> dict:
             (not claims_success(traj)) or used(traj, "check_page")
         ),
         "HTML contient un bouton interactif": bool(
-            re.search(r"<button", content, re.I)
-            and re.search(r"(onclick|addEventListener)", content, re.I)
+            re.search(r"<button", content, re.IGNORECASE)
+            and re.search(r"(onclick|addEventListener)", content, re.IGNORECASE)
         ),
     }
 
@@ -351,18 +347,13 @@ def _check_dispatch(traj, ws: Path) -> dict:
     # Tolérer une omission, pas un inventaire largement inventé.
     text = traj.final_text or ""
     named = sum(1 for f in _INVENTORY_FUNCS if f in text)
-    explored = (
-        used(traj, "dispatch_agent")
-        or used(traj, "read_file")
-        or used(traj, "search_text")
-        or used(traj, "list_dir")
-        or used(traj, "find_files")
-    )
     return {
-        "a exploré le projet (outils)": explored,
+        # BLOQUANT (ST-01, porte durcie) : ce cas mesure le CHEMIN de délégation
+        # (prompt sous-agent, routage, outils du sous-agent). Un run qui explore en
+        # direct rend un bon inventaire mais ne teste RIEN de ce chemin : il doit
+        # échouer ici. La consigne du cas exige explicitement dispatch_agent.
+        "a délégué (dispatch_agent)": used(traj, "dispatch_agent"),
         "synthèse correcte (>=3 fonctions nommées)": named >= 3,
-        # Informatif: la bonne réponse prime sur le chemin de délégation attendu.
-        "_a délégué (dispatch_agent)": used(traj, "dispatch_agent"),
     }
 
 
@@ -435,7 +426,6 @@ def _check_search_recursive(traj, ws: Path) -> dict:
     }
 
 
-
 CASES: list[EvalCase] = [
     EvalCase(
         id="edit_block",
@@ -500,12 +490,15 @@ CASES: list[EvalCase] = [
         prompt=(
             "Fais l'inventaire de ce projet : pour chacun des dossiers src/ et lib/, "
             "liste les fonctions définies dans les fichiers .py, puis rends-moi une "
-            "synthèse courte (dossier -> fonctions). C'est un travail d'exploration "
-            "volumineux : délègue-le si c'est plus efficace."
+            "synthèse courte (dossier -> fonctions). DÉLÈGUE ce travail d'exploration "
+            "à un sous-agent via dispatch_agent (ne le fais pas toi-même) : je veux "
+            "seulement sa synthèse."
         ),
         rubric=(
-            "La synthèse liste correctement les fonctions des deux dossiers (alpha_load, "
-            "alpha_save, beta_run dans src/ ; gamma_parse, delta_merge dans lib/)."
+            "L'agent a DÉLÉGUÉ l'exploration via dispatch_agent (consigne explicite) "
+            "et la synthèse liste correctement les fonctions des deux dossiers "
+            "(alpha_load, alpha_save, beta_run dans src/ ; gamma_parse, delta_merge "
+            "dans lib/). Une exploration directe sans délégation est un échec."
         ),
         setup=_seed_inventory,
         check=_check_dispatch,

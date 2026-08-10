@@ -84,7 +84,10 @@ def build_app(cfg):
         ):
             if kind == "content":
                 out += chunk
-        return "Synthèse mémoire :\n" + out.strip()
+        out = out.strip()
+        # Vide (stop silencieux du modèle) -> "" : make_recall se replie sur le
+        # rendu brut des hits au lieu de renvoyer un en-tête nu (vécu 2026-08-10).
+        return f"Synthèse mémoire :\n{out}" if out else ""
 
     memory = SimpleNamespace(provider=mem_provider, paths=mem_paths)
     if cfg.memory.recall_summarize:

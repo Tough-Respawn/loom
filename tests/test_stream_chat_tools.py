@@ -172,6 +172,41 @@ def test_tool_erreur_ok_false():
     assert tr["ok"] is False
 
 
+def test_debug_force_ignore_des_echecs_separes_par_un_check_vert():
+    results = iter(["erreur: docker absent", "diagnostic ok", "erreur: migration absente"])
+    reg = FakeRegistry({"run_shell": lambda _a: next(results)})
+    client, _ = make_client(
+        [
+            turn_tools([("call_1", "run_shell", '{"command": "docker ps"}')]),
+            turn_tools([("call_2", "run_shell", '{"command": "git status"}')]),
+            turn_tools([("call_3", "run_shell", '{"command": "prisma status"}')]),
+            turn_text("diagnostic terminé."),
+        ]
+    )
+
+    events, done = run(client, registry=reg)
+
+    assert done["reason"] == "natural"
+    assert not [p for p in only(events, "harness") if p["kind"] == "debug"]
+
+
+def test_debug_force_apres_deux_echecs_consecutifs():
+    reg = FakeRegistry({"run_shell": lambda _a: "erreur: commande échouée"})
+    client, _ = make_client(
+        [
+            turn_tools([("call_1", "run_shell", '{"command": "test 1"}')]),
+            turn_tools([("call_2", "run_shell", '{"command": "test 2"}')]),
+            turn_text("je passe en debug."),
+        ]
+    )
+
+    events, done = run(client, registry=reg)
+
+    assert done["reason"] == "natural"
+    debug = [p for p in only(events, "harness") if p["kind"] == "debug"]
+    assert len(debug) == 1
+
+
 def test_args_json_invalide_sans_executer():
     reg = FakeRegistry({"read_file": lambda a: "jamais appelé"})
     client, _ = make_client(

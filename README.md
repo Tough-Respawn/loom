@@ -138,7 +138,14 @@ Le banc navigateur isolé (stub local, aucun vrai modèle) est documenté dans
 - **Périmètre** = `workspace_dir` (ou le dossier détecté dans ton message). Lecture large ;
   écriture et shell gardés par le **mode permission** (`allow` = autonome, `ask` = confirmation).
 - **Déléguer** : pour un gros chantier, l'agent peut lancer `dispatch_agent` — un sous-agent à
-  contexte isolé qui travaille puis renvoie une synthèse.
+  contexte isolé qui travaille puis renvoie une synthèse. Chaque ouvrier est **observable** :
+  une carte dans le fil montre son état, le modèle réellement utilisé (routage compris), l'outil
+  en cours, la durée et les tokens, avec une chronologie dépliable (bornée) — persistée dans la
+  timeline de session, rejouée au rechargement. Télémétrie pure : rien n'est réinjecté dans le
+  contexte du parent, seule la synthèse y entre. Chaque ouvrier peut être **arrêté
+  individuellement** (bouton « arrêter » de sa carte) : annulation coopérative et idempotente,
+  le fil principal et les autres ouvriers continuent ; une commande shell longue de l'ouvrier
+  est interrompue avec tout son arbre de processus.
 
 ## Sécurité & périmètre de confiance
 
