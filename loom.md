@@ -116,7 +116,7 @@ uv run python -m evals.run_review_eval           # éval du skill code-review
   les interactions et le rendu navigateur.
 - **Banc d'éval complet** : livré (graders code, juge LLM, historiques par commit).
   Le `--self-test` est hors ligne ; les comparaisons de prompts exigent un serveur modèle.
-- **Éval** : `default_model` de config est un distant → forcer `--model qwen…` pour évaluer le local (seul à révéler une régression du prompt). Le jeu de cas **n'exerce pas `dispatch_agent`** → le prompt sous-agent n'est pas encore testé par l'A/B.
+- **Éval** : `default_model` de config est un distant → forcer `--model qwen…` pour évaluer le local (seul à révéler une régression du prompt). Le cas `dispatch_probe` exerce le VRAI chemin sous-agent (ST-01 : délégation BLOQUANTE, activité du sous-agent capturée dans `Trajectory.sub_agents` + transcripts) ; chaque délégation émet en outre le contrat `subagent_*` corrélé par `agent_id` (ST-02 : timeline + carte UI, chronologie bornée) et s'annule individuellement via POST `/session/<sid>/subagent/<aid>/cancel` (ST-03 : coopératif, idempotent, parent/frères intacts, `status=cancelled`).
 - **Agnostique machine** : la taille des modèles chargeables et le contexte local sont bornés par le matériel hôte (VRAM/RAM), mesurés à la calibration — aucune spec de machine n'est une constante du projet. Les analyses liées à une machine (bancs, perf, sondes) restent en local (`docs/local/`, `var/`, `config/local.toml` — gitignorés) ; le versionné ne porte que mécaniques et principes.
 - **GPU multi-backends** : après installation du binaire, `llama-server --list-devices`
   est la source de vérité pour CUDA, Vulkan (AMD/Intel/NVIDIA) et Metal ; `nvidia-smi`

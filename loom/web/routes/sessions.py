@@ -21,7 +21,6 @@ from loom.web.routes.priming import _prime_async
 from loom.web.routes.skills import _index_context
 
 
-
 def _register_session_routes(app, S):
     @app.post("/reset")
     def reset() -> str:
@@ -70,7 +69,6 @@ def _register_session_routes(app, S):
                 ).strip()
             return str(content).strip()
 
-
         user_msgs = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
 
         target_idx = None
@@ -102,7 +100,6 @@ def _register_session_routes(app, S):
 
         else:
             text = str(content)
-
 
         conv.messages = msgs[: target_idx + 1]
 
@@ -150,6 +147,12 @@ def _register_session_routes(app, S):
         sess = _get_session(S, req_sid) if req_sid else S.cur["session"]
         if sess is not None:
             _cancel_for(S, sess.id).set()
+            # ST-03 : l'arrêt global d'une session annule AUSSI ses ouvriers
+            # (sous-agents) — coopérativement, run_shell longs compris. Les
+            # ouvriers des autres sessions ne sont pas touchés.
+            from loom.tools.agent import CANCELLATIONS
+
+            CANCELLATIONS.cancel_session(sess.id)
             # Fermer un stream distant figé rend son teardown et son verrou bornés.
             holder = S.active_streams.get(sess.id)
             if holder is not None and holder.get("stream") is not None:
@@ -177,7 +180,6 @@ def _register_session_routes(app, S):
                 "error": "file de notes pleine — attendre le prochain point d'arrêt"
             }, 429
         return {"ok": True, "queued": queued}
-
 
     @app.get("/sessions")
     def sessions_list():
@@ -217,18 +219,62 @@ def _register_session_routes(app, S):
     def session_timeline(sid):
         """Journal d'affichage temps réel d'une session, pour REJOUER l'UI au rechargement
         (raisonnement, texte, cartes d'outils exactement comme en direct). Les chunks 'text'/
-        'reasoning' consécutifs sont recollés pour un rejeu léger."""
+        'reasoning' consécutifs sont recollés pour un rejeu léger. Après un crash ou un
+        redémarrage, un tool_call sans tool_result ne doit pas rester animé à l'infini."""
         out: list[dict] = []
+        pending_tools: dict[str, dict] = {}
         for e in S.session_store.read_timeline(sid):
             ev = e.get("event")
             d = e.get("data") or {}
+            if ev == "tool_call":
+                key = str(d.get("id") or d.get("name") or "")
+                if key:
+                    pending_tools[key] = dict(d)
+            elif ev == "tool_result":
+                key = str(d.get("id") or d.get("name") or "")
+                if key:
+                    pending_tools.pop(key, None)
             if ev in ("text", "reasoning") and out and out[-1].get("event") == ev:
                 out[-1]["data"]["text"] = (out[-1]["data"].get("text") or "") + (
                     d.get("text") or ""
                 )
             else:
                 out.append({"event": ev, "data": dict(d)})
+        # Ne fermer que les appels historiques. Pendant un vrai stream actif, un autre
+        # onglet peut charger la timeline avant que le résultat arrive.
+        if sid not in S.active_streams:
+            for key, call in pending_tools.items():
+                message = (
+                    "interrompu : Loom a été arrêté ou redémarré avant que l'outil "
+                    "ne rende son résultat"
+                )
+                out.append(
+                    {
+                        "event": "tool_result",
+                        "data": {
+                            "id": call.get("id") or key,
+                            "name": call.get("name") or "outil",
+                            "ok": False,
+                            "preview": message,
+                            "out_full": message,
+                        },
+                    }
+                )
         return {"events": out}
+
+    @app.post("/session/<sid>/subagent/<aid>/cancel")
+    def session_subagent_cancel(sid, aid):
+        """ST-03 : annulation CIBLÉE d'un ouvrier — (session_id, agent_id).
+
+        IDEMPOTENTE : annuler deux fois, ou viser un ouvrier inconnu/terminé,
+        rend un état en 200, jamais une erreur. Coopérative : pose un Event que
+        la sous-boucle observe entre deux événements et qu'un run_shell actif
+        observe pendant sa commande (arbre de processus tué par le mécanisme
+        existant). N'arrête NI le parent NI les ouvriers frères ; l'ancien
+        arrêt global garde son comportement."""
+        from loom.tools.agent import CANCELLATIONS
+
+        return {"state": CANCELLATIONS.request(str(sid), str(aid))}
 
     @app.post("/session/new")
     def session_new():
@@ -264,7 +310,6 @@ def _register_session_routes(app, S):
         _prime_async(S, _ensure_model(S, sess), require_running=True)
 
         return {"id": sess.id, "title": sess.title, "workspace": sess.workspace}
-
 
     @app.get("/session/<sid>/export")
     def session_export(sid):

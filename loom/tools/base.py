@@ -200,6 +200,8 @@ AVAILABLE_TOOLS = [
     {"name": "list_dir", "label": "list_dir", "danger": False},
     {"name": "read_file", "label": "read_file", "danger": False},
     {"name": "read_image", "label": "read_image", "danger": False},
+    {"name": "code_outline", "label": "code_outline", "danger": False},
+    {"name": "code_diagnostics", "label": "code_diagnostics", "danger": False},
     {"name": "calculate", "label": "calculate", "danger": False},
     {"name": "current_date", "label": "current_date", "danger": False},
     {"name": "web_search", "label": "web_search", "danger": False},
