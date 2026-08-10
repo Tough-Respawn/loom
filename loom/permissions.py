@@ -22,6 +22,12 @@ READ_TOOLS = frozenset(
         "find_files",
         "search_text",
         "list_dir",
+        # Intelligence de code (ST-06) : analyse en LECTURE SEULE (ast, ruff
+        # one-shot). Classés EXPLICITEMENT : un outil hors catégories tombe en
+        # « ask » = refus silencieux sans UI (vécu 2× : submit_result 2026-07-16,
+        # prototypes du banc ST-05 2026-08-09).
+        "code_outline",
+        "code_diagnostics",
         "web_search",
         "fetch_url",
         "check_page",

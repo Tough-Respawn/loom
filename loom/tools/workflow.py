@@ -83,14 +83,33 @@ def make_run_workflow(
             par agent, relayé au runner (qui l'ignore en session privée)."""
             sink: list = []
             parts: list[str] = []
+            cancelled = False
             for kind, payload in runner.stream(
-                prompt, schema=schema, sink=sink, model=model
+                prompt,
+                schema=schema,
+                sink=sink,
+                model=model,
+                label=label,
+                parent="workflow",
             ):
                 if kind == "content" and isinstance(payload, str):
                     parts.append(payload)
-                elif kind in ("tool_call", "tool_result", "usage"):
-                    # Relayer aussi l'usage pour conserver des totaux de session exacts.
+                elif kind in ("tool_call", "tool_result", "usage") or kind.startswith(
+                    "subagent_"
+                ):
+                    # Relayer aussi l'usage (totaux de session exacts) et le contrat
+                    # ST-02 (subagent_*) : MÊME télémétrie que dispatch_agent.
                     events.put((kind, payload))
+                    # ST-03 : un ouvrier ANNULÉ suit le contrat de panne du script
+                    # (agent() -> None) ; la cause vit dans l'événement relayé.
+                    if (
+                        kind == "subagent_end"
+                        and isinstance(payload, dict)
+                        and payload.get("status") == "cancelled"
+                    ):
+                        cancelled = True
+            if cancelled:
+                return None
             if schema is not None:
                 return sink[-1] if sink else None
             return "".join(parts).strip() or None

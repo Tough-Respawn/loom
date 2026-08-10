@@ -247,6 +247,63 @@ export function _replayTimeline(t, events) {
         });
         break;
       }
+      // ST-02 : rejouer les cartes sous-agents, corrélées par agent_id.
+      case "subagent_start": {
+        think = null;
+        asst = null;
+        const key = "sub:" + d.agent_id;
+        if (!byTool[key])
+          byTool[key] = add({
+            id: key,
+            kind: "subagent",
+            agentId: d.agent_id,
+            parent: d.parent,
+            label: d.label,
+            modelRequested: d.model_requested,
+            model: d.model_resolved,
+            state: "running",
+            log: [],
+            tokIn: 0,
+            tokOut: 0,
+          });
+        break;
+      }
+      case "subagent_tool_call": {
+        const it = byTool["sub:" + d.agent_id];
+        if (!it) break;
+        it.currentTool = d.name;
+        if (d.model) it.model = d.model;
+        it.log = (it.log || []).concat([{ t: "call", name: d.name }]).slice(-60);
+        break;
+      }
+      case "subagent_tool_result": {
+        const it = byTool["sub:" + d.agent_id];
+        if (!it) break;
+        it.currentTool = null;
+        it.log = (it.log || [])
+          .concat([{ t: "res", name: d.name, ok: !!d.ok, preview: d.preview || "" }])
+          .slice(-60);
+        break;
+      }
+      case "subagent_usage": {
+        const it = byTool["sub:" + d.agent_id];
+        if (!it) break;
+        it.tokIn = d.prompt_tokens || 0;
+        it.tokOut = d.completion_tokens || 0;
+        if (d.model) it.model = d.model;
+        break;
+      }
+      case "subagent_end": {
+        const it = byTool["sub:" + d.agent_id];
+        if (!it) break;
+        it.state = d.status || "completed";
+        it.duration = d.duration_s;
+        it.stop = d.stop_reason;
+        if (d.model) it.model = d.model;
+        it.dropped = d.events_dropped || 0;
+        it.currentTool = null;
+        break;
+      }
     }
   });
 }

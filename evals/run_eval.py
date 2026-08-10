@@ -118,6 +118,9 @@ class Trajectory:
     cached_tokens: int = 0
     stop_reason: str = ""
     duration_s: float = 0.0
+    # ST-01 : activité RÉELLE des sous-boucles (une entrée par tier appelé par un
+    # dispatch_agent) — modèle effectif, tours, outils, tokens, stop, synthèse.
+    sub_agents: list = field(default_factory=list)
 
     @property
     def n_tool_calls(self) -> int:
@@ -125,6 +128,53 @@ class Trajectory:
 
     # `n_turns` conserve son ancien sens d'appels d'outils.
     n_turns = n_tool_calls
+
+
+def _record_subagents(client, model: str, sink: list):
+    """Instrumentation du HARNAIS (jamais de la production) : remplace
+    `client.stream_chat_tools` par un enregistreur. Le parent est appelé via la
+    référence d'origine (renvoyée), donc TOUT appel passant par l'attribut vient
+    d'un SubAgentRunner (`_run_tier`) : une entrée par tier réellement appelé,
+    avec le modèle effectif, les tours, les outils, les tokens, la raison d'arrêt
+    et la synthèse COMPLÈTE (bornée large, pas un aperçu).
+
+    Renvoie (orig, restore) : itérer `orig` pour le parent, appeler `restore()`
+    en finally."""
+    orig = client.stream_chat_tools
+
+    def recorded(messages, system_prompt, max_tokens, **kw):
+        rec = {
+            # _run_tier passe model=tier ; None = la route locale par défaut,
+            # c'est-à-dire le modèle de la campagne.
+            "model": kw.get("model") or model,
+            "model_turns": 0,
+            "tools": [],
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "stop_reason": "",
+            "synthesis": "",
+        }
+        sink.append(rec)
+        for kind, payload in orig(messages, system_prompt, max_tokens, **kw):
+            if kind == "usage":
+                rec["model_turns"] += 1
+                rec["prompt_tokens"] += payload.get("prompt_tokens") or 0
+                rec["completion_tokens"] += payload.get("completion_tokens") or 0
+            elif kind == "tool_result":
+                rec["tools"].append(payload.get("name"))
+            elif kind == "content" and isinstance(payload, str):
+                rec["synthesis"] += payload
+            elif kind == "done":
+                rec["stop_reason"] = payload.get("reason") or ""
+            yield (kind, payload)
+        rec["synthesis"] = rec["synthesis"].strip()[:4000]
+
+    client.stream_chat_tools = recorded
+
+    def restore():
+        client.stream_chat_tools = orig
+
+    return orig, restore
 
 
 def _git_show(rel: str) -> str:
@@ -188,9 +238,12 @@ def run_one(
         {"role": "user", "content": prompt},
     ]
     traj = Trajectory()
+    # L'enregistreur intercepte les sous-boucles (dispatch_agent) ; le parent
+    # passe par `orig` et n'est donc jamais compté comme sous-agent.
+    orig_stream, restore_stream = _record_subagents(client, model, traj.sub_agents)
     t0 = time.monotonic()
     try:
-        for kind, payload in client.stream_chat_tools(
+        for kind, payload in orig_stream(
             messages,
             chat_prompt,
             max_tokens=cfg.chat.max_tokens,
@@ -232,6 +285,8 @@ def run_one(
     except Exception as e:  # un run qui plante = donnée, pas un crash du harnais
         traj.error = f"{type(e).__name__}: {e}"
         traj.stop_reason = traj.stop_reason or "crash"
+    finally:
+        restore_stream()  # l'instrumentation ne survit jamais au run
     traj.duration_s = round(time.monotonic() - t0, 1)
     return traj
 
@@ -298,6 +353,29 @@ def case_passed(checks: dict) -> bool:
     return bool(crit) and all(crit.values())
 
 
+def _run_record(traj, checks: dict, jd, model: str) -> dict:
+    """Entrée d'UN run pour report.json : trajectoire du parent ET activité réelle
+    des sous-agents (`sub_agents`, capturée par _record_subagents — modèle effectif,
+    tours, outils, tokens, stop, synthèse). Factorisé pour être testable tel quel."""
+    return {
+        "checks": checks,
+        "passed": case_passed(checks),
+        "model": model,
+        "n_model_turns": traj.model_turns,
+        "n_tool_calls": traj.n_tool_calls,
+        "prompt_tokens": traj.prompt_tokens,
+        "completion_tokens": traj.completion_tokens,
+        "cached_tokens": traj.cached_tokens,
+        "stop_reason": traj.stop_reason,
+        "duration_s": traj.duration_s,
+        "error": traj.error,
+        "tools": [n for n, _ in traj.tool_calls],
+        "final": (traj.final_text or "")[:800],
+        "sub_agents": traj.sub_agents,
+        "judge": jd,
+    }
+
+
 def run_variant(
     client,
     model,
@@ -341,24 +419,10 @@ def run_variant(
                 )
                 checks = case.check(traj, ws)
                 jd = judge(client, model, case, traj) if do_judge else None
-                runs_data.append(
-                    {
-                        "checks": checks,
-                        "passed": case_passed(checks),
-                        "n_model_turns": traj.model_turns,
-                        "n_tool_calls": traj.n_tool_calls,
-                        "prompt_tokens": traj.prompt_tokens,
-                        "completion_tokens": traj.completion_tokens,
-                        "cached_tokens": traj.cached_tokens,
-                        "stop_reason": traj.stop_reason,
-                        "duration_s": traj.duration_s,
-                        "error": traj.error,
-                        "tools": [n for n, _ in traj.tool_calls],
-                        "final": (traj.final_text or "")[:800],
-                        "judge": jd,
-                    }
+                runs_data.append(_run_record(traj, checks, jd, model))
+                _save_transcript(
+                    run_dir, name, case.id, k, traj, checks, jd, model=model
                 )
-                _save_transcript(run_dir, name, case.id, k, traj, checks, jd)
                 mark = "ok" if runs_data[-1]["passed"] else "XX"
                 print(
                     f"  [{name}] {case.id} run{k + 1}/{runs} [{mark}] "
@@ -372,19 +436,41 @@ def run_variant(
     return results
 
 
-def _save_transcript(run_dir: Path | None, variant, case_id, k, traj, checks, jd):
+def _save_transcript(
+    run_dir: Path | None, variant, case_id, k, traj, checks, jd, model=None
+):
     """Transcript détaillé d'UN run de cas, sous le dossier de campagne (jamais
     écrasé d'une campagne à l'autre). `run_dir` None (appel hors campagne) ->
-    repli sur l'ancien emplacement out/<variante>/."""
+    repli sur l'ancien emplacement out/<variante>/. Chaque appel d'outil est
+    suivi de l'aperçu borné de son RÉSULTAT : c'est ce qui rend diagnosticable
+    une délégation (synthèse du sous-agent, marqueur « [relève : …] »)."""
     d = (run_dir / variant) if run_dir is not None else (_OUT / variant)
     d.mkdir(parents=True, exist_ok=True)
     lines = [f"# {variant} / {case_id} / run {k + 1}", ""]
     lines.append("## Outils appelés")
-    for n, a in traj.tool_calls:
+    for i, (n, a) in enumerate(traj.tool_calls):
         lines.append(f"- {n}({json.dumps(a, ensure_ascii=False)[:200]})")
+        if i < len(traj.tool_results):
+            r = traj.tool_results[i]
+            mark = "ok" if r.get("ok") else "KO"
+            preview = " ".join(str(r.get("preview", "")).split())[:160]
+            lines.append(f"  -> [{mark}] {preview}")
+    # L'activité RÉELLE des sous-boucles (pas un aperçu) : c'est la donnée qui
+    # rend une délégation diagnosticable — modèle effectif, coût, synthèse entière.
+    if traj.sub_agents:
+        lines.append("\n## Sous-agents")
+        for i, s in enumerate(traj.sub_agents, 1):
+            lines.append(
+                f"### sous-agent {i} — modèle={s.get('model', '?')} "
+                f"tours={s.get('model_turns', 0)} outils={s.get('tools', [])} "
+                f"tok={s.get('prompt_tokens', 0)}/{s.get('completion_tokens', 0)} "
+                f"stop={s.get('stop_reason') or '?'}"
+            )
+            lines.append("Synthèse :\n" + (s.get("synthesis") or "(vide)"))
     lines.append("\n## Réponse finale\n" + (traj.final_text or "(vide)"))
     lines.append(
-        f"\n## Coût\nstop={traj.stop_reason or '?'} tours_modèle={traj.model_turns} "
+        f"\n## Coût\nmodèle={model or '?'} stop={traj.stop_reason or '?'} "
+        f"tours_modèle={traj.model_turns} "
         f"outils={len(traj.tool_calls)} tok_in={traj.prompt_tokens} "
         f"tok_out={traj.completion_tokens} durée={traj.duration_s}s"
     )

@@ -182,6 +182,73 @@ export async function sendChat(sid, text, images, options = {}) {
         if (asstId) { patch(asstId, { done: true }); asstId = null; }
         push({ kind: "phase", name: evt.name, task: evt.task, detail: evt.detail });
         break;
+      // ST-02 : contrat subagent_* — une carte par agent_id, chronologie bornée.
+      case "subagent_start": {
+        if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
+        if (asstId) { patch(asstId, { done: true }); asstId = null; }
+        const key = "sub:" + evt.agent_id;
+        if (!get(key))
+          push({
+            id: key,
+            kind: "subagent",
+            agentId: evt.agent_id,
+            parent: evt.parent,
+            label: evt.label,
+            modelRequested: evt.model_requested,
+            model: evt.model_resolved,
+            state: "running",
+            log: [],
+            tokIn: 0,
+            tokOut: 0,
+          });
+        break;
+      }
+      case "subagent_tool_call": {
+        const key = "sub:" + evt.agent_id;
+        const card = get(key);
+        if (!card) break;
+        patch(key, {
+          currentTool: evt.name,
+          model: evt.model || card.model,
+          log: (card.log || []).concat([{ t: "call", name: evt.name }]).slice(-60),
+        });
+        break;
+      }
+      case "subagent_tool_result": {
+        const key = "sub:" + evt.agent_id;
+        const card = get(key);
+        if (!card) break;
+        patch(key, {
+          currentTool: null,
+          log: (card.log || [])
+            .concat([{ t: "res", name: evt.name, ok: !!evt.ok, preview: evt.preview || "" }])
+            .slice(-60),
+        });
+        break;
+      }
+      case "subagent_usage": {
+        const key = "sub:" + evt.agent_id;
+        if (!get(key)) break;
+        patch(key, {
+          tokIn: evt.prompt_tokens || 0,
+          tokOut: evt.completion_tokens || 0,
+          model: evt.model || get(key).model,
+        });
+        break;
+      }
+      case "subagent_end": {
+        const key = "sub:" + evt.agent_id;
+        if (!get(key)) break;
+        patch(key, {
+          state: evt.status || "completed",
+          duration: evt.duration_s,
+          stop: evt.stop_reason,
+          model: evt.model || get(key).model,
+          dropped: evt.events_dropped || 0,
+          currentTool: null,
+        });
+        break;
+      }
       case "tool_request":
         push({ kind: "perm", callId: evt.id, name: evt.name, summary: evt.summary });
         break;

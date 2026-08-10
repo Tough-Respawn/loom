@@ -80,6 +80,108 @@ export function AgentLane({ it, name }) {
   </div>`;
 }
 
+export function SubagentCard({ it, sid }) {
+  // ST-02 : UNE ligne par ouvrier (état, modèle, outil courant, durée, tokens),
+  // dépliable vers sa chronologie BORNÉE. ST-03 : bouton « arrêter » (annulation
+  // CIBLÉE, idempotente — le fil principal et les frères continuent), transition
+  // visible running -> arrêt… (cancelling) -> arrêté (cancelled, via subagent_end).
+  const [open, setOpen] = useState(false);
+  // idle -> pending (POST accepté, state="cancelling") ; failed = réseau HS,
+  // réponse non-2xx ou state inattendu : le bouton revient en « réessayer ».
+  const [ask, setAsk] = useState("idle");
+  const running = it.state === "running";
+  const cancelling = running && ask === "pending";
+  const status = running
+    ? cancelling
+      ? "arrêt…"
+      : ask === "failed"
+        ? "annulation refusée"
+        : it.currentTool
+          ? "→ " + it.currentTool
+          : "en cours…"
+    : it.state === "completed"
+      ? "✓" + (it.stop && it.stop !== "natural" ? " · " + it.stop : "")
+      : it.state === "cancelled"
+        ? "arrêté"
+        : "✕ · " + (it.stop || "échec");
+  const stopWorker = async (e) => {
+    e.stopPropagation();
+    setAsk("pending");
+    try {
+      const r = await fetch(
+        `/session/${encodeURIComponent(sid || "")}/subagent/${encodeURIComponent(it.agentId || "")}/cancel`,
+        { method: "POST" },
+      );
+      let state = null;
+      try {
+        state = (await r.json()).state;
+      } catch (err) {
+        /* corps illisible : traité comme échec ci-dessous */
+      }
+      // « cancelling » = la seule confirmation ; « unknown » (ouvrier déjà
+      // terminé, id périmé) ou non-2xx ne doivent PAS afficher « arrêt… ».
+      if (!r.ok || state !== "cancelling") setAsk("failed");
+    } catch (err) {
+      setAsk("failed"); // réseau : re-cliquer reste idempotent
+    }
+  };
+  const bits = [];
+  if (it.model) bits.push(it.model);
+  if (it.tokIn || it.tokOut) bits.push(`${it.tokIn}/${it.tokOut} tok`);
+  if (it.duration != null) bits.push(it.duration + "s");
+  const log = it.log || [];
+  const shown = log.slice(-50);
+  return html`<div
+    class=${"subagent-card" +
+    (running
+      ? cancelling
+        ? " working cancelling"
+        : " working"
+      : it.state === "completed"
+        ? " ok"
+        : it.state === "cancelled"
+          ? " cancelled"
+          : " ko")}
+  >
+    <div class="agent-head" onClick=${() => setOpen(!open)} title="Chronologie de l'ouvrier">
+      <span class="lane-avatar">${(it.label || "A").trim().charAt(0).toUpperCase()}</span>
+      <span class="lane-name">${it.label || "sous-agent"}</span>
+      <span class="sub-meta">${bits.join(" · ")}</span>
+      <span class="lane-status">${status}</span>
+      ${running && !cancelling
+        ? html`<button
+            class="sub-stop"
+            type="button"
+            title=${ask === "failed"
+              ? "La demande n'a pas abouti (réseau ou ouvrier introuvable) — réessayer"
+              : "Arrêter cet ouvrier — le fil principal et les autres ouvriers continuent"}
+            onClick=${stopWorker}
+          >${ask === "failed" ? "réessayer" : "arrêter"}</button>`
+        : null}
+      <span class="sub-caret">${open ? "▾" : "▸"}</span>
+    </div>
+    ${open
+      ? html`<div class="sub-log">
+          ${shown.map((e) =>
+            e.t === "call"
+              ? html`<div class="sub-log-line">→ ${e.name}</div>`
+              : html`<div class=${"sub-log-line" + (e.ok ? "" : " ko")}>
+                  ${e.ok ? "✓" : "✕"} ${e.name}${e.preview ? " — " + e.preview : ""}
+                </div>`,
+          )}
+          ${log.length > 50
+            ? html`<div class="sub-log-line faint">… affichage borné aux 50 derniers</div>`
+            : null}
+          ${it.dropped
+            ? html`<div class="sub-log-line faint">
+                … ${it.dropped} événements non conservés (chronologie bornée)
+              </div>`
+            : null}
+        </div>`
+      : null}
+  </div>`;
+}
+
 export function ParallelArena({ lanes }) {
   const running = lanes.some((l) => l.pending);
   const seed = (lanes[0] && lanes[0].id) || "";
@@ -353,6 +455,8 @@ export function Item({ it, userIndex, sid }) {
       return html`<${Think} it=${it} />`;
     case "tool":
       return html`<${ToolPill} it=${it} />`;
+    case "subagent":
+      return html`<${SubagentCard} it=${it} sid=${sid} />`;
     case "perm":
       return html`<${PermAsk} it=${it} sid=${sid} />`;
     case "choices":

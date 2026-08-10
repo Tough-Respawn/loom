@@ -1184,7 +1184,7 @@ class LoomClient:
             "act_nudges": 0,  # nb de relances « passe de la parole à l'acte » déjà émises
             "length_continues": 0,  # nb de relances « continue » sur troncature max_tokens
             "loop_breaks": 0,  # nb de coupes « tu répètes la même phrase, agis » déjà émises
-            "fail_count": 0,  # échecs cumulés d'outils d'exécution/vérif ce tour (cascade de bugs)
+            "fail_count": 0,  # échecs consécutifs d'exécution/vérif (cascade de bugs)
             "debug_forced": False,  # méthode debug déjà imposée ce tour ? (anti-nag)
             "refocus_done": False,  # note de recentrage post-force-fit déjà émise ? (une seule)
             "empty_retries": 0,  # nb de relances sur réponse VIDE (0 texte, 0 tool call)

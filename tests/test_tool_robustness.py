@@ -1,6 +1,7 @@
 # Robustesse de la frontière d'outils face aux formes naturellement produites par un modèle.
 from __future__ import annotations
 
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -17,6 +18,29 @@ from loom.tools.calc import calculate
 from loom.tools.fs import make_edit_file
 from loom.tools.read import make_read_file
 from loom.tools.todo import make_manage_todos
+
+
+def test_run_shell_ferme_stdin_pour_rester_non_interactif(monkeypatch, tmp_path):
+    import loom.tools.shell as shell
+
+    seen = {}
+
+    class FakeProc:
+        returncode = 0
+        pid = 123
+
+        def communicate(self, timeout=None):
+            return "ok", ""
+
+    def fake_popen(*args, **kwargs):
+        seen.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(shell.subprocess, "Popen", fake_popen)
+    spec = shell.make_run_shell(str(tmp_path))
+
+    assert spec.run({"command": "python --version"}) == "ok"
+    assert seen["stdin"] is subprocess.DEVNULL
 
 
 

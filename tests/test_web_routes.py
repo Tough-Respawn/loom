@@ -119,6 +119,34 @@ def test_timeline_vide(web_sess):
     assert r.get_json()["events"] == []
 
 
+def test_timeline_replay_ferme_un_outil_interrompu(web_sess):
+    sid = web_sess.get("/sessions").get_json()["active"]
+    store = web_sess.application.S.session_store
+    store.append_event(sid, "tool_call", {"id": "call-stuck", "name": "run_shell"})
+
+    events = web_sess.get(f"/session/{sid}/timeline").get_json()["events"]
+
+    assert [e["event"] for e in events] == ["tool_call", "tool_result"]
+    result = events[-1]["data"]
+    assert result["id"] == "call-stuck"
+    assert result["name"] == "run_shell"
+    assert result["ok"] is False
+    assert "interrompu" in result["preview"]
+
+
+def test_timeline_replay_garde_pending_un_outil_reellement_actif(web_sess):
+    sid = web_sess.get("/sessions").get_json()["active"]
+    state = web_sess.application.S
+    state.session_store.append_event(
+        sid, "tool_call", {"id": "call-live", "name": "run_shell"}
+    )
+    state.active_streams[sid] = object()
+
+    events = web_sess.get(f"/session/{sid}/timeline").get_json()["events"]
+
+    assert [e["event"] for e in events] == ["tool_call"]
+
+
 def test_reset(web_sess):
     assert web_sess.post("/reset").status_code == 200
 
