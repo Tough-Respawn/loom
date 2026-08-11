@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 
+import httpx
+from openai import BadRequestError
+
 from .fakes import (
     FakeRegistry,
     collect,
@@ -156,6 +159,118 @@ def test_tool_call_sequentiel_nominal():
     tool_msg = next(m for m in msgs if m["role"] == "tool")
     assert tool_msg["tool_call_id"] == "call_1"
     assert tool_msg["content"].startswith("contenu de x.txt")
+
+
+def test_reasoning_content_exact_est_rejoue_apres_un_appel_outil():
+    from .fakes import chunk, usage_chunk
+
+    reg = FakeRegistry({"read_file": lambda _a: "contenu"})
+    first = [
+        chunk(reasoning="raisonnement exact du provider"),
+        chunk(tool_calls=[(0, "call_1", "read_file", '{"path":"x"}')]),
+        chunk(finish="tool_calls"),
+        usage_chunk(),
+    ]
+    client, fake = make_client([first, turn_text("fini")], remote=True)
+
+    events, done = run(client, registry=reg, model="remote-x")
+
+    assert done["reason"] == "natural"
+    assistant = next(
+        m for m in fake.calls[1]["messages"] if m.get("tool_calls")
+    )
+    assert assistant["reasoning_content"] == "raisonnement exact du provider"
+
+
+def test_evenement_monitor_synthetique_recoit_un_reasoning_vide():
+    from .fakes import chunk, usage_chunk
+
+    reg = FakeRegistry({"read_file": lambda _a: "contenu"})
+    first = [
+        chunk(reasoning="raisonnement provider"),
+        chunk(tool_calls=[(0, "call_1", "read_file", '{"path":"x"}')]),
+        chunk(finish="tool_calls"),
+        usage_chunk(),
+    ]
+    event = {
+        "id": "evt-monitor",
+        "monitor_id": "mon-1",
+        "description": "build",
+        "text": "phase suivante",
+        "model_content": "sortie externe balisée",
+        "final": False,
+    }
+    drains = iter([[], [event], []])
+    client, fake = make_client([first, turn_text("fini")], remote=True)
+
+    events, done = run(
+        client,
+        registry=reg,
+        model="remote-x",
+        monitor_events_provider=lambda: next(drains, []),
+    )
+
+    assert done["reason"] == "natural"
+    monitor_message = next(
+        m
+        for m in fake.calls[1]["messages"]
+        if any(
+            tc.get("function", {}).get("name") == "monitor"
+            for tc in m.get("tool_calls", [])
+        )
+    )
+    assert monitor_message["reasoning_content"] == ""
+    assert len(only(events, "monitor_event")) == 1
+
+
+def test_400_reasoning_history_est_repare_et_rejoue_une_fois():
+    request = httpx.Request("POST", "https://provider.invalid/chat/completions")
+    response = httpx.Response(400, request=request)
+    error = BadRequestError(
+        "The `reasoning_content` in the thinking mode must be passed back to the API.",
+        response=response,
+        body={"error": {"type": "invalid_request_error"}},
+    )
+    client, fake = make_client([error, turn_text("repris")], remote=True)
+    old_messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "monitor_event_old",
+                    "type": "function",
+                    "function": {
+                        "name": "monitor",
+                        "arguments": '{"action":"event"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "monitor_event_old",
+            "content": "sortie asynchrone",
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    events, done = collect(
+        client.stream_chat_tools(
+            old_messages,
+            SYSTEM,
+            model="remote-x",
+            thinking=True,
+        )
+    )
+
+    assert done["reason"] == "natural"
+    assert len(fake.calls) == 2
+    repaired = next(
+        m for m in fake.calls[1]["messages"] if m.get("tool_calls")
+    )
+    assert repaired["reasoning_content"] == ""
+    assert "api_error" not in [p.get("reason") for p in only(events, "done")]
 
 
 def test_tool_erreur_ok_false():

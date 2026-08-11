@@ -20,17 +20,15 @@ shell) : un ouvrier en lecture seule ne sert à rien. Garde-fous :
   incluse) ; en mode « ask » sans confirmation interactive, l'action est refusée
   par défaut (le sous-agent tourne sans UI) ;
 - `thinking=False` ; l'arrêt suit le stop naturel du modèle, borné par les
-  garde-fous de stream_chat_tools (plafond de tours + non-progrès ; le mur de
-  temps a été retiré).
+  garde-fous de stream_chat_tools ET par les budgets propres à l'ouvrier
+  (durée, appels API, tokens cumulés, contexte et cycles de résultats).
 
 Plafond de tours (`max_iters`) selon LOCAL vs DISTANT — règle cardinale « on
 bride le local, on exploite le distant » :
 - LOCAL : 30. Le coupe-circuit anti-boucle + le non-progrès (repeat_limit) sont
   actifs ; 30 n'est qu'un plafond dur d'appoint. Un slot VRAM, on limite.
-- DISTANT : 500, comme le fil principal. Pour un modèle fort, l'anti-boucle est
-  COUPÉ (cf. stream_chat_tools) -> `max_iters` est le SEUL backstop : il doit
-  être un vrai seuil de runaway, pas un cap de progression. Un ouvrier
-  multi-fichiers distant a besoin de marge, sinon on le décapite en pleine tâche.
+- DISTANT : 500 reste un backstop anti-runaway, pas une politique de budget. Les
+  bornes d'ouvrier ci-dessus coupent bien avant un emballement coûteux.
 """
 
 from __future__ import annotations
@@ -39,6 +37,7 @@ import inspect
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Iterator
 
 from loom.tools.base import ToolError, ToolRegistry, ToolSpec
@@ -114,6 +113,20 @@ SUBAGENT_EVENT_CAP = 200
 # Aperçu borné d'un résultat d'outil dans la chronologie (mêmes règles d'affichage
 # que les pastilles : jamais les arguments, seulement le début du résultat).
 _SUB_PREVIEW = 160
+# Bornes de TRAVAIL d'un ouvrier, distinctes du backstop `max_iters=500` de la
+# boucle distante. Elles bornent le coût et la durée même lorsqu'un modèle fait
+# varier ses arguments et échappe ainsi à repeat_stop.
+SUBAGENT_MAX_DURATION_S = 15 * 60
+SUBAGENT_MAX_API_CALLS = 100
+SUBAGENT_MAX_PROMPT_TOKENS = 4_000_000
+
+# Détection de non-progrès sur les RÉSULTATS des outils d'exploration. Trois
+# résultats byte-identiques dans une fenêtre courte signalent un cycle même si
+# les arguments (curseur/start_line/pattern) changent.
+SUBAGENT_RESULT_REPEAT_LIMIT = 3
+SUBAGENT_RESULT_WINDOW = 12
+SUBAGENT_CONSECUTIVE_TOOL_ERRORS = 5
+_RESULT_CYCLE_TOOLS = frozenset({"read_file", "search_text", "list_dir", "find_files"})
 # Table des ÉTATS TERMINAUX d'une délégation (ST-02, revue user) :
 # - natural (ou stop vide hérité) -> completed ;
 # - tout arrêt de garde-fou ou d'API ci-dessous -> failed ;
@@ -128,6 +141,12 @@ _SUB_FAILED_STOPS = frozenset(
         "max_iters",
         "context_irreducible",
         "output_overflow",
+        "worker_timeout",
+        "api_call_budget",
+        "prompt_budget",
+        "context_budget",
+        "result_cycle",
+        "tool_error_budget",
     }
 )
 
@@ -295,6 +314,13 @@ class SubAgentRunner:
         compact_for: Callable[[str | None], int | None] | None = None,
         model_roles: dict[str, str] | None = None,
         session_id: str | None = None,
+        max_duration_s: float | None = SUBAGENT_MAX_DURATION_S,
+        max_api_calls: int | None = SUBAGENT_MAX_API_CALLS,
+        max_prompt_tokens: int | None = SUBAGENT_MAX_PROMPT_TOKENS,
+        max_context_tokens: int | None = None,
+        result_repeat_limit: int = SUBAGENT_RESULT_REPEAT_LIMIT,
+        result_window: int = SUBAGENT_RESULT_WINDOW,
+        max_consecutive_tool_errors: int = SUBAGENT_CONSECUTIVE_TOOL_ERRORS,
     ) -> None:
         self.client = client
         self.build_sub_registry = build_sub_registry
@@ -317,6 +343,13 @@ class SubAgentRunner:
         self.permission = permission
         self.compact_after_tokens = compact_after_tokens
         self.compact_for = compact_for
+        self.max_duration_s = max_duration_s
+        self.max_api_calls = max_api_calls
+        self.max_prompt_tokens = max_prompt_tokens
+        self.max_context_tokens = max_context_tokens
+        self.result_repeat_limit = max(2, result_repeat_limit)
+        self.result_window = max(self.result_repeat_limit, result_window)
+        self.max_consecutive_tool_errors = max(2, max_consecutive_tool_errors)
         # Les rôles abstraits gardent les workflows portables entre configurations.
         self.model_roles = model_roles or {}
         # Une session privée ignore tout override susceptible d'envoyer des données ailleurs.
@@ -369,10 +402,12 @@ class SubAgentRunner:
           tier se lit ici et dans subagent_end.model) ;
         - subagent_end    : status completed|failed (cancelled : réservé ST-03),
           stop_reason, duration_s, model final, events_dropped.
-        Ces événements sont de la TÉLÉMÉTRIE : rien n'entre dans le contexte du
-        parent (seule la synthèse actuelle y entre), aucun message de prompt
-        n'est ajouté, le cache n'est pas touché. `label`/`parent` identifient la
-        délégation ; à défaut : première ligne de la tâche / "dispatch".
+        Ces événements restent de la TÉLÉMÉTRIE : aucun message de prompt n'est
+        ajouté et le cache n'est pas touché. Le consommateur de dispatch traduit
+        toutefois `subagent_end.status/stop_reason` dans l'enveloppe du résultat
+        parent afin qu'un échec ne soit jamais présenté comme `ok=true`.
+        `label`/`parent` identifient la délégation ; à défaut : première ligne de
+        la tâche / "dispatch".
         """
         task = (task or "").strip()
         if not task:
@@ -445,10 +480,24 @@ class SubAgentRunner:
             # abandonne le générateur (fermeture de session, stop global).
             if self.session_id:
                 CANCELLATIONS.register(self.session_id, aid, cancel_ev)
-            tok_in = tok_out = chron = dropped = 0
+            tok_in = tok_out = chron = dropped = api_calls = 0
             stop = ""
             cur = _mname(tiers[0])
             cancelled = False
+            recent_results: deque[tuple[str, str]] = deque(maxlen=self.result_window)
+            tool_error_streaks: dict[str, int] = {}
+
+            def _budget_stop(reason: str):
+                labels = {
+                    "worker_timeout": "durée maximale de l'ouvrier atteinte",
+                    "api_call_budget": "budget d'appels API de l'ouvrier atteint",
+                    "prompt_budget": "budget cumulé de tokens prompt atteint",
+                    "context_budget": "contexte d'un appel devenu trop volumineux",
+                    "result_cycle": "cycle de résultats d'outils identiques détecté",
+                    "tool_error_budget": "trop d'erreurs consécutives du même outil",
+                }
+                yield ("content", f"\n[arrêt ouvrier : {labels[reason]}]\n")
+                yield ("done", {"reason": reason})
             try:
                 yield (
                     "subagent_start",
@@ -464,6 +513,12 @@ class SubAgentRunner:
                     for i, tier in enumerate(tiers):
                         cur = _mname(tier)
                         failed = False
+                        _, compact_threshold = self._limits(tier)
+                        context_limit = self.max_context_tokens
+                        if context_limit is None and compact_threshold:
+                            # Laisser la compaction agir à son seuil, mais couper si
+                            # une requête le dépasse malgré la marge de sortie.
+                            context_limit = compact_threshold + self.max_tokens
                         gen = _run_tier(tier)
                         try:
                             while True:
@@ -484,6 +539,13 @@ class SubAgentRunner:
                                         "l'utilisateur avant la fin]\n",
                                     )
                                     break
+                                if (
+                                    self.max_duration_s is not None
+                                    and time.monotonic() - t0 >= self.max_duration_s
+                                ):
+                                    stop = "worker_timeout"
+                                    yield from _budget_stop(stop)
+                                    break
                                 try:
                                     kind, payload = next(gen)
                                 except StopIteration:
@@ -501,6 +563,7 @@ class SubAgentRunner:
                                         f"\n[relève : {tier} indisponible -> {tiers[i + 1]}]\n",
                                     )
                                     break
+                                forced_stop = ""
                                 if kind == "done" and isinstance(payload, dict):
                                     stop = payload.get("reason") or stop
                                 elif kind == "tool_call" and isinstance(payload, dict):
@@ -519,6 +582,33 @@ class SubAgentRunner:
                                 elif kind == "tool_result" and isinstance(
                                     payload, dict
                                 ):
+                                    tool_name = str(payload.get("name") or "")
+                                    tool_ok = bool(payload.get("ok"))
+                                    result_text = str(
+                                        payload.get("out_full")
+                                        or payload.get("detail")
+                                        or payload.get("preview")
+                                        or ""
+                                    ).strip()
+                                    if tool_name in _RESULT_CYCLE_TOOLS and result_text:
+                                        fingerprint = (tool_name, result_text)
+                                        recent_results.append(fingerprint)
+                                        if (
+                                            sum(x == fingerprint for x in recent_results)
+                                            >= self.result_repeat_limit
+                                        ):
+                                            forced_stop = "result_cycle"
+                                    if tool_ok:
+                                        tool_error_streaks[tool_name] = 0
+                                    else:
+                                        tool_error_streaks[tool_name] = (
+                                            tool_error_streaks.get(tool_name, 0) + 1
+                                        )
+                                        if (
+                                            tool_error_streaks[tool_name]
+                                            >= self.max_consecutive_tool_errors
+                                        ):
+                                            forced_stop = "tool_error_budget"
                                     if chron < SUBAGENT_EVENT_CAP:
                                         chron += 1
                                         yield (
@@ -536,8 +626,25 @@ class SubAgentRunner:
                                     else:
                                         dropped += 1
                                 elif kind == "usage" and isinstance(payload, dict):
+                                    api_calls += 1
                                     tok_in += payload.get("prompt_tokens") or 0
                                     tok_out += payload.get("completion_tokens") or 0
+                                    if (
+                                        self.max_api_calls is not None
+                                        and api_calls >= self.max_api_calls
+                                    ):
+                                        forced_stop = "api_call_budget"
+                                    if (
+                                        self.max_prompt_tokens is not None
+                                        and tok_in > self.max_prompt_tokens
+                                    ):
+                                        forced_stop = "prompt_budget"
+                                    if (
+                                        context_limit is not None
+                                        and (payload.get("prompt_tokens") or 0)
+                                        > context_limit
+                                    ):
+                                        forced_stop = "context_budget"
                                     yield (
                                         "subagent_usage",
                                         {
@@ -548,6 +655,10 @@ class SubAgentRunner:
                                         },
                                     )
                                 yield (kind, payload)
+                                if forced_stop:
+                                    stop = forced_stop
+                                    yield from _budget_stop(stop)
+                                    break
                                 if kind == "done":
                                     # Fin naturelle émise : la sous-boucle est
                                     # close — une annulation qui arrive APRÈS
@@ -568,6 +679,9 @@ class SubAgentRunner:
                             "duration_s": round(time.monotonic() - t0, 1),
                             "model": cur,
                             "events_dropped": dropped,
+                            "api_calls": api_calls,
+                            "prompt_tokens": tok_in,
+                            "completion_tokens": tok_out,
                         },
                     )
                     raise
@@ -589,6 +703,9 @@ class SubAgentRunner:
                         "duration_s": round(time.monotonic() - t0, 1),
                         "model": cur,
                         "events_dropped": dropped,
+                        "api_calls": api_calls,
+                        "prompt_tokens": tok_in,
+                        "completion_tokens": tok_out,
                     },
                 )
             finally:
@@ -597,9 +714,9 @@ class SubAgentRunner:
 
         return _stream()
 
-    def run(self, task: str) -> str:
+    def run(self, task: str, *, model: str | None = None) -> str:
         """Repli non-streamant : draine `stream` et garde la synthèse (content)."""
-        chunks = [p for kind, p in self.stream(task) if kind == "content"]
+        chunks = [p for kind, p in self.stream(task, model=model) if kind == "content"]
         return "".join(chunks).strip() or "(le sous-agent n'a rien renvoyé)"
 
 
@@ -636,12 +753,23 @@ def make_dispatch_agent(
         compact_for=compact_for,
     )
 
+    def _requested_role(args: dict) -> str | None:
+        explicit = args.get("model")
+        if explicit in ("cheap", "strong"):
+            return explicit
+        # Un dispatch libre peut devenir un audit multi-fichiers non borné. Quand
+        # un rôle fort existe, il est donc le défaut ; `cheap` reste disponible
+        # explicitement pour une recherche courte et précisément découpée.
+        return "strong" if runner.model_roles.get("strong") else None
+
     def run_stream(args: dict):
         # Valider avant de créer le générateur pour remonter immédiatement les erreurs.
-        return runner.stream(args.get("task") or "")
+        return runner.stream(
+            args.get("task") or "", model=_requested_role(args)
+        )
 
     def run(args: dict) -> str:
-        return runner.run(args.get("task") or "")
+        return runner.run(args.get("task") or "", model=_requested_role(args))
 
     return ToolSpec(
         name="dispatch_agent",
@@ -651,7 +779,8 @@ def make_dispatch_agent(
             "requires exploring/reading/modifying a lot and you only want a SYNTHESIS "
             "back, not all the detail in your context. Give a precise, self-contained "
             "instruction (objective + done criterion); the sub-agent acts then returns "
-            "what it did. It CANNOT delegate in turn."
+            "what it did. It CANNOT delegate in turn. Broad/multi-file tasks use the "
+            "strong worker by default; request cheap only for a short, bounded lookup."
         ),
         parameters={
             "type": "object",
@@ -661,7 +790,15 @@ def make_dispatch_agent(
                     "description": (
                         "Precise, self-contained question or research task to delegate."
                     ),
-                }
+                },
+                "model": {
+                    "type": "string",
+                    "enum": ["cheap", "strong"],
+                    "description": (
+                        "Worker role. Omit for strong when configured; use cheap only "
+                        "for a short and tightly bounded lookup."
+                    ),
+                },
             },
             "required": ["task"],
         },

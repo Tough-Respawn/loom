@@ -27,7 +27,7 @@ def _sub_registry() -> ToolRegistry:
                 name="list_dir",
                 description="liste",
                 parameters={"type": "object", "properties": {}},
-                run=lambda a: "src/alpha.py lib/gamma.py",
+                run=lambda a: f"{a.get('path') or 'src'}/alpha.py lib/gamma.py",
             )
         ]
     )
@@ -258,6 +258,12 @@ def test_table_des_etats_terminaux():
         "max_iters": "failed",
         "context_irreducible": "failed",
         "output_overflow": "failed",
+        "worker_timeout": "failed",
+        "api_call_budget": "failed",
+        "prompt_budget": "failed",
+        "context_budget": "failed",
+        "result_cycle": "failed",
+        "tool_error_budget": "failed",
     }
     for reason, status in attendu.items():
         runner = SubAgentRunner(
@@ -266,6 +272,102 @@ def test_table_des_etats_terminaux():
         end = _subevents(list(runner.stream("t")))[-1][1]
         assert end["status"] == status, f"stop={reason!r} -> {end['status']}"
         assert end["stop_reason"] == reason
+
+
+class _EventClient(_StopClient):
+    def __init__(self, events):
+        super().__init__("")
+        self.events = events
+
+    def stream_chat_tools(self, *a, **kw):
+        yield from self.events
+
+
+def _budget_end(events, **limits):
+    options = {
+        "max_duration_s": None,
+        "max_api_calls": None,
+        "max_prompt_tokens": None,
+    }
+    options.update(limits)
+    runner = SubAgentRunner(
+        _EventClient(events),
+        lambda: FakeRegistry(),
+        system_prompt="s",
+        model="m",
+        **options,
+    )
+    emitted = list(runner.stream("t"))
+    return emitted, _subevents(emitted)[-1][1]
+
+
+def test_budget_tokens_cumules_coupe_l_ouvrier():
+    events, end = _budget_end(
+        [
+            ("usage", {"prompt_tokens": 60, "completion_tokens": 1}),
+            ("usage", {"prompt_tokens": 60, "completion_tokens": 1}),
+            ("content", "ne doit pas être atteint"),
+        ],
+        max_prompt_tokens=100,
+    )
+    assert end["status"] == "failed" and end["stop_reason"] == "prompt_budget"
+    assert end["api_calls"] == 2 and end["prompt_tokens"] == 120
+    assert any(k == "done" and p["reason"] == "prompt_budget" for k, p in events)
+
+
+def test_budgets_appels_api_et_contexte_coupent_l_ouvrier():
+    _, api_end = _budget_end(
+        [
+            ("usage", {"prompt_tokens": 10, "completion_tokens": 1}),
+            ("usage", {"prompt_tokens": 10, "completion_tokens": 1}),
+        ],
+        max_api_calls=2,
+    )
+    assert api_end["stop_reason"] == "api_call_budget"
+
+    _, context_end = _budget_end(
+        [("usage", {"prompt_tokens": 101, "completion_tokens": 1})],
+        max_context_tokens=100,
+    )
+    assert context_end["stop_reason"] == "context_budget"
+
+
+def test_budget_de_duree_coupe_avant_un_nouveau_tour():
+    _, end = _budget_end(
+        [("content", "ne doit pas être atteint")], max_duration_s=0
+    )
+    assert end["status"] == "failed" and end["stop_reason"] == "worker_timeout"
+
+
+def test_cycle_de_resultats_identiques_ignore_les_arguments():
+    result = {
+        "name": "search_text",
+        "ok": True,
+        "preview": "mêmes lignes",
+        "out_full": "src/a.ts:10: valeur identique",
+    }
+    events, end = _budget_end(
+        [("tool_result", {**result, "in_full": f"pattern-{i}"}) for i in range(3)]
+        + [("content", "ne doit pas être atteint")],
+        result_repeat_limit=3,
+    )
+    assert end["status"] == "failed" and end["stop_reason"] == "result_cycle"
+    assert any(k == "done" and p["reason"] == "result_cycle" for k, p in events)
+
+
+def test_erreurs_consecutives_du_meme_outil_coupent_l_ouvrier():
+    error = {
+        "name": "run_shell",
+        "ok": False,
+        "preview": "commande en échec",
+        "out_full": "commande en échec",
+    }
+    _, end = _budget_end(
+        [("tool_result", dict(error)) for _ in range(3)],
+        max_consecutive_tool_errors=3,
+    )
+    assert end["status"] == "failed"
+    assert end["stop_reason"] == "tool_error_budget"
 
 
 # --- 3. deux ouvriers concurrents : aucune fuite entre agent_id ----------------

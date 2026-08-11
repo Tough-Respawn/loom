@@ -15,6 +15,7 @@ partagée avec le prompt système) : PowerShell sous Windows, bash sous macOS/Li
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import time
@@ -42,6 +43,16 @@ _UNIX_EQUIV = {
     "df": "Get-PSDrive",
     "sudo": "(pas de sudo : lance un terminal en administrateur)",
 }
+
+_SENSITIVE_NAME = re.compile(
+    r"(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|PRIVATE_KEY|CLIENT_SECRET|BASIC_AUTH|DATABASE_URL)",
+    re.IGNORECASE,
+)
+_SENSITIVE_ASSIGNMENT = re.compile(
+    r"(?im)^(?P<prefix>\s*(?:export\s+|\$env:)?[A-Z0-9_.-]*"
+    r"(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|PRIVATE_KEY|CLIENT_SECRET|BASIC_AUTH|DATABASE_URL)"
+    r"[A-Z0-9_.-]*\s*[:=]\s*)(?P<value>.*)$"
+)
 
 
 def _unix_ism_hint(command: str, stderr: str) -> str:
@@ -79,6 +90,87 @@ def _unix_ism_hint(command: str, stderr: str) -> str:
 def _shell_argv(command: str) -> list[str]:
     """argv adapté à l'OS courant (délègue à la détection centrale)."""
     return detect().shell_argv(command)
+
+
+def _has_unquoted_ps_chain_operator(command: str) -> bool:
+    """Détecte ``&&``/``||`` seulement dans la syntaxe PowerShell elle-même.
+
+    Un modèle lance souvent ``node -e "a || b"`` : le garde PowerShell 5.1 ne doit
+    pas prendre l'opérateur JavaScript cité pour un opérateur du shell. Le backtick
+    échappe le caractère suivant ; dans une chaîne simple, ``''`` représente une
+    apostrophe littérale.
+    """
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == "`":
+            i += 2
+            continue
+        if quote == "'":
+            if ch == "'":
+                if i + 1 < len(command) and command[i + 1] == "'":
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if command[i : i + 2] in ("&&", "||"):
+            return True
+        i += 1
+    return False
+
+
+def _workspace_secret_values(root: Path) -> set[str]:
+    """Valeurs sensibles connues, sans jamais les journaliser.
+
+    Les fichiers dotenv restent bornés à la racine du workspace : pas de parcours
+    récursif ni de lecture de fichiers applicatifs arbitraires.
+    """
+    values: set[str] = set()
+    for key, value in os.environ.items():
+        if _SENSITIVE_NAME.search(key) and len(value.strip()) >= 4:
+            values.add(value.strip())
+    for path in root.glob(".env*"):
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            if not _SENSITIVE_NAME.search(key):
+                continue
+            value = value.strip().strip('"\'')
+            if len(value) >= 4:
+                values.add(value)
+    return values
+
+
+def _redact_shell_output(text: str, root: Path) -> str:
+    """Retire les secrets avant modèle, timeline et debug.log."""
+    if not text:
+        return text
+    redacted = text
+    # Plus longues d'abord pour éviter qu'une valeur préfixe masque partiellement une autre.
+    for value in sorted(_workspace_secret_values(root), key=len, reverse=True):
+        redacted = redacted.replace(value, "<redacted>")
+    return _SENSITIVE_ASSIGNMENT.sub(
+        lambda match: match.group("prefix") + "<redacted>", redacted
+    )
 
 
 def _truncate(text: str, max_output: int) -> str:
@@ -141,7 +233,9 @@ def make_run_shell(
                 "run_shell est réservé aux VRAIES commandes système (python, git, npm, …)."
             )
         # PowerShell 5.1 ne comprend pas `&&` ni `||`.
-        if detect().shell_kind == "powershell" and ("&&" in command or "||" in command):
+        if detect().shell_kind == "powershell" and _has_unquoted_ps_chain_operator(
+            command
+        ):
             raise ToolError(
                 "PowerShell 5.1 ne supporte pas '&&'/'||'. Utilise ';' entre les "
                 "commandes (et teste $LASTEXITCODE), ou fais des appels run_shell séparés."
@@ -213,8 +307,8 @@ def make_run_shell(
                 "erreur, ou un test des fonctions de logique), ou laisse l'utilisateur "
                 "l'ouvrir lui-même. Pour une page web servie par un SERVEUR (Next.js/Vite/Flask), utilise serve_and_check (il demarre le serveur, verifie, puis l'arrete). Pour une page .html statique, utilise check_page."
             )
-        stdout = (stdout or "").strip("\r\n")
-        stderr = (stderr or "").strip("\r\n")
+        stdout = _redact_shell_output((stdout or "").strip("\r\n"), root)
+        stderr = _redact_shell_output((stderr or "").strip("\r\n"), root)
         # Montrer la sortie avant le statut rend l'aperçu immédiatement utile.
         if stdout and stderr:
             body = f"{stdout}\n--- stderr ---\n{stderr}"
