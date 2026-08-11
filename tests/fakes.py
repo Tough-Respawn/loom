@@ -73,7 +73,10 @@ class FakeOAI:
         self.calls.append(kwargs)
         if not self.scripts:
             raise RuntimeError("script épuisé (appel API de trop)")
-        return _FakeStream(self.scripts.pop(0))
+        script = self.scripts.pop(0)
+        if isinstance(script, Exception):
+            raise script
+        return _FakeStream(script)
 
 
 class FakeRegistry:

@@ -43,6 +43,41 @@ def test_run_shell_ferme_stdin_pour_rester_non_interactif(monkeypatch, tmp_path)
     assert seen["stdin"] is subprocess.DEVNULL
 
 
+def test_operateurs_powershell_cites_ne_sont_pas_des_chainages():
+    from loom.tools.shell import _has_unquoted_ps_chain_operator
+
+    assert not _has_unquoted_ps_chain_operator(
+        'node -e "const x = value || \'fallback\'; console.log(x)"'
+    )
+    assert not _has_unquoted_ps_chain_operator("Write-Output 'a && b'")
+    assert _has_unquoted_ps_chain_operator("Write-Output a || Write-Output b")
+    assert _has_unquoted_ps_chain_operator("cmd /c one && cmd /c two")
+
+
+def test_run_shell_masque_les_secrets_dotenv_avant_de_rendre_la_sortie(tmp_path):
+    from loom.tools.shell import _redact_shell_output
+
+    secret = "rao-dev-admin:mot-de-passe-tres-secret"
+    (tmp_path / ".env.local").write_text(
+        f"PLAYWRIGHT_BASIC_AUTH={secret}\nPUBLIC_FLAG=true\n",
+        encoding="utf-8",
+    )
+
+    out = _redact_shell_output(f"BASIC_AUTH_SET=oui{secret}\nPUBLIC_FLAG=true", tmp_path)
+
+    assert secret not in out
+    assert "BASIC_AUTH_SET=<redacted>" in out
+    assert "PUBLIC_FLAG=true" in out
+
+
+def test_run_shell_masque_une_affectation_sensible_inconnue(tmp_path):
+    from loom.tools.shell import _redact_shell_output
+
+    out = _redact_shell_output("API_TOKEN=valeur-inconnue\nRESULT=ok", tmp_path)
+
+    assert out == "API_TOKEN=<redacted>\nRESULT=ok"
+
+
 
 
 def test_array_json_string_parsee():

@@ -56,11 +56,15 @@ def _stream_tool_events(registry, tc_id: str, name: str, args: dict):
     à relayer (tool_stream, sub_usage) puis, en dernier, ("__result__", synthèse).
     L'appelant route les events vers son canal (yield direct ou queue de thread)."""
     parts: list[str] = []
+    terminal: dict | None = None
     for sub_kind, sub_payload in registry.run_stream(name, args):
         # Contrat ST-02 : la télémétrie des sous-agents (agent_id, chronologie)
-        # remonte TELLE QUELLE jusqu'à la route chat (SSE + timeline). Elle ne
-        # nourrit ni la ligne d'activité ni la synthèse.
+        # remonte TELLE QUELLE jusqu'à la route chat (SSE + timeline). Seul
+        # `subagent_end` influence aussi l'enveloppe du résultat parent : un
+        # terminal failed/cancelled ne doit jamais pouvoir devenir `ok=true`.
         if isinstance(sub_kind, str) and sub_kind.startswith("subagent_"):
+            if sub_kind == "subagent_end" and isinstance(sub_payload, dict):
+                terminal = sub_payload
             yield (sub_kind, sub_payload)
             continue
         line = _sub_activity_line(sub_kind, sub_payload)
@@ -70,7 +74,20 @@ def _stream_tool_events(registry, tc_id: str, name: str, args: dict):
             parts.append(sub_payload)
         elif sub_kind == "usage":  # conso du sous-agent -> totaux de session
             yield ("sub_usage", sub_payload)
-    yield ("__result__", "".join(parts).strip() or "(le sous-agent n'a rien renvoyé)")
+    summary = "".join(parts).strip() or "(le sous-agent n'a rien renvoyé)"
+    # Le statut terminal est le contrat faisant foi. Avant ce garde, la télémétrie
+    # pouvait annoncer `failed/repeat_stop` pendant que le parent recevait `ok=true`
+    # parce que la narration partielle commençait par « Je commence… ». Rendre
+    # l'échec explicite dans le contenu conserve le contrat texte des outils ET fait
+    # basculer les deux chemins d'exécution sur `ok=false` via leur test `erreur:`.
+    if terminal and terminal.get("status") != "completed":
+        status = terminal.get("status") or "failed"
+        stop_reason = terminal.get("stop_reason") or "unknown"
+        summary = (
+            f"erreur: sous-agent {status} (stop_reason={stop_reason}).\n"
+            f"Synthèse partielle non fiable :\n{summary}"
+        )
+    yield ("__result__", summary)
 
 
 def _tool_result_payload(
