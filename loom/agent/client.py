@@ -44,6 +44,14 @@ from loom.agent.toolrun import _run_tools_parallel, _run_tools_sequential, _safe
 from loom.agent.toolsets import _DEBUG_FORCE, _PARALLEL_SAFE
 
 
+def _is_reasoning_history_error(exc: Exception) -> bool:
+    """Reconnaît le 400 des providers thinking qui réclament leur historique privé."""
+    msg = str(getattr(exc, "message", "") or exc).lower()
+    return "reasoning_content" in msg and (
+        "passed back" in msg or "thinking mode" in msg or "must be" in msg
+    )
+
+
 def _inject_monitor_events(provider, convo: list[dict]):
     """Injecte les événements asynchrones comme de vrais résultats d'outil."""
     if provider is None:
@@ -116,6 +124,9 @@ class LoomClient:
         self._routes: dict[str, dict] = {}
         # Un échec durable de slot KV coupe les nouvelles tentatives jusqu'au redémarrage.
         self._slot_broken: set[str] = set()
+        # Capacités apprises à chaud : un modèle qui émet du reasoning_content exige
+        # généralement qu'il soit renvoyé aux tours d'outils suivants.
+        self._reasoning_history_models: set[str] = set()
         for rid, spec in (routes or {}).items():
             self._routes[rid] = {
                 "client": OpenAI(
@@ -773,6 +784,11 @@ class LoomClient:
     ) -> Iterator[tuple[str, str]]:
         """Yield les events (reasoning|content), system prompt injecté en tête."""
         oai, api_model, native = self._resolve(model)
+        reasoning_key = model or self.model
+        reasoning_history = reasoning_key in self._reasoning_history_models or any(
+            m.get("role") == "assistant" and "reasoning_content" in m
+            for m in messages
+        )
         kwargs = build_create_kwargs(
             api_model,
             messages,
@@ -780,9 +796,26 @@ class LoomClient:
             max_tokens,
             thinking,
             native_extras=native,
+            reasoning_history=reasoning_history,
         )
         _debug_messages(kwargs["model"], kwargs["messages"])
-        stream = oai.chat.completions.create(**kwargs)
+        try:
+            stream = oai.chat.completions.create(**kwargs)
+        except APIError as exc:
+            if not (thinking and _is_reasoning_history_error(exc)):
+                raise
+            self._reasoning_history_models.add(reasoning_key)
+            kwargs = build_create_kwargs(
+                api_model,
+                messages,
+                system_prompt,
+                max_tokens,
+                thinking,
+                native_extras=native,
+                reasoning_history=True,
+            )
+            log_event("reasoning_history.retry", level="WARN", model=api_model)
+            stream = oai.chat.completions.create(**kwargs)
         # `/cancel` ferme ce stream pour débloquer une lecture distante figée.
         if stream_holder is not None:
             stream_holder["stream"] = stream
@@ -807,6 +840,8 @@ class LoomClient:
                 stream_holder["stream"] = None
             _close(stream)
             _debug("REPONSE <- modele", {"reasoning": reasoning, "content": content})
+        if reasoning:
+            self._reasoning_history_models.add(reasoning_key)
 
     def _preventive_compaction(
         self,
@@ -1171,6 +1206,7 @@ class LoomClient:
         convo = list(messages)
         # Résoudre une fois le modèle et les extensions natives pour tout l'appel.
         oai, api_model, native = self._resolve(model)
+        reasoning_key = model or self.model
         tools = registry.openai_tools() if registry else None
         # Les sous-générateurs partagent ces compteurs et publient leur issue via `action`.
         st: dict = {
@@ -1190,6 +1226,12 @@ class LoomClient:
             "empty_retries": 0,  # nb de relances sur réponse VIDE (0 texte, 0 tool call)
             "truncated_streak": 0,  # troncatures d'arguments d'outil CONSÉCUTIVES
             "verify_streak": 0,  # checks navigateur verts consécutifs (anti sur-vérification)
+            "reasoning_history": reasoning_key in self._reasoning_history_models
+            or any(
+                m.get("role") == "assistant" and "reasoning_content" in m
+                for m in convo
+            ),
+            "reasoning_history_retries": 0,
             "text": "",  # texte accumulé du dernier appel modèle
             "reasoning": "",  # raisonnement accumulé du dernier appel modèle
             "action": "",  # issue posée par le dernier sous-générateur
@@ -1217,6 +1259,7 @@ class LoomClient:
                 thinking,
                 tools=tools,
                 native_extras=native,
+                reasoning_history=st["reasoning_history"],
             )
             _debug_messages(kwargs["model"], kwargs["messages"])
             # Une variation des outils, placés en tête de prompt, invalide tout le cache.
@@ -1240,6 +1283,23 @@ class LoomClient:
                     stream_holder=stream_holder,
                 )
             except (APIError, httpx.HTTPError) as exc:
+                # Compatibilité automatique avec les historiques DeepSeek thinking,
+                # y compris une session ancienne/rechargée où le champ n'existe pas.
+                # Un seul retry : toute autre 400 suit le diagnostic API normal.
+                if (
+                    thinking
+                    and _is_reasoning_history_error(exc)
+                    and st["reasoning_history_retries"] < 1
+                ):
+                    st["reasoning_history_retries"] += 1
+                    st["reasoning_history"] = True
+                    self._reasoning_history_models.add(reasoning_key)
+                    log_event(
+                        "reasoning_history.retry",
+                        level="WARN",
+                        model=api_model,
+                    )
+                    continue
                 yield from self._handle_stream_api_error(
                     exc,
                     convo,
@@ -1255,6 +1315,9 @@ class LoomClient:
                     return
                 continue
             text, reasoning = st["text"], st["reasoning"]
+            if reasoning:
+                st["reasoning_history"] = True
+                self._reasoning_history_models.add(reasoning_key)
 
             tool_calls = collector["tool_calls"]
             # Récupérer un appel d'outil émis en texte si le canal structuré est vide.
@@ -1291,11 +1354,10 @@ class LoomClient:
             if st["action"] == "done":
                 return
 
-            convo.append(
-                {
-                    "role": "assistant",
-                    "content": text or None,
-                    "tool_calls": [
+            assistant_message = {
+                "role": "assistant",
+                "content": text or None,
+                "tool_calls": [
                         {
                             "id": tc["id"],
                             "type": "function",
@@ -1307,8 +1369,13 @@ class LoomClient:
                         }
                         for tc in tool_calls
                     ],
-                }
-            )
+            }
+            # Conserver EXACTEMENT la réflexion reçue : le provider peut la vérifier
+            # au tour suivant. Les messages synthétiques seront complétés à vide dans
+            # build_create_kwargs sans mutation de l'historique portable.
+            if reasoning:
+                assistant_message["reasoning_content"] = reasoning
+            convo.append(assistant_message)
             # Paralléliser seulement les outils sûrs sur un provider distant. Le local
             # partage un slot, et tout effet de bord exige de conserver l'ordre.
             _seq_tool_calls = tool_calls

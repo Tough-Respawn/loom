@@ -157,6 +157,26 @@ def test_usage_du_sous_agent_remonte_au_parent(tmp_path):
     assert any(k == "sub_usage" for k, _ in events)
 
 
+def test_echec_sous_agent_devient_ok_false_avec_stop_reason(tmp_path):
+    """Régression 72bd680eb551 : un repeat_stop ne doit plus remonter comme une
+    synthèse saine simplement parce que le texte partiel commence par « Je… »."""
+    scripts = [
+        turn_tools([("p1", "dispatch_agent", '{"task": "inventorie"}')]),
+        turn_tools([("s1", "list_dir", "{}")]),
+        turn_tools([("s2", "list_dir", "{}")]),
+        turn_tools([("s3", "list_dir", "{}")]),  # repeat_stop avant exécution
+        turn_text("Le parent constate explicitement l'échec de l'ouvrier."),
+    ]
+    events, _ = _parent_stream(scripts)
+    result = [p for k, p in events if k == "tool_result"][0]
+    assert result["ok"] is False
+    assert result["out_full"].startswith("erreur: sous-agent failed")
+    assert "stop_reason=repeat_stop" in result["out_full"]
+    assert "Synthèse partielle non fiable" in result["out_full"]
+    end = [p for k, p in events if k == "subagent_end"][0]
+    assert end["status"] == "failed" and end["stop_reason"] == "repeat_stop"
+
+
 # --- ST-01b : porte go/no-go — le grader distingue sain / cassé ----------------
 
 

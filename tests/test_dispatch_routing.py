@@ -185,6 +185,35 @@ def test_roles_cheap_strong_resolus_depuis_la_config():
     assert client2.tried == ["flash"]
 
 
+def test_dispatch_libre_prend_strong_par_defaut_et_cheap_sur_demande():
+    """Un audit libre n'est plus envoyé implicitement au chercheur cheap. Le rôle
+    cheap reste disponible pour une recherche explicitement courte et bornée."""
+    from loom.tools.agent import make_dispatch_agent
+
+    roles = {"cheap": "flash", "strong": "zai"}
+    client = ChainClient({"flash": "ok", "zai": "ok"}, remote_ids={"flash", "zai"})
+    runner = _runner(
+        client, model="local-x", model_chain=["flash", "zai"], model_roles=roles
+    )
+    spec = make_dispatch_agent(
+        client, lambda: FakeRegistry(), system_prompt="s", runner=runner
+    )
+    spec.run({"task": "audit multi-fichiers"})
+    assert client.tried == ["zai"]
+
+    client2 = ChainClient(
+        {"flash": "ok", "zai": "ok"}, remote_ids={"flash", "zai"}
+    )
+    runner2 = _runner(
+        client2, model="local-x", model_chain=["flash", "zai"], model_roles=roles
+    )
+    spec2 = make_dispatch_agent(
+        client2, lambda: FakeRegistry(), system_prompt="s", runner=runner2
+    )
+    spec2.run({"task": "trouve une ligne précise", "model": "cheap"})
+    assert client2.tried == ["flash"]
+
+
 def test_role_non_resolu_retombe_sur_la_chaine():
     # Pas de modèle strong dans la config -> "strong" inconnu -> chaîne normale.
     client = ChainClient({"flash": "ok"}, remote_ids={"flash"})

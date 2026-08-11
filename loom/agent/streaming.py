@@ -82,10 +82,27 @@ def build_create_kwargs(
     thinking: bool = True,
     tools: list[dict] | None = None,
     native_extras: bool = True,
+    reasoning_history: bool = False,
 ) -> dict:
+    request_messages = messages
+    if reasoning_history:
+        # DeepSeek et quelques providers thinking exigent que chaque ancien message
+        # assistant repasse un champ reasoning_content. Copier évite de polluer la
+        # conversation persistée avec une extension refusée par d'autres providers.
+        request_messages = [
+            (
+                {
+                    **message,
+                    "reasoning_content": str(message.get("reasoning_content") or ""),
+                }
+                if message.get("role") == "assistant"
+                else message
+            )
+            for message in messages
+        ]
     kwargs = {
         "model": model,
-        "messages": [{"role": "system", "content": system_prompt}, *messages],
+        "messages": [{"role": "system", "content": system_prompt}, *request_messages],
         "stream": True,
         # Demander l'usage réel dans un chunk final, si le provider le supporte.
         "stream_options": {"include_usage": True},
