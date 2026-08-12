@@ -41,6 +41,10 @@ READ_TOOLS = frozenset(
         "remember",
         # Rendre un résultat structuré en mémoire n'est pas un effet à confirmer.
         "submit_result",
+        # Charger le schéma d'un outil différé = lecture de catalogue, aucun effet
+        # système. 3e occurrence du piège « hors catégories -> ask » (session
+        # 468415b7be1e, 2026-08-12 : confirmation UI demandée pour tool_search).
+        "tool_search",
     }
 )
 SHELL_TOOLS = frozenset({"run_shell", "serve_and_check", "monitor"})

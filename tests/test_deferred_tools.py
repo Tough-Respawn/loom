@@ -77,3 +77,16 @@ def test_deferred_prefix_is_smaller_than_all_full_schemas():
     assert len(json.dumps(deferred, ensure_ascii=False)) < len(
         json.dumps(full, ensure_ascii=False)
     )
+
+
+def test_tool_search_autorise_sans_confirmation_dans_tous_les_modes():
+    """Session 468415b7be1e (2026-08-12) : tool_search hors catégories tombait dans
+    le « ask » par prudence -> confirmation UI pour une simple lecture de catalogue.
+    Classé READ_TOOLS : allow partout, comme code_outline/code_diagnostics."""
+    from loom.permissions import PermissionConfig, evaluate
+
+    for mode in ("allow", "ask", "allowlist", "deny_all"):
+        d = evaluate(
+            "tool_search", {"names": ["code_outline"]}, PermissionConfig(mode=mode)
+        )
+        assert d.action == "allow", f"tool_search en mode {mode} -> {d.action}"
