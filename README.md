@@ -1,14 +1,57 @@
-# 🧵 Loom — un agent IA local, multimodal et offline
+# 🧵 Loom
 
 <!-- RÔLE : pitch public (présentation, démarrage rapide). Suivi interne : ETAT_PROJET.md. Carte technique : loom.md. Historique versions : CHANGELOG.md. -->
 
-> Un modèle open-source qui **agit** sur ta machine avec des outils —
-> **100 % en local, sans internet.**
+Un agent IA qui agit sur ta machine avec un modèle et des outils :
+il localise, lit, modifie et exécute sur tes vrais projets.
+Pensé d'abord pour les modèles locaux (utilisable 100 % offline), il pilote
+aussi des modèles distants par API si tu en configures.
 
-Loom est un **agent tool-use** local : une boucle qui donne à un modèle local les bons outils
+![Interface de Loom](docs/assets/loom-ui.png)
+
+## Démarrer
+
+Prérequis : [`uv`](https://docs.astral.sh/uv/). Le binaire `llama-server` et le
+premier modèle s'installent tout seuls via `loom-setup` (ou à la main :
+[docs/install-windows.md](docs/install-windows.md) / [docs/install-linux.md](docs/install-linux.md)).
+
+```bash
+uv sync                      # dépendances + installe le package loom
+# ou : uv sync --extra mcp   # si [[mcp_servers]] est configuré
+uv run loom-setup            # installeur guidé : OS/GPU/RAM détectés, llama.cpp
+                             # + un modèle qui fit — chaque action confirmée
+uv run python -m loom.web    # interface chat sur :8000
+```
+Puis ouvre **http://127.0.0.1:8000**. `loom.web` démarre le serveur modèle toute
+seule (enfant, à la demande) et l'éteint avec elle. (`uv run loom/runtime/serve.py`
+reste dispo pour servir le moteur seul — et déclenche aussi l'installeur au premier
+run sur machine vierge.)
+
+### Vérifier l'installation
+
+```bash
+uv run pytest tests/ -q                       # suite de non-régression
+uv run ruff check loom tests scripts evals   # analyse statique
+uv run python -m evals.run_eval --self-test  # harnais d'éval, hors ligne
+```
+
+Le banc navigateur isolé (stub local, aucun vrai modèle) est documenté dans
+[`tests/e2e/README.md`](tests/e2e/README.md).
+
+> ⚠️ Avant de t'en servir, lis [Sécurité](#sécurité--périmètre-de-confiance) : Loom donne un
+> shell et l'écriture disque au modèle. En dehors d'un environnement isolé, mets
+> `[permissions] mode = "ask"`.
+
+## Le projet
+
+Loom est un **agent tool-use** : une boucle qui donne à un modèle les bons outils
 et la logique de les enchaîner, pour qu'il **localise, lise, modifie et exécute** sur tes vrais
-projets au lieu de seulement discuter. Le pari : rester productif même internet coupé, et
-démontrer le savoir-faire d'« internaliser le harness » sur un modèle autre que Claude.
+projets au lieu de seulement discuter. Le cap est **local d'abord** — le pari : rester productif
+même internet coupé, et démontrer le savoir-faire d'« internaliser le harness » sur un modèle
+autre que Claude. Des **modèles distants** (API OpenAI-compatible) se branchent au même harness
+quand tu en configures : comme modèle principal d'une session, ou en rôles cheap/strong pour la
+délégation (`dispatch_agent` / `run_workflow`) ; une session peut aussi être marquée **privée**
+pour rester 100 % locale.
 
 Le harness, c'est ça et rien d'autre : **les outils, et l'intelligence d'appeler le bon au bon
 moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode « build » séparé
@@ -17,7 +60,7 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
 ## Ce que ça fait
 
 - 💬 **Chat web** local (Flask + Preact/htm, zéro build) avec **streaming SSE** et markdown.
-- 🧰 **25 outils activés par défaut** (selon `config/defaults.toml`), regroupés par usage :
+- 🧰 **27 outils activés par défaut** (selon `config/defaults.toml`), regroupés par usage :
   - **Localiser** : `find_files` (glob), `search_text` (grep), `list_dir`.
   - **Lire** : `read_file` (texte, et PDF / Excel / Word → texte extrait automatiquement),
     `read_image` (voir une image du disque : capture, schéma).
@@ -69,8 +112,10 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
   → preuve forte → réécrire-si-pourri, déclenchée quand un bug apparaît.
 - 💭 **Raisonnement** : le « thinking » s'affiche dans un bloc animé, désactivable d'un clic.
 - ⏹️ **Interruption** : soumettre un nouveau message stoppe net la génération en cours.
-- 🔀 **Multi-modèles** : modèles découverts par dossier `loom/models/<id>/` + sélecteur UI ;
-  hot-swap via llama-swap.
+- 🔀 **Multi-modèles** : modèles locaux découverts par dossier `loom/models/<id>/` + sélecteur
+  UI ; hot-swap via llama-swap. **Modèles distants** (API OpenAI-compatible) gérés depuis la
+  console (onglet Modèles distants) : sélectionnables comme modèle principal, utilisables en
+  rôles cheap/strong par la délégation, avec suivi des tokens et du coût.
 
 ## Architecture
 
@@ -97,39 +142,6 @@ Navigateur ──HTTP──► Loom (Flask :8000) ──OpenAI API──► llam
   défaut `gemma4-26b-a4b-uncensored` ; `qwen3.6-35b-a3b-abliterated` dispo (avec vision).
   Chacun branche les siens — voir [loom/models/README.md](loom/models/README.md) et
   `loom/models/_TEMPLATE/`.
-
-## Démarrer
-
-Prérequis : [`uv`](https://docs.astral.sh/uv/). Le binaire `llama-server` et le
-premier modèle s'installent tout seuls via `loom-setup` (ou à la main :
-[docs/install-windows.md](docs/install-windows.md) / [docs/install-linux.md](docs/install-linux.md)).
-
-```bash
-uv sync                      # dépendances + installe le package loom
-# ou : uv sync --extra mcp   # si [[mcp_servers]] est configuré
-uv run loom-setup            # installeur guidé : OS/GPU/RAM détectés, llama.cpp
-                             # + un modèle qui fit — chaque action confirmée
-uv run python -m loom.web    # interface chat sur :8000
-```
-Puis ouvre **http://127.0.0.1:8000**. `loom.web` démarre le serveur modèle toute
-seule (enfant, à la demande) et l'éteint avec elle. (`uv run loom/runtime/serve.py`
-reste dispo pour servir le moteur seul — et déclenche aussi l'installeur au premier
-run sur machine vierge.)
-
-### Vérifier l'installation
-
-```bash
-uv run pytest tests/ -q                       # suite de non-régression
-uv run ruff check loom tests scripts evals   # analyse statique
-uv run python -m evals.run_eval --self-test  # harnais d'éval, hors ligne
-```
-
-Le banc navigateur isolé (stub local, aucun vrai modèle) est documenté dans
-[`tests/e2e/README.md`](tests/e2e/README.md).
-
-> ⚠️ Avant de t'en servir, lis [Sécurité](#sécurité--périmètre-de-confiance) : Loom donne un
-> shell et l'écriture disque au modèle. En dehors d'un environnement isolé, mets
-> `[permissions] mode = "ask"`.
 
 ## Utiliser l'agent
 
@@ -226,16 +238,22 @@ Re-calibrer (nouveau matériel, nouveau modèle par défaut) : supprimer la tabl
 [rapport de préparation du 2026-08-02](docs/rapport-preparation-2026-08-02.md).
 
 - ✅ Runtime auto-adaptatif (offload MoE), sessions (titre inféré), vision, thinking, interruption, multi-modèles.
-- ✅ Agent tool-use : ~23 outils, politique de décision + séquencement dans le prompt système.
-- ✅ Garde-fous de boucle (stop naturel + plafond de tours + anti-répétition).
-- ✅ Sécurité d'ingestion : anti-SSRF + frontière de confiance (active même hors-ligne).
+- ✅ Agent tool-use : 27 outils armés par défaut, politique de décision + séquencement dans le prompt système.
+- ✅ Garde-fous de boucle (stop naturel + plafond de tours + anti-répétition), durcis le
+  2026-08-11 (boucles d'outils, échecs de sous-agents).
+- ✅ Sécurité d'ingestion : anti-SSRF (y compris NAT64/DNS64) + frontière de confiance (active même hors-ligne).
 - ✅ Skills déclenchés par le modèle (catalogue + `use_skill`) ; store de plugins compatible CC.
 - ✅ Workflows : `run_workflow` — un script Python (écrit par le modèle ou canonique d'un skill)
-  orchestre N sous-agents (`agent`/`parallel`/`pipeline`, sortie structurée, rôles cheap/strong) ;
-  les synthèses restent hors du contexte du fil principal.
+  orchestre N sous-agents (`agent`/`parallel`/`pipeline`, sortie structurée validée strictement,
+  rôles cheap/strong) ; les synthèses restent hors du contexte du fil principal.
+- ✅ Outils différés : `tool_search` charge les schémas à la demande (sans confirmation) —
+  préfixe stable, base du client MCP stdio ; `monitor` asynchrone.
+- ✅ Intelligence de code Python (`code_outline`, `code_diagnostics` — différés) et
+  sous-agents observables (carte par ouvrier dans le fil, arrêt individuel) (2026-08-10).
 - ✅ Calibration machine agnostique (`loom-setup`) : topologie découverte + contexte par pente
-  mesurée et vitesse validée, décision tracée, fail-loud sur repli.
-- ✅ Banc d'éval (graders déterministes + juge LLM) et SearXNG auto-hébergé.
+  mesurée et vitesse validée, décision tracée, fail-loud sur repli ; repli machine des réglages
+  mesurés + sonde ubatch sur le vrai serveur (2026-08-04).
+- ✅ Banc d'éval (graders déterministes + juge LLM, campagnes non écrasables) et SearXNG auto-hébergé.
 - 🔜 Tranches plugins suivantes (hooks, agents), RAG pour les skills volumineux et audio.
 
 ## Stack
