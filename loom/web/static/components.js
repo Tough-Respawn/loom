@@ -410,6 +410,11 @@ export function Assistant({ it, sid }) {
 }
 
 export function enhance(el, raw) {
+  // Les fiches de la shortlist /add-model se consultent sans quitter Loom.
+  el.querySelectorAll('a[href^="https://huggingface.co/"]').forEach((link) => {
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+  });
   el.querySelectorAll("pre").forEach((pre) => {
     if (pre.querySelector(".copy-btn")) return;
     // Capture le texte du code AVANT d'ajouter le bouton : sinon innerText inclut
