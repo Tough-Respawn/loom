@@ -484,7 +484,8 @@ def _search(query, deps):
             "Autre recherche ? (ou /cancel)",
         )
     lines = [
-        f"  {i + 1}. {h['repo_id']}  ({h['downloads']} téléchargements, {h['likes']} likes)"
+        f"  {i + 1}. [{h['repo_id']}](https://huggingface.co/{h['repo_id']})  "
+        f"({h['downloads']} téléchargements, {h['likes']} likes)"
         for i, h in enumerate(hits)
     ]
     return WizardResult(
