@@ -43,6 +43,12 @@
   le cache de la conversation). `infer_title` n'envoie plus de `temperature` (refusée
   par certains providers : 400 « only 1 is allowed ») et, en local, coupe le thinking
   dès le premier essai.
+  *Révision après validation réelle* : en local, le vrai titre ne tourne plus en
+  parallèle sur le slot annexe (les deux slots partagent le matériel : warm tombé à
+  6,5 t/s et titre annulé au timeout de 20 s, mesuré) mais dans la maintenance
+  SÉQUENTIELLE, après le warm, sous le verrou, en flux et INTERRUPTIBLE par un message
+  via le même porte-flux que le warm. Timeout inchangé (20 s) tant que l'interruption
+  en plein calcul n'est pas prouvée côté serveur. Distant : thread dédié sans verrou.
 
 - **Warm préemptible** (étape 4) : l'amorçage (warm de fin de tour, keep-warm, reflect)
   publie son flux HTTP dans un porte-flux partagé `S.warm_holder` ; un message qui trouve

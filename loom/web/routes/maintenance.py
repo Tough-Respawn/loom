@@ -6,7 +6,15 @@ from loom.web.routes.priming import _prime_slot
 
 
 def _post_turn_maintenance(
-    S, sess, msgs, actions, answer, model, do_reflect, kv_saved=False
+    S,
+    sess,
+    msgs,
+    actions,
+    answer,
+    model,
+    do_reflect,
+    kv_saved=False,
+    title_request=None,
 ):
     """Fin de tour déportée hors du flux SSE : reflect (apprentissage) PUIS
     restauration du cache de la conversation (save fait en fin de génération ;
@@ -72,6 +80,21 @@ def _post_turn_maintenance(
                     flush=True,
                 )
             S.last_activity[0] = time.time()
+            if title_request is not None:
+                # Vrai titre APRÈS le warm, séquentiel (les deux slots partagent le
+                # matériel : en parallèle, warm à 6,5 t/s et titre annulé au timeout,
+                # vécu 2026-09-13) et INTERRUPTIBLE par un message via le porte-flux.
+                from loom.web.routes.helpers import _title_in_background
+
+                message, provisional = title_request
+                _title_in_background(
+                    S,
+                    sess,
+                    model,
+                    message,
+                    provisional,
+                    stream_holder=getattr(S, "warm_holder", None),
+                )
 
     finally:
         if is_local:
