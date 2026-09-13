@@ -20,6 +20,7 @@ from loom.web.app import (
     _action_trace_line,
     _build_user_content,
     _detect_workspace,
+    _fallback_title,
     _infer_title,
     _should_adopt,
     _sse,
@@ -38,6 +39,7 @@ from loom.web.routes.helpers import (
     _lock_for,
     _model_limits,
     _price_of,
+    _title_in_background,
     _session,
     _totals,
 )
@@ -260,6 +262,12 @@ def _register_chat_routes(app, S):
             message = _handle_init_command(S, message, sess)
 
         title_message = display_message if is_handoff else message
+        # Titre PROVISOIRE tout de suite (début du message) ; le vrai titre viendra
+        # après `done`, hors verrou (étape 3 de l'audit timings 2026-09-13).
+        _needs_model_title = sess.title == "Nouvelle session"
+        if _needs_model_title:
+            sess.title = _fallback_title(title_message)
+            S.session_store.save(sess)
 
         # Ne pas injecter d'image inline dans un modèle sans projecteur vision.
 
@@ -516,6 +524,8 @@ def _register_chat_routes(app, S):
 
             if adopted_ws:  # informe l'UI que le dossier de travail a été adopté
                 yield _sse("workspace", path=adopted_ws)
+            if _needs_model_title:
+                yield _sse("session_title", id=sess.id, title=sess.title)
 
             # Démarrer dans le générateur rend chaque phase visible dans le flux.
             if conv.model and conv.model not in S.remote_model_ids:
@@ -745,29 +755,6 @@ def _register_chat_routes(app, S):
 
             last_tok = None
 
-            # Titrer le distant en arrière-plan; attendre la fin pour ne pas concurrencer le local.
-            _titled = {"value": None, "emitted": False}
-            _title_ready = threading.Event()
-            _immediate_title = (
-                sess.title == "Nouvelle session" and conv.model in S.remote_model_ids
-            )
-            if _immediate_title:
-
-                def _do_title(_msg=title_message, _model=conv.model):
-                    _t = ""
-                    try:
-                        _t = _infer_title(S.client, _model or None, _msg)
-                    except Exception:  # noqa: BLE001 - titre best-effort, jamais bloquant
-                        _t = ""
-                    _titled["value"] = _t or ""
-                    if _t:
-                        sess.title = _t
-                    _title_ready.set()
-
-                threading.Thread(
-                    target=_do_title, daemon=True, name="loom-title"
-                ).start()
-
             try:
                 # Sérialiser le slot local unique; laisser les API distantes parallèles.
                 if conv.model and conv.model not in S.remote_model_ids:
@@ -797,19 +784,6 @@ def _register_chat_routes(app, S):
                     saw_compaction = False
                     stop_reason = ""
                     for kind, payload in source:
-                        # Publier le titre distant dès qu'il est disponible.
-                        if (
-                            _immediate_title
-                            and _title_ready.is_set()
-                            and not _titled["emitted"]
-                        ):
-                            _titled["emitted"] = True
-                            if _titled["value"]:
-                                S.session_store.save(sess)
-                                yield _sse(
-                                    "session_title", id=sess.id, title=_titled["value"]
-                                )
-
                         if cancel_event.is_set():
                             # Conserver le contenu déjà reçu lors d'une nouvelle soumission.
 
@@ -1094,26 +1068,14 @@ def _register_chat_routes(app, S):
                     name="loom-post-turn",
                 ).start()
 
-                # Titrer la session du flux, jamais la session actuellement focalisée.
-
-                if _immediate_title:
-                    # Attendre brièvement le titre distant s'il n'a pas encore été publié.
-                    if not _titled["emitted"]:
-                        _title_ready.wait(timeout=8)
-                        _titled["emitted"] = True
-                        if _titled["value"]:
-                            sess.title = _titled["value"]
-                            S.session_store.save(sess)
-                            yield _sse(
-                                "session_title", id=sess.id, title=_titled["value"]
-                            )
-                elif saved and sess.title == "Nouvelle session":
-                    # Titrer le local seulement lorsque son slot est libre.
-                    _title = _infer_title(S.client, conv.model or None, title_message)
-                    if _title:
-                        sess.title = _title
-                        S.session_store.save(sess)
-                        yield _sse("session_title", id=sess.id, title=_title)
+                # Vrai titre après coup, hors flux et hors verrou : `done` ne l'attend pas.
+                if _needs_model_title and saved:
+                    threading.Thread(
+                        target=_title_in_background,
+                        args=(S, sess, conv.model, title_message, sess.title),
+                        daemon=True,
+                        name="loom-title",
+                    ).start()
 
                 yield _sse("done")
 

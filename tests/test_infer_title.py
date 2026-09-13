@@ -1,5 +1,7 @@
-# infer_title : robustesse aux providers à température FIGÉE (Kimi/Moonshot renvoie
-# 400 « invalid temperature: only 0.6/1 is allowed ») — on retente SANS température.
+# infer_title : plus JAMAIS de `temperature` (des providers la refusent : Kimi/Moonshot
+# 400 « invalid temperature: only 0.6/1 is allowed » — vécu aussi en session locale le
+# 2026-09-13 avec un titre qui n'arrivait jamais), et en LOCAL le thinking est coupé dès
+# le premier essai (variante llama.cpp), sinon le budget part en réflexion.
 from types import SimpleNamespace
 
 from loom.agent.client import LoomClient
@@ -29,12 +31,25 @@ class _FakeOAI:
         return self
 
 
-def test_infer_title_retente_sans_temperature_sur_400_temperature():
+def _self(oai, native):
+    return SimpleNamespace(
+        _resolve=lambda m: (oai, "m", native),
+        is_remote=lambda m: not native,
+        annex_slot=lambda m: 1,
+    )
+
+
+def test_infer_title_n_envoie_jamais_de_temperature():
     oai = _FakeOAI()
-    fake_self = SimpleNamespace(_resolve=lambda m: (oai, "kimi-k3", None))
-    title = LoomClient.infer_title(fake_self, "kimi-k3", "bonjour le monde")
+    title = LoomClient.infer_title(_self(oai, native=False), "kimi-k3", "bonjour")
     assert title == "Titre Kimi"
     calls = oai.chat.completions.calls
-    # 1er essai : temperature posée -> 400 ; 2e essai : MÊME variante sans temperature
-    assert "temperature" in calls[0] and "temperature" not in calls[1]
-    assert len(calls) == 2  # pas de cascade sur les autres variantes
+    assert len(calls) == 1 and "temperature" not in calls[0]
+
+
+def test_infer_title_local_coupe_le_thinking_des_le_premier_essai():
+    oai = _FakeOAI()
+    LoomClient.infer_title(_self(oai, native=True), "orn", "bonjour")
+    first = oai.chat.completions.calls[0]
+    assert first["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert first["extra_body"]["id_slot"] == 1

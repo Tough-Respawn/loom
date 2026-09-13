@@ -35,9 +35,21 @@
   (`enable_thinking_param`) ; `slot_counts` resynchronisé à chaque régénération du yaml.
   (Revue croisée du 2026-09-13.)
 
+- **Titre hors du chemin critique** (étape 3) : titre PROVISOIRE (début du message)
+  posé et publié dès le début du tour ; `done` n'attend plus jamais le modèle de
+  titrage (avant : 21 s de slot local avant `done`, annulé au timeout, ou jusqu'à 8 s
+  d'attente du titre distant). Le vrai titre s'infère après coup dans un thread dédié,
+  hors verrou, sur le slot annexe — jamais sur un local à un seul slot (il évincerait
+  le cache de la conversation). `infer_title` n'envoie plus de `temperature` (refusée
+  par certains providers : 400 « only 1 is allowed ») et, en local, coupe le thinking
+  dès le premier essai.
+
 ### Tests
 - 12 non-régressions (`tests/test_slot_pinning.py`) : payload local/distant, choix du slot
   annexe, fil principal, warm, appels annexes, sous-agent, save vide/plein.
+- 5 parcours web complets (`tests/test_title_off_critical_path.py`) : provisoire avant le
+  premier texte, vrai titre après coup hors flux, un seul slot = pas d'appel, distant sans
+  attente, titre existant jamais retouché ; `test_infer_title.py` réécrit.
 
 ### Constats laissés en pistes (cf. ETAT_PROJET)
 - Titre local tenté avant le `done` puis 400 « invalid temperature » ; warm de fin de

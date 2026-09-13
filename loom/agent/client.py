@@ -740,46 +740,50 @@ class LoomClient:
             ],
             # Garder une petite marge si le backend ne sait pas couper le thinking.
             "max_tokens": 96,
-            "temperature": 0.3,
+            # Jamais de `temperature` : des providers la refusent (Kimi : 400 « only 1
+            # is allowed ») et un titre au défaut du modèle est tout aussi bon.
         }
-        # Essayer les conventions anti-thinking connues, puis un appel nu.
+        local = native and not self.is_remote(model)
+        # Conventions anti-thinking connues. En LOCAL, la variante llama.cpp d'abord :
+        # essayer d'abord celle de Z.ai laissait le modèle réfléchir 96 tokens pour
+        # rien (vécu 2026-09-13 : 21 s de slot, titre jamais produit).
         attempts = (
-            {"extra_body": {"thinking": {"type": "disabled"}}},  # Z.ai / GLM
-            {
-                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
-            },  # llama.cpp / Qwen (local)
-            {"extra_body": {"reasoning": {"enabled": False}}},  # OpenRouter
-            {},  # modèle sans raisonnement / provider strict
+            (
+                {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+                {},
+            )
+            if local
+            else (
+                {"extra_body": {"thinking": {"type": "disabled"}}},  # Z.ai / GLM
+                {
+                    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
+                },  # llama.cpp / Qwen
+                {"extra_body": {"reasoning": {"enabled": False}}},  # OpenRouter
+                {},  # modèle sans raisonnement / provider strict
+            )
         )
         # Le titre est cosmétique : échouer vite puis utiliser le texte du message.
         fast = oai.with_options(max_retries=0, timeout=20)
         for extra in attempts:
             payload = {**base, **extra}
-            if native and not self.is_remote(model):
+            if local:
                 # Slot annexe : le titre ne doit pas écraser le cache du fil principal.
                 payload["extra_body"] = {
                     **payload.get("extra_body", {}),
                     "id_slot": self.annex_slot(model),
                 }
-            # Certains providers imposent leur température ; la seconde passe l'omet.
-            for drop_temp in (False, True):
-                if drop_temp:
-                    payload = {k: v for k, v in payload.items() if k != "temperature"}
-                try:
-                    resp = fast.chat.completions.create(**payload)
-                    txt = (resp.choices[0].message.content or "").strip()
-                    txt = txt.strip('"').strip("'").strip()
-                    if txt:
-                        return txt.splitlines()[0][:60].strip()
-                    break  # réponse vide : cette variante ne donnera rien -> suivante
-                except (APIConnectionError, APITimeoutError):
-                    # Une panne de transport rend les autres variantes inutiles.
-                    return ""
-                except Exception as e:  # noqa: BLE001 - param rejeté par ce backend
-                    _debug("TITLE_ERR", str(e))
-                    if not drop_temp and "temperature" in str(e).lower():
-                        continue  # même variante, sans imposer notre température
-                    break  # variante suivante
+            try:
+                resp = fast.chat.completions.create(**payload)
+                txt = (resp.choices[0].message.content or "").strip()
+                txt = txt.strip('"').strip("'").strip()
+                if txt:
+                    return txt.splitlines()[0][:60].strip()
+                # réponse vide : cette variante ne donnera rien -> suivante
+            except (APIConnectionError, APITimeoutError):
+                # Une panne de transport rend les autres variantes inutiles.
+                return ""
+            except Exception as e:  # noqa: BLE001 - param rejeté par ce backend
+                _debug("TITLE_ERR", str(e))
         return ""
 
     def describe_image(self, data_uri: str, question: str, model: str) -> str:
