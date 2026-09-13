@@ -29,6 +29,7 @@ from loom.web.routes.helpers import (
     _cancel_for,
     _confirm,
     _engine_for,
+    _client_try_hot_resume,
     _ensure_local_server,
     _free_image_engines,
     _get_session,
@@ -775,6 +776,9 @@ def _register_chat_routes(app, S):
                         S.local_gen_lock.acquire()
                     _local_held = True
                     S.local_busy["reason"] = "génération"
+                    # Slot froid (déchargement, swap) : restaurer AVANT de générer,
+                    # sinon ce message paie le re-prefill intégral. One-shot, ~ms si chaud.
+                    _client_try_hot_resume(S, conv.model, sess.id)
                     # Libérer la VRAM image; ne garder son cache RAM que si le LLM tient avec.
                     if _free_image_engines(S, _local_size_mb(S, conv.model)) is False:
                         yield _sse(

@@ -56,11 +56,9 @@ def build_app(cfg):
     client.hybrid_models = {m.id for m in cfg.models if m.cache_isolation}
     # Slots effectifs par modèle (= --parallel émis) : les annexes vont sur le slot 1
     # quand il existe, le fil principal reste sur le 0 (= celui du save/restore).
-    from loom.runtime.server_args import resolve_parallel
+    from loom.runtime.server_args import compute_slot_counts
 
-    client.slot_counts = {
-        m.id: resolve_parallel(cfg.n_parallel, m.cache_isolation) for m in cfg.models
-    }
+    client.slot_counts = compute_slot_counts(cfg.models, cfg.n_parallel)
     # Séparer le store épisodique des fichiers d'identité injectés au prompt.
     from types import SimpleNamespace
 

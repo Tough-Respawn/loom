@@ -42,4 +42,4 @@ STORIES-handoff-multi-modeles.md
 /logs/handoff_monitor.log
 scripts/
 # Scripts ad hoc ecrits par Loom lui-meme a la racine (actions demandees en session) : jamais suivis
-/test_*.py
+/*.py
