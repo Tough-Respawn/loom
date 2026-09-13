@@ -460,6 +460,8 @@ class SubAgentRunner:
                     permission=self.permission,
                     # Compacter avant saturation évite les appels d'outils tronqués.
                     compact_after_tokens=threshold,
+                    # Slot annexe : le cache du parent (slot 0) reste intact.
+                    id_slot=self.client.annex_slot(tier),
                 )
             finally:
                 if saved:
@@ -498,6 +500,7 @@ class SubAgentRunner:
                 }
                 yield ("content", f"\n[arrêt ouvrier : {labels[reason]}]\n")
                 yield ("done", {"reason": reason})
+
             try:
                 yield (
                     "subagent_start",
@@ -594,7 +597,9 @@ class SubAgentRunner:
                                         fingerprint = (tool_name, result_text)
                                         recent_results.append(fingerprint)
                                         if (
-                                            sum(x == fingerprint for x in recent_results)
+                                            sum(
+                                                x == fingerprint for x in recent_results
+                                            )
                                             >= self.result_repeat_limit
                                         ):
                                             forced_stop = "result_cycle"
@@ -764,9 +769,7 @@ def make_dispatch_agent(
 
     def run_stream(args: dict):
         # Valider avant de créer le générateur pour remonter immédiatement les erreurs.
-        return runner.stream(
-            args.get("task") or "", model=_requested_role(args)
-        )
+        return runner.stream(args.get("task") or "", model=_requested_role(args))
 
     def run(args: dict) -> str:
         return runner.run(args.get("task") or "", model=_requested_role(args))

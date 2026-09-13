@@ -166,7 +166,7 @@ class LoomClient:
         body = _flatten_for_summary(list(old_messages), budget_chars)
         if not body.strip():
             return ""
-        oai, api_model, _ = self._resolve(model)
+        oai, api_model, native = self._resolve(model)
         try:
             resp = oai.chat.completions.create(
                 model=api_model,
@@ -177,6 +177,12 @@ class LoomClient:
                 # Un résumé dense tient en 700 tokens et reste abordable sur un modèle lent.
                 max_tokens=700,
                 temperature=0.2,
+                # Slot annexe : ne pas écraser le cache du fil principal.
+                **(
+                    {"extra_body": {"id_slot": self.annex_slot(model)}}
+                    if native
+                    else {}
+                ),
             )
             summary = (resp.choices[0].message.content or "").strip()
         except Exception as exc:  # noqa: BLE001 - best-effort : jamais crasher l'appelant
@@ -251,6 +257,14 @@ class LoomClient:
     def is_remote(self, model: str | None) -> bool:
         """Vrai si le modèle est servi par une API DISTANTE (route montée), pas en local."""
         return bool(model and model in self._routes)
+
+    def annex_slot(self, model: str | None) -> int:
+        """Slot llama-server des appels ANNEXES (titre, résumé, reflect, sous-agent) :
+        1 si le modèle a deux slots (cache_isolation -> --parallel 2, table
+        `slot_counts` posée au boot), sinon 0 — un seul slot, rien à isoler. Le fil
+        principal et son warm restent TOUJOURS sur le slot 0 (= celui du save)."""
+        counts = getattr(self, "slot_counts", None) or {}
+        return 1 if counts.get(model or self.model, 1) >= 2 else 0
 
     def add_remote_route(self, model_id: str, spec: dict) -> None:
         """Monte (ou remplace) À CHAUD la route d'un modèle distant : un client OpenAI de plus,
@@ -469,6 +483,11 @@ class LoomClient:
                 with urllib.request.urlopen(req, timeout=20) as resp:
                     body = json.loads(resp.read().decode() or "{}")
                 _debug(f"SLOT_{action.upper()}", {"name": name, **body}, terminal=False)
+                if action == "save" and body.get("n_saved") == 0:
+                    # Le slot visé ne contenait rien : fichier inutile, et un restore
+                    # dessus « réussirait » en rendant un slot vide (re-prefill total).
+                    _debug("SLOT_SAVE_VIDE", f"{path} : n_saved = 0 -> ignoré")
+                    return False
                 return True
             except Exception as e:  # noqa: BLE001 - slot KV best-effort, jamais bloquant
                 # Timeout et HTTP 501 sont durables : les retenter pénaliserait chaque tour.
@@ -660,6 +679,7 @@ class LoomClient:
                 thinking,
                 tools=registry.openai_tools() if registry else None,
                 native_extras=native,
+                id_slot=0,
             )
             stream = oai.chat.completions.create(**kwargs)
             try:
@@ -683,7 +703,7 @@ class LoomClient:
         connaît pas ; on garde la 1re qui produit un vrai titre. Couvre le DISTANT (Z.ai/GLM,
         OpenRouter…) comme le LOCAL (llama.cpp/Qwen). Renvoie "" si rien d'exploitable ->
         l'appelant gère le repli (début du message)."""
-        oai, api_model, _ = self._resolve(model)
+        oai, api_model, native = self._resolve(model)
         prompt = (
             "Donne un titre TRÈS court (3 à 5 mots) résumant cette demande, en français, "
             "sans guillemets ni ponctuation finale. Réponds UNIQUEMENT par le titre.\n\n"
@@ -715,6 +735,12 @@ class LoomClient:
         fast = oai.with_options(max_retries=0, timeout=20)
         for extra in attempts:
             payload = {**base, **extra}
+            if native:
+                # Slot annexe : le titre ne doit pas écraser le cache du fil principal.
+                payload["extra_body"] = {
+                    **payload.get("extra_body", {}),
+                    "id_slot": self.annex_slot(model),
+                }
             # Certains providers imposent leur température ; la seconde passe l'omet.
             for drop_temp in (False, True):
                 if drop_temp:
@@ -781,13 +807,17 @@ class LoomClient:
         model: str | None = None,
         thinking: bool = True,
         stream_holder: dict | None = None,
+        id_slot: int | None = None,
     ) -> Iterator[tuple[str, str]]:
-        """Yield les events (reasoning|content), system prompt injecté en tête."""
+        """Yield les events (reasoning|content), system prompt injecté en tête.
+        `id_slot` : None = slot annexe (reflect, synthèse recall…) ; le fil
+        principal sans outils et le keep-warm passent 0 explicitement."""
         oai, api_model, native = self._resolve(model)
+        if id_slot is None:
+            id_slot = self.annex_slot(model)
         reasoning_key = model or self.model
         reasoning_history = reasoning_key in self._reasoning_history_models or any(
-            m.get("role") == "assistant" and "reasoning_content" in m
-            for m in messages
+            m.get("role") == "assistant" and "reasoning_content" in m for m in messages
         )
         kwargs = build_create_kwargs(
             api_model,
@@ -797,6 +827,7 @@ class LoomClient:
             thinking,
             native_extras=native,
             reasoning_history=reasoning_history,
+            id_slot=id_slot,
         )
         _debug_messages(kwargs["model"], kwargs["messages"])
         try:
@@ -813,6 +844,7 @@ class LoomClient:
                 thinking,
                 native_extras=native,
                 reasoning_history=True,
+                id_slot=id_slot,
             )
             log_event("reasoning_history.retry", level="WARN", model=api_model)
             stream = oai.chat.completions.create(**kwargs)
@@ -1165,8 +1197,12 @@ class LoomClient:
         monitor_events_provider=None,
         refocus_note: bool = True,
         stream_holder: dict | None = None,
+        id_slot: int | None = 0,
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
+
+        `id_slot` : slot llama-server (0 = fil principal, défaut ; le sous-agent
+        passe le slot annexe pour ne pas écraser le cache du parent).
 
         `notes_provider` (optionnel) : callable sans argument renvoyant les REMARQUES
         de l'utilisateur arrivées PENDANT le tour (« notes en vol », façon Claude
@@ -1228,8 +1264,7 @@ class LoomClient:
             "verify_streak": 0,  # checks navigateur verts consécutifs (anti sur-vérification)
             "reasoning_history": reasoning_key in self._reasoning_history_models
             or any(
-                m.get("role") == "assistant" and "reasoning_content" in m
-                for m in convo
+                m.get("role") == "assistant" and "reasoning_content" in m for m in convo
             ),
             "reasoning_history_retries": 0,
             "text": "",  # texte accumulé du dernier appel modèle
@@ -1260,6 +1295,7 @@ class LoomClient:
                 tools=tools,
                 native_extras=native,
                 reasoning_history=st["reasoning_history"],
+                id_slot=id_slot,
             )
             _debug_messages(kwargs["model"], kwargs["messages"])
             # Une variation des outils, placés en tête de prompt, invalide tout le cache.
@@ -1358,17 +1394,17 @@ class LoomClient:
                 "role": "assistant",
                 "content": text or None,
                 "tool_calls": [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                # Assainir le JSON tronqué pour ne pas empoisonner les tours suivants.
-                                "arguments": _safe_args(tc["arguments"]),
-                            },
-                        }
-                        for tc in tool_calls
-                    ],
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            # Assainir le JSON tronqué pour ne pas empoisonner les tours suivants.
+                            "arguments": _safe_args(tc["arguments"]),
+                        },
+                    }
+                    for tc in tool_calls
+                ],
             }
             # Conserver EXACTEMENT la réflexion reçue : le provider peut la vérifier
             # au tour suivant. Les messages synthétiques seront complétés à vide dans

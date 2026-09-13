@@ -83,6 +83,7 @@ def build_create_kwargs(
     tools: list[dict] | None = None,
     native_extras: bool = True,
     reasoning_history: bool = False,
+    id_slot: int | None = None,
 ) -> dict:
     request_messages = messages
     if reasoning_history:
@@ -120,6 +121,12 @@ def build_create_kwargs(
         if not thinking:
             # Paramètre non standard du template local pour couper la réflexion préalable.
             extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+        # Slot llama-server EXPLICITE : sans lui le serveur choisit par LRU/similarité
+        # et la conversation peut vivre sur le slot 1 pendant que Loom sauve le 0
+        # (audit 2026-09-13 : n_saved = 114 = le prompt de titre). 0 = fil principal,
+        # 1 = annexes (titre, résumé, reflect, sous-agent) quand le modèle a 2 slots.
+        if id_slot is not None:
+            extra_body["id_slot"] = id_slot
         kwargs["extra_body"] = extra_body
     return kwargs
 

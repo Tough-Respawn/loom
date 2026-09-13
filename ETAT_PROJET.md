@@ -2,7 +2,12 @@
 
 <!-- RÔLE : suivi interne (livré, état technique, reste/pistes, conventions). Pitch public : README.md. Carte technique : loom.md. Historique versions : CHANGELOG.md. -->
 
-> Dernière mise à jour : 2026-08-02 — audit de préparation après l'éclatement des
+> Dernière mise à jour : 2026-09-13 — audit timings (voir CHANGELOG) : binaire
+> `build-vulkan-uma` en service (coût fixe par requête ÷15), slots llama-server
+> explicites + save vérifié. Reste du plan validé : titre hors chemin critique,
+> warm annulable, réduction du préfixe (`deferred_tools` par A/B).
+>
+> Mise à jour précédente : 2026-08-02 — audit de préparation après l'éclatement des
 > god-files. Le self-test d'éval a été reconnecté aux modules propriétaires et couvert
 > par pytest ; suite, Ruff, self-test et smoke web rejoués. Voir
 > [CHANGELOG.md](CHANGELOG.md), [docs/audit-dette.md](docs/audit-dette.md) et le

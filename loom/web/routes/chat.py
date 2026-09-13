@@ -720,6 +720,7 @@ def _register_chat_routes(app, S):
                     model=conv.model or None,
                     thinking=conv.thinking,
                     stream_holder=stream_holder,
+                    id_slot=0,  # fil principal : même slot que le save/restore
                 )
 
             interrupted = False

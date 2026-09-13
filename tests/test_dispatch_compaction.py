@@ -20,6 +20,9 @@ class _RecClient:
     def __init__(self):
         self.kwargs = None
 
+    def annex_slot(self, model):
+        return 0  # un seul slot : rien à isoler
+
     def is_remote(self, model):
         return False
 
