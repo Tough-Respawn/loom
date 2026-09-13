@@ -124,6 +124,23 @@ def _title_in_background(
         S.session_store.save(sess)
 
 
+def _abort_warm(S) -> bool:
+    """Interrompt l'amorçage en cours (warm de fin de tour, keep-warm, reflect) :
+    ferme le flux publié dans `S.warm_holder` — llama-server annule la tâche à la
+    déconnexion et GARDE le cache déjà calculé — et pose `abort` pour qu'un warm
+    pas encore parti se saute. True si un porte-flux existe (étape 4, 2026-09-13)."""
+    from loom.agent.streaming import _close
+
+    holder = getattr(S, "warm_holder", None)
+    if holder is None:
+        return False
+    holder["abort"] = True
+    stream = holder.get("stream")
+    if stream is not None:
+        _close(stream)
+    return True
+
+
 def _client_try_hot_resume(S, model: str | None, session_id: str) -> bool:
     """Reprise à chaud one-shot sur slot FROID depuis le chemin /chat lui-même :
     après un déchargement, la reprise n'existait que dans l'amorçage (boot,

@@ -27,6 +27,7 @@ from loom.web.app import (
 )
 from loom.web.routes.commands import _handle_goal_command, _handle_init_command
 from loom.web.routes.helpers import (
+    _abort_warm,
     _cancel_for,
     _confirm,
     _engine_for,
@@ -759,7 +760,24 @@ def _register_chat_routes(app, S):
                 # Sérialiser le slot local unique; laisser les API distantes parallèles.
                 if conv.model and conv.model not in S.remote_model_ids:
                     if not S.local_gen_lock.acquire(blocking=False):
-                        yield _sse("notice", text=_local_busy_notice(S))
+                        # Verrou tenu par un AMORÇAGE (warm/keep-warm/reflect) : on
+                        # l'interrompt — le message prend la main et paie lui-même le
+                        # contexte restant. Une vraie génération, elle, se termine.
+                        _reason = S.local_busy.get("reason") or ""
+                        if _reason in (
+                            "prime",
+                            "keepwarm",
+                            "maintenance",
+                        ) and _abort_warm(S):
+                            yield _sse(
+                                "notice",
+                                text=(
+                                    "amorçage du contexte interrompu : ton message "
+                                    "prend la main (il préfillera ce qui manque)."
+                                ),
+                            )
+                        else:
+                            yield _sse("notice", text=_local_busy_notice(S))
                         S.local_gen_lock.acquire()
                     _local_held = True
                     S.local_busy["reason"] = "génération"
