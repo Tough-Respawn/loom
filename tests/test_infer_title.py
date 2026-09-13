@@ -123,3 +123,22 @@ def test_infer_title_abandonne_rend_vide():
     t.join(timeout=2)
     assert out == [""]  # abandonné : pas de titre, et pas de variante suivante tentée
     assert "stream" not in holder and not holder.get("abort")
+
+
+def test_infer_title_interruptible_a_60s_de_budget():
+    # Interruption en plein calcul PROUVÉE côté serveur le 2026-09-13 (cancel task,
+    # cache partiel conservé) : le titrage séquentiel peut prendre 60 s sans risque,
+    # un message le coupe. Sans porte-flux (distant, thread), 20 s restent la règle.
+    seen: dict = {}
+
+    def create(**kw):
+        return _ChunkStream(["ok"])
+
+    oai = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    oai.with_options = lambda **kw: seen.update(kw) or oai
+    LoomClient.infer_title(_self(oai, native=True), "orn", "x", stream_holder={})
+    assert seen["timeout"] == 60
+    LoomClient.infer_title(_self(oai, native=True), "orn", "x")
+    assert seen["timeout"] == 20
