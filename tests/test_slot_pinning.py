@@ -191,3 +191,72 @@ def test_save_slot_accepte_une_sauvegarde_pleine(monkeypatch, tmp_path):
     )
     assert c.save_slot("orn", "turnend.kv", session_id="s1") is True
     assert (tmp_path / "turnend.kv.meta.json").exists()
+
+
+# ---- revue 2026-09-13 : distant, save vide après save valide, restore vide -----
+
+
+def test_jamais_d_id_slot_vers_une_route_distante_meme_avec_extras_natifs():
+    # `_resolve` renvoie enable_thinking_param comme drapeau « extras natifs » :
+    # une route distante qui l'active recevait id_slot. Un slot n'a de sens qu'en local.
+    client, fake = make_client([turn_text("ok")], remote=True)
+    client._routes["remote-x"]["enable_thinking_param"] = True
+    collect(
+        client.stream_chat_tools(
+            [{"role": "user", "content": "hi"}],
+            "sys",
+            8,
+            model="remote-x",
+            registry=FakeRegistry(),
+        )
+    )
+    body = fake.calls[0]["extra_body"]
+    assert "repeat_penalty" in body  # les extras natifs partent toujours
+    assert "id_slot" not in body
+
+
+def test_stream_chat_distant_sans_id_slot():
+    client, fake = make_client([turn_text("ok")], remote=True)
+    client._routes["remote-x"]["enable_thinking_param"] = True
+    list(
+        client.stream_chat(
+            [{"role": "user", "content": "hi"}], "sys", 8, model="remote-x"
+        )
+    )
+    assert "id_slot" not in fake.calls[0]["extra_body"]
+
+
+def test_save_vide_invalide_la_meta_du_save_precedent(monkeypatch, tmp_path):
+    import urllib.request
+
+    c = LoomClient(base_url="http://127.0.0.1:8080/v1")
+    c.hot_resume_enabled = True
+    c.slots_dir_override = str(tmp_path)
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen({"n_saved": 9697}))
+    assert c.save_slot("orn", "turnend.kv", session_id="s1") is True
+    assert (tmp_path / "turnend.kv.meta.json").exists()
+    # Le serveur a DÉJÀ écrasé le fichier par un save vide : la meta ment désormais.
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen({"n_saved": 0}))
+    assert c.save_slot("orn", "turnend.kv", session_id="s1") is False
+    assert not (tmp_path / "turnend.kv.meta.json").exists()
+    assert "orn" not in c._warm_slots()
+
+
+def test_restore_vide_est_un_echec(monkeypatch, tmp_path):
+    import urllib.request
+
+    c = LoomClient(base_url="http://127.0.0.1:8080/v1")
+    c.hot_resume_enabled = True
+    c.slots_dir_override = str(tmp_path)
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen({"n_restored": 0}))
+    assert c.restore_slot("orn", "turnend.kv", force=True) is False
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen({"n_restored": 9697}))
+    assert c.restore_slot("orn", "turnend.kv", force=True) is True
+
+
+def test_compute_slot_counts_suit_la_config():
+    from loom.runtime.server_args import compute_slot_counts
+
+    models = [NS(id="orn", cache_isolation=True), NS(id="qwen", cache_isolation=False)]
+    assert compute_slot_counts(models, n_parallel=1) == {"orn": 2, "qwen": 1}
+    assert compute_slot_counts(models, n_parallel=3) == {"orn": 3, "qwen": 3}

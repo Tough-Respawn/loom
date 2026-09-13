@@ -5,8 +5,6 @@ import threading
 from flask import request
 
 
-
-
 # ---- Config vivante ----------------------------------------------------------------
 
 
@@ -49,7 +47,15 @@ def _regen_swap_yaml(S):
     try:
         from loom.runtime.serve import regenerate_swap_yaml
 
-        return bool(regenerate_swap_yaml(S.config_defaults_path, S.config_local_path))
+        ok = bool(regenerate_swap_yaml(S.config_defaults_path, S.config_local_path))
+        if ok and getattr(S, "client", None) is not None:
+            # Les slots effectifs suivent la config (cache_isolation posé après un bench).
+            from loom.config import load_config
+            from loom.runtime.server_args import compute_slot_counts
+
+            cfg = load_config(S.config_defaults_path, S.config_local_path)
+            S.client.slot_counts = compute_slot_counts(cfg.models, cfg.n_parallel)
+        return ok
     except Exception as e:  # noqa: BLE001
         print(f"[loom] regen swap yaml échoué: {e}", flush=True)
         return False

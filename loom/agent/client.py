@@ -180,7 +180,7 @@ class LoomClient:
                 # Slot annexe : ne pas écraser le cache du fil principal.
                 **(
                     {"extra_body": {"id_slot": self.annex_slot(model)}}
-                    if native
+                    if native and not self.is_remote(model)
                     else {}
                 ),
             )
@@ -265,6 +265,12 @@ class LoomClient:
         principal et son warm restent TOUJOURS sur le slot 0 (= celui du save)."""
         counts = getattr(self, "slot_counts", None) or {}
         return 1 if counts.get(model or self.model, 1) >= 2 else 0
+
+    def _slot_arg(self, model: str | None, id_slot: int | None) -> int | None:
+        """Un slot n'a de sens qu'en LOCAL. `_resolve` renvoie `enable_thinking_param`
+        comme drapeau « extras natifs » pour une route distante : ce drapeau ne
+        suffit pas, on tranche sur la route (revue 2026-09-13)."""
+        return None if self.is_remote(model) else id_slot
 
     def add_remote_route(self, model_id: str, spec: dict) -> None:
         """Monte (ou remplace) À CHAUD la route d'un modèle distant : un client OpenAI de plus,
@@ -484,9 +490,14 @@ class LoomClient:
                     body = json.loads(resp.read().decode() or "{}")
                 _debug(f"SLOT_{action.upper()}", {"name": name, **body}, terminal=False)
                 if action == "save" and body.get("n_saved") == 0:
-                    # Le slot visé ne contenait rien : fichier inutile, et un restore
-                    # dessus « réussirait » en rendant un slot vide (re-prefill total).
-                    _debug("SLOT_SAVE_VIDE", f"{path} : n_saved = 0 -> ignoré")
+                    # Le serveur a DÉJÀ écrasé le fichier par ce save vide : la meta du
+                    # save précédent mentirait (restore « réussi » d'un slot vide,
+                    # re-prefill total). On l'invalide et le slot redevient froid.
+                    _debug("SLOT_SAVE_VIDE", f"{path} : n_saved = 0 -> meta invalidée")
+                    self._invalidate_slot_meta(model, name)
+                    return False
+                if action == "restore" and body.get("n_restored") == 0:
+                    _debug("SLOT_RESTORE_VIDE", f"{path} : n_restored = 0 -> échec")
                     return False
                 return True
             except Exception as e:  # noqa: BLE001 - slot KV best-effort, jamais bloquant
@@ -540,6 +551,15 @@ class LoomClient:
                         f"SLOT_{action.upper()}_ERR", f"{path} : {e}", terminal=False
                     )
         return False
+
+    def _invalidate_slot_meta(self, model: str | None, name: str) -> None:
+        try:
+            self._slots_meta_path(name).unlink(missing_ok=True)
+        except (
+            OSError
+        ) as e:  # best-effort : au pire la meta reste, le restore vide échoue
+            _debug("HOT_RESUME_META_ERR", str(e), terminal=False)
+        self._warm_slots().discard(model or "")
 
     def save_slot(
         self, model: str | None, name: str, session_id: str | None = None
@@ -679,7 +699,7 @@ class LoomClient:
                 thinking,
                 tools=registry.openai_tools() if registry else None,
                 native_extras=native,
-                id_slot=0,
+                id_slot=self._slot_arg(model, 0),
             )
             stream = oai.chat.completions.create(**kwargs)
             try:
@@ -735,7 +755,7 @@ class LoomClient:
         fast = oai.with_options(max_retries=0, timeout=20)
         for extra in attempts:
             payload = {**base, **extra}
-            if native:
+            if native and not self.is_remote(model):
                 # Slot annexe : le titre ne doit pas écraser le cache du fil principal.
                 payload["extra_body"] = {
                     **payload.get("extra_body", {}),
@@ -815,6 +835,7 @@ class LoomClient:
         oai, api_model, native = self._resolve(model)
         if id_slot is None:
             id_slot = self.annex_slot(model)
+        id_slot = self._slot_arg(model, id_slot)
         reasoning_key = model or self.model
         reasoning_history = reasoning_key in self._reasoning_history_models or any(
             m.get("role") == "assistant" and "reasoning_content" in m for m in messages
@@ -1295,7 +1316,7 @@ class LoomClient:
                 tools=tools,
                 native_extras=native,
                 reasoning_history=st["reasoning_history"],
-                id_slot=id_slot,
+                id_slot=self._slot_arg(model, id_slot),
             )
             _debug_messages(kwargs["model"], kwargs["messages"])
             # Une variation des outils, placés en tête de prompt, invalide tout le cache.

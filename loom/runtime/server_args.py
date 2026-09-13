@@ -13,6 +13,12 @@ def resolve_parallel(n_parallel: int, cache_isolation: bool) -> int:
     return max(base, 2) if cache_isolation else base
 
 
+def compute_slot_counts(models, n_parallel: int) -> dict[str, int]:
+    """Slots effectifs par modèle (= --parallel émis dans le yaml). Sert au client
+    pour router les appels annexes sur le slot 1 quand il existe."""
+    return {m.id: resolve_parallel(n_parallel, m.cache_isolation) for m in models}
+
+
 def build_server_args(
     server_bin: str,
     model_path: str,
