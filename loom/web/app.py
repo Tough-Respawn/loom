@@ -539,6 +539,9 @@ def create_app(
         local_gen_lock=threading.Lock(),
         # La raison du verrou alimente un message de mise en file exact.
         local_busy={"reason": ""},
+        # Porte-flux de l'amorçage (warm/keep-warm/reflect) : /chat le ferme pour
+        # préempter un prefill en cours au lieu d'attendre sa fin (étape 4).
+        warm_holder={},
         stay_awake=StayAwake(),
         confirm_local=threading.local(),
         notes=NotesQueue(),

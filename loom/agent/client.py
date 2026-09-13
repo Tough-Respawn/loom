@@ -681,6 +681,7 @@ class LoomClient:
         model: str | None = None,
         registry=None,
         thinking: bool = True,
+        stream_holder: dict | None = None,
     ) -> bool:
         """Ré-amorce le cache KV du slot LOCAL : re-prefill silencieux (1 token) du
         MÊME préfixe que le prochain tour — system prompt + messages + schémas
@@ -689,6 +690,14 @@ class LoomClient:
         intermédiaire (titre, reflect, ping) écrase le cache de la conversation ->
         sans ré-amorçage le message suivant re-préfillerait TOUT (des minutes en
         local). Best-effort (avale toute erreur), False si échec."""
+        # PRÉEMPTIBLE (étape 4, 2026-09-13) : `stream_holder` partagé avec /chat.
+        # Un message qui arrive pendant le prefill pose `abort` et ferme le flux
+        # publié ici -> llama-server annule la tâche (cache déjà calculé conservé),
+        # on rend la main tout de suite au lieu de tenir le verrou jusqu'au bout.
+        if stream_holder is not None and stream_holder.get("abort"):
+            stream_holder["abort"] = False
+            return False
+        aborted = False
         try:
             oai, api_model, native = self._resolve(model)
             kwargs = build_create_kwargs(
@@ -702,14 +711,25 @@ class LoomClient:
                 id_slot=self._slot_arg(model, 0),
             )
             stream = oai.chat.completions.create(**kwargs)
+            if stream_holder is not None:
+                stream_holder["stream"] = stream
             try:
                 for _ in _iter_events(stream):
                     pass
             finally:
                 _close(stream)
+                if stream_holder is not None:
+                    stream_holder.pop("stream", None)
+                    aborted = bool(stream_holder.pop("abort", False))
+            if aborted:
+                _debug("WARM_CTX_ABANDON", "message arrivé pendant l'amorçage")
+                return False
             return True
         except Exception as e:  # noqa: BLE001 - amorçage best-effort, jamais bloquant
-            _debug("WARM_CTX_ERR", str(e))
+            if aborted:
+                _debug("WARM_CTX_ABANDON", "message arrivé pendant l'amorçage")
+            else:
+                _debug("WARM_CTX_ERR", str(e))
             return False
 
     def infer_title(self, model: str | None, message: str) -> str:

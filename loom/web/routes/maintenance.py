@@ -5,8 +5,6 @@ import time
 from loom.web.routes.priming import _prime_slot
 
 
-
-
 def _post_turn_maintenance(
     S, sess, msgs, actions, answer, model, do_reflect, kv_saved=False
 ):
@@ -36,6 +34,7 @@ def _post_turn_maintenance(
                     provider=S.reflect_stores.provider,
                     paths=S.reflect_stores.paths,
                     learned_dir=S.reflect_stores.learned_dir,
+                    stream_holder=getattr(S, "warm_holder", None),
                 )
 
                 # Trace VISIBLE (console/serve.log) : sinon l'apprentissage est
@@ -136,6 +135,7 @@ def _keepwarm_loop(S):
                     1,
                     model=model,
                     thinking=False,
+                    stream_holder=getattr(S, "warm_holder", None),
                 ):
                     pass
 

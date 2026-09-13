@@ -60,6 +60,8 @@ def _prime_slot(S, sess) -> bool:
             model=model,
             registry=registry if (registry is not None and len(registry)) else None,
             thinking=conv.thinking,
+            # Préemptible : /chat ferme ce flux si un message arrive pendant le prefill.
+            stream_holder=getattr(S, "warm_holder", None),
         )
     except Exception as e:  # noqa: BLE001 - amorçage best-effort, jamais bloquant
         print(f"[prime] erreur ignorée : {e}", flush=True)
