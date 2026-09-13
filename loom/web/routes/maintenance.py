@@ -22,6 +22,12 @@ def _post_turn_maintenance(
     derrière le verrou (attend la fermeture du flux ; si l'utilisateur a déjà
     relancé, on passe après son tour). Distant : reflect seul."""
     is_local = bool(model) and model not in S.remote_model_ids
+    holder = getattr(S, "warm_holder", None)
+
+    def _aborted() -> bool:
+        # Un message attend le verrou : plus RIEN ne démarre (warm, titre, ping),
+        # le signal reste posé jusqu'à la libération (revue croisée 2026-09-13).
+        return bool(holder and holder.get("abort"))
 
     if is_local and not S.local_gen_lock.acquire(timeout=600):
         return
@@ -65,7 +71,7 @@ def _post_turn_maintenance(
             except Exception as _e:  # noqa: BLE001 - best-effort, jamais bloquant
                 print(f"[reflect] erreur ignorée : {_e}", flush=True)
 
-        if is_local:
+        if is_local and not _aborted():
             if kv_saved and S.client.restore_slot(model, "turnend.kv"):
                 print(
                     "[slot] cache de la conversation RESTAURÉ après fin de tour "
@@ -80,7 +86,7 @@ def _post_turn_maintenance(
                     flush=True,
                 )
             S.last_activity[0] = time.time()
-            if title_request is not None:
+            if title_request is not None and not _aborted():
                 # Vrai titre APRÈS le warm, séquentiel (les deux slots partagent le
                 # matériel : en parallèle, warm à 6,5 t/s et titre annulé au timeout,
                 # vécu 2026-09-13) et INTERRUPTIBLE par un message via le porte-flux.
@@ -98,6 +104,8 @@ def _post_turn_maintenance(
 
     finally:
         if is_local:
+            if holder is not None:
+                holder["abort"] = False  # le verrou se libère : signal remis à zéro
             S.local_busy["reason"] = ""
             S.local_gen_lock.release()
 
@@ -127,46 +135,58 @@ def _keepwarm_loop(S):
         if last <= 0 or (time.time() - last) < interval:
             continue
 
-        if not S.local_gen_lock.acquire(blocking=False):
-            continue  # génération locale en cours => déjà chaud
+        _keepwarm_tick(S)
 
-        S.local_busy["reason"] = "keepwarm"
-        try:
-            sess = S.cur["session"]
 
-            model = sess.conversation.model if sess else None
+def _keepwarm_tick(S) -> None:
+    """Une itération du keep-warm (extraite pour être testable) : verrou, prime du
+    préfixe (ou ping de repli), signal d'annulation honoré et remis à zéro."""
+    if not S.local_gen_lock.acquire(blocking=False):
+        return  # génération locale en cours => déjà chaud
 
-            if not model:
-                continue
+    holder = getattr(S, "warm_holder", None)
+    S.local_busy["reason"] = "keepwarm"
+    try:
+        sess = S.cur["session"]
 
-            # Keep-warm = garder chaud le modèle LOCAL (éviter le cold start). Un modèle
-            # DISTANT n'a pas de cold start côté machine ET est PAYANT à l'appel : le
-            # pinger en boucle brûlerait des crédits pour rien -> on saute.
-            if model in S.remote_model_ids:
-                continue
+        model = sess.conversation.model if sess else None
 
-            # Keep-warm v2 : on ré-amorce le PRÉFIXE DE LA CONVERSATION au lieu
-            # d'un « ping » — l'ancien ping gardait le modèle chaud mais ÉCRASAIT
-            # le cache KV du fil (slot unique) : chaque reprise re-préfillait
-            # TOUT (bug 2026-07-10). Ici : modèle chaud ET cache chaud ; si le
-            # cache est déjà bon, le prefill est ~nul -> quasi gratuit. Repli
-            # ping pour une session encore vide (rien à amorcer, juste chauffer).
-            if not _prime_slot(S, sess):
-                for _kind, _chunk in S.client.stream_chat(
-                    [{"role": "user", "content": "ping"}],
-                    "",
-                    1,
-                    model=model,
-                    thinking=False,
-                    stream_holder=getattr(S, "warm_holder", None),
-                ):
-                    pass
+        if not model:
+            return
 
-            S.last_activity[0] = time.time()  # gardé chaud => relance un intervalle
+        # Keep-warm = garder chaud le modèle LOCAL (éviter le cold start). Un modèle
+        # DISTANT n'a pas de cold start côté machine ET est PAYANT à l'appel : le
+        # pinger en boucle brûlerait des crédits pour rien -> on saute.
+        if model in S.remote_model_ids:
+            return
 
-        except Exception:  # noqa: BLE001 - keep-warm best-effort, jamais bloquant
-            pass
+        # Keep-warm v2 : on ré-amorce le PRÉFIXE DE LA CONVERSATION au lieu
+        # d'un « ping » — l'ancien ping gardait le modèle chaud mais ÉCRASAIT
+        # le cache KV du fil (slot unique) : chaque reprise re-préfillait
+        # TOUT (bug 2026-07-10). Ici : modèle chaud ET cache chaud ; si le
+        # cache est déjà bon, le prefill est ~nul -> quasi gratuit. Repli
+        # ping pour une session encore vide (rien à amorcer, juste chauffer).
+        primed = _prime_slot(S, sess)
+        if not primed and not (holder and holder.get("abort")):
+            # Un warm INTERROMPU n'est pas un échec : pas de ping pendant qu'un
+            # message attend le verrou (revue croisée 2026-09-13).
+            for _kind, _chunk in S.client.stream_chat(
+                [{"role": "user", "content": "ping"}],
+                "",
+                1,
+                model=model,
+                thinking=False,
+                stream_holder=holder,
+            ):
+                pass
 
-        finally:
-            S.local_busy["reason"] = ""
-            S.local_gen_lock.release()
+        S.last_activity[0] = time.time()  # gardé chaud => relance un intervalle
+
+    except Exception:  # noqa: BLE001 - keep-warm best-effort, jamais bloquant
+        pass
+
+    finally:
+        if holder is not None:
+            holder["abort"] = False
+        S.local_busy["reason"] = ""
+        S.local_gen_lock.release()

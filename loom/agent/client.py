@@ -695,8 +695,7 @@ class LoomClient:
         # publié ici -> llama-server annule la tâche (cache déjà calculé conservé),
         # on rend la main tout de suite au lieu de tenir le verrou jusqu'au bout.
         if stream_holder is not None and stream_holder.get("abort"):
-            stream_holder["abort"] = False
-            return False
+            return False  # un message attend : ne rien démarrer (signal conservé)
         aborted = False
         try:
             oai, api_model, native = self._resolve(model)
@@ -712,6 +711,12 @@ class LoomClient:
             )
             stream = oai.chat.completions.create(**kwargs)
             if stream_holder is not None:
+                if stream_holder.get("abort"):
+                    # Le message est arrivé PENDANT l'ouverture HTTP : le flux n'était
+                    # pas encore publié, on le ferme sans le lire.
+                    _close(stream)
+                    _debug("WARM_CTX_ABANDON", "message arrivé pendant l'amorçage")
+                    return False
                 stream_holder["stream"] = stream
             try:
                 for _ in _iter_events(stream):
@@ -720,13 +725,15 @@ class LoomClient:
                 _close(stream)
                 if stream_holder is not None:
                     stream_holder.pop("stream", None)
-                    aborted = bool(stream_holder.pop("abort", False))
+                    # Le signal n'est PAS consommé ici : il vaut pour toute la
+                    # maintenance (titre, ping…) ; le détenteur du verrou le remet à 0.
+                    aborted = bool(stream_holder.get("abort"))
             if aborted:
                 _debug("WARM_CTX_ABANDON", "message arrivé pendant l'amorçage")
                 return False
             return True
         except Exception as e:  # noqa: BLE001 - amorçage best-effort, jamais bloquant
-            if aborted:
+            if aborted or (stream_holder is not None and stream_holder.get("abort")):
                 _debug("WARM_CTX_ABANDON", "message arrivé pendant l'amorçage")
             else:
                 _debug("WARM_CTX_ERR", str(e))
@@ -803,9 +810,11 @@ class LoomClient:
                     # INTERRUPTIBLE (maintenance séquentielle) : en flux, publié dans
                     # le porte-flux — un message utilisateur le ferme, on rend "".
                     if stream_holder.get("abort"):
-                        stream_holder["abort"] = False
                         return ""
                     stream = fast.chat.completions.create(**payload, stream=True)
+                    if stream_holder.get("abort"):
+                        _close(stream)  # arrivé pendant l'ouverture : jamais lu
+                        return ""
                     stream_holder["stream"] = stream
                     txt = ""
                     try:
@@ -815,7 +824,7 @@ class LoomClient:
                     finally:
                         _close(stream)
                         stream_holder.pop("stream", None)
-                        if stream_holder.pop("abort", False):
+                        if stream_holder.get("abort"):
                             _debug("TITLE_ABANDON", "message arrivé pendant le titrage")
                             return ""
                 else:
@@ -829,7 +838,7 @@ class LoomClient:
                 # Une panne de transport rend les autres variantes inutiles.
                 return ""
             except Exception as e:  # noqa: BLE001 - param rejeté par ce backend
-                if stream_holder is not None and stream_holder.pop("abort", False):
+                if stream_holder is not None and stream_holder.get("abort"):
                     stream_holder.pop("stream", None)
                     _debug("TITLE_ABANDON", "message arrivé pendant le titrage")
                     return ""

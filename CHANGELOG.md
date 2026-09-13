@@ -57,6 +57,13 @@
   préfille lui-même ce qui manque, avec une notice explicite. Avant : le message attendait
   la fin du prefill d'amorçage (54 s vécus). Une vraie génération d'une autre session
   n'est jamais interrompue.
+  *Revue croisée n°2* : le signal d'annulation porte sur TOUTE la durée du verrou —
+  `warm_context` / `infer_title` ne le consomment plus, la maintenance n'enchaîne ni
+  restore, ni warm, ni titre après une interruption, le keep-warm ne « ping » plus
+  après un warm interrompu, et le signal est revérifié dès l'ouverture du flux HTTP
+  (un message arrivé pendant l'ouverture ferme le flux sans le lire). Seul le
+  détenteur du verrou (maintenance, keep-warm, amorçage, ou le `/chat` qui le prend)
+  remet le signal à zéro.
 
 ### Tests
 - 5 tests (`tests/test_warm_preemptible.py`) : flux publié et abandon signalé, abandon
