@@ -231,6 +231,9 @@ class _StopClient:
     def __init__(self, reason):
         self.reason = reason
 
+    def annex_slot(self, model):
+        return 0  # un seul slot : rien à isoler
+
     def is_remote(self, model):
         return False
 
@@ -333,9 +336,7 @@ def test_budgets_appels_api_et_contexte_coupent_l_ouvrier():
 
 
 def test_budget_de_duree_coupe_avant_un_nouveau_tour():
-    _, end = _budget_end(
-        [("content", "ne doit pas être atteint")], max_duration_s=0
-    )
+    _, end = _budget_end([("content", "ne doit pas être atteint")], max_duration_s=0)
     assert end["status"] == "failed" and end["stop_reason"] == "worker_timeout"
 
 

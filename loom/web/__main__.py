@@ -54,6 +54,13 @@ def build_app(cfg):
     client.hot_resume_enabled = cfg.hot_resume
     client.restore_safe = cfg.restore_safe
     client.hybrid_models = {m.id for m in cfg.models if m.cache_isolation}
+    # Slots effectifs par modèle (= --parallel émis) : les annexes vont sur le slot 1
+    # quand il existe, le fil principal reste sur le 0 (= celui du save/restore).
+    from loom.runtime.server_args import resolve_parallel
+
+    client.slot_counts = {
+        m.id: resolve_parallel(cfg.n_parallel, m.cache_isolation) for m in cfg.models
+    }
     # Séparer le store épisodique des fichiers d'identité injectés au prompt.
     from types import SimpleNamespace
 

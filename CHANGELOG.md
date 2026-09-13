@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-09-13 — audit timings : slots explicites, save vérifié, binaire UMA
+
+### Audit (session ornith Q8, chiffres du log llama-server)
+- Amorçage 88 s pour un préfixe de 9 585 tokens (26 schémas d'outils ≈ 5,6k, system
+  3 966) ; premier octet 6,4 à 23,5 s par tour même cache plein ; décode 8,4-8,7 t/s.
+- Cause n°1 (hors repo) : le binaire maison du 27/07 n'avait PAS le fix de lecture UMA
+  (`de63a6dcf`) — ~3,3 s par opération de checkpoint, deux par requête. Rebuild
+  `build-vulkan-uma` (branche `fix/kv-restore-checkpoint-uma`) : cache plein +4 tokens
+  3,3 s → 0,22 s, +18 tokens 7,0 s → 0,77 s, décode inchangé. Sonde à prompt identique.
+- Cause n°2 : llama-server plaçait la conversation sur le slot 1 (LRU au premier appel)
+  pendant que Loom sauvait `/slots/0` — `n_saved = 114` = le prompt de titre. Chaque
+  redémarrage repayait l'amorçage complet.
+
+### Fonctionnalités
+- **Slot llama-server explicite** (`id_slot` dans `extra_body`, local uniquement) : fil
+  principal et warm sur le slot 0 (= celui du save/restore de la reprise à chaud) ;
+  titre, résumé, `stream_chat` (reflect, synthèse recall) et sous-agents sur le slot 1
+  quand le modèle a deux slots (`client.slot_counts` posé au boot depuis
+  `resolve_parallel`), sinon 0. L'isolation `cache_isolation` devient déterministe.
+- **Save vérifié** : un save qui répond `n_saved = 0` est refusé (pas de meta, slot non
+  marqué chaud) — la reprise à chaud ne restaure jamais un slot vide.
+
+### Tests
+- 12 non-régressions (`tests/test_slot_pinning.py`) : payload local/distant, choix du slot
+  annexe, fil principal, warm, appels annexes, sous-agent, save vide/plein.
+
+### Constats laissés en pistes (cf. ETAT_PROJET)
+- Titre local tenté avant le `done` puis 400 « invalid temperature » ; warm de fin de
+  tour non annulable ; `deferred_tools` jamais validé par A/B ; artefacts `{'text': …}`
+  dans USER.md ; `regenerate_swap_yaml` oublie ub/b/checkpoint_min_step ;
+  `--cache-reuse` inapplicable à ornith (multimodal + hybride).
+
+---
+
 ## 2026-08-03 — calibration : repli machine, sonde d'ubatch sur llama-server
 
 ### Fonctionnalités
