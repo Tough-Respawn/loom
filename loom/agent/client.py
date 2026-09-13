@@ -785,7 +785,11 @@ class LoomClient:
             )
         )
         # Le titre est cosmétique : échouer vite puis utiliser le texte du message.
-        fast = oai.with_options(max_retries=0, timeout=20)
+        # 60 s quand il est interruptible (maintenance séquentielle : un message le
+        # coupe, prouvé côté serveur le 2026-09-13) ; 20 s sinon (thread distant).
+        fast = oai.with_options(
+            max_retries=0, timeout=60 if stream_holder is not None else 20
+        )
         for extra in attempts:
             payload = {**base, **extra}
             if local:
