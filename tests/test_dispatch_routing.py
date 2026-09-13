@@ -19,6 +19,9 @@ class ChainClient:
         self.kwargs = []
         self.slots = []
 
+    def annex_slot(self, model):
+        return 0  # un seul slot : rien à isoler
+
     def is_remote(self, model):
         return model in self.remote
 
@@ -201,9 +204,7 @@ def test_dispatch_libre_prend_strong_par_defaut_et_cheap_sur_demande():
     spec.run({"task": "audit multi-fichiers"})
     assert client.tried == ["zai"]
 
-    client2 = ChainClient(
-        {"flash": "ok", "zai": "ok"}, remote_ids={"flash", "zai"}
-    )
+    client2 = ChainClient({"flash": "ok", "zai": "ok"}, remote_ids={"flash", "zai"})
     runner2 = _runner(
         client2, model="local-x", model_chain=["flash", "zai"], model_roles=roles
     )
