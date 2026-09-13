@@ -1070,6 +1070,15 @@ def _register_chat_routes(app, S):
                     and len(actions) >= S.settings["reflect_min_actions"]
                 )
 
+                # Vrai titre après coup : `done` ne l'attend jamais. LOCAL -> dans la
+                # maintenance séquentielle (après le warm, interruptible) ; DISTANT ->
+                # thread dédié sans verrou (pas de matériel partagé).
+                _title_local = bool(conv.model) and conv.model not in S.remote_model_ids
+                _title_request = (
+                    (title_message, sess.title)
+                    if (_needs_model_title and saved and _title_local)
+                    else None
+                )
                 threading.Thread(
                     target=_post_turn_maintenance,
                     args=(
@@ -1082,12 +1091,11 @@ def _register_chat_routes(app, S):
                         _do_reflect,
                         _kv_saved,
                     ),
+                    kwargs={"title_request": _title_request},
                     daemon=True,
                     name="loom-post-turn",
                 ).start()
-
-                # Vrai titre après coup, hors flux et hors verrou : `done` ne l'attend pas.
-                if _needs_model_title and saved:
+                if _needs_model_title and saved and not _title_local:
                     threading.Thread(
                         target=_title_in_background,
                         args=(S, sess, conv.model, title_message, sess.title),

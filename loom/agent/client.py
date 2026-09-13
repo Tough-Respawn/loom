@@ -732,7 +732,9 @@ class LoomClient:
                 _debug("WARM_CTX_ERR", str(e))
             return False
 
-    def infer_title(self, model: str | None, message: str) -> str:
+    def infer_title(
+        self, model: str | None, message: str, stream_holder: dict | None = None
+    ) -> str:
         """Titre COURT (3-5 mots) d'une conversation, inféré par le modèle. NON streamé, tout
         petit budget.
 
@@ -793,9 +795,29 @@ class LoomClient:
                     "id_slot": self.annex_slot(model),
                 }
             try:
-                resp = fast.chat.completions.create(**payload)
-                txt = (resp.choices[0].message.content or "").strip()
-                txt = txt.strip('"').strip("'").strip()
+                if stream_holder is not None:
+                    # INTERRUPTIBLE (maintenance séquentielle) : en flux, publié dans
+                    # le porte-flux — un message utilisateur le ferme, on rend "".
+                    if stream_holder.get("abort"):
+                        stream_holder["abort"] = False
+                        return ""
+                    stream = fast.chat.completions.create(**payload, stream=True)
+                    stream_holder["stream"] = stream
+                    txt = ""
+                    try:
+                        for kind, chunk in _iter_events(stream):
+                            if kind == "content":
+                                txt += chunk
+                    finally:
+                        _close(stream)
+                        stream_holder.pop("stream", None)
+                        if stream_holder.pop("abort", False):
+                            _debug("TITLE_ABANDON", "message arrivé pendant le titrage")
+                            return ""
+                else:
+                    resp = fast.chat.completions.create(**payload)
+                    txt = resp.choices[0].message.content or ""
+                txt = txt.strip().strip('"').strip("'").strip()
                 if txt:
                     return txt.splitlines()[0][:60].strip()
                 # réponse vide : cette variante ne donnera rien -> suivante
@@ -803,6 +825,10 @@ class LoomClient:
                 # Une panne de transport rend les autres variantes inutiles.
                 return ""
             except Exception as e:  # noqa: BLE001 - param rejeté par ce backend
+                if stream_holder is not None and stream_holder.pop("abort", False):
+                    stream_holder.pop("stream", None)
+                    _debug("TITLE_ABANDON", "message arrivé pendant le titrage")
+                    return ""
                 _debug("TITLE_ERR", str(e))
         return ""
 

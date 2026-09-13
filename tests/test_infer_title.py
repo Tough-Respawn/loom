@@ -53,3 +53,73 @@ def test_infer_title_local_coupe_le_thinking_des_le_premier_essai():
     first = oai.chat.completions.calls[0]
     assert first["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert first["extra_body"]["id_slot"] == 1
+
+
+# ---- revue croisée 2026-09-13 : titrage en FLUX, interruptible via le porte-flux ----
+
+
+class _ChunkStream:
+    """Flux minimal : deux deltas de contenu puis fin."""
+
+    def __init__(self, parts):
+        self.parts = parts
+        self.closed = False
+
+    def __iter__(self):
+        for p in self.parts:
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=p))],
+                usage=None,
+            )
+
+    def close(self):
+        self.closed = True
+
+
+def test_infer_title_avec_porte_flux_streame_et_publie_son_flux():
+    stream = _ChunkStream(["Titre ", "streamé"])
+    seen: list[dict] = []
+
+    def create(**kw):
+        seen.append(kw)
+        return stream
+
+    oai = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    oai.with_options = lambda **kw: oai
+    holder: dict = {}
+    title = LoomClient.infer_title(
+        _self(oai, native=True), "orn", "bonjour", stream_holder=holder
+    )
+    assert title == "Titre streamé"
+    assert seen[0]["stream"] is True  # un flux, pour pouvoir le fermer de l'extérieur
+    assert stream.closed and "stream" not in holder  # porte-flux nettoyé
+
+
+def test_infer_title_abandonne_rend_vide():
+    import threading
+
+    from tests.test_warm_preemptible import _BlockingStream
+
+    stream = _BlockingStream()
+    oai = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: stream))
+    )
+    oai.with_options = lambda **kw: oai
+    holder: dict = {}
+    out: list = []
+    t = threading.Thread(
+        target=lambda: out.append(
+            LoomClient.infer_title(
+                _self(oai, native=True), "orn", "x", stream_holder=holder
+            )
+        )
+    )
+    t.start()
+    assert stream.started.wait(timeout=2)
+    holder["abort"] = True
+    holder["stream"].close()
+    t.join(timeout=2)
+    assert out == [""]  # abandonné : pas de titre, et pas de variante suivante tentée
+    assert "stream" not in holder and not holder.get("abort")

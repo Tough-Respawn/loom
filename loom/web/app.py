@@ -135,13 +135,13 @@ def _fallback_title(message: str) -> str:
     return (message or "").strip().splitlines()[0][:48].strip() or "Session"
 
 
-def _infer_title(client, model, message: str) -> str:
+def _infer_title(client, model, message: str, stream_holder: dict | None = None) -> str:
     """Titre court (3-5 mots) inféré par le modèle depuis la 1re demande, pour ne pas laisser
     la session « Nouvelle session ». La logique (thinking coupé + tentatives) vit dans
     client.infer_title ; ici on ne garde QUE le repli sur le début du message si le modèle ne
     renvoie rien d'exploitable."""
     try:
-        title = client.infer_title(model, message)
+        title = client.infer_title(model, message, stream_holder=stream_holder)
     except Exception:  # noqa: BLE001 - un titre est cosmétique, jamais bloquant
         title = ""
     return title or _fallback_title(message)

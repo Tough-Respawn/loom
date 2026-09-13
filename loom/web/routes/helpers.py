@@ -103,7 +103,12 @@ def _local_size_mb(S, mid) -> int:
 
 
 def _title_in_background(
-    S, sess, model: str | None, message: str, provisional: str
+    S,
+    sess,
+    model: str | None,
+    message: str,
+    provisional: str,
+    stream_holder: dict | None = None,
 ) -> None:
     """Vrai titre (modèle) APRÈS `done`, hors verrou, dans un thread dédié : le tour
     ne l'attend jamais (avant : 21 s de slot local avant `done`, ou jusqu'à 8 s
@@ -116,7 +121,9 @@ def _title_in_background(
     if is_local and getattr(S.client, "annex_slot", lambda m: 0)(model) == 0:
         return
     try:
-        title = _infer_title(S.client, model or None, message)
+        title = _infer_title(
+            S.client, model or None, message, stream_holder=stream_holder
+        )
     except Exception:  # noqa: BLE001 - cosmétique, jamais bloquant
         return
     if title and title != provisional and sess.title == provisional:
