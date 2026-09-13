@@ -163,6 +163,7 @@ def reflect(
     provider: Any,
     paths: dict,
     learned_dir: str,
+    stream_holder: dict | None = None,
 ) -> ReflectResult | None:
     """Un tour de réflexion complet : appel modèle borné -> validation -> écritures.
 
@@ -178,6 +179,8 @@ def reflect(
         max_tokens=800,
         model=model,
         thinking=False,
+        # Porte-flux partagé : un message utilisateur peut interrompre la réflexion.
+        stream_holder=stream_holder,
     ):
         if kind == "content":
             txt += chunk

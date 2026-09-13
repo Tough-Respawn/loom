@@ -23,7 +23,7 @@ class PrimeSpy:
         self.calls = []
 
     def warm_context(
-        self, messages, system_prompt, model=None, registry=None, thinking=True
+        self, messages, system_prompt, model=None, registry=None, thinking=True, **kw
     ):
         self.calls.append(
             {

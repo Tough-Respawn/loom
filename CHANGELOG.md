@@ -44,7 +44,18 @@
   par certains providers : 400 « only 1 is allowed ») et, en local, coupe le thinking
   dès le premier essai.
 
+- **Warm préemptible** (étape 4) : l'amorçage (warm de fin de tour, keep-warm, reflect)
+  publie son flux HTTP dans un porte-flux partagé `S.warm_holder` ; un message qui trouve
+  le verrou local tenu par un amorçage FERME ce flux (llama-server annule la tâche à la
+  déconnexion et garde le cache déjà calculé), l'amorçage rend la main aussitôt et le tour
+  préfille lui-même ce qui manque, avec une notice explicite. Avant : le message attendait
+  la fin du prefill d'amorçage (54 s vécus). Une vraie génération d'une autre session
+  n'est jamais interrompue.
+
 ### Tests
+- 5 tests (`tests/test_warm_preemptible.py`) : flux publié et abandon signalé, abandon
+  déjà demandé, fermeture par le helper, passage du porte-flux à reflect, parcours web
+  complet (second message pendant un warm : `done` en < 2 s, flux fermé, notice).
 - 12 non-régressions (`tests/test_slot_pinning.py`) : payload local/distant, choix du slot
   annexe, fil principal, warm, appels annexes, sous-agent, save vide/plein.
 - 5 parcours web complets (`tests/test_title_off_critical_path.py`) : provisoire avant le
