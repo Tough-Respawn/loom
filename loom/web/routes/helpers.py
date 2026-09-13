@@ -102,6 +102,28 @@ def _local_size_mb(S, mid) -> int:
     return int(spec.get("size_mb") or 0) if spec else 0
 
 
+def _title_in_background(
+    S, sess, model: str | None, message: str, provisional: str
+) -> None:
+    """Vrai titre (modèle) APRÈS `done`, hors verrou, dans un thread dédié : le tour
+    ne l'attend jamais (avant : 21 s de slot local avant `done`, ou jusqu'à 8 s
+    d'attente du titre distant). Local à UN seul slot : on n'appelle pas le modèle,
+    l'inférence évincerait le cache de la conversation ; le provisoire reste.
+    Le titre n'est posé que si personne ne l'a changé entre-temps."""
+    from loom.web.app import _infer_title
+
+    is_local = bool(model) and model not in S.remote_model_ids
+    if is_local and getattr(S.client, "annex_slot", lambda m: 0)(model) == 0:
+        return
+    try:
+        title = _infer_title(S.client, model or None, message)
+    except Exception:  # noqa: BLE001 - cosmétique, jamais bloquant
+        return
+    if title and title != provisional and sess.title == provisional:
+        sess.title = title
+        S.session_store.save(sess)
+
+
 def _client_try_hot_resume(S, model: str | None, session_id: str) -> bool:
     """Reprise à chaud one-shot sur slot FROID depuis le chemin /chat lui-même :
     après un déchargement, la reprise n'existait que dans l'amorçage (boot,

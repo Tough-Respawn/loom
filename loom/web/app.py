@@ -129,6 +129,12 @@ def _sse(event_type: str, **fields) -> str:
     return f"data: {json.dumps({'type': event_type, **fields}, ensure_ascii=False)}\n\n"
 
 
+def _fallback_title(message: str) -> str:
+    """Titre PROVISOIRE : début du message. Posé dès le début du tour pour que la
+    session ne reste jamais « Nouvelle session » en attendant le modèle."""
+    return (message or "").strip().splitlines()[0][:48].strip() or "Session"
+
+
 def _infer_title(client, model, message: str) -> str:
     """Titre court (3-5 mots) inféré par le modèle depuis la 1re demande, pour ne pas laisser
     la session « Nouvelle session ». La logique (thinking coupé + tentatives) vit dans
@@ -138,9 +144,7 @@ def _infer_title(client, model, message: str) -> str:
         title = client.infer_title(model, message)
     except Exception:  # noqa: BLE001 - un titre est cosmétique, jamais bloquant
         title = ""
-    if not title:
-        title = message.strip().splitlines()[0][:48].strip() or "Session"
-    return title
+    return title or _fallback_title(message)
 
 
 def _build_user_content(message, images, *, is_vision, stash_dir) -> str | list:
