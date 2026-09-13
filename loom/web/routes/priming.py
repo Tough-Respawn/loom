@@ -138,6 +138,9 @@ def _prime_async(S, sess, *, wait_server: float = 0.0, require_running: bool = F
                     # Préfixe chaud : le keep-warm prend le relais pour le garder.
                     S.last_activity[0] = time.time()
             finally:
+                _holder = getattr(S, "warm_holder", None)
+                if _holder is not None:
+                    _holder["abort"] = False  # verrou libéré : signal remis à zéro
                 S.local_busy["reason"] = ""
                 S.local_gen_lock.release()
         except Exception as e:  # noqa: BLE001 - amorçage best-effort

@@ -780,6 +780,9 @@ def _register_chat_routes(app, S):
                             yield _sse("notice", text=_local_busy_notice(S))
                         S.local_gen_lock.acquire()
                     _local_held = True
+                    _holder = getattr(S, "warm_holder", None)
+                    if _holder is not None:
+                        _holder["abort"] = False  # le verrou est à nous
                     S.local_busy["reason"] = "génération"
                     # Slot froid (déchargement, swap) : restaurer AVANT de générer,
                     # sinon ce message paie le re-prefill intégral. One-shot, ~ms si chaud.
