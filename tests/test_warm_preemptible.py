@@ -70,7 +70,9 @@ def test_warm_context_publie_son_flux_et_signale_l_abandon():
     holder["stream"].close()
     t.join(timeout=2)
     assert result == [False]  # abandonné, pas « amorcé »
-    assert "stream" not in holder and not holder.get("abort")  # porte-flux nettoyé
+    # Le flux est retiré, mais le signal RESTE : il vaut pour toute la maintenance
+    # (titre, ping…) jusqu'à la libération du verrou par son détenteur.
+    assert "stream" not in holder and holder.get("abort") is True
 
 
 def test_warm_context_saute_si_l_abandon_est_deja_demande():
@@ -84,7 +86,7 @@ def test_warm_context_saute_si_l_abandon_est_deja_demande():
         )
         is False
     )
-    assert created == [] and holder == {"abort": False}
+    assert created == [] and holder == {"abort": True}  # signal conservé
 
 
 def test_abort_warm_ferme_le_flux_courant():
@@ -211,3 +213,162 @@ def test_un_message_interrompt_le_warm_de_fin_de_tour(warm_env):
     assert any(e["type"] == "notice" and "interrompu" in e["text"] for e in events), [
         e for e in events if e["type"] == "notice"
     ]
+
+
+# ---- revue 2 (2026-09-13) : signal conservé jusqu'à la libération du verrou ----------
+
+
+class _RaceStream(_BlockingStream):
+    """Flux dont l'itération ne doit JAMAIS commencer (annulation pendant l'ouverture)."""
+
+    def __iter__(self):
+        raise AssertionError("le flux ne doit pas être lu après une annulation")
+
+
+def test_warm_context_revérifie_l_annulation_des_l_ouverture_du_flux():
+    client = LoomClient("http://127.0.0.1:9/v1")
+    holder: dict = {}
+    stream = _RaceStream()
+
+    def create(**kw):
+        holder["abort"] = True  # le message arrive PENDANT l'ouverture HTTP
+        return stream
+
+    client._client = NS(chat=NS(completions=NS(create=create)))
+    assert (
+        client.warm_context(
+            [{"role": "user", "content": "."}], "sys", stream_holder=holder
+        )
+        is False
+    )
+    assert stream.closed and "stream" not in holder and holder["abort"] is True
+
+
+def test_infer_title_revérifie_l_annulation_des_l_ouverture_du_flux():
+    holder: dict = {}
+    stream = _RaceStream()
+
+    def create(**kw):
+        holder["abort"] = True
+        return stream
+
+    oai = NS(chat=NS(completions=NS(create=create)))
+    oai.with_options = lambda **kw: oai
+    fake_self = NS(
+        _resolve=lambda m: (oai, "m", True),
+        is_remote=lambda m: False,
+        annex_slot=lambda m: 1,
+    )
+    assert LoomClient.infer_title(fake_self, "orn", "x", stream_holder=holder) == ""
+    assert stream.closed and holder["abort"] is True
+
+
+def test_keepwarm_annule_ne_ping_pas_et_libere_le_signal(monkeypatch):
+    import threading as _th
+
+    import loom.web.routes.maintenance as m
+
+    pings: list = []
+    client = NS(stream_chat=lambda *a, **k: pings.append(k) or iter(()))
+    sess = NS(conversation=NS(model=MODEL), id="s")
+    S = NS(
+        settings={"keepwarm_interval": 1.0, "keepwarm_enabled": True},
+        last_activity=[time.time() - 100],
+        local_gen_lock=_th.Lock(),
+        local_busy={"reason": ""},
+        cur={"session": sess},
+        remote_model_ids=set(),
+        client=client,
+        warm_holder={},
+    )
+
+    def prime_aborted(S_, sess_):
+        S_.warm_holder["abort"] = True  # un message a coupé le warm
+        return False
+
+    monkeypatch.setattr(m, "_prime_slot", prime_aborted)
+    m._keepwarm_tick(S)
+    assert pings == []  # pas de ping de repli pendant qu'un message attend
+    assert S.warm_holder.get("abort") is False  # signal remis à zéro à la libération
+    assert S.local_gen_lock.acquire(blocking=False)  # verrou libéré
+
+
+@pytest.fixture()
+def maint_env(tmp_env, monkeypatch):
+    """Session SANS titre (titre demandé) + warm bloquant : le message qui interrompt
+    le warm ne doit pas voir la maintenance enchaîner sur le titre."""
+    client = LoomClient("http://127.0.0.1:9/v1")
+    fake = FakeOAI([turn_text("un."), turn_text("deux.")])
+    client._client = fake
+    client.slot_counts = {MODEL: 2}
+    seen = {"stream": None, "started": threading.Event(), "titles": [], "holder": None}
+
+    def warm_context(*a, stream_holder=None, **k):
+        seen["holder"] = stream_holder
+        if stream_holder is not None and stream_holder.get("abort"):
+            return False
+        s = _BlockingStream()
+        seen["stream"] = s
+        stream_holder["stream"] = s
+        seen["started"].set()
+        try:
+            for _ in s:
+                pass
+        except RuntimeError:
+            return False
+        finally:
+            stream_holder.pop("stream", None)
+        return True
+
+    def infer_title(m, message, stream_holder=None):
+        seen["titles"].append(message)
+        return "Titre modèle"
+
+    monkeypatch.setattr(client, "warm_context", warm_context)
+    monkeypatch.setattr(client, "infer_title", infer_title)
+    monkeypatch.setattr(
+        client,
+        "running_local",
+        lambda timeout=0.0: (True, json.dumps({"running": [{"model": MODEL}]})),
+    )
+    monkeypatch.setattr(client, "save_slot", lambda *a, **k: False)
+    monkeypatch.setattr(client, "try_hot_resume", lambda *a, **k: False)
+    store = SessionStore(
+        tmp_env / "sessions",
+        default_system_prompt="prompt de test",
+        default_model=MODEL,
+        known_models=[MODEL],
+    )
+    app = create_app(
+        client=client,
+        skills_dir=str(tmp_env / "skills"),
+        session_store=store,
+        models=[MODEL],
+        keepwarm_enabled=False,
+        workspace_dir=str(tmp_env / "workspace"),
+        user_skills_dir=str(tmp_env / "skills_user"),
+        plugins_dir=str(tmp_env / "plugins"),
+        remote_store_path=str(tmp_env / "remote_models.json"),
+        tool_factory=lambda tools, ws, conv: FakeRegistry(),
+    )
+    web = app.test_client()
+    r = web.post("/session/new", data={})  # « Nouvelle session » : titre demandé
+    assert r.status_code == 200
+    return web, seen, store, r.get_json()["id"]
+
+
+def test_warm_interrompu_aucun_titre_ne_suit_sous_le_verrou(maint_env):
+    web, seen, store, sid = maint_env
+    r = web.post("/chat", data={"message": "premier", "session_id": sid})
+    assert _sse_events(r.data)[-1]["type"] == "done"
+    assert seen["started"].wait(timeout=3)
+    t0 = time.monotonic()
+    r = web.post("/chat", data={"message": "second", "session_id": sid})
+    elapsed = time.monotonic() - t0
+    assert _sse_events(r.data)[-1]["type"] == "done"
+    assert elapsed < 2.0, elapsed
+    assert seen["stream"].closed
+    time.sleep(0.3)
+    assert seen["titles"] == []  # le titre n'a PAS été tenté après l'interruption
+    assert store.load(sid).title == "premier"  # provisoire conservé
+    assert seen["holder"].get("abort") is False  # signal remis à zéro à la libération

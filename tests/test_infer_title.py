@@ -122,7 +122,7 @@ def test_infer_title_abandonne_rend_vide():
     holder["stream"].close()
     t.join(timeout=2)
     assert out == [""]  # abandonné : pas de titre, et pas de variante suivante tentée
-    assert "stream" not in holder and not holder.get("abort")
+    assert "stream" not in holder and holder.get("abort") is True  # signal conservé
 
 
 def test_infer_title_interruptible_a_60s_de_budget():
