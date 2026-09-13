@@ -444,7 +444,11 @@ def test_local_parcours_complet():
     d = deps(hits=HITS, files=FILES)
     r = wizard.start("qwen3 30b", d)  # /add-model <recherche> : direct à la shortlist
     assert r.state["step"] == "l_repo"
-    assert "unsloth/Qwen3-30B-GGUF" in r.reply and "9000" in r.reply
+    assert (
+        "[unsloth/Qwen3-30B-GGUF]"
+        "(https://huggingface.co/unsloth/Qwen3-30B-GGUF)" in r.reply
+    )
+    assert "9000" in r.reply
 
     r = wizard.step(r.state, "1", d)  # choix du repo -> quants annotés
     assert r.state["step"] == "l_quant"
