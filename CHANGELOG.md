@@ -25,8 +25,15 @@
   titre, résumé, `stream_chat` (reflect, synthèse recall) et sous-agents sur le slot 1
   quand le modèle a deux slots (`client.slot_counts` posé au boot depuis
   `resolve_parallel`), sinon 0. L'isolation `cache_isolation` devient déterministe.
-- **Save vérifié** : un save qui répond `n_saved = 0` est refusé (pas de meta, slot non
-  marqué chaud) — la reprise à chaud ne restaure jamais un slot vide.
+- **Save vérifié** : un save qui répond `n_saved = 0` est refusé ET invalide la meta du
+  save précédent (le serveur a déjà écrasé le fichier) ; un restore qui répond
+  `n_restored = 0` est un échec. La reprise à chaud ne restaure jamais un slot vide.
+- **Reprise à chaud depuis `/chat`** : après un déchargement (slots froids), le premier
+  message tente le restore one-shot sous le verrou local AVANT de générer — la reprise
+  n'existait que dans l'amorçage (boot, changement de modèle/session, fin de tour).
+- **`id_slot` jamais vers une route distante**, même si elle active les extras natifs
+  (`enable_thinking_param`) ; `slot_counts` resynchronisé à chaque régénération du yaml.
+  (Revue croisée du 2026-09-13.)
 
 ### Tests
 - 12 non-régressions (`tests/test_slot_pinning.py`) : payload local/distant, choix du slot

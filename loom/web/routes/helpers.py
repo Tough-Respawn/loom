@@ -7,7 +7,6 @@ from loom.runtime.comfy import ComfyEngine
 from loom.runtime.hardware import ram_available_mb
 
 
-
 # Marge RAM (Mo) gardée libre AU-DELÀ du LLM à charger : OS, cache KV, pics
 # transitoires. En dessous, on ne garde pas le cache image (jamais d'OOM pour
 # une optimisation de confort).
@@ -101,6 +100,20 @@ def _local_size_mb(S, mid) -> int:
     """size_mb (model.toml) d'un modèle local, 0 si inconnu."""
     spec = next((m for m in S.local_model_specs if m.get("id") == mid), None)
     return int(spec.get("size_mb") or 0) if spec else 0
+
+
+def _client_try_hot_resume(S, model: str | None, session_id: str) -> bool:
+    """Reprise à chaud one-shot sur slot FROID depuis le chemin /chat lui-même :
+    après un déchargement, la reprise n'existait que dans l'amorçage (boot,
+    changement de modèle/session, fin de tour) — le premier message re-préfillait
+    tout (revue 2026-09-13). Duck typing des fakes de test."""
+    fn = getattr(S.client, "try_hot_resume", None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn(model, session_id))
+    except Exception:  # noqa: BLE001 - best-effort, jamais bloquant
+        return False
 
 
 def _client_mark_all_cold(S) -> None:
