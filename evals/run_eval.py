@@ -343,6 +343,50 @@ def judge(client, model, case, traj) -> dict:
         }
 
 
+_JUDGE_LOGITS_INSTR = (
+    "You are a STRICT, impartial evaluator of an agent's work. Judge ONLY from the trace "
+    "given in the context. pass=true only if the success criterion is clearly met."
+)
+
+
+def judge_logits(client, model, case, traj, decider=None) -> dict:
+    """Juge par LECTURE DES LOGITS (loom.agent.decide) : mêmes entrées que `judge`, mais
+    pas de JSON généré : `pass` et `score` sont lus en 2 questions fermées sur le slot
+    annexe, avec une probabilité chacune. Pas de `reason` rédigée (rien n'est généré) ;
+    la probabilité et la couverture tiennent lieu de motif. Signal NON calibré : à
+    comparer au grader code (vérité terrain) avant d'en faire foi."""
+    from loom.agent.decide import Decider, Field
+
+    tools_seen = ", ".join(n for n, _ in traj.tool_calls) or "(aucun)"
+    context = (
+        f"TASK: {case.prompt}\n\nSUCCESS CRITERION: {case.rubric}\n\n"
+        f"TOOLS CALLED (in order): {tools_seen}\n\n"
+        f"AGENT'S FINAL ANSWER:\n{(traj.final_text or '(vide)')[:1500]}"
+    )
+    schema = [
+        Field.boolean("pass", "Is the success criterion clearly met by the trace?"),
+        Field.integer("score", 1, 5, "Quality of the work, 1 (bad) to 5 (excellent)."),
+    ]
+    if decider is None:
+        decider = Decider(client.base_url, id_slot=client.annex_slot(model))
+    try:
+        d = decider.decide(_JUDGE_LOGITS_INSTR, schema, context)
+    except Exception as e:  # noqa: BLE001 - même contrat que `judge` : jamais bloquant
+        return {"pass": None, "score": None, "reason": f"juge indisponible : {e}"}
+    p_pass = d.probs["pass"]["true"]
+    reason = (
+        f"logits : p(pass)={p_pass:.2f}, p(score)={max(d.probs['score'].values()):.2f}"
+    )
+    low = [k for k, v in d.coverage.items() if v < 0.5]
+    if low:
+        reason += f" ; couverture faible sur {', '.join(low)} (signal peu fiable)"
+    return {
+        "pass": bool(d.values["pass"]),
+        "score": int(d.values["score"]),
+        "reason": reason,
+    }
+
+
 def _critical(checks: dict) -> dict:
     """Checks bloquants = ceux dont le nom ne commence pas par '_' (informatifs)."""
     return {k: v for k, v in checks.items() if not k.startswith("_")}
@@ -418,7 +462,9 @@ def run_variant(
                     deferred_tools,
                 )
                 checks = case.check(traj, ws)
-                jd = judge(client, model, case, traj) if do_judge else None
+                # `do_judge` : None (pas de juge), "chat" (JSON généré) ou "logits".
+                judge_fn = judge_logits if do_judge == "logits" else judge
+                jd = judge_fn(client, model, case, traj) if do_judge else None
                 runs_data.append(_run_record(traj, checks, jd, model))
                 _save_transcript(
                     run_dir, name, case.id, k, traj, checks, jd, model=model
@@ -836,6 +882,13 @@ def main():
     ap.add_argument("--model", default=None)
     ap.add_argument("--max-iters", type=int, default=20)
     ap.add_argument("--no-judge", action="store_true")
+    ap.add_argument(
+        "--judge",
+        choices=["chat", "logits"],
+        default="chat",
+        help="juge modèle : JSON généré (chat) ou lecture des logits (logits, 2 questions "
+        "fermées sur le slot annexe, sans texte généré)",
+    )
     ap.add_argument("--cases", default=None, help="ids séparés par des virgules")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument(
@@ -918,7 +971,7 @@ def main():
                 perm,
                 args.runs,
                 args.max_iters,
-                not args.no_judge,
+                None if args.no_judge else args.judge,
                 only,
                 mcp_hub=mcp_hub if name == "new" else None,
                 deferred_tools=args.mcp_fixture,
