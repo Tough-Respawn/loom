@@ -1,4 +1,4 @@
-# ADR 0003 — Retrait de l'édition par numéro de ligne (insert_lines + replace_lines)
+# ADR 0005 — Retrait de l'édition par numéro de ligne (insert_lines + replace_lines)
 
 - Statut : Accepté
 - Date : 2026-06-18

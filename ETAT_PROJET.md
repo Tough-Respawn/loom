@@ -211,7 +211,7 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
   non-agentic était précisément des outils **non semés** sur les sessions (corrigé). Un gating
   dynamique recréerait l'angle mort et casserait le prompt caching (préfixe stable requis,
   94-98 % de hit mesuré côté distant).
-- **Édition par numéros de ligne** (`replace_lines`, `insert_lines`) : retirés (ADR 0003).
+- **Édition par numéros de ligne** (`replace_lines`, `insert_lines`) : retirés (ADR 0005).
   Les numéros se périment après chaque edit → thrash → arrêt anti-loop. `edit_file`
   exact-match est l'unique éditeur chirurgical.
 - **Mur de temps** (`max_seconds` 300 s) : retiré, il décapitait le raisonnement en plein vol.
