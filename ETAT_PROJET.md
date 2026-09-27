@@ -145,6 +145,19 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   au boot sur repli neutre. Fixture « machine dorée » (sondes réelles figées dans
   `tests/test_topology.py`) ; validé live en aveugle sur le poste de banc de l'époque.
 
+### Décision par logits (2026-09-21)
+- **`loom/agent/decide.py`** : primitive native (llama-server stock, pas de fork) pour les
+  questions fermées : lecture des probabilités pré-sampling aux nœuds de divergence des
+  options, préfixe en cache, `Decider(base_url, id_slot)`. Renvoie valeur (toujours dans le
+  schéma) + probabilité + `coverage`. Probabilité NON calibrée : signal relatif.
+- **Mesuré** (`evals/bench_decision.py`, 12 champs, 6 tickets annotés) : E4B 3,05 s vs
+  5,39 s JSON (50/54 vs 54/54) ; ornith 35B cpu-moe 9,8 s vs 13,2 s (27/27). ~140 ms par
+  requête serveur sur E4B, ~500 ms sur le MoE : ici le gain vient des tokens non générés.
+- **Câblé** : `evals/run_eval.py --judge logits` (pass + score sans texte), smoke runtime OK.
+- **Reste** : pré-sélection douce de skills, porte anti-injection (préfille chaque page une
+  2e fois sur le slot annexe : à mesurer), parallélisme par slots (`--parallel N`) pour
+  approcher le batch du fork sur un modèle dense résident.
+
 ### Sécurité
 - **Mode permission** (`loom/permissions.py`) : `evaluate()` pur + `DEFAULT_DENY` (regex
   incontournable même en `allow`) + confirmation interactive (`ask`) ; install de plugins gardée.
