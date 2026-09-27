@@ -77,8 +77,8 @@ Méthode : lecture statique du code réel, recoupement des symboles par recherch
 - `loom/extend/plugins.py:35-37` — champs scannés par `_scan_components` et stockés, mais **jamais lus** en aval. Seul `Plugin.skills` est consommé.
 - **Fix appliqué** : les 3 champs retirés de la classe `Plugin`, le scan correspondant supprimé de `_scan_components` (ne scanne plus que les skills). Docstrings et `_fmt_plugin` mis à jour. Ruff OK, smoke test OK.
 
-### P1-8. Évals référencent `replace_lines` (outil retiré par ADR 0003) — ✅ CORRIGÉ
-- `docs/adr/0003-retrait-insert-lines-ere-35b.md` (statut Accepté) retire `replace_lines` ET `insert_lines`. L'outil n'existe plus dans le runtime. Mais les évals y faisaient encore référence.
+### P1-8. Évals référencent `replace_lines` (outil retiré par ADR 0005) — ✅ CORRIGÉ
+- `docs/adr/0005-retrait-insert-lines-ere-35b.md` (statut Accepté) retire `replace_lines` ET `insert_lines`. L'outil n'existe plus dans le runtime. Mais les évals y faisaient encore référence.
 - **Fix appliqué** : toutes les références à `replace_lines`/`insert_lines` purgées du code source des évals (`cases.py`, `run_eval.py`, `README.md`). Self-test mis à jour pour utiliser `edit_file`. `evals/harness.py` créé pour mutualiser le code commun. Ruff OK, self-test évals VERT, aucune référence résiduelle dans le code Python exécutable.
 
 ### P1-9. `requests` déclaré en dépendance mais jamais importé — ✅ CORRIGÉ
