@@ -1,4 +1,4 @@
-"""Outils d'écriture/édition. Trois outils DÉLIBÉRÉMENT distincts (cf. ADR 0003 : édition par numéro de ligne retirée) :
+"""Outils d'écriture/édition. Trois outils DÉLIBÉRÉMENT distincts (cf. ADR 0005 : édition par numéro de ligne retirée) :
 chacun neutralise une contrainte précise d'un petit modèle sur un contexte étroit.
 
 - write_file   : créer / réécrire un petit fichier (baseline).
