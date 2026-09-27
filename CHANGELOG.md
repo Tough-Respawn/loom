@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-21 — décision par logits (mode « Jev » natif, llama-server stock)
+
+- `loom/agent/decide.py` : questions fermées (enum / booléen / entier) répondues sans
+  générer de JSON : une requête `/completion` (`n_predict=1`, `n_probs`, probabilités
+  PRÉ-sampling) par nœud de divergence des options, préfixe en cache, slot au choix.
+  Valeur toujours dans le schéma, probabilité renormalisée par champ, `coverage` = masse
+  que le schéma couvrait (signal faible visible, jamais masqué). Probabilité NON calibrée.
+- Pièges mesurés et traités : coupe là où les TOKENS des options divergent (`":` + ` true`,
+  pas `": ` + `true`) ; booléens et entiers acceptés nus ET cités (Gemma 4 E4B pose ` "`
+  après `":` dans 15 à 99 % des cas) ; clé `top_logprobs` en pré-sampling.
+- Banc réel `evals/bench_decision.py` (serveur éphémère, flags Loom, 12 champs, 6 tickets
+  annotés) : gemma4-e4b 3,05 s vs 5,39 s JSON à chaud (justesse 50/54 vs 54/54) ;
+  ornith 1.5 35B cpu-moe 9,8 s vs 13,2 s (27/27 des deux côtés), `--no-op-offload`
+  n'apporte rien (10,4 s). Coût = ~140 ms/requête serveur sur E4B, ~500 ms sur le MoE :
+  le gain vient des tokens non générés, pas du batch (fork non adopté).
+- Évals : `--judge logits` (2 questions fermées, sans texte généré) à côté du juge JSON ;
+  smoke runtime sur E4B : trajectoire réussie p(pass)=1,00, ratée p(pass)=0,01, ~1 s.
+
 ## 2026-09-13 — audit timings : slots explicites, save vérifié, binaire UMA
 
 ### Audit (session ornith Q8, chiffres du log llama-server)
