@@ -10,6 +10,7 @@ from pathlib import Path
 
 from loom.runtime.gguf_meta import read_gguf_meta
 from loom.runtime.models_fetch import ModelUnavailable, ensure_model
+from loom.utils import atomic_write_text
 
 _STRIP_SUFFIX = re.compile(r"[-_.](gguf)$", re.IGNORECASE)
 
@@ -67,7 +68,7 @@ def write_model_toml(
     if mmproj_filename:
         lines.append(f'mmproj_filename = "{mmproj_filename}"')
     p = model_dir / "model.toml"
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(p, "\n".join(lines) + "\n")
     stub = model_dir / "profile.md"
     if not stub.exists():
         stub.touch()
@@ -90,7 +91,7 @@ def finalize_model_toml(model_dir: str | Path, gguf_path: str | Path) -> dict:
         doc["n_layers"] = meta["n_layers"]
     if meta.get("expert_count"):
         doc["cpu_moe"] = True
-    p.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    atomic_write_text(p, tomlkit.dumps(doc))
     return meta
 
 

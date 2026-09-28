@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from loom.config import _deep_merge
+from loom.utils import atomic_write_text
 
 
 @dataclass
@@ -190,7 +191,7 @@ def set_local_values(local_path: str | Path, values: dict[str, dict]) -> None:
         for key, value in kv.items():
             doc[table][key] = value
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    local_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    atomic_write_text(local_path, tomlkit.dumps(doc))
 
 
 def _set_local_value(local_path: str | Path, table: str, key: str, value) -> None:

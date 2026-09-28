@@ -37,6 +37,7 @@ from loom.web.routes.model_admin import (
     _removable_models,
 )
 from loom.web.routes.rebench import _REBENCH, _rebench_worker
+from loom.utils import atomic_write_text
 
 
 def _wizard_deps(S):
@@ -551,7 +552,7 @@ def _register_model_routes(app, S):
                     doc[key] = (
                         raw if isinstance(raw, bool) else str(raw).lower() in truthy
                     )
-                tp.write_text(tomlkit.dumps(doc), encoding="utf-8")
+                atomic_write_text(tp, tomlkit.dumps(doc))
         except (ValueError, TypeError) as e:
             return {"ok": False, "error": str(e)[:120]}, 400
         # Régénérer puis décharger applique le nouveau tuning au prochain usage.
