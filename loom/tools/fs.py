@@ -124,6 +124,11 @@ def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     à l'identique et ne pas casser un fichier PowerShell (UTF-16)."""
     _guard_write_path(path)  # choke point : write_file/edit/replace/insert passent ici
     path.parent.mkdir(parents=True, exist_ok=True)
+    # UTF-16 avec BOM : ordre des octets EXPLICITE (le codec « utf-16 » écrit dans
+    # l'ordre natif, donc un fichier big-endian repartait en little-endian).
+    if encoding in ("utf-16-le-bom", "utf-16-be-bom"):
+        encoding = encoding.removesuffix("-bom")
+        content = "﻿" + content
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding=encoding, newline="") as fh:
         fh.write(content)
@@ -279,16 +284,35 @@ def make_edit_file(workspace_dir: str) -> ToolSpec:
         if path.is_dir():
             raise ToolError(f"'{rel}' est un répertoire, pas un fichier")
         # Réécrire avec l'encodage détecté garde éditables les fichiers UTF-16 et cp1252.
-        raw, _enc = _decode_text_enc(path.read_bytes())
+        try:
+            raw, _enc = _decode_text_enc(path.read_bytes(), strict=True)
+        except UnicodeDecodeError as exc:
+            raise ToolError(
+                f"{rel} contient des octets invalides pour son encodage "
+                f"({exc.encoding}) : édition refusée pour ne pas les corrompre. "
+                "Utilise write_file pour réécrire le fichier entier si c'est voulu."
+            ) from exc
         if raw is None:
             raise ToolError(
                 f"fichier binaire non éditable : {rel} (aucun encodage texte détecté)"
             )
-        # Chercher en LF puis restaurer le style original rend l'édition indépendante de l'OS.
-        is_crlf = "\r\n" in raw
-        text = raw.replace("\r\n", "\n")
         old_string = old_string.replace("\r\n", "\n")
         new_string = new_string.replace("\r\n", "\n")
+        # Fins de ligne MIXTES : travailler sur le texte brut, dans le style de la zone
+        # trouvée, pour ne pas convertir les lignes non éditées.
+        mixed = "\r\n" in raw and "\n" in raw.replace("\r\n", "")
+        if mixed:
+            text = raw
+            for style in ("\n", "\r\n"):
+                candidate = old_string.replace("\n", style)
+                if candidate in raw:
+                    old_string = candidate
+                    new_string = new_string.replace("\n", style)
+                    break
+        else:
+            # Chercher en LF puis restaurer le style original : indépendant de l'OS.
+            text = raw.replace("\r\n", "\n")
+        is_crlf = "\r\n" in raw and not mixed
         count = text.count(old_string)
         if count == 0:
             # Signaler les numéros décoratifs copiés depuis `read_file`.
