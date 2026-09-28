@@ -32,16 +32,21 @@ _IMAGE_MIME = {
 }
 
 
-def _decode_text_enc(data: bytes) -> tuple[str, str] | tuple[None, None]:
+def _decode_text_enc(
+    data: bytes, strict: bool = False
+) -> tuple[str, str] | tuple[None, None]:
     """Décode des octets en (texte, encodage) en gérant les encodages courants sous
     Windows. L'encodage renvoyé permet de RÉ-ÉCRIRE à l'identique (edit_file). Renvoie
-    (None, None) si ça ressemble vraiment à du binaire (échec de tout décodage)."""
+    (None, None) si ça ressemble vraiment à du binaire (échec de tout décodage).
+    `strict` (édition) : un octet invalide après un BOM lève UnicodeDecodeError au lieu
+    de devenir U+FFFD — réécrire le fichier corromprait ces octets."""
+    errors = "strict" if strict else "replace"
     if data[:3] == b"\xef\xbb\xbf":  # UTF-8 avec BOM
-        return data[3:].decode("utf-8", errors="replace"), "utf-8-sig"
+        return data[3:].decode("utf-8", errors=errors), "utf-8-sig"
     if data[:2] == b"\xff\xfe":  # UTF-16 LE (BOM) — défaut PowerShell
-        return data[2:].decode("utf-16-le", errors="replace"), "utf-16"
+        return data[2:].decode("utf-16-le", errors=errors), "utf-16-le-bom"
     if data[:2] == b"\xfe\xff":  # UTF-16 BE (BOM)
-        return data[2:].decode("utf-16-be", errors="replace"), "utf-16"
+        return data[2:].decode("utf-16-be", errors=errors), "utf-16-be-bom"
     try:
         return data.decode("utf-8"), "utf-8"  # cas le plus courant
     except UnicodeDecodeError:
