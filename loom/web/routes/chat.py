@@ -800,22 +800,29 @@ def _register_chat_routes(app, S):
                         # Verrou tenu par un AMORÇAGE (warm/keep-warm/reflect) : on
                         # l'interrompt — le message prend la main et paie lui-même le
                         # contexte restant. Une vraie génération, elle, se termine.
-                        _reason = S.local_busy.get("reason") or ""
-                        if _reason in (
-                            "prime",
-                            "keepwarm",
-                            "maintenance",
-                        ) and _abort_warm(S):
-                            yield _sse(
-                                "notice",
-                                text=(
-                                    "amorçage du contexte interrompu : ton message "
-                                    "prend la main (il préfillera ce qui manque)."
-                                ),
-                            )
-                        else:
-                            yield _sse("notice", text=_local_busy_notice(S))
-                        S.local_gen_lock.acquire()
+                        # La raison est relue à chaque palier : un amorçage peut prendre
+                        # le verrou PENDANT l'attente (ou avant d'avoir posé sa raison).
+                        _told_abort = _told_busy = False
+                        while not S.local_gen_lock.acquire(timeout=0.25):
+                            _reason = S.local_busy.get("reason") or ""
+                            if _reason in (
+                                "prime",
+                                "keepwarm",
+                                "maintenance",
+                            ) and _abort_warm(S):
+                                if not _told_abort:
+                                    _told_abort = True
+                                    yield _sse(
+                                        "notice",
+                                        text=(
+                                            "amorçage du contexte interrompu : ton "
+                                            "message prend la main (il préfillera "
+                                            "ce qui manque)."
+                                        ),
+                                    )
+                            elif _reason and not _told_busy and not _told_abort:
+                                _told_busy = True
+                                yield _sse("notice", text=_local_busy_notice(S))
                     _local_held = True
                     _holder = getattr(S, "warm_holder", None)
                     if _holder is not None:
