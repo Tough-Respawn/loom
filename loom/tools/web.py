@@ -79,8 +79,6 @@ class WebSearchConfig:
     max_chars_per_page: int = 4000
 
 
-
-
 # Un User-Agent de navigateur évite les refus réservés aux clients HTTP nus.
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -105,13 +103,11 @@ def _httpx_get(url, params=None, headers=None, timeout=None, pin_ip=None):
     Si `pin_ip` est fourni (anti DNS-rebinding), on se connecte à CETTE IP déjà validée
     en préservant le Host et le SNI d'origine : httpx ne re-résout pas le nom d'hôte."""
     if pin_ip is None:
-        return httpx.get(
-            url,
-            params=params,
-            headers=_with_ua(headers),
-            timeout=timeout,
-            follow_redirects=False,
-        )
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            req = client.build_request(
+                "GET", url, params=params, headers=_with_ua(headers)
+            )
+            return _bounded_send(client, req)
     parsed = urlparse(url)
     host = parsed.hostname or ""
     host_hdr = host if parsed.port is None else f"{host}:{parsed.port}"
@@ -127,7 +123,56 @@ def _httpx_get(url, params=None, headers=None, timeout=None, pin_ip=None):
             headers=hdrs,
             extensions={"sni_hostname": host},
         )
-        return client.send(req)
+        return _bounded_send(client, req)
+
+
+# Bornes d'une page récupérée : la page est de toute façon tronquée pour le modèle,
+# lire plus ne sert qu'à saturer la mémoire ; le timeout httpx est PAR opération,
+# un serveur qui distille un octet à la fois ne le déclenche jamais.
+_FETCH_MAX_BYTES = 5_000_000
+_FETCH_TOTAL_S = 60.0
+
+
+def _read_bounded(chunks, close) -> bytes:
+    """Lit `chunks` jusqu'à _FETCH_MAX_BYTES, en levant httpx.ReadTimeout au-delà de
+    _FETCH_TOTAL_S. `close` ferme la connexion dans tous les cas."""
+    import time
+
+    deadline = time.monotonic() + _FETCH_TOTAL_S
+    parts: list[bytes] = []
+    size = 0
+    try:
+        for chunk in chunks:
+            parts.append(chunk)
+            size += len(chunk)
+            if size >= _FETCH_MAX_BYTES:
+                break
+            if time.monotonic() > deadline:
+                raise httpx.ReadTimeout(
+                    f"délai total de {_FETCH_TOTAL_S:.0f} s dépassé pendant la lecture"
+                )
+    finally:
+        close()
+    return b"".join(parts)[:_FETCH_MAX_BYTES]
+
+
+def _bounded_send(client: httpx.Client, req: httpx.Request) -> httpx.Response:
+    """Envoie `req` en flux et renvoie une réponse au corps borné (taille, durée)."""
+    resp = client.send(req, stream=True)
+    body = _read_bounded(resp.iter_bytes(), resp.close)
+    # Le corps est déjà décompressé : sans ces en-têtes, httpx ne le redécode pas.
+    headers = [
+        (k, v)
+        for k, v in resp.headers.multi_items()
+        if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")
+    ]
+    return httpx.Response(
+        resp.status_code,
+        headers=headers,
+        content=body,
+        request=req,
+        extensions={"reason_phrase": resp.reason_phrase.encode()},
+    )
 
 
 # L'alias Chrome suit la dernière version connue de curl_cffi.
@@ -147,16 +192,52 @@ def _impersonate_get(url, pin_ip, headers, timeout, impersonate):
     parsed = urlparse(url)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    sess = _creq.Session()
-    if pin_ip:
-        sess.curl.setopt(CurlOpt.RESOLVE, [f"{host}:{port}:{pin_ip}".encode()])
-    return sess.get(
-        url,
-        impersonate=target,
-        headers=headers or None,
-        allow_redirects=False,  # sauts suivis+revalidés par fetch_page (anti-SSRF)
-        timeout=timeout,
+    # Session fermée à la sortie (elle ne l'était jamais) ; corps lu en flux et borné
+    # comme sur le chemin httpx.
+    with _creq.Session() as sess:
+        if pin_ip:
+            sess.curl.setopt(CurlOpt.RESOLVE, [f"{host}:{port}:{pin_ip}".encode()])
+        resp = sess.get(
+            url,
+            impersonate=target,
+            headers=headers or None,
+            allow_redirects=False,  # sauts suivis+revalidés par fetch_page (anti-SSRF)
+            timeout=timeout,
+            stream=True,
+        )
+        body = _read_bounded(resp.iter_content(), resp.close)
+    return _BoundedResponse(
+        resp.status_code,
+        resp.headers,
+        body,
+        getattr(resp, "reason", "") or "",
+        resp.charset or resp.encoding or "utf-8",
     )
+
+
+@dataclass
+class _BoundedResponse:
+    """Réponse curl_cffi au corps déjà lu (et borné) : les attributs dont
+    fetch_page et les backends de recherche se servent."""
+
+    status_code: int
+    headers: object
+    content: bytes
+    reason: str
+    encoding: str
+
+    @property
+    def text(self) -> str:
+        return self.content.decode(self.encoding or "utf-8", errors="replace")
+
+    def json(self):
+        return json.loads(self.text)
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=None, response=None
+            )
 
 
 def _http_get(
@@ -188,8 +269,6 @@ def _truncate(text: str, max_chars: int) -> str:
     if len(text) > max_chars:
         return text[:max_chars] + "\n...[tronqué]"
     return text
-
-
 
 
 def _search_searxng(query: str, cfg: WebSearchConfig) -> list[dict]:
@@ -277,12 +356,12 @@ def _pick_backend(cfg: WebSearchConfig) -> str:
     return "ddgs"
 
 
-
-
 def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
     """Recherche en ligne ; renvoie une liste {title,url,snippet}.
 
-    Dégrade en liste vide si le réseau est absent (jamais d'exception réseau).
+    Dégrade en liste vide si le réseau est absent (connexion/timeout). Une erreur de
+    service (statut HTTP, limitation ddgs) remonte à l'appelant, qui la rapporte au
+    modèle ; en mode auto, searxng en erreur se rabat d'abord sur ddgs.
     """
     backend = _pick_backend(cfg)
     try:
@@ -295,6 +374,12 @@ def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
 
                 if ensure_running(cfg.searxng_url):
                     return _search_searxng(query, cfg)
+                if cfg.backend == "auto":
+                    return _search_ddgs(query, cfg)
+                raise
+            except httpx.HTTPStatusError:
+                # Instance joignable mais en erreur (429 de limitation, 5xx) : même
+                # repli qu'une instance injoignable en mode auto.
                 if cfg.backend == "auto":
                     return _search_ddgs(query, cfg)
                 raise
