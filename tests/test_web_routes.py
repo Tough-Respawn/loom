@@ -12,8 +12,6 @@ def _sse_types(body: bytes) -> list[str]:
     return out
 
 
-
-
 def test_commands_catalogue_de_la_palette(web):
     # Le catalogue doit rester exploitable par la palette du composer.
     data = web.get("/commands").get_json()
@@ -151,8 +149,6 @@ def test_reset(web_sess):
     assert web_sess.post("/reset").status_code == 200
 
 
-
-
 def test_csrf_cross_site_403(web_sess):
     r = web_sess.post(
         "/note", data={"text": "x"}, headers={"Sec-Fetch-Site": "cross-site"}
@@ -165,8 +161,6 @@ def test_csrf_same_origin_passe(web_sess):
         "/note", data={"text": "x"}, headers={"Sec-Fetch-Site": "same-origin"}
     )
     assert r.status_code == 200
-
-
 
 
 def test_chat_message_vide_400(web_sess):
@@ -192,8 +186,6 @@ def test_chat_goal_clear_ack_sse(web_sess):
     assert _sse_types(r.data)[-1] == "done"
 
 
-
-
 def test_cancel_204(web_sess):
     assert web_sess.post("/cancel", data={}).status_code == 204
 
@@ -213,8 +205,6 @@ def test_thinking_toggle(web_sess):
 def test_tools_et_skills_html(web_sess):
     assert web_sess.post("/tools", data={"tool": ["read_file"]}).status_code == 200
     assert web_sess.post("/skills", data={"skill": []}).status_code == 200
-
-
 
 
 def test_skill_source_404(web):
@@ -245,8 +235,6 @@ def test_skill_delete(web, tmp_env):
 
 def test_skill_generate_sans_description_400(web_sess):
     assert web_sess.post("/skill/generate", data={"description": ""}).status_code == 400
-
-
 
 
 def test_models_local(web):
@@ -282,8 +270,6 @@ def test_config_effective(web):
 def test_compact_session_inconnue_404(web_sess):
     r = web_sess.post("/compact", data={"session_id": "inconnue"})
     assert r.status_code == 404
-
-
 
 
 def test_sse_format():
@@ -382,3 +368,12 @@ def test_build_user_content_image_modele_texte_note_honnete(tmp_env):
     assert "SANS vision" in out and "VISION" in out
     assert "photo.png" in out  # chemin stashé listé
     assert (tmp_env / "stash").exists()
+
+
+def test_models_remote_id_invalide_400(web):
+    r = web.post(
+        "/models/remote",
+        data=json.dumps({"id": "..", "base_url": "https://x", "model": "m"}),
+        content_type="application/json",
+    )
+    assert r.status_code == 400

@@ -234,9 +234,11 @@ def launch_direct(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
     )
 
 
-def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
-    """Plusieurs modèles : llama-swap route vers le bon selon le champ 'model'."""
-    swap = build_swap_config(
+def _swap_config(cfg: RuntimeConfig, profile: HardwareProfile) -> dict:
+    """Config llama-swap depuis la config runtime : UNE seule construction pour le
+    lancement et la régénération UI (sinon la régénération perdait les réglages
+    machine mesurés — ubatch/batch/checkpoint)."""
+    return build_swap_config(
         cfg.models,
         profile,
         llama_bin=cfg.server_bin,
@@ -249,7 +251,11 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
         default_batch=cfg.default_batch,
         default_checkpoint_min_step=cfg.default_checkpoint_min_step,
     )
-    write_swap_yaml(swap, SWAP_YAML)
+
+
+def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
+    """Plusieurs modèles : llama-swap route vers le bon selon le champ 'model'."""
+    write_swap_yaml(_swap_config(cfg, profile), SWAP_YAML)
     args = [
         cfg.swap_bin,
         "--config",
@@ -281,17 +287,7 @@ def regenerate_swap_yaml(
         cfg = load_config(defaults_path, local_path)
         # Le binaire configuré détecte aussi les GPU non-NVIDIA.
         profile = detect_hardware(cfg.server_bin)
-        swap = build_swap_config(
-            cfg.models,
-            profile,
-            llama_bin=cfg.server_bin,
-            models_dir=str(cfg.models_dir),
-            context=cfg.context,
-            override_n_gpu_layers=cfg.override_n_gpu_layers,
-            slot_save_dir=slots_dir(),
-            n_parallel=cfg.n_parallel,
-        )
-        write_swap_yaml(swap, out_path)
+        write_swap_yaml(_swap_config(cfg, profile), out_path)
         return Path(out_path)
     except Exception:  # noqa: BLE001 - régénération best-effort, jamais fatale pour l'UI
         return None

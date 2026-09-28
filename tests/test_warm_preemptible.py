@@ -372,3 +372,45 @@ def test_warm_interrompu_aucun_titre_ne_suit_sous_le_verrou(maint_env):
     assert seen["titles"] == []  # le titre n'a PAS été tenté après l'interruption
     assert store.load(sid).title == "premier"  # provisoire conservé
     assert seen["holder"].get("abort") is False  # signal remis à zéro à la libération
+
+
+def test_message_preempte_un_amorcage_qui_pose_sa_raison_apres_coup(warm_env):
+    # Fenêtre de course : le verrou est pris AVANT que la raison soit posée. Le
+    # message qui arrive à ce moment doit quand même interrompre l'amorçage, au
+    # lieu d'attendre la fin du warm + titre (jusqu'à ~60 s en réel).
+    web, warm, sid = warm_env
+    S = web.application.S
+    r = web.post("/chat", data={"message": "premier", "session_id": sid})
+    assert _sse_events(r.data)[-1]["type"] == "done"
+    # Laisser l'amorçage de fin de tour démarrer puis se faire interrompre par
+    # un premier message, pour repartir d'un verrou libre.
+    warm["started"].wait(timeout=3)
+    _abort_warm_now = __import__(
+        "loom.web.routes.helpers", fromlist=["_abort_warm"]
+    )._abort_warm
+    _abort_warm_now(S)
+    assert S.local_gen_lock.acquire(timeout=3)
+    S.local_busy["reason"] = ""  # verrou tenu, raison pas encore posée
+    holder = S.warm_holder
+    holder["abort"] = False
+
+    def fake_maintenance():
+        time.sleep(0.4)  # /chat est déjà en attente du verrou
+        S.local_busy["reason"] = "maintenance"
+        deadline = time.monotonic() + 5
+        while not holder.get("abort") and time.monotonic() < deadline:
+            time.sleep(0.02)
+        holder["abort"] = False
+        S.local_busy["reason"] = ""
+        S.local_gen_lock.release()
+
+    th = threading.Thread(target=fake_maintenance, daemon=True)
+    th.start()
+    t0 = time.monotonic()
+    r = web.post("/chat", data={"message": "second", "session_id": sid})
+    events = _sse_events(r.data)
+    elapsed = time.monotonic() - t0
+    th.join(6)
+    assert events[-1]["type"] == "done", events[-3:]
+    assert elapsed < 2.5, elapsed  # sans relecture de la raison : ~5 s
+    assert any(e["type"] == "notice" and "interrompu" in e["text"] for e in events)
