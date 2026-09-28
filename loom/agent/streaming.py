@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from loom.agent.compaction import _msg_chars
+from loom.agent.compaction import _message_chars
 from loom.agent.debuglog import _debug, log_event
 
 
@@ -38,9 +38,7 @@ def _estimate_usage(system_prompt, messages, text, reasoning, tool_calls) -> dic
     lui, le compteur ↑/↓ resterait figé à 0 sur une API distante. Approximatif mais bien
     mieux que zéro ; le local (llama.cpp) renvoie toujours l'usage réel -> jamais utilisé là.
     Marqué estimated=True (les compteurs restent fonctionnels, l'UI peut le nuancer)."""
-    prompt_chars = len(system_prompt or "") + sum(
-        _msg_chars(m.get("content")) for m in messages
-    )
+    prompt_chars = len(system_prompt or "") + sum(_message_chars(m) for m in messages)
     out_chars = (
         len(text or "")
         + len(reasoning or "")

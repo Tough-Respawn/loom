@@ -18,7 +18,7 @@ from loom.agent.compaction import (
     _force_fit,
     _inject_notes,
     _microcompact_tools,
-    _msg_chars,
+    _message_chars,
 )
 from loom.agent.debuglog import _debug, _debug_messages, log_event, tools_fingerprint
 from loom.agent.debuglog import context_fingerprint as context_fingerprint
@@ -245,7 +245,7 @@ class LoomClient:
         convo = list(messages)
 
         def _tot() -> int:
-            return len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
+            return len(system_prompt) + sum(_message_chars(m) for m in convo)
 
         before = _tot()
         _microcompact_tools(convo, keep_recent_tools)
@@ -1028,9 +1028,7 @@ class LoomClient:
         if not compact_after_tokens:
             return
         # Le code tokenise densément ; 3 caractères/token déclenche prudemment plus tôt.
-        approx = (
-            len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
-        ) // 3
+        approx = (len(system_prompt) + sum(_message_chars(m) for m in convo)) // 3
         if approx <= compact_after_tokens:
             return
         cleared = _microcompact_tools(convo, keep_recent_tools)
