@@ -67,6 +67,7 @@ from loom.setup.steps import (
     set_swap_bin,
     swap_bin_status,
 )
+from loom.utils import atomic_write_text
 
 LOOM_DIR = Path(__file__).resolve().parent.parent  # = loom/ (le package)
 REPO_ROOT = LOOM_DIR.parent
@@ -791,7 +792,7 @@ def _set_model_context(gguf_path: Path, context: int, mecanisme: str) -> None:
             break
     else:
         lines += ["", stamp, new_line]
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(p, "\n".join(lines) + "\n")
 
 
 def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> None:
@@ -816,7 +817,7 @@ def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> No
             break
     else:
         lines += ["", stamp, new_line]
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(p, "\n".join(lines) + "\n")
 
 
 def _set_model_ubatch(gguf_path: Path, ubatch: int, batch: int, detail: str) -> None:
@@ -849,7 +850,7 @@ def _set_model_ubatch(gguf_path: Path, ubatch: int, batch: int, detail: str) -> 
                 else:
                     lines.insert(i, stamp)
                 break
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(p, "\n".join(lines) + "\n")
 
 
 def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):

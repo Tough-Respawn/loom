@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from loom.utils import CHARS_PER_TOKEN as _CHARS_PER_TOKEN
+from loom.utils import CHARS_PER_TOKEN as _CHARS_PER_TOKEN, atomic_write_text
 
 # Cache mémoire {path: (mtime, contenu)} : on ne RELIT le disque que si le fichier a changé.
 # Évite 3 lectures par tour pour rien, tout en gardant l'édition à chaud (un write -> mtime
@@ -53,7 +53,7 @@ def append_unique(path: str, line: str) -> None:
     if line in lines:
         return
     body = (existing + "\n" + line).strip() if existing else line
-    p.write_text(body + "\n", encoding="utf-8")
+    atomic_write_text(p, body + "\n")
     _cache.pop(path, None)  # force la relecture (mtime Windows parfois trop grossier)
 
 
