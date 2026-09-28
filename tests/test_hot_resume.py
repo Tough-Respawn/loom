@@ -167,3 +167,49 @@ def test_echec_restore_un_seul_essai(monkeypatch, tmp_path):
     assert c.try_hot_resume("orn", "s1") is False
     assert c.try_hot_resume("orn", "s1") is False
     assert len(calls) == 1
+
+
+# ---- disjoncteur : un chargement de modèle n'est pas un hang du slot ----------
+
+
+def _timeout_urlopen(seen):
+    def fake(req, timeout=None):
+        seen.append(timeout)
+        raise TimeoutError("timed out")
+
+    return fake
+
+
+def test_timeout_pendant_le_chargement_ne_desactive_pas_le_slot(monkeypatch, tmp_path):
+    # Reprise à froid : /upstream/<m>/slots fait CHARGER le modèle par llama-swap
+    # avant de répondre. Un gros modèle dépasse 20 s : ce n'est pas un hang du
+    # slot, le save/restore ne doit pas être coupé jusqu'au redémarrage.
+    import urllib.request
+
+    c = _client(tmp_path)
+    monkeypatch.setattr(c, "local_server_root", lambda: "http://127.0.0.1:9")
+    monkeypatch.setattr(
+        c, "running_local", lambda timeout=5.0: (True, '{"running": []}')
+    )
+    seen = []
+    monkeypatch.setattr(urllib.request, "urlopen", _timeout_urlopen(seen))
+    assert c.restore_slot("orn", "turnend.kv", force=True) is False
+    assert "orn" not in c._slot_broken
+    assert seen and seen[0] > 20  # le chargement a droit à plus que 20 s
+
+
+def test_timeout_modele_charge_desactive_bien_le_slot(monkeypatch, tmp_path):
+    import urllib.request
+
+    c = _client(tmp_path)
+    monkeypatch.setattr(c, "local_server_root", lambda: "http://127.0.0.1:9")
+    monkeypatch.setattr(
+        c,
+        "running_local",
+        lambda timeout=5.0: (True, '{"running": [{"model": "orn"}]}'),
+    )
+    seen = []
+    monkeypatch.setattr(urllib.request, "urlopen", _timeout_urlopen(seen))
+    assert c.restore_slot("orn", "turnend.kv", force=True) is False
+    assert "orn" in c._slot_broken
+    assert seen == [20]
