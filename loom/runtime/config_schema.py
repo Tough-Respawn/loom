@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TypedDict
 
 import tomlkit
+from loom.utils import atomic_write_text
 
 # L'ordre définit celui de l'affichage.
 SECTION_LABELS = {
@@ -596,7 +597,7 @@ def set_value(
     if section not in doc:
         doc[section] = tomlkit.table()
     doc[section][key] = val
-    target.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    atomic_write_text(target, tomlkit.dumps(doc))
     return {"ok": True, "source": spec["layer"]}
 
 
@@ -614,5 +615,5 @@ def reset_value(
     doc = tomlkit.parse(target.read_text(encoding="utf-8"))
     if section in doc and key in doc[section]:
         del doc[section][key]
-        target.write_text(tomlkit.dumps(doc), encoding="utf-8")
+        atomic_write_text(target, tomlkit.dumps(doc))
     return {"ok": True, "source": "defaut"}
