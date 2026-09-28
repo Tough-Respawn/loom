@@ -12,7 +12,7 @@ from pathlib import Path
 from flask import Response, request
 
 from loom.agent import context
-from loom.agent.client import _msg_chars, log_event, set_debug_log_path
+from loom.agent.client import _message_chars, log_event, set_debug_log_path
 from loom.prompts import IMAGE_REFINE_SYSTEM
 from loom.runtime.comfy import ComfyError
 from loom.runtime.models_profile import load_profile
@@ -714,7 +714,7 @@ def _register_chat_routes(app, S):
                     # Estimer aussitôt la jauge; l'usage réel la corrigera au prochain appel.
                     conv.context_tokens = (
                         len(conv.system_prompt)
-                        + sum(_msg_chars(m.get("content")) for m in conv.messages)
+                        + sum(_message_chars(m) for m in conv.messages)
                     ) // 3
                     yield _tl(
                         "tool_result",
