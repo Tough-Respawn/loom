@@ -40,7 +40,12 @@ from loom.agent.streaming import (
     build_create_kwargs,
 )
 from loom.agent.streaming import _turn_timing_fields as _turn_timing_fields
-from loom.agent.toolrun import _run_tools_parallel, _run_tools_sequential, _safe_args
+from loom.agent.toolrun import (
+    _allowed_without_asking,
+    _run_tools_parallel,
+    _run_tools_sequential,
+    _safe_args,
+)
 from loom.agent.toolsets import _DEBUG_FORCE, _PARALLEL_SAFE
 
 
@@ -1504,6 +1509,9 @@ class LoomClient:
                 and self.is_remote(model)
                 and len(tool_calls) >= 2
                 and all(tc.get("name") in _PARALLEL_SAFE for tc in tool_calls)
+                # La voie parallèle n'a ni confirmation ni refus : un seul appel qui
+                # demanderait (ask) ou serait refusé (deny) renvoie tout en séquentiel.
+                and all(_allowed_without_asking(permission, tc) for tc in tool_calls)
             )
             if _parallel:
                 _seq_tool_calls = []  # la boucle séquentielle ne fait rien ce tour

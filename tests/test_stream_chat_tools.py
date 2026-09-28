@@ -26,8 +26,6 @@ def run(client, registry=None, model=None, **kw):
     )
 
 
-
-
 def test_stop_naturel():
     client, fake = make_client([turn_text("Bonjour, travail fini.")])
     events, done = run(client)
@@ -128,8 +126,6 @@ def test_continuation_length():
     assert msgs[-1]["role"] == "user"
 
 
-
-
 def test_tool_call_sequentiel_nominal():
     reg = FakeRegistry({"read_file": lambda a: f"contenu de {a['path']}"})
     client, fake = make_client(
@@ -176,9 +172,7 @@ def test_reasoning_content_exact_est_rejoue_apres_un_appel_outil():
     events, done = run(client, registry=reg, model="remote-x")
 
     assert done["reason"] == "natural"
-    assistant = next(
-        m for m in fake.calls[1]["messages"] if m.get("tool_calls")
-    )
+    assistant = next(m for m in fake.calls[1]["messages"] if m.get("tool_calls"))
     assert assistant["reasoning_content"] == "raisonnement exact du provider"
 
 
@@ -266,9 +260,7 @@ def test_400_reasoning_history_est_repare_et_rejoue_une_fois():
 
     assert done["reason"] == "natural"
     assert len(fake.calls) == 2
-    repaired = next(
-        m for m in fake.calls[1]["messages"] if m.get("tool_calls")
-    )
+    repaired = next(m for m in fake.calls[1]["messages"] if m.get("tool_calls"))
     assert repaired["reasoning_content"] == ""
     assert "api_error" not in [p.get("reason") for p in only(events, "done")]
 
@@ -288,7 +280,9 @@ def test_tool_erreur_ok_false():
 
 
 def test_debug_force_ignore_des_echecs_separes_par_un_check_vert():
-    results = iter(["erreur: docker absent", "diagnostic ok", "erreur: migration absente"])
+    results = iter(
+        ["erreur: docker absent", "diagnostic ok", "erreur: migration absente"]
+    )
     reg = FakeRegistry({"run_shell": lambda _a: next(results)})
     client, _ = make_client(
         [
@@ -377,8 +371,6 @@ def test_payload_write_file_specialise():
     assert tr["in_full"] == "out.txt\nhello monde"
 
 
-
-
 def _two_reads():
     return turn_tools(
         [
@@ -445,8 +437,6 @@ def test_distant_outil_non_safe_reste_sequentiel():
     events, done = run(client, registry=reg, model="remote-x")
     assert done["reason"] == "natural"
     assert "parallel" not in kinds(events)
-
-
 
 
 def test_notes_en_vol_injectees():
@@ -555,3 +545,61 @@ def test_strong_desactive_repeat_stop():
     client, _ = make_client([same(), same(), same(), same(), turn_text("fini.")])
     events, done = run(client, registry=reg, strong=True)
     assert done["reason"] == "natural"
+
+
+def test_distant_parallele_respecte_la_permission_ask():
+    # dispatch_agent est « parallélisable », mais la voie parallèle n'a ni
+    # confirmation ni refus : en mode ask, chaque appel doit être confirmé.
+    from loom.permissions import PermissionConfig, evaluate
+
+    ran = []
+    reg = FakeRegistry({"dispatch_agent": lambda a: ran.append(a) or "fait"})
+    client, _ = make_client(
+        [
+            turn_tools(
+                [
+                    ("call_1", "dispatch_agent", '{"task": "a"}'),
+                    ("call_2", "dispatch_agent", '{"task": "b"}'),
+                ]
+            ),
+            turn_text("fini."),
+        ],
+        remote=True,
+    )
+    asked = []
+    events, done = run(
+        client,
+        registry=reg,
+        model="remote-x",
+        permission=lambda n, a: evaluate(n, a, PermissionConfig(mode="ask")),
+        confirm=lambda cid, n, a: asked.append(cid) and False,
+    )
+    assert done["reason"] == "natural"
+    assert "parallel" not in kinds(events)
+    assert asked == ["call_1", "call_2"]
+    assert ran == []  # confirmation refusée : aucun sous-agent lancé
+
+
+def test_distant_parallele_si_tout_est_autorise():
+    from loom.permissions import PermissionConfig, evaluate
+
+    reg = FakeRegistry({"dispatch_agent": lambda a: "fait"})
+    client, _ = make_client(
+        [
+            turn_tools(
+                [
+                    ("call_1", "dispatch_agent", '{"task": "a"}'),
+                    ("call_2", "dispatch_agent", '{"task": "b"}'),
+                ]
+            ),
+            turn_text("fini."),
+        ],
+        remote=True,
+    )
+    events, _ = run(
+        client,
+        registry=reg,
+        model="remote-x",
+        permission=lambda n, a: evaluate(n, a, PermissionConfig(mode="allow")),
+    )
+    assert "parallel" in kinds(events)
