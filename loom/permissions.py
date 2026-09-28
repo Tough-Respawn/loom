@@ -68,9 +68,17 @@ DEFAULT_DENY: tuple[re.Pattern, ...] = (
         re.IGNORECASE,
     ),
     re.compile(r"remove-item\b(?=.*\brecurse\b)(?=.*\bforce\b)", re.IGNORECASE),
-    re.compile(r"\brmdir\s+/s\b", re.IGNORECASE),
-    re.compile(r"\bdel\s+/f\b", re.IGNORECASE),
-    re.compile(r"\bformat\s", re.IGNORECASE),
+    # Alias PowerShell (ri/rm/del/rd/rmdir/erase) avec -r[ecurse] et -fo[rce], abrégés.
+    re.compile(
+        r"\b(ri|rm|del|rd|rmdir|erase)\b(?=[^|;&]*\s-r(e|ec|ecu|ecur|ecurs|ecurse)?\b)"
+        r"(?=[^|;&]*\s-fo(r|rc|rce)?\b)",
+        re.IGNORECASE,
+    ),
+    # cmd : suppression récursive (/s) de rd/rmdir/del/erase, ou forcée (/f) de del.
+    re.compile(r"\b(rd|rmdir|del|erase)\b[^|;&]*\s/s\b", re.IGNORECASE),
+    re.compile(r"\b(del|erase)\b[^|;&]*\s/f\b", re.IGNORECASE),
+    # `format` en position de COMMANDE vers un lecteur (pas `ruff format`, `npm run format`).
+    re.compile(r"(^|[;&|(]\s*)format(\.com|\.exe)?\s+[a-z]:", re.IGNORECASE),
     re.compile(r"\bmkfs", re.IGNORECASE),
     re.compile(r"\bdd\s+if=", re.IGNORECASE),
     re.compile(r"\bshutdown\b", re.IGNORECASE),
@@ -147,7 +155,13 @@ def _command_allowlisted(command: str, allow_commands: list[str]) -> bool:
 
 
 def _path_allowlisted(rel: str, allow_paths: list[str]) -> bool:
-    norm = rel.replace("\\", "/").strip("/")
+    import posixpath
+
+    # Normaliser AVANT de comparer : `src/../../x` commence par `src/` mais sort du
+    # dossier autorisé. Un chemin qui remonte au-dessus de la racine n'est jamais listé.
+    norm = posixpath.normpath(rel.replace("\\", "/")).strip("/")
+    if norm == ".." or norm.startswith("../"):
+        return False
     for a in allow_paths:
         a_norm = a.replace("\\", "/").strip("/")
         if norm == a_norm or norm.startswith(a_norm + "/"):
