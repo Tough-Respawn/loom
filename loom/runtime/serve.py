@@ -340,6 +340,16 @@ def main() -> int:
         SERVE_LOG.write_text("", encoding="utf-8")
     except OSError:
         pass
+    try:
+        return _main()
+    except Exception:  # noqa: BLE001 - lancé sans console : la trace doit rester lisible
+        import traceback
+
+        _log("[loom] arrêt sur erreur inattendue :\n" + traceback.format_exc())
+        return 1
+
+
+def _main() -> int:
     code = maybe_bootstrap()
     if code is not None:
         return code
