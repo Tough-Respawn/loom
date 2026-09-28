@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from __future__ import annotations
+import json
 from collections.abc import Iterator
 
 from loom.agent.debuglog import _debug
@@ -24,6 +24,57 @@ def _msg_chars(content) -> int:
     if isinstance(content, list):
         return sum(len(p.get("text", "")) for p in content if isinstance(p, dict))
     return 0
+
+
+def _tool_args_chars(m: dict) -> int:
+    """Taille des appels d'outils d'un message assistant (nom + arguments JSON) :
+    un write_file y porte tout le fichier écrit, envoyé au modèle à chaque tour."""
+    total = 0
+    for tc in m.get("tool_calls") or []:
+        fn = tc.get("function") if isinstance(tc, dict) else None
+        if isinstance(fn, dict):
+            total += len(fn.get("name") or "") + len(fn.get("arguments") or "")
+    return total
+
+
+def _message_chars(m: dict) -> int:
+    """Taille approx. d'un message complet : contenu + arguments d'outils."""
+    return _msg_chars(m.get("content")) + _tool_args_chars(m)
+
+
+def _shrink_tool_args(m: dict, floor: int = 200) -> dict:
+    """Copie de `m` dont les longues valeurs d'arguments d'outils sont remplacées par
+    un marqueur. Le JSON reste valide et les valeurs courtes (path, name…) restent."""
+    calls = []
+    for tc in m.get("tool_calls") or []:
+        fn = tc.get("function") if isinstance(tc, dict) else None
+        raw = fn.get("arguments") if isinstance(fn, dict) else None
+        if not isinstance(raw, str) or len(raw) <= floor:
+            calls.append(tc)
+            continue
+        try:
+            args = json.loads(raw)
+        except ValueError:
+            args = None
+        if isinstance(args, dict):
+            args = {
+                k: (
+                    v
+                    if len(json.dumps(v, ensure_ascii=False)) <= floor
+                    else f"…[{len(json.dumps(v, ensure_ascii=False))} car. retirés "
+                    "pour tenir dans le contexte]"
+                )
+                for k, v in args.items()
+            }
+        else:
+            args = {"_omis": f"{len(raw)} car. retirés pour tenir dans le contexte"}
+        calls.append(
+            {
+                **tc,
+                "function": {**fn, "arguments": json.dumps(args, ensure_ascii=False)},
+            }
+        )
+    return {**m, "tool_calls": calls}
 
 
 def _microcompact_tools(
@@ -132,7 +183,7 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
     abandonne. Mute `convo` en place ; renvoie True si on tient le budget après réduction."""
 
     def _total() -> int:
-        return len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)
+        return len(system_prompt) + sum(_message_chars(m) for m in convo)
 
     _CLIP_FLOOR = 200
 
@@ -165,6 +216,18 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
         idx, longest = _longest(skip=task_idx)
         if longest <= _CLIP_FLOOR:  # plus rien d'autre : la tâche en dernier recours
             idx, longest = _longest(skip=-1)
+        # Les arguments d'anciens appels d'outils (fichiers écrits) passent avant les
+        # contenus : les réduire ne touche ni la tâche ni les résultats récents.
+        args_idx, args_len = -1, 0
+        for i, m in enumerate(convo[:-2]):
+            n = _tool_args_chars(m)
+            if n > args_len:
+                args_idx, args_len = i, n
+        if args_idx >= 0 and args_len > _CLIP_FLOOR and args_len >= longest:
+            shrunk = _shrink_tool_args(convo[args_idx], _CLIP_FLOOR)
+            if _tool_args_chars(shrunk) < args_len:
+                convo[args_idx] = shrunk
+                continue
         if idx >= 0 and longest > _CLIP_FLOOR:
             c = convo[idx].get("content")
             if isinstance(c, str):
@@ -203,7 +266,7 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
 
 def _ctx_estimate(system_prompt: str, convo: list[dict]) -> int:
     # Estimer à 3 caractères/token pour rafraîchir la jauge avant le prochain usage réel.
-    return (len(system_prompt) + sum(_msg_chars(m.get("content")) for m in convo)) // 3
+    return (len(system_prompt) + sum(_message_chars(m) for m in convo)) // 3
 
 
 def _inject_notes(notes_provider, convo: list[dict]) -> Iterator[tuple[str, object]]:
