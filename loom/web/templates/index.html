@@ -1001,7 +1001,9 @@
     }
     .msg.assistant:hover .msg-transfer, .msg-transfer:focus-visible { opacity: .8; }
     .msg-transfer:hover:not(:disabled) { opacity: 1; background: var(--accent-dim); color: #fff; }
-    .msg-transfer:disabled { color: var(--text-faint); cursor: default; opacity: .35; }
+    .msg-transfer:disabled { color: var(--text-faint); cursor: default; }
+    /* Désactivé : visible au survol comme les autres, mais nettement plus pâle. */
+    .msg.assistant:hover .msg-transfer:disabled { opacity: .35; }
     .transfer-menu {
       position: absolute; top: 25px; right: 0; z-index: 220; min-width: 220px;
       padding: 4px; background: var(--bg-panel); border: 1px solid var(--border);

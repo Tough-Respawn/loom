@@ -1,7 +1,7 @@
 import { opsFor, panesFor, scheduleRenderFor, state, tab } from "./state.js";
-import { renderTabs } from "./tabs.js";
+import { activateTab, renderTabs } from "./tabs.js";
 import { setActivityFor, syncComposersFor } from "./panes.js";
-import { reflectWorkdir, scheduleMachineRefresh, setMetrics, updateUsageMeter } from "./panels.js";
+import { reflectWorkdir, scheduleMachineRefresh, setMetrics, showToast, updateUsageMeter } from "./panels.js";
 import { loomWorkdir, set_loomWorkdir } from "./shared.js";
 import { streamSSE } from "./sse.js";
 
@@ -13,6 +13,7 @@ export async function sendChat(sid, text, images, options = {}) {
   if (t.abort) t.abort.abort();
   const ac = new AbortController();
   t.abort = ac;
+  t.stopAt = null;
   t.streaming = true;
   renderTabs();
   syncComposersFor(sid);
@@ -54,6 +55,10 @@ export async function sendChat(sid, text, images, options = {}) {
 
   const onEvent = (evt) => {
     lastEvtAt = Date.now();
+    // Le Stop surveille ce signe de vie avant de couper le flux.
+    if (t.abort === ac) t.lastEvtAt = lastEvtAt;
+    // Une note après Stop : le serveur reprend un tour, c'est un flux normal.
+    if (evt.type === "note" && t.abort === ac) t.stopAt = null;
     if (evt.type === "text" || evt.type === "reasoning" || evt.type === "tool_args")
       sawToken = true;
     // La reprise du flux efface tout label forcé, sauf si `status` le pilote.
@@ -305,6 +310,7 @@ export async function sendChat(sid, text, images, options = {}) {
         if (options.handoffId) {
           t.timeline = t.timeline.filter((item) => item.id !== userId);
           scheduleRenderFor(sid);
+          if (options.onRejected) options.onRejected();
           opsFor(options.errorSid || sid).push({
             kind: "error",
             message:
@@ -357,6 +363,7 @@ export async function sendChat(sid, text, images, options = {}) {
       if (options.handoffId) {
         t.timeline = t.timeline.filter((item) => item.id !== userId);
         scheduleRenderFor(sid);
+        if (options.onRejected) options.onRejected();
         opsFor(options.errorSid || sid).push({
           kind: "error",
           message: "Transfert impossible : " + err.message,
@@ -374,6 +381,7 @@ export async function sendChat(sid, text, images, options = {}) {
     // Ne clôturer l'état que si ce flux n'a pas été remplacé.
     if (t.abort === ac) {
       t.abort = null;
+      t.stopAt = null;
       t.streaming = false;
       renderTabs();
       syncComposersFor(sid);
@@ -420,6 +428,14 @@ export async function sendHandoff(sourceSid, targetSid, text, previous) {
     },
   ];
   const userFields = { provenance: chain, handoffId };
+  // On reste sur la source : la confirmation nomme la cible et permet de l'ouvrir.
+  const confirmSent = (queued) =>
+    showToast(
+      (queued ? "En file dans « " : "Envoyé vers « ") +
+        (target.title || "session") +
+        " »",
+      [{ label: "Ouvrir", onClick: () => activateTab(targetSid) }],
+    );
 
   // Si la cible génère, laisser le backend arbitrer atomiquement entre file et flux direct.
   if (target.streaming) {
@@ -439,7 +455,10 @@ export async function sendHandoff(sourceSid, targetSid, text, previous) {
       fd.append(key, String(value));
     try {
       const response = await fetch("/handoff", { method: "POST", body: fd });
-      if (response.status === 202) return;
+      if (response.status === 202) {
+        confirmSent(true);
+        return;
+      }
       target.timeline = target.timeline.filter((item) => item.id !== queuedItem.id);
       scheduleRenderFor(targetSid);
       if (response.status !== 409) {
@@ -463,11 +482,14 @@ export async function sendHandoff(sourceSid, targetSid, text, previous) {
     }
   }
 
+  // Un refus du backend retire la confirmation ; l'erreur s'affiche dans la source.
+  const dismiss = confirmSent(false);
   return sendChat(targetSid, text, [], {
     endpoint: "/handoff",
     form: _handoffForm(sourceSid, previous, handoffId),
     userFields,
     handoffId,
     errorSid: sourceSid,
+    onRejected: dismiss,
   });
 }

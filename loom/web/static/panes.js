@@ -438,8 +438,27 @@ export function handoffMessage(sourceSid, targetSid, text, provenance) {
 
 export function stopPane(pane) {
   const t = tab(pane.sid);
-  if (t && t.abort) t.abort.abort();
+  const ac = t && t.abort;
   if (pane.sid) postForm("/cancel", { session_id: pane.sid }).catch(() => {});
+  if (ac) {
+    if (t.stopAt) {
+      // Second Stop : couper sans attendre le serveur.
+      ac.abort();
+    } else {
+      // Garder le flux ouvert : le serveur le ferme lui-même, ou enchaîne sur une
+      // note en file (la reprise doit s'afficher). Couper seulement s'il reste muet.
+      const stopAt = Date.now();
+      t.stopAt = stopAt;
+      const watch = setInterval(() => {
+        if (t.abort !== ac || t.stopAt !== stopAt) return clearInterval(watch);
+        const quietSince = Math.max(stopAt, t.lastEvtAt || 0);
+        if (Date.now() - quietSince > 3000) {
+          clearInterval(watch);
+          ac.abort();
+        }
+      }, 500);
+    }
+  }
   syncComposer(pane);
 }
 
