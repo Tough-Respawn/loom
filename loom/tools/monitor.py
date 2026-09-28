@@ -195,6 +195,8 @@ class MonitorHub:
             proc = subprocess.Popen(
                 _shell_argv(command),
                 cwd=str(Path(workspace_dir)),
+                # Comme run_shell : jamais de lecture sur la console du serveur Loom.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=stderr_fh,
                 encoding="utf-8",
