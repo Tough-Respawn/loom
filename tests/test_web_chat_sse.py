@@ -486,3 +486,153 @@ def test_chat_erreur_api_flux_error_generique(chat_env):
     events = _sse_events(r.data)
     assert events[-1]["type"] == "error"
     assert events[-1]["message"] == "erreur interne"
+
+
+def _scripted_app(tmp_env, first_stream, then_text, tool_factory):
+    """App complète dont le 1er appel modèle est `first_stream`, les suivants `then_text`."""
+    from types import SimpleNamespace as NS
+
+    from loom.agent.client import LoomClient
+
+    from .fakes import _FakeStream, chunk, usage_chunk
+
+    class ScriptedOAI:
+        def __init__(self):
+            self.n = 0
+            self.chat = NS(completions=NS(create=self._create))
+
+        def _create(self, **kw):
+            self.n += 1
+            if self.n == 1:
+                return first_stream
+            return _FakeStream([chunk(content=then_text, finish="stop"), usage_chunk()])
+
+    client = LoomClient("http://127.0.0.1:9/v1")
+    client.add_remote_route(
+        MODEL, {"base_url": "http://127.0.0.1:9/v1", "api_key": "k", "model": "fake/x"}
+    )
+    client._routes[MODEL]["client"] = ScriptedOAI()
+    store = SessionStore(
+        tmp_env / "sessions",
+        default_system_prompt="prompt de test",
+        default_model=MODEL,
+        known_models=[MODEL],
+    )
+    app = create_app(
+        client=client,
+        skills_dir=str(tmp_env / "skills"),
+        session_store=store,
+        models=[MODEL],
+        remote_model_ids=[MODEL],
+        keepwarm_enabled=False,
+        workspace_dir=str(tmp_env / "workspace"),
+        user_skills_dir=str(tmp_env / "skills_user"),
+        plugins_dir=str(tmp_env / "plugins"),
+        remote_store_path=str(tmp_env / "remote_models.json"),
+        tool_factory=tool_factory,
+    )
+    web = app.test_client()
+    sid = web.post("/session/new", data={"title": "t"}).get_json()["id"]
+    return app, web, sid
+
+
+def _saved_messages(tmp_env, sid) -> list[dict]:
+    saved = json.loads(
+        (tmp_env / "sessions" / sid / "session.json").read_text(encoding="utf-8")
+    )
+    return [
+        m
+        for m in saved["conversation"]["messages"]
+        if m.get("role") in ("user", "assistant")
+    ]
+
+
+def test_reprise_apres_stop_place_la_reponse_apres_la_note(tmp_env):
+    # La réponse à la note doit suivre la note dans le contexte persistant, pas
+    # réécrire la réponse interrompue placée au-dessus.
+    from loom.web.routes.helpers import _cancel_for
+
+    from .fakes import chunk, usage_chunk
+
+    holder = {}
+
+    class MidCancelStream:
+        def __iter__(self):
+            yield chunk(content="début interrompu ")
+            holder["app"].S.notes.push(holder["sid"], "la note")
+            _cancel_for(holder["app"].S, holder["sid"]).set()
+            yield chunk(content="suite ignorée", finish="stop")
+            yield usage_chunk()
+
+        def close(self):
+            pass
+
+    app, web, sid = _scripted_app(
+        tmp_env,
+        MidCancelStream(),
+        "réponse à la note",
+        lambda t, w, c: FakeRegistry({"list_dir": lambda a: "x"}),
+    )
+    holder.update(app=app, sid=sid)
+    r = web.post("/chat", data={"message": "commence", "session_id": sid})
+    assert r.status_code == 200
+
+    types = [e["type"] for e in _sse_events(r.data)]  # déroule le flux SSE
+    assert types[-1] == "done" and "note" in types
+
+    msgs = _saved_messages(tmp_env, sid)
+    contents = [str(m["content"]) for m in msgs]
+    i_note = next((i for i, c in enumerate(contents) if c.endswith("la note")), None)
+    assert i_note is not None, contents
+    assert "réponse à la note" in contents[i_note + 1], contents
+    assert msgs[i_note + 1]["role"] == "assistant"
+    # La réponse interrompue reste à sa place, sans la réponse à la note.
+    assert any(
+        m["role"] == "assistant" and "début interrompu" in str(m["content"])
+        for m in msgs[:i_note]
+    )
+    assert "réponse à la note" not in " ".join(contents[:i_note])
+
+
+def test_note_pendant_un_tour_sans_outils_est_traitee(tmp_env):
+    # Sans outils, aucun point d'arrêt ne draine la file : la note (ex. un handoff
+    # mis en file) doit être reprise en fin de tour, pas rester orpheline.
+    from .fakes import chunk, usage_chunk
+
+    holder = {}
+
+    class NotedStream:
+        def __iter__(self):
+            yield chunk(content="première réponse")
+            holder["app"].S.notes.push(
+                holder["sid"],
+                {
+                    "text": "message transféré",
+                    "display": "message transféré",
+                    "provenance": [],
+                    "handoff_id": "handoff:t1",
+                },
+            )
+            yield chunk(finish="stop")
+            yield usage_chunk()
+
+        def close(self):
+            pass
+
+    app, web, sid = _scripted_app(
+        tmp_env, NotedStream(), "réponse au transfert", lambda t, w, c: None
+    )
+    holder.update(app=app, sid=sid)
+    r = web.post("/chat", data={"message": "commence", "session_id": sid})
+    assert r.status_code == 200
+
+    events = _sse_events(r.data)
+    notes = [e for e in events if e["type"] == "note"]
+    assert [n.get("handoff_id") for n in notes] == ["handoff:t1"]
+    texts = "".join(e.get("text", "") for e in events if e["type"] == "text")
+    assert "réponse au transfert" in texts
+    assert app.S.notes.drain(sid) == []
+
+    contents = [str(m["content"]) for m in _saved_messages(tmp_env, sid)]
+    assert contents[-3:-1] == ["première réponse", "message transféré"]
+    assert "réponse au transfert" in contents[-1]
