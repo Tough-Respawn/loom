@@ -58,7 +58,13 @@ def _model_cmd(
         # L'isolation du cache est une propriété du modèle, pas de la machine.
         n_parallel=resolve_parallel(n_parallel, model.cache_isolation),
     )
-    return " ".join(str(a) for a in args).replace("\\", "/")
+    return " ".join(_quote(str(a).replace("\\", "/")) for a in args)
+
+
+def _quote(arg: str) -> str:
+    """llama-swap redécoupe `cmd` (shlex Windows ou POSIX) : un argument avec espace
+    doit être entre guillemets doubles, compris des deux découpages."""
+    return f'"{arg}"' if any(c.isspace() for c in arg) else arg
 
 
 def build_swap_config(
