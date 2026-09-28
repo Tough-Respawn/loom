@@ -28,6 +28,9 @@ dependencies = [
     "psutil>=7.2.2",
     "tomlkit>=0.13",
     "truststore>=0.10",
+    # PyYAML : importé par runtime/swap.py (config llama-swap). N'arrivait que par
+    # huggingface-hub ; déclaré pour ne pas dépendre de ses choix de dépendances.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
