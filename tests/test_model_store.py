@@ -147,3 +147,37 @@ def test_delete_remote_in_toml_absent_est_noop(tmp_path):
     assert model_store.delete_remote_in_toml(p, "inconnu") is False
     assert model_store.delete_remote_in_toml(tmp_path / "absent.toml", "a") is False
     assert 'id = "a"' in p.read_text(encoding="utf-8")
+
+
+BAD_IDS = ["", ".", "..", "../x", "a/b", "a\b", ".cache", "x y", "c:"]
+
+
+def test_remote_dir_refuse_un_id_qui_sort_du_dossier(tmp_path):
+    import pytest
+
+    for bad in BAD_IDS:
+        with pytest.raises(ValueError):
+            model_store.remote_dir(tmp_path, bad)
+    assert model_store.valid_model_id("kimi-k2.5_q4")
+
+
+def test_delete_remote_dir_id_dotdot_ne_detruit_pas_la_racine(tmp_path):
+    # `remote/..` = la racine des modèles : un rmtree dessus effaçait tous les GGUF.
+    root = tmp_path / "models"
+    (root / "local-model").mkdir(parents=True)
+    gguf = root / "local-model" / "m.gguf"
+    gguf.write_bytes(b"GGUF")
+    _mk_remote(root, "kimi")
+    for bad in ("..", "."):
+        assert model_store.delete_remote_dir([root], bad) is False
+    assert gguf.exists() and (root / "remote" / "kimi" / "model.toml").exists()
+
+
+def test_write_remote_dir_refuse_un_id_traversant(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError):
+        model_store.write_remote_dir(
+            tmp_path, {"id": "..", "base_url": "u", "model": "m"}
+        )
+    assert not (tmp_path / "model.toml").exists()

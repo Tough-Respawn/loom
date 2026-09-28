@@ -26,7 +26,9 @@ class WizardResult:
 
 
 def _valid_id(mid: str) -> bool:
-    return bool(mid) and all(c.isalnum() or c in "-_." for c in mid)
+    from loom.runtime.model_store import valid_model_id
+
+    return valid_model_id(mid)
 
 
 def start(arg: str, deps) -> WizardResult:

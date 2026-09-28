@@ -443,11 +443,16 @@ def _register_model_routes(app, S):
 
     @app.post("/models/remote")
     def models_remote_upsert():
+        b = request.get_json(silent=True) or {}
+        mid = (b.get("id") or "").strip()
+        if mid and not model_store.valid_model_id(mid):
+            return {
+                "error": f"id invalide « {mid} » (lettres, chiffres, -_. ; "
+                "pas de point initial)"
+            }, 400
         roots = _models_roots(S)
         if not roots:
             return {"error": "racine des modèles indisponible"}, 500
-        b = request.get_json(silent=True) or {}
-        mid = (b.get("id") or "").strip()
         base_url = (b.get("base_url") or "").strip().rstrip("/")
         model = (b.get("model") or "").strip()
         if not (mid and base_url and model):

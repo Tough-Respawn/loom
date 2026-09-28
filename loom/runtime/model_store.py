@@ -37,8 +37,23 @@ FIELDS = (
 KEEP = ("id", "api_key_env", *FIELDS)
 
 
+def valid_model_id(model_id: str) -> bool:
+    """Id utilisable comme nom de dossier : lettres, chiffres et `-_.`, sans point
+    initial (`.`, `..` et les dossiers cachés sortiraient de `remote/` ou s'y
+    confondraient)."""
+    return (
+        bool(model_id)
+        and len(model_id) <= 100
+        and not model_id.startswith(".")
+        and all(c.isalnum() or c in "-_." for c in model_id)
+    )
+
+
 def remote_dir(root: str | Path, model_id: str) -> Path:
-    """Dossier d'un distant sous une racine : <racine>/remote/<id>."""
+    """Dossier d'un distant sous une racine : <racine>/remote/<id>. Un id invalide
+    lève ValueError : ce chemin sert à écrire et à supprimer (rmtree)."""
+    if not valid_model_id(model_id):
+        raise ValueError(f"id de modèle invalide : {model_id!r}")
     return Path(root) / "remote" / model_id
 
 
@@ -107,8 +122,13 @@ def delete_remote_dir(models_roots: list[Path] | list[str], model_id: str) -> bo
     découverte étant première-racine-gagnante, un reliquat sur une autre racine
     ressusciterait le modèle au boot suivant. Renvoie True si au moins un supprimé."""
     removed = False
+    if not valid_model_id(model_id):
+        return False
     for root in models_roots:
         d = remote_dir(root, model_id)
+        # Garde-fou avant rmtree : le dossier doit être un enfant direct de remote/.
+        if d.resolve().parent != (Path(root) / "remote").resolve():
+            continue
         if d.is_dir():
             shutil.rmtree(d, ignore_errors=True)
             removed = removed or not d.exists()
@@ -154,7 +174,7 @@ def migrate_into_dirs(
                 else:
                     write_remote_dir(dest_root, rec)
                     ok = True
-            except OSError:
+            except (OSError, ValueError):  # ValueError : id hérité non utilisable
                 ok = False
         if ok:
             if source == "toml":
