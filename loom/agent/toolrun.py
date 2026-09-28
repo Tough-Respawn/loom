@@ -20,6 +20,19 @@ from loom.agent.toolsets import (
 )
 
 
+def _allowed_without_asking(permission, tc: dict) -> bool:
+    """True si l'appel peut partir sans confirmation ni refus (sans politique : oui).
+    Des arguments illisibles restent à la voie séquentielle, qui sait les signaler."""
+    if permission is None:
+        return True
+    try:
+        args = json.loads(tc.get("arguments") or "{}")
+    except json.JSONDecodeError:
+        return False
+    decision = permission(tc.get("name"), args)
+    return decision is None or decision.action == "allow"
+
+
 def _safe_args(raw: str) -> str:
     """Renvoie des arguments JSON VALIDES pour l'historique. Si l'appel a été tronqué
     (réponse coupée par max_tokens -> JSON cassé), on remet `{}` : sans ça, le JSON
