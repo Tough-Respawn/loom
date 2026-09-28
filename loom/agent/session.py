@@ -8,7 +8,6 @@ retient la session courante (survit au redémarrage du serveur)."""
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import uuid
@@ -16,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from loom.agent.conversation import Conversation
-from loom.utils import now_iso as _now_iso
+from loom.utils import now_iso as _now_iso, atomic_write_text
 
 # Valider l'id avant tout accès disque pour confiner lecture et suppression sous `root`.
 _SID_RE = re.compile(r"[0-9a-f]{12}")
@@ -112,7 +111,7 @@ class SessionStore:
             return
         self.default_model = model_id
         try:
-            self._last_model_file.write_text(model_id, encoding="utf-8")
+            atomic_write_text(self._last_model_file, model_id)
         except OSError:
             pass
 
@@ -157,14 +156,12 @@ class SessionStore:
             raise ValueError(f"id de session invalide : {session.id!r}")
         session.conversation.runtime_session_id = session.id
         session.updated_at = _now_iso()
-        f = self._file(session.id)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_name(f.name + ".tmp")
-        tmp.write_text(
+        # Temporaire au nom unique : le fil de titrage sauve hors du verrou de chat,
+        # un nom fixe laissait deux sauvegardes concurrentes se tronquer.
+        atomic_write_text(
+            self._file(session.id),
             json.dumps(session.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
-        os.replace(tmp, f)
 
     # La timeline append-only rejoue l'UI exacte ; `session.json` reste le contexte lean.
     def _timeline_file(self, sid: str):
@@ -341,7 +338,7 @@ class SessionStore:
             (self.root / "active").unlink(missing_ok=True)
 
     def set_active(self, sid: str) -> None:
-        (self.root / "active").write_text(sid, encoding="utf-8")
+        atomic_write_text((self.root / "active"), sid)
 
     def _active_id(self) -> str | None:
         f = self.root / "active"

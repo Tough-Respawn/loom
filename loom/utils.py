@@ -92,3 +92,35 @@ def estimate_tokens(text: str) -> int:
     ``memory/identity.py`` (bornage du bloc identité) - garde un seul seuil.
     """
     return max(1, len(text) // CHARS_PER_TOKEN)
+
+
+def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:
+    """Écrit `text` dans `path` sans jamais laisser un fichier tronqué : fichier
+    temporaire au nom UNIQUE dans le même dossier (deux écrivains concurrents ne se
+    marchent pas dessus), fsync, puis `os.replace`. Sous Windows, `os.replace` échoue
+    (WinError 5) tant qu'un autre handle tient la cible (lecteur, antivirus,
+    indexeur) : quelques nouvelles tentatives courtes avant d'abandonner."""
+    import os
+    import time
+    import uuid
+    from pathlib import Path
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        # Mêmes fins de ligne que Path.write_text (traduction native).
+        with open(tmp, "w", encoding=encoding) as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        for attempt in range(6):
+            try:
+                os.replace(tmp, target)
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        tmp.unlink(missing_ok=True)

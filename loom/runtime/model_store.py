@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from loom.utils import atomic_write_text
 
 # Les clés restent sur une racine machine-owned et ne sont jamais renvoyées au client.
 FIELDS = (
@@ -113,7 +114,7 @@ def write_remote_dir(root: str | Path, record: dict) -> Path:
     for k in FIELDS:
         if record.get(k) is not None:
             doc[k] = record[k]
-    p.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    atomic_write_text(p, tomlkit.dumps(doc))
     return p
 
 
@@ -267,5 +268,5 @@ def delete_remote_in_toml(local_path: str | Path | None, model_id: str) -> bool:
     # Supprimer aussi la clé vide laissée par certaines anciennes configurations.
     if len(arr) == 0:
         del doc["remote_models"]
-    p.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    atomic_write_text(p, tomlkit.dumps(doc))
     return True
