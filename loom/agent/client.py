@@ -483,7 +483,11 @@ class LoomClient:
         payload = json.dumps({"filename": name}).encode()
         paths = [f"/upstream/{model}/slots/0?action={action}"] if model else []
         paths.append(f"/slots/0?action={action}")
+        # `/upstream/<m>/...` fait CHARGER un modèle absent avant de répondre : ce
+        # temps de chargement (> 20 s pour un gros modèle) n'est pas un hang du slot.
+        loading = bool(model) and self._model_not_loaded(model)
         for i, path in enumerate(paths):
+            call_timeout = 600 if (loading and i == 0) else 20
             req = urllib.request.Request(
                 root + path,
                 data=payload,
@@ -491,7 +495,7 @@ class LoomClient:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
+                with urllib.request.urlopen(req, timeout=call_timeout) as resp:
                     body = json.loads(resp.read().decode() or "{}")
                 _debug(f"SLOT_{action.upper()}", {"name": name, **body}, terminal=False)
                 if action == "save" and body.get("n_saved") == 0:
@@ -519,11 +523,16 @@ class LoomClient:
                     or "refused" in str(e).lower()
                     or "10061" in str(e)
                 )
-                if (
-                    isinstance(e, TimeoutError)
-                    or "timed out" in str(e).lower()
-                    or code == 501
-                ):
+                timed_out = isinstance(e, TimeoutError) or "timed out" in str(e).lower()
+                if timed_out and loading and i == 0:
+                    _debug(
+                        f"SLOT_{action.upper()}_ERR",
+                        f"{path} : timeout pendant le chargement du modèle -> "
+                        "pas de disjoncteur",
+                        terminal=False,
+                    )
+                    return False
+                if timed_out or code == 501:
                     self._slot_broken.add(key)
                     if code == 501:
                         # llama.cpp peut refuser les slots avec `--mmproj`; garder le corps
@@ -556,6 +565,16 @@ class LoomClient:
                         f"SLOT_{action.upper()}_ERR", f"{path} : {e}", terminal=False
                     )
         return False
+
+    def _model_not_loaded(self, model: str) -> bool:
+        """True seulement si llama-swap répond ET ne liste pas `model` parmi les
+        modèles chargés. Inventaire vide ou illisible -> False (comportement
+        prudent d'origine : un timeout reste un hang)."""
+        try:
+            alive, txt = self.running_local(timeout=2.0)
+        except Exception:  # noqa: BLE001 - sonde best-effort
+            return False
+        return bool(alive and txt and model not in txt)
 
     def _invalidate_slot_meta(self, model: str | None, name: str) -> None:
         try:
