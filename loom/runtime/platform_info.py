@@ -14,6 +14,13 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+# Préfixe PowerShell : sortie en UTF-8 pour le processus ET ses exe natifs (le
+# try/catch couvre un hôte sans console, où l'affectation peut lever).
+_PS_UTF8 = (
+    "try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}; "
+    "$OutputEncoding=[System.Text.Encoding]::UTF8; "
+)
+
 
 @dataclass(frozen=True)
 class PlatformInfo:
@@ -37,7 +44,16 @@ class PlatformInfo:
         """argv pour exécuter `command` dans le shell natif du système."""
         if self.shell_family == "powershell":
             exe = "pwsh" if self.shell_kind == "pwsh" else "powershell"
-            return [exe, "-NoProfile", "-NonInteractive", "-Command", command]
+            # Loom lit la sortie en UTF-8, mais PowerShell (et les exe natifs qu'il
+            # lance) écrit dans la page OEM (cp850 sur un Windows FR) : tout accent
+            # revenait en U+FFFD, jusqu'aux messages d'erreur système.
+            return [
+                exe,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                _PS_UTF8 + command,
+            ]
         bash = shutil.which("bash") or "/bin/bash"
         return [bash, "-lc", command]
 
