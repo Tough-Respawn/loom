@@ -360,7 +360,8 @@ export function Assistant({ it, sid }) {
   const candidates = state.order
     .filter((targetSid) => targetSid !== sid && tab(targetSid))
     .sort((a, b) => (a === state.active ? -1 : b === state.active ? 1 : 0));
-  const disabled = sid === state.active || candidates.length === 0;
+  // Toute autre session ouverte est une cible, y compris depuis la session affichée.
+  const disabled = candidates.length === 0;
   const sendTo = (targetSid) => {
     setMenuOpen(false);
     handoffMessage(sid, targetSid, it.raw, it.provenance || []);
@@ -382,7 +383,7 @@ export function Assistant({ it, sid }) {
         <button
           class="msg-transfer"
           type="button"
-          title=${disabled ? "La session active ne peut pas recevoir ce message" : "Envoyer cette réponse vers une autre session"}
+          title=${disabled ? "Aucune autre session ouverte : ouvre un autre onglet pour y envoyer ce message" : "Envoyer cette réponse vers une autre session"}
           disabled=${disabled}
           onClick=${chooseTarget}
         >→ envoyer</button>
