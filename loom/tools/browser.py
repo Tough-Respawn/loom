@@ -448,6 +448,15 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
     )
 
 
+def _port_open(host: str, port: int) -> bool:
+    """True si quelque chose accepte déjà une connexion sur host:port."""
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
 def _wait_for_port(proc: subprocess.Popen, host: str, port: int, timeout: int) -> bool:
     """Attend qu'un port TCP accepte une connexion (serveur prêt). Renvoie False si le
     delai expire OU si le process serveur meurt avant (crash au démarrage)."""
@@ -531,6 +540,16 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                 f"page {url}",
             )
 
+        # Port déjà pris par un processus NON suivi (ancien serveur orphelin, autre
+        # appli) : le nouveau échouerait (EADDRINUSE) et l'attente du port validerait
+        # l'ANCIEN. Le dire plutôt que vérifier la mauvaise page.
+        if _port_open(host, port):
+            raise ToolError(
+                f"le port {port} est déjà occupé par un autre processus (ancien serveur "
+                "encore vivant ?) : arrête-le, ou lance sur un autre port et passe l'url "
+                "correspondante."
+            )
+
         # Un serveur détaché ne rend pas la main; sonder son port et journaliser sa sortie.
         fd, logpath = tempfile.mkstemp(prefix="loom-serve-", suffix=".log")
         os.close(fd)
@@ -545,6 +564,8 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                 proc = subprocess.Popen(
                     _shell_argv(command),
                     cwd=str(workdir),
+                    # Comme run_shell : jamais de lecture sur la console du serveur Loom.
+                    stdin=subprocess.DEVNULL,
                     stdout=logf,
                     stderr=subprocess.STDOUT,
                     **popen_kwargs,
