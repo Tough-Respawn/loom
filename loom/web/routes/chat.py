@@ -519,6 +519,38 @@ def _register_chat_routes(app, S):
             # Une note transférée remplace la provenance pour conserver toute la chaîne.
             response_provenance = list(provenance)
 
+            def _replay_notes(pending):
+                """Injecte des notes drainées hors point d'arrêt et les annonce au client.
+                La réponse qui suit ouvre un nouveau message assistant, APRÈS les notes."""
+                nonlocal response_provenance, answer
+                for _n in pending:
+                    if isinstance(_n, dict):
+                        _note_text = str(_n.get("text", ""))
+                        _note_display = str(_n.get("display", _note_text))
+                        _note_provenance = _n.get("provenance") or []
+                        response_provenance = list(_note_provenance)
+                        _note_data = {
+                            "content": _note_display,
+                            "provenance": _note_provenance,
+                            "handoff_id": str(_n.get("handoff_id", "")),
+                        }
+                    else:
+                        _note_text = _n
+                        _note_display = _n
+                        _note_data = {"content": _n}
+                    conv.add("user", _note_text)
+                    S.session_store.append_event(sess.id, "user", _note_data)
+                    yield _sse(
+                        "note",
+                        text=_note_display,
+                        provenance=_note_data.get("provenance"),
+                        handoff_id=_note_data.get("handoff_id", ""),
+                    )
+                save()
+                answer = ""
+                _turn["idx"] = None
+                _turn["a0"] = len(actions)
+
             # Appliquer le profil aux réponses comme aux écritures d'outils.
 
             _profile = load_profile(conv.model) if conv.model else None
@@ -604,7 +636,9 @@ def _register_chat_routes(app, S):
 
             saved = False
             # Sauvegarder aux étapes marquantes limite les pertes lors d'une interruption.
-            _turn = {"idx": None, "last": 0.0}
+            # `a0` : premières actions du segment de réponse courant (une reprise sur note
+            # ouvre un nouveau segment, placé après la note).
+            _turn = {"idx": None, "last": 0.0, "a0": 0}
 
             # La timeline persiste uniquement les événements nécessaires pour rejouer la vue.
             _TL = {
@@ -637,9 +671,12 @@ def _register_chat_routes(app, S):
                 nonlocal saved
 
                 body = answer
+                seg_actions = actions[_turn["a0"] :]
 
-                if actions:
-                    trace = "[Actions de ce tour : " + " · ".join(actions[:20]) + "]"
+                if seg_actions:
+                    trace = (
+                        "[Actions de ce tour : " + " · ".join(seg_actions[:20]) + "]"
+                    )
 
                     body = f"{body}\n\n{trace}" if body else trace
 
@@ -1000,7 +1037,15 @@ def _register_chat_routes(app, S):
                             )
 
                     if not interrupted:
-                        break
+                        # Une note arrivée après le dernier point d'arrêt (ou pendant un
+                        # tour sans outils, qui n'en a aucun) relance un tour au lieu
+                        # d'attendre un message manuel.
+                        _late = S.notes.drain(sess.id)
+                        if not _late:
+                            break
+                        _persist(final=True)
+                        yield from _replay_notes(_late)
+                        continue
 
                     # Persister le travail partiel avant le marqueur d'interruption.
                     _persist(final=True)
@@ -1015,30 +1060,7 @@ def _register_chat_routes(app, S):
                     _pending = S.notes.drain(sess.id)
                     if not _pending:
                         return
-                    for _n in _pending:
-                        if isinstance(_n, dict):
-                            _note_text = str(_n.get("text", ""))
-                            _note_display = str(_n.get("display", _note_text))
-                            _note_provenance = _n.get("provenance") or []
-                            response_provenance = list(_note_provenance)
-                            _note_data = {
-                                "content": _note_display,
-                                "provenance": _note_provenance,
-                                "handoff_id": str(_n.get("handoff_id", "")),
-                            }
-                        else:
-                            _note_text = _n
-                            _note_display = _n
-                            _note_data = {"content": _n}
-                        conv.add("user", _note_text)
-                        S.session_store.append_event(sess.id, "user", _note_data)
-                        yield _sse(
-                            "note",
-                            text=_note_display,
-                            provenance=_note_data.get("provenance"),
-                            handoff_id=_note_data.get("handoff_id", ""),
-                        )
-                    save()
+                    yield from _replay_notes(_pending)
                     cancel_event.clear()
 
                 # Réarmer le recentrage seulement si la compaction finit encore en boucle.
