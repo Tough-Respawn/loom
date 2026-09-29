@@ -1273,6 +1273,13 @@ class LoomClient:
                 "(vérifie le modèle sélectionné)."
             ),
             "other": f"erreur du serveur de modèle : {str(exc)[:160]}",
+            "backend_down": (
+                f"le serveur du modèle « {model or self.model} » s'est arrêté au "
+                "démarrage, avant de produire un seul token — souvent un fichier "
+                "GGUF que ce build de llama.cpp ne sait pas charger (format de "
+                "quantification récent ou d'un fork). Choisis un autre modèle ; "
+                "détails dans var/logs/serve.log."
+            ),
         }[kind]
         yield ("content", f"\n[génération interrompue : {reason}]")
         yield ("done", {"reason": "api_error", "kind": kind})
