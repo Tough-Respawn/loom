@@ -235,11 +235,11 @@ def _rebenchable_models(S) -> list[dict]:
 
 
 def _persist_wizard_exchange(S, sess, conv, save, message, reply):
-    """Chaque étape du wizard est un VRAI échange du fil : persistée dans la
-    conversation ET le journal (ré-affichage au rechargement) — exigence spec."""
-    conv.add("user", message)
+    """Chaque étape du wizard reste visible dans le fil : persistée dans le JOURNAL
+    (ré-affichage au rechargement), mais PAS dans la conversation envoyée au modèle.
+    Vécu : les menus /add-model (liste Hugging Face, choix de quant…) partaient au
+    modèle au premier vrai message, qui les croyait écrits par lui."""
     S.session_store.append_event(sess.id, "user", {"content": message})
-    conv.add("assistant", reply)
     S.session_store.append_event(sess.id, "text", {"text": reply})
     save()
 
@@ -305,8 +305,7 @@ def _finish_install(S, sess, chat_lock, mid, mdir, job):
     # Attendre brièvement le verrou; le journal append-only borne le risque de repli.
     got = chat_lock.acquire(timeout=2)
     try:
-        conv = sess.conversation
-        conv.add("assistant", msg)
+        # Journal seulement, comme les étapes du wizard (cf. _persist_wizard_exchange).
         S.session_store.append_event(sess.id, "text", {"text": msg})
         S.session_store.save(sess)
     finally:
