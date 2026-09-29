@@ -146,7 +146,10 @@ def recommend_gpu_layers(
     if budget_mb <= 0:
         return 0
     if budget_mb >= model_size_mb:
-        return total_layers
+        # llama.cpp compte la couche de sortie en plus des n_layers : -ngl n_layers
+        # laisse la couche 0 sur CPU (« offloaded 64/65 », mesuré 2026-09-29).
+        # 999 = tout sur GPU, llama.cpp borne lui-même.
+        return 999
     return max(0, round(total_layers * budget_mb / model_size_mb))
 
 
