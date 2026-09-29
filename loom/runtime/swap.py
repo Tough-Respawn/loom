@@ -41,7 +41,7 @@ def _model_cmd(
         max(1, profile.cpu_threads // 2) if profile.has_gpu else profile.cpu_threads
     )
     args = build_server_args(
-        server_bin=llama_bin,
+        server_bin=model.server_bin or llama_bin,
         model_path=model_path,
         port="${PORT}",
         context=ctx,
