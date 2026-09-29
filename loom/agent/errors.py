@@ -5,8 +5,6 @@ import httpx
 from openai import APIConnectionError, APIError, APITimeoutError
 
 
-
-
 def _classify_api_error(exc: APIError) -> str:
     """Range une erreur du SDK openai en catégorie d'ACTION (pas en code HTTP brut).
 
@@ -16,6 +14,9 @@ def _classify_api_error(exc: APIError) -> str:
     - 'timeout' / 'connection' : transport (serveur lent ou pas lancé) -> stop, pas de retry ;
     - 'model_not_found' : 404 (llama-swap n'a pas le modèle demandé) -> stop ;
     - 'other' : erreur cliente 4xx (auth, requête invalide) -> stop, on remonte la cause ;
+    - 'backend_down' : llama-swap signale que llama-server est mort au lancement (500
+      « upstream command exited prematurely », typiquement un GGUF que ce build ne sait
+      pas charger) -> stop : aucun token n'a été produit, « écris plus court » serait faux ;
     - 'overflow' : 5xx OU erreur sans statut (tool_call vraisemblablement tronqué par
       max_tokens) -> seul cas où « écris plus court » + retry borné a un sens.
     """
@@ -36,6 +37,8 @@ def _classify_api_error(exc: APIError) -> str:
         return "context_overflow"
     if status is not None and status < 500:
         return "other"
+    if "exited prematurely" in msg:
+        return "backend_down"
     return "overflow"
 
 
