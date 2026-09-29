@@ -5,7 +5,10 @@ en arrière-plan et finalisation post-download (métadonnées GGUF -> model.toml
 from __future__ import annotations
 
 import re
+import socket
+import subprocess
 import threading
+import time
 from pathlib import Path
 
 from loom.runtime.gguf_meta import read_gguf_meta
@@ -73,6 +76,58 @@ def write_model_toml(
     if not stub.exists():
         stub.touch()
     return p
+
+
+# Marqueur -lv 4 émis une fois l'en-tête, l'architecture et les hyperparamètres
+# validés, AVANT la lecture des poids : le test ne coûte qu'environ 1 s.
+_PROBE_OK = "load_tensors: loading model tensors"
+_PROBE_ERR = re.compile(r"^\S+ E |exiting due to model loading error")
+
+
+def probe_loadable(
+    server_bin: str | Path, gguf_path: str | Path, timeout_s: float = 120.0
+) -> tuple[bool | None, str]:
+    """Le build llama-server configuré sait-il ouvrir ce GGUF ? Lance le serveur,
+    s'arrête dès que l'en-tête est validé (ou refusé), sans charger les poids.
+
+    (True, "") = lisible ; (False, cause) = refusé (ex. « invalid ggml type 142 »,
+    quant d'un fork) ; (None, raison) = test impossible ou non concluant. Ne détecte
+    pas une erreur survenant pendant la lecture des tenseurs eux-mêmes."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    try:
+        proc = subprocess.Popen(
+            [str(server_bin), "-m", str(gguf_path), "--port", str(port), "-c", "512"]
+            + ["-ngl", "0", "-lv", "4"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        return None, f"llama-server non lancé ({exc})"
+    errors: list[str] = []
+    deadline = time.monotonic() + timeout_s
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if _PROBE_OK in line:
+                return True, ""
+            if _PROBE_ERR.search(line):
+                # Garder le message sans l'horodatage llama.cpp (« 0.00.41 E »).
+                errors.append(re.sub(r"^\S+ E\s+", "", line))
+                if "exiting" in line or len(errors) >= 3:
+                    break
+            if time.monotonic() > deadline:
+                return None, "test de chargement trop long, non concluant"
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+    if errors:
+        return False, errors[0]
+    return None, "llama-server s'est arrêté sans diagnostic"
 
 
 def finalize_model_toml(model_dir: str | Path, gguf_path: str | Path) -> dict:

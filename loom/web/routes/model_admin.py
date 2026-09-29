@@ -5,9 +5,6 @@ from loom.runtime import model_install
 from loom.web.routes.config import _regen_swap_yaml
 
 
-
-
-
 def _list_remote_models(base_url: str, api_key: str) -> list[str] | None:
     """Ids exposés par une API OpenAI-compatible (GET /models), triés — ou None si
     l'endpoint est injoignable/refuse : le wizard retombe sur la saisie manuelle.
@@ -247,6 +244,19 @@ def _persist_wizard_exchange(S, sess, conv, save, message, reply):
     save()
 
 
+def _probe_install(gguf: Path) -> tuple[bool | None, str]:
+    """Test de chargement du GGUF par le binaire llama-server configuré (même
+    résolution que /rebench). (None, raison) si le binaire est introuvable."""
+    from loom.setup.steps import read_raw_config, resolve_bin, server_bin_status
+    from loom.web.__main__ import CONFIG_PATH, PERSONAL_CONFIG_PATH
+
+    raw = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
+    server_bin = resolve_bin(server_bin_status(raw)[1])
+    if server_bin is None:
+        return None, "binaire llama-server introuvable"
+    return model_install.probe_loadable(server_bin, gguf)
+
+
 def _finish_install(S, sess, chat_lock, mid, mdir, job):
     """Fin de download (appelé DANS le thread du job, succès ou échec) : finalise le
     toml (métadonnées GGUF), monte le modèle, pousse le message de fin dans la
@@ -258,7 +268,23 @@ def _finish_install(S, sess, chat_lock, mid, mdir, job):
             "automatique au premier lancement du modèle."
         )
     else:
-        meta = model_install.finalize_model_toml(mdir, Path(mdir) / job.filenames[0])
+        gguf = Path(mdir) / job.filenames[0]
+        meta = model_install.finalize_model_toml(mdir, gguf)
+        # « Installé » doit vouloir dire « chargeable » : un quant d'un fork (vécu :
+        # PQ2_0, ggml type 142) se téléchargeait « avec succès » puis faisait planter
+        # llama-server au premier message.
+        loadable, cause = _probe_install(gguf)
+        if loadable is False:
+            msg = (
+                f"« {mid} » est téléchargé, mais le llama.cpp installé ne sait pas "
+                f"le charger :\n{cause}\n"
+                "Il n'est pas ajouté au sélecteur. C'est en général un format de "
+                "quantification récent ou propre à un fork : choisis un autre quant, "
+                "ou un build de llama.cpp qui le supporte."
+            )
+        else:
+            msg = None
+    if msg is None:
         _mount_local(
             S,
             mid,
@@ -273,6 +299,8 @@ def _finish_install(S, sess, chat_lock, mid, mdir, job):
             extras.append("MoE détecté -> cpu_moe = true")
         det = f" ({', '.join(extras)})" if extras else ""
         msg = f"Modèle « {mid} » installé{det} — disponible dans le sélecteur."
+        if loadable is None:
+            msg += f"\n(test de chargement non concluant : {cause})"
     job.final_message = msg
     # Attendre brièvement le verrou; le journal append-only borne le risque de repli.
     got = chat_lock.acquire(timeout=2)
