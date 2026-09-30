@@ -47,8 +47,9 @@ class ChatConfig:
     # la session active pour ne pas provoquer de swap.
     keepwarm_enabled: bool = True
     keepwarm_interval: int = 150
-    # Budget du bloc durable SOUL/USER/MEMORY injecté à chaque prompt.
-    identity_max_tokens: int = 600
+    # Budget du bloc durable SOUL/USER/MEMORY. Payé une fois par session (prompt figé) :
+    # 600 coupait déjà les notes récentes de MEMORY (3,3k caractères, 2026-09-30).
+    identity_max_tokens: int = 1200
     # La fiche projet a son propre budget pour ne pas rogner l'identité durable.
     project_memory_max_tokens: int = 600
     # Boucle d'apprentissage et réflexion post-tour.
@@ -393,7 +394,7 @@ def load_config(
         web_search=_parse_web_search(ws),
         keepwarm_enabled=bool(ch.get("keepwarm_enabled", True)),
         keepwarm_interval=int(ch.get("keepwarm_interval", 150)),
-        identity_max_tokens=int(ch.get("identity_max_tokens", 600)),
+        identity_max_tokens=int(ch.get("identity_max_tokens", 1200)),
         project_memory_max_tokens=int(ch.get("project_memory_max_tokens", 600)),
         learned_skills_dir=ch.get("learned_skills_dir", "var/skills_learned"),
         user_skills_dir=ch.get("user_skills_dir", "var/skills_user"),
