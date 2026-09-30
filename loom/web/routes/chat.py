@@ -1090,10 +1090,8 @@ def _register_chat_routes(app, S):
 
                 _persist(final=True)  # fin de tour : écriture finale garantie
 
-                # Sauvegarder le slot avant le titre et la maintenance qui peuvent l'écraser.
-                _kv_saved = S.client.save_slot(
-                    conv.model, "turnend.kv", session_id=sess.id
-                )
+                # La sauvegarde du slot (2 à 4 s, plusieurs Go) se fait en tête de la
+                # maintenance, sous le verrou local : plus avant `done` (2026-09-30).
 
                 # Déporter la maintenance évite de retarder `done` et protège le cache du fil.
                 _do_reflect = (
@@ -1122,7 +1120,6 @@ def _register_chat_routes(app, S):
                         answer,
                         conv.model,
                         _do_reflect,
-                        _kv_saved,
                     ),
                     kwargs={"title_request": _title_request},
                     daemon=True,
