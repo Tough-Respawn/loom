@@ -60,8 +60,11 @@ _SERVER_KEYS = (
     "created context checkpoint",
     "model loaded",
     "exiting",
-    " E ",
 )
+# Lignes émises par les mêmes fonctions mais sans intérêt pour le diagnostic.
+_SERVER_NOISE = ("sampler chain", "sampler params")
+# Événements client de l'ancien format, redondants avec call.request / call.end.
+_CLIENT_LEGACY = ("turn.request", "turn.timing", "usage", "stream.first_byte")
 
 
 @dataclass
@@ -158,7 +161,8 @@ def load_server_events(client: list[Event], model: str, explicit: Path | None):
         return None, 0, len(ends), []
     events = []
     for rel, text in lines:
-        if any(k in text for k in _SERVER_KEYS):
+        keep = text.startswith("E ") or any(k in text for k in _SERVER_KEYS)
+        if keep and not any(n in text for n in _SERVER_NOISE):
             events.append(
                 Event(origin + timedelta(seconds=rel), "serveur", "srv", text=text)
             )
@@ -199,6 +203,7 @@ def _describe(e: Event) -> str:
 def alerts(client: list[Event]) -> list[str]:
     """Constats automatiques sur les appels et la maintenance."""
     out = []
+    refused: dict[str, list[str]] = {}
     last_turn_slot_user: dict = {}
     for e in client:
         f = e.fields
@@ -232,13 +237,17 @@ def alerts(client: list[Event]) -> list[str]:
                 )
             )
         if e.name == "slot.action" and str(f.get("resultat", "")).startswith("refuse"):
-            out.append(
-                f"{_fmt_t(e.t)} {f.get('action')} de {f.get('fichier')} refusée : {f.get('resultat')}"
+            key = (
+                f"{f.get('action')} de {f.get('fichier')} refusée : {f.get('resultat')}"
             )
+            refused.setdefault(key, []).append(_fmt_t(e.t))
         if e.name == "maint.end" and f.get("interrompue"):
             out.append(
                 f"{_fmt_t(e.t)} maintenance interrompue par un message ({f.get('duree_s')} s)"
             )
+    # Un refus répété à chaque tour tient en une ligne.
+    for key, times in refused.items():
+        out.append(f"{key} ({len(times)} fois, dès {times[0]})")
     return out
 
 
@@ -281,7 +290,7 @@ def build_report(
     lines += [
         "## Appels modèle",
         "",
-        "| heure | rôle | slot | issue | réutilisés | recalculés | prefill s | générés | durée s |",
+        "| fin | rôle | slot | issue | réutilisés | recalculés | prefill s | générés | durée s |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for e in calls:
@@ -300,7 +309,8 @@ def build_report(
         "| heure | source | événement |",
         "|---|---|---|",
     ]
-    for e in sorted(client + server_events, key=lambda ev: ev.t):
+    timeline = [e for e in client if e.name not in _CLIENT_LEGACY] + server_events
+    for e in sorted(timeline, key=lambda ev: ev.t):
         lines.append(
             f"| {_fmt_t(e.t)} | {e.source} | {_describe(e).replace('|', '/')} |"
         )

@@ -115,7 +115,7 @@ def test_alertes(tmp_path):
     text = "\n".join(found)
     assert "Mémoire durable" in text  # la section modifiée est nommée
     assert "pris par un appel reflect" in text  # slot de la conversation occupé
-    assert "refusée : refuse_slot_kv_off" in text
+    assert "refusée : refuse_slot_kv_off (1 fois" in text  # regroupé
     assert "recalcul important (turn) : 9352" in text
     assert "maintenance interrompue" in text
 

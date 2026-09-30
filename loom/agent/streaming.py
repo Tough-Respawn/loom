@@ -168,7 +168,8 @@ def _turn_timing_fields(tim: dict, first_byte_ms: float | None) -> dict:
         "prefill_tps": round(pp_n / (pp_ms / 1000), 1) if pp_ms > 0 else 0.0,
         "generation_s": round(tg_ms / 1000, 1),
         "generation_tok": tg_n,
-        "generation_tps": round(tg_n / (tg_ms / 1000), 1) if tg_ms > 0 else 0.0,
+        # Sous 1 ms (un seul token, ré-amorçage), le débit n'a pas de sens.
+        "generation_tps": round(tg_n / (tg_ms / 1000), 1) if tg_ms >= 1 else 0.0,
         "total_s": round((pp_ms + tg_ms) / 1000, 1),
     }
     if first_byte_ms is not None:
