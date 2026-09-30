@@ -46,7 +46,7 @@ from loom.web.routes.helpers import (
 )
 from loom.web.routes.maintenance import _post_turn_maintenance
 from loom.web.routes.models import _handle_add_model_command
-from loom.web.routes.system_prompt import _build_system_prompt
+from loom.web.routes.system_prompt import _build_system_prompt, _workspace_note
 
 # Source de vérité de la palette; garder ce catalogue aligné avec les handlers.
 CHAT_COMMANDS = [
@@ -306,8 +306,14 @@ def _register_chat_routes(app, S):
                 adopted_ws = detected
 
         try:
+            # Prompt figé d'abord : un changement de dossier s'annonce ensuite EN TÊTE
+            # du message (fin de fil), jamais en réécrivant le system prompt.
+            system_prompt, strong = _build_system_prompt(
+                S, conv, workspace=sess.workspace
+            )
+            _ws_note = _workspace_note(S, conv, sess.workspace)
             content = _build_user_content(
-                message,
+                _ws_note + message,
                 request.files.getlist("image"),
                 is_vision=bool(conv.model and conv.model in S.vision_models),
                 stash_dir=_sdir / "uploads",
@@ -329,11 +335,6 @@ def _register_chat_routes(app, S):
                     }
                 )
             S.session_store.append_event(sess.id, "user", user_event)
-
-            # La compaction reste dans le générateur afin d'être visible dans le flux.
-            system_prompt, strong = _build_system_prompt(
-                S, conv, workspace=sess.workspace
-            )
         except ValueError as exc:
             chat_lock.release()
 
