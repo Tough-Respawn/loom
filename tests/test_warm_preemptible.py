@@ -213,7 +213,7 @@ def test_un_message_interrompt_le_warm_de_fin_de_tour(warm_env):
     assert events[-1]["type"] == "done", events[-3:]
     assert elapsed < 2.0, elapsed  # sans préemption : 5 s (le faux warm) ou 54 s (réel)
     assert warm["stream"].closed  # le flux du warm a bien été fermé par le message
-    assert any(e["type"] == "notice" and "interrompu" in e["text"] for e in events), [
+    assert any(e["type"] == "notice" and "reprend là où" in e["text"] for e in events), [
         e for e in events if e["type"] == "notice"
     ]
 
@@ -416,4 +416,4 @@ def test_message_preempte_un_amorcage_qui_pose_sa_raison_apres_coup(warm_env):
     th.join(6)
     assert events[-1]["type"] == "done", events[-3:]
     assert elapsed < 2.5, elapsed  # sans relecture de la raison : ~5 s
-    assert any(e["type"] == "notice" and "interrompu" in e["text"] for e in events)
+    assert any(e["type"] == "notice" and "reprend là où" in e["text"] for e in events)

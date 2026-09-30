@@ -816,9 +816,9 @@ def _register_chat_routes(app, S):
                                     yield _sse(
                                         "notice",
                                         text=(
-                                            "amorçage du contexte interrompu : ton "
-                                            "message prend la main (il préfillera "
-                                            "ce qui manque)."
+                                            "préparation du contexte déjà "
+                                            "commencée : ta réponse reprend là où "
+                                            "elle en était."
                                         ),
                                     )
                             elif _reason and not _told_busy and not _told_abort:
