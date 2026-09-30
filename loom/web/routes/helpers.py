@@ -120,6 +120,12 @@ def _title_in_background(
     is_local = bool(model) and model not in S.remote_model_ids
     if is_local and getattr(S.client, "annex_slot", lambda m: 0)(model) == 0:
         return
+    try:  # thread à part (titre distant) : journal de la session, pas le global
+        from loom.agent.debuglog import set_debug_log_path
+
+        set_debug_log_path(S.session_store.session_dir(sess.id) / "debug.log")
+    except Exception:  # noqa: BLE001 - journal best-effort
+        pass
     try:
         title = _infer_title(
             S.client, model or None, message, stream_holder=stream_holder

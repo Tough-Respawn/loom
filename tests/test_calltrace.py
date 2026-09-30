@@ -71,6 +71,23 @@ def test_prefixe_suivi_par_slot(_events):
     assert [r["prefixe"] for r in requests] == ["premier", "premier", "ajout"]
 
 
+def test_distant_un_titre_ne_compte_pas_contre_la_conversation(_events):
+    # vécu 2026-09-30 (GLM-5.3) : un appel de titre sans outils entre deux tours
+    # faisait signaler une divergence « outils » qui n'existait pas
+    def remote(system, *msgs, tools=None):
+        k = _kwargs(system, *msgs, tools=tools)
+        k["extra_body"] = {}  # distant : pas de slot
+        return k
+
+    tools = [{"type": "function", "function": {"name": "read"}}]
+    calltrace.CallTrace("turn", remote("S", ("user", "a"), tools=tools))
+    calltrace.CallTrace("title", remote("T", ("user", "a")))
+    calltrace.CallTrace("turn", remote("S", ("user", "a"), ("user", "b"), tools=tools))
+    requests = [f for ev, f in _events if ev == "call.request"]
+    assert [r["prefixe"] for r in requests] == ["premier", "premier", "ajout"]
+    assert not [f for ev, f in _events if ev == "prefix.diff"]
+
+
 def test_ordre_de_rendu_outils_puis_system():
     labels = [e for e, _ in request_elements(_kwargs("# A\nx\n", ("user", "u")))]
     assert labels[0] == "outils" and labels[1].startswith("system")

@@ -125,6 +125,49 @@ def test_infer_title_abandonne_rend_vide():
     assert "stream" not in holder and holder.get("abort") is True  # signal conservé
 
 
+class _GlmCompletions:
+    """Comme GLM-5.3 : refuse de couper le thinking, raisonne toujours ; ne sort un
+    titre que si le budget laisse la place au raisonnement."""
+
+    def __init__(self):
+        self.calls = []
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        if (kw.get("extra_body") or {}).get("thinking") == {"type": "disabled"}:
+            raise RuntimeError(
+                "Error code: 400 - This model always engages in thinking and "
+                "cannot disable it"
+            )
+        content = "Titre GLM" if kw["max_tokens"] >= 512 else ""
+        msg = SimpleNamespace(content=content, reasoning_content="je réfléchis")
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+
+def test_modele_qui_raisonne_toujours_un_seul_appel_utile():
+    # vécu 2026-09-30 : 4 appels facturés par session, et jamais de titre
+    oai = SimpleNamespace(chat=SimpleNamespace(completions=_GlmCompletions()))
+    oai.with_options = lambda **kw: oai
+    me = _self(oai, native=False)
+    assert LoomClient.infer_title(me, "glm-5.3", "bonjour") == "Titre GLM"
+    assert len(oai.chat.completions.calls) == 2  # refus explicite, puis le bon appel
+    oai.chat.completions.calls.clear()
+    assert LoomClient.infer_title(me, "glm-5.3", "salut") == "Titre GLM"
+    assert len(oai.chat.completions.calls) == 1  # retenu : directement le bon appel
+
+
+def test_reponse_vide_apres_raisonnement_sans_refus_explicite():
+    class _Silent(_GlmCompletions):
+        def create(self, **kw):  # accepte tout, mais raisonne quand même
+            kw = {**kw, "extra_body": {}}
+            return super().create(**kw)
+
+    oai = SimpleNamespace(chat=SimpleNamespace(completions=_Silent()))
+    oai.with_options = lambda **kw: oai
+    assert LoomClient.infer_title(_self(oai, native=False), "m2", "x") == "Titre GLM"
+    assert len(oai.chat.completions.calls) == 2  # 1 variante vide, puis le bon appel
+
+
 def test_infer_title_interruptible_a_60s_de_budget():
     # Interruption en plein calcul PROUVÉE côté serveur le 2026-09-13 (cancel task,
     # cache partiel conservé) : le titrage séquentiel peut prendre 60 s sans risque,
