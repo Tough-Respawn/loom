@@ -40,6 +40,7 @@ from loom.agent.streaming import (
     build_create_kwargs,
 )
 from loom.agent.streaming import _turn_timing_fields as _turn_timing_fields
+from loom.agent.calltrace import traced_create
 from loom.agent.toolrun import (
     _allowed_without_asking,
     _run_tools_parallel,
@@ -173,7 +174,9 @@ class LoomClient:
             return ""
         oai, api_model, native = self._resolve(model)
         try:
-            resp = oai.chat.completions.create(
+            resp = traced_create(
+                oai,
+                "summary",
                 model=api_model,
                 messages=[
                     {"role": "system", "content": _SUMMARY_SYSTEM},
@@ -328,7 +331,9 @@ class LoomClient:
                 timeout=timeout,
                 max_retries=0,
             )
-            oai.chat.completions.create(
+            traced_create(
+                oai,
+                "ping",
                 model=model,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=1,
@@ -454,6 +459,44 @@ class LoomClient:
     def _slot_action(
         self, model: str | None, action: str, name: str, force: bool = False
     ) -> bool:
+        """`_slot_action_impl` journalisé : une ligne `slot.action` par tentative, avec
+        le motif d'un refus (vécu 2026-09-30 : la restauration de fin de tour était
+        refusée en silence par slot_kv = false, il a fallu relire le code pour le voir)."""
+        import time as _time
+
+        if self.is_remote(model):
+            motif = "distant"
+        elif not (
+            force
+            or getattr(self, "slot_kv_enabled", False)
+            or (action == "save" and getattr(self, "hot_resume_enabled", False))
+        ):
+            motif = "refuse_slot_kv_off" if action == "restore" else "refuse_desactive"
+        elif (model or "(local)") in self._slot_broken:
+            motif = "refuse_disjoncteur"
+        else:
+            motif = ""
+        self._last_slot_body = None
+        t0 = _time.monotonic()
+        ok = self._slot_action_impl(model, action, name, force)
+        body = self._last_slot_body or {}
+        fields = {
+            "action": action,
+            "fichier": name,
+            "model": model or "",
+            "force": force,
+            "resultat": "ok" if ok else (motif or "echec"),
+            "duree_s": round(_time.monotonic() - t0, 2),
+        }
+        for k in ("n_saved", "n_restored", "n_written", "n_read"):
+            if k in body:
+                fields[k] = body[k]
+        log_event("slot.action", **fields)
+        return ok
+
+    def _slot_action_impl(
+        self, model: str | None, action: str, name: str, force: bool = False
+    ) -> bool:
         """POST /slots/0?action=save|restore sur le serveur LOCAL (via la route
         llama-swap /upstream/<modèle>/, repli /slots direct pour un llama-server
         sans swap). Nécessite --slot-save-path côté serveur. Best-effort.
@@ -497,6 +540,7 @@ class LoomClient:
             try:
                 with urllib.request.urlopen(req, timeout=call_timeout) as resp:
                     body = json.loads(resp.read().decode() or "{}")
+                self._last_slot_body = body
                 _debug(f"SLOT_{action.upper()}", {"name": name, **body}, terminal=False)
                 if action == "save" and body.get("n_saved") == 0:
                     # Le serveur a DÉJÀ écrasé le fichier par ce save vide : la meta du
@@ -733,7 +777,7 @@ class LoomClient:
                 native_extras=native,
                 id_slot=self._slot_arg(model, 0),
             )
-            stream = oai.chat.completions.create(**kwargs)
+            stream = traced_create(oai, "prime", **kwargs)
             if stream_holder is not None:
                 if stream_holder.get("abort"):
                     # Le message est arrivé PENDANT l'ouverture HTTP : le flux n'était
@@ -835,7 +879,7 @@ class LoomClient:
                     # le porte-flux — un message utilisateur le ferme, on rend "".
                     if stream_holder.get("abort"):
                         return ""
-                    stream = fast.chat.completions.create(**payload, stream=True)
+                    stream = traced_create(fast, "title", **payload, stream=True)
                     if stream_holder.get("abort"):
                         _close(stream)  # arrivé pendant l'ouverture : jamais lu
                         return ""
@@ -852,7 +896,7 @@ class LoomClient:
                             _debug("TITLE_ABANDON", "message arrivé pendant le titrage")
                             return ""
                 else:
-                    resp = fast.chat.completions.create(**payload)
+                    resp = traced_create(fast, "title", **payload)
                     txt = resp.choices[0].message.content or ""
                 txt = txt.strip().strip('"').strip("'").strip()
                 if txt:
@@ -890,7 +934,9 @@ class LoomClient:
             {"type": "image_url", "image_url": {"url": data_uri}},
         ]
         try:
-            resp = oai.chat.completions.create(
+            resp = traced_create(
+                oai,
+                "vision",
                 model=api_model,
                 messages=[
                     {"role": "system", "content": sys_p},
@@ -939,7 +985,7 @@ class LoomClient:
         )
         _debug_messages(kwargs["model"], kwargs["messages"])
         try:
-            stream = oai.chat.completions.create(**kwargs)
+            stream = traced_create(oai, "annex", **kwargs)
         except APIError as exc:
             if not (thinking and _is_reasoning_history_error(exc)):
                 raise
@@ -955,7 +1001,7 @@ class LoomClient:
                 id_slot=id_slot,
             )
             log_event("reasoning_history.retry", level="WARN", model=api_model)
-            stream = oai.chat.completions.create(**kwargs)
+            stream = traced_create(oai, "annex", **kwargs)
         # `/cancel` ferme ce stream pour débloquer une lecture distante figée.
         if stream_holder is not None:
             stream_holder["stream"] = stream
@@ -1311,6 +1357,7 @@ class LoomClient:
         refocus_note: bool = True,
         stream_holder: dict | None = None,
         id_slot: int | None = 0,
+        purpose: str = "turn",
     ) -> Iterator[tuple[str, object]]:
         """Boucle tool-use : relaie le texte, exécute les outils, relance le modèle.
 
@@ -1430,6 +1477,7 @@ class LoomClient:
                     thinking,
                     st,
                     stream_holder=stream_holder,
+                    purpose=purpose,
                 )
             except (APIError, httpx.HTTPError) as exc:
                 # Compatibilité automatique avec les historiques DeepSeek thinking,
