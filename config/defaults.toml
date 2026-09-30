@@ -29,6 +29,13 @@ hot_resume = false
 # true = build avec le fix (PR ggml-org #26004) : tous les modèles y ont droit.
 restore_safe = false
 
+# Journal fichier de llama-server, un par modèle : var/logs/llama/<modèle>.log
+# (archivé dans archive/ avant d'être écrasé par un redémarrage). 4 = décisions de
+# cache (sauvegarde RAM, recherche, restauration, recalcul forcé) — ce qu'il faut
+# pour retracer un re-prefill ; 3 = défaut llama.cpp ; 5 = une ligne par token
+# (très verbeux) ; 0 = pas de fichier.
+log_verbosity = 4
+
 # Marge VRAM hors couches GPU ; trop bas -> spill mémoire partagée (surveiller nvidia-smi)
 gpu_kv_headroom_mb = 640
 

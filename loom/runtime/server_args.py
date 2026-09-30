@@ -36,6 +36,8 @@ def build_server_args(
     ubatch: int | None = None,
     batch: int | None = None,
     checkpoint_min_step: int | None = None,
+    log_file: str | None = None,
+    log_verbosity: int | None = None,
 ) -> list[str]:
     """Liste d'arguments pour lancer llama-server en API OpenAI-compatible local.
 
@@ -109,4 +111,7 @@ def build_server_args(
     # Un maillage plus serré borne le retraitement des modèles hybrides après compaction.
     if checkpoint_min_step is not None:
         args += ["--checkpoint-min-step", str(checkpoint_min_step)]
+    # Journal fichier : sans lui, les décisions de cache ne sont visibles nulle part.
+    if log_file and log_verbosity:
+        args += ["--log-file", str(log_file), "-lv", str(log_verbosity)]
     return args

@@ -2,7 +2,16 @@
 from __future__ import annotations
 import time
 
+from loom.agent.calltrace import call_purpose
+from loom.agent.debuglog import log_event, set_debug_log_path
 from loom.web.routes.priming import _prime_slot
+
+
+def _maint_log(etape: str, t0: float, **fields) -> None:
+    """Une ligne `maint.step` : étape, durée et résultat (journal de la session)."""
+    log_event(
+        "maint.step", etape=etape, duree_s=round(time.monotonic() - t0, 1), **fields
+    )
 
 
 def _post_turn_maintenance(
@@ -23,42 +32,75 @@ def _post_turn_maintenance(
     relancé, on passe après son tour). Distant : reflect seul."""
     is_local = bool(model) and model not in S.remote_model_ids
     holder = getattr(S, "warm_holder", None)
+    # Thread à part : sans ça, reflect, restauration et ré-amorçage finissaient dans
+    # le journal GLOBAL, invisibles dans celui de la session (post-mortem 2026-09-30).
+    try:
+        set_debug_log_path(S.session_store.session_dir(sess.id) / "debug.log")
+    except Exception:  # noqa: BLE001 - journal best-effort
+        pass
+    t_maint = time.monotonic()
+    log_event(
+        "maint.start",
+        model=model or "",
+        local=is_local,
+        reflect=bool(do_reflect),
+        kv_saved=bool(kv_saved),
+        titre=title_request is not None,
+    )
 
     def _aborted() -> bool:
         # Un message attend le verrou : plus RIEN ne démarre (warm, titre, ping),
         # le signal reste posé jusqu'à la libération (revue croisée 2026-09-13).
         return bool(holder and holder.get("abort"))
 
+    t0 = time.monotonic()
     if is_local and not S.local_gen_lock.acquire(timeout=600):
+        _maint_log("verrou", t0, resultat="timeout")
         return
     if is_local:
         S.local_busy["reason"] = "maintenance"
+        _maint_log("verrou", t0, resultat="obtenu")
 
     try:
         if do_reflect:
+            t0 = time.monotonic()
             try:
                 from loom.agent.reflect import reflect as _reflect
 
-                _res = _reflect(
-                    msgs,
-                    actions,
-                    answer,
-                    client=S.client,
-                    model=model or S.reflect_model,
-                    provider=S.reflect_stores.provider,
-                    paths=S.reflect_stores.paths,
-                    learned_dir=S.reflect_stores.learned_dir,
-                    stream_holder=getattr(S, "warm_holder", None),
-                )
+                with call_purpose("reflect"):
+                    _res = _reflect(
+                        msgs,
+                        actions,
+                        answer,
+                        client=S.client,
+                        model=model or S.reflect_model,
+                        provider=S.reflect_stores.provider,
+                        paths=S.reflect_stores.paths,
+                        learned_dir=S.reflect_stores.learned_dir,
+                        stream_holder=getattr(S, "warm_holder", None),
+                    )
 
                 # Trace VISIBLE (console/serve.log) : sinon l'apprentissage est
                 # une boîte noire — on ne sait pas s'il a tourné ni retenu quoi.
                 if _res is None:
+                    _maint_log("reflect", t0, resultat="rien_retenu")
                     print(
                         "[reflect] rien retenu (tour peu généralisable)",
                         flush=True,
                     )
                 else:
+                    # Une note identité RÉÉCRIT le system prompt (USER/MEMORY) : sur un
+                    # modèle hybride, le prochain tour recalcule tout (2026-09-30).
+                    _maint_log(
+                        "reflect",
+                        t0,
+                        resultat="retenu",
+                        skills=len(_res.new_skills) + len(_res.improved_skills),
+                        episodes=len(_res.episodes),
+                        notes_identite=len(_res.memory_updates)
+                        + len(_res.user_updates)
+                        + len(_res.soul_updates),
+                    )
                     print(
                         f"[reflect] retenu : {len(_res.new_skills)} skill(s), "
                         f"{len(_res.improved_skills)} amélioré(s), "
@@ -69,17 +111,37 @@ def _post_turn_maintenance(
                     )
 
             except Exception as _e:  # noqa: BLE001 - best-effort, jamais bloquant
+                _maint_log("reflect", t0, resultat="erreur", erreur=str(_e))
                 print(f"[reflect] erreur ignorée : {_e}", flush=True)
 
+        if is_local and _aborted():
+            _maint_log("restauration", t_maint, resultat="sautee_message_en_attente")
         if is_local and not _aborted():
-            if kv_saved and S.client.restore_slot(model, "turnend.kv"):
+            t0 = time.monotonic()
+            _restored = bool(kv_saved) and S.client.restore_slot(model, "turnend.kv")
+            _maint_log(
+                "restauration",
+                t0,
+                resultat="ok"
+                if _restored
+                else ("refusee_ou_echec" if kv_saved else "pas_de_sauvegarde"),
+            )
+            if _restored:
                 print(
                     "[slot] cache de la conversation RESTAURÉ après fin de tour "
                     "(~ms, save/restore du slot KV)",
                     flush=True,
                 )
             else:
+                t0 = time.monotonic()
                 _ok = _prime_slot(S, sess)
+                _maint_log(
+                    "reamorcage",
+                    t0,
+                    resultat="ok"
+                    if _ok
+                    else ("annule" if _aborted() else "echec_ou_sans_objet"),
+                )
                 print(
                     f"[prime] repli ré-amorçage par re-prefill : "
                     f"{'ok' if _ok else 'échec/sans objet'}",
@@ -93,6 +155,7 @@ def _post_turn_maintenance(
                 from loom.web.routes.helpers import _title_in_background
 
                 message, provisional = title_request
+                t0 = time.monotonic()
                 _title_in_background(
                     S,
                     sess,
@@ -101,13 +164,20 @@ def _post_turn_maintenance(
                     provisional,
                     stream_holder=getattr(S, "warm_holder", None),
                 )
+                _maint_log("titre", t0)
 
     finally:
+        _interrupted = _aborted()  # lu AVANT la remise à zéro du signal
         if is_local:
             if holder is not None:
                 holder["abort"] = False  # le verrou se libère : signal remis à zéro
             S.local_busy["reason"] = ""
             S.local_gen_lock.release()
+        log_event(
+            "maint.end",
+            duree_s=round(time.monotonic() - t_maint, 1),
+            interrompue=_interrupted,
+        )
 
 
 # --- Keep-warm : empêche l'OS d'évincer le modèle inactif (cold start après pause). --
@@ -154,6 +224,12 @@ def _keepwarm_tick(S) -> None:
         if not model:
             return
 
+        try:  # journal de la session, pas le journal global
+            set_debug_log_path(S.session_store.session_dir(sess.id) / "debug.log")
+        except Exception:  # noqa: BLE001 - journal best-effort
+            pass
+        log_event("keepwarm.tick", model=model)
+
         # Keep-warm = garder chaud le modèle LOCAL (éviter le cold start). Un modèle
         # DISTANT n'a pas de cold start côté machine ET est PAYANT à l'appel : le
         # pinger en boucle brûlerait des crédits pour rien -> on saute.
@@ -166,19 +242,21 @@ def _keepwarm_tick(S) -> None:
         # TOUT (bug 2026-07-10). Ici : modèle chaud ET cache chaud ; si le
         # cache est déjà bon, le prefill est ~nul -> quasi gratuit. Repli
         # ping pour une session encore vide (rien à amorcer, juste chauffer).
-        primed = _prime_slot(S, sess)
+        with call_purpose("keepwarm"):
+            primed = _prime_slot(S, sess)
         if not primed and not (holder and holder.get("abort")):
             # Un warm INTERROMPU n'est pas un échec : pas de ping pendant qu'un
             # message attend le verrou (revue croisée 2026-09-13).
-            for _kind, _chunk in S.client.stream_chat(
-                [{"role": "user", "content": "ping"}],
-                "",
-                1,
-                model=model,
-                thinking=False,
-                stream_holder=holder,
-            ):
-                pass
+            with call_purpose("keepwarm"):
+                for _kind, _chunk in S.client.stream_chat(
+                    [{"role": "user", "content": "ping"}],
+                    "",
+                    1,
+                    model=model,
+                    thinking=False,
+                    stream_holder=holder,
+                ):
+                    pass
 
         S.last_activity[0] = time.time()  # gardé chaud => relance un intervalle
 
