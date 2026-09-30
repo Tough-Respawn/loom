@@ -353,7 +353,12 @@ def test_extra_reply_persistee_dans_le_journal(env_img, monkeypatch):
     assert any("✅" in t for t in texts)  # le résultat survit au rechargement du fil
 
 
-def test_add_model_local_installe(env, monkeypatch):
+def _install_local(env, monkeypatch, probe):
+    """/add-model local de bout en bout, téléchargement simulé ; `probe` = résultat
+    du test de chargement (jamais un vrai llama-server en test unitaire)."""
+    from loom.web.routes import model_admin
+
+    monkeypatch.setattr(model_admin, "_probe_install", lambda gguf: probe)
     hits = [{"repo_id": "org/mon-GGUF", "downloads": 10, "likes": 1}]
     files = [
         {
@@ -387,6 +392,21 @@ def test_add_model_local_installe(env, monkeypatch):
     mdir = env.root / "local" / "text" / "nouveau-modele"
     assert (mdir / "model.toml").exists()
     assert 'repo = "org/mon-GGUF"' in (mdir / "model.toml").read_text(encoding="utf-8")
-    # monté à chaud : visible dans la liste des modèles sélectionnables
     payload = env.web.get("/models/config").get_json()
-    assert any(m["id"] == "nouveau-modele" for m in payload["models"])
+    return any(m["id"] == "nouveau-modele" for m in payload["models"])
+
+
+def test_add_model_local_installe(env, monkeypatch):
+    # monté à chaud : visible dans la liste des modèles sélectionnables
+    assert _install_local(env, monkeypatch, probe=(True, ""))
+
+
+def test_add_model_local_illisible_non_monte(env, monkeypatch):
+    # llama-server refuse le GGUF (ex. quant d'un fork) : téléchargé mais PAS monté
+    refus = (False, "tensor 'output.weight' has invalid ggml type 142")
+    assert not _install_local(env, monkeypatch, probe=refus)
+
+
+def test_add_model_local_test_non_concluant_monte(env, monkeypatch):
+    # test impossible (binaire introuvable) : on ne bloque pas l'installation
+    assert _install_local(env, monkeypatch, probe=(None, "binaire introuvable"))
