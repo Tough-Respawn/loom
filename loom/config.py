@@ -183,6 +183,10 @@ class RuntimeConfig:
     slot_kv: bool = False
     # La reprise à chaud restaure seulement un slot froid, jamais à chaque tour.
     hot_resume: bool = False
+    # Verbosité du journal fichier de llama-server (var/logs/llama/<modèle>.log) :
+    # 4 = décisions de cache (sauvegarde RAM, recherche, restauration, recalcul
+    # forcé), 3 = défaut llama.cpp, 5 = une ligne par token, 0 = pas de fichier.
+    server_log_verbosity: int = 4
     # Exclure les hybrides si le binaire ne préserve pas leurs checkpoints au restore.
     restore_safe: bool = False
     # Réserver cette VRAM au cache KV et aux buffers pour éviter le spill partagé.
@@ -474,6 +478,7 @@ def load_config(
         n_parallel=int(s.get("n_parallel", 1)),
         slot_kv=bool(s.get("slot_kv", False)),
         hot_resume=bool(s.get("hot_resume", False)),
+        server_log_verbosity=int(s.get("log_verbosity", 4)),
         restore_safe=bool(s.get("restore_safe", False)),
         gpu_kv_headroom_mb=int(s.get("gpu_kv_headroom_mb", 1024)),
         override_n_gpu_layers=o.get("n_gpu_layers"),

@@ -243,9 +243,34 @@ class TracedStream:
         return getattr(self._stream, name)
 
 
+_model_switch_hook = None
+_last_model: str | None = None
+
+
+def set_model_switch_hook(hook) -> None:
+    """`hook(model)` est appelé AVANT le premier appel à un modèle différent du
+    précédent — llama-swap va (re)lancer son llama-server, qui écrasera son journal :
+    c'est le moment de l'archiver."""
+    global _model_switch_hook
+    _model_switch_hook = hook
+
+
+def _note_model(model: str) -> None:
+    global _last_model
+    with _lock:
+        switched = bool(model) and model != _last_model
+        _last_model = model or _last_model
+    if switched and _model_switch_hook is not None:
+        try:
+            _model_switch_hook(model)
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+
+
 def traced_create(client: Any, default_purpose: str, **kwargs: Any) -> Any:
     """`client.chat.completions.create(**kwargs)` tracé. Rend un `TracedStream` pour un
     appel streamé, la réponse telle quelle sinon."""
+    _note_model(str(kwargs.get("model") or ""))
     trace = CallTrace(current_purpose(default_purpose), kwargs)
     try:
         result = client.chat.completions.create(**kwargs)
