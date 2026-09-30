@@ -40,6 +40,9 @@ class Conversation:
     context_tokens: int = 0
     # Persister le wizard pour qu'il survive à un rafraîchissement de page.
     wizard: dict | None = None
+    # System prompt figé pour la session (texte, clé des choix explicites, dossier
+    # annoncé) : le réécrire en cours de fil fait tout recalculer sur un modèle hybride.
+    frozen_prompt: dict | None = None
 
     def add_usage(
         self,
@@ -98,6 +101,7 @@ class Conversation:
         self.goal = ""  # ...et objectif effacé
         self.wizard = None  # wizard abandonné avec le fil
         self.deferred_loaded = []
+        self.frozen_prompt = None  # fil neuf : le prompt se refige au prochain tour
         # Compteur de consommation remis à zéro : le fil repart, le cumul aussi.
         self.tokens_in = 0
         self.tokens_out = 0
@@ -151,6 +155,7 @@ class Conversation:
             "notes": self.notes,
             "goal": self.goal,
             "wizard": self.wizard,
+            "frozen_prompt": self.frozen_prompt,
             "disabled_skills": self.disabled_skills,
             "skill_overrides": self.skill_overrides,
             "tokens_in": self.tokens_in,
@@ -176,6 +181,9 @@ class Conversation:
             notes=list(data.get("notes", [])),
             goal=data.get("goal", ""),
             wizard=data.get("wizard"),
+            frozen_prompt=data.get("frozen_prompt")
+            if isinstance(data.get("frozen_prompt"), dict)
+            else None,
             disabled_skills=list(data.get("disabled_skills", [])),
             skill_overrides=dict(data.get("skill_overrides", {})),
             tokens_in=int(data.get("tokens_in", 0) or 0),

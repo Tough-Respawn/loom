@@ -18,6 +18,7 @@ from loom.web.routes.helpers import (
     _totals,
 )
 from loom.web.routes.priming import _prime_async
+from loom.web.routes.system_prompt import strip_workspace_note
 from loom.web.routes.skills import _index_context
 
 
@@ -64,10 +65,11 @@ def _register_session_routes(app, S):
 
         def _as_text(content) -> str:
             if isinstance(content, list):
-                return " ".join(
+                content = " ".join(
                     p.get("text", "") for p in content if p.get("type") == "text"
-                ).strip()
-            return str(content).strip()
+                )
+            # L'UI affiche le message SANS la note de dossier ajoutée par Loom.
+            return strip_workspace_note(str(content)).strip()
 
         user_msgs = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
 
@@ -91,15 +93,7 @@ def _register_session_routes(app, S):
                 status=400,
             )
 
-        content = msgs[target_idx].get("content", "")
-
-        if isinstance(content, list):
-            text = " ".join(
-                p.get("text", "") for p in content if p.get("type") == "text"
-            )
-
-        else:
-            text = str(content)
+        text = _as_text(msgs[target_idx].get("content", ""))
 
         conv.messages = msgs[: target_idx + 1]
 
