@@ -206,7 +206,8 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     got = chat_lock.acquire(timeout=2)
     try:
         conv = sess.conversation
-        conv.add("assistant", msg)
+        # Journal seulement : un compte rendu de commande n'est pas un tour que le
+        # modèle doit relire (cf. model_admin._persist_wizard_exchange).
         if wiz is not None:
             conv.set_wizard(wiz)
         S.session_store.append_event(sess.id, "text", {"text": msg})

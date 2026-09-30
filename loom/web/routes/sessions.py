@@ -290,7 +290,13 @@ def _register_session_routes(app, S):
             if _lk is not None and _lk.locked():
                 continue
             ghost = _get_session(S, meta.id)
-            if ghost is not None and not ghost.conversation.messages:
+            # Le journal compte aussi : une session qui n'a vu que /add-model n'a
+            # aucun message de conversation mais n'est pas vierge.
+            if (
+                ghost is not None
+                and not ghost.conversation.messages
+                and not S.session_store.read_timeline(meta.id)
+            ):
                 if S.monitor_hub is not None:
                     S.monitor_hub.stop_session(meta.id)
                 S.session_store.delete(meta.id)
