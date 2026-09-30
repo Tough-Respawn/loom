@@ -77,7 +77,11 @@ def validate_reflect_json(obj: Any) -> ReflectResult | None:
     for key in ("memory_updates", "user_updates", "soul_updates"):
         seen = set()
         for line in obj.get(key) or []:
-            line = str(line).strip()
+            # Comme les épisodes : le modèle renvoie parfois {"text": ...} ; str() écrivait
+            # alors « {'text': ...} » tel quel dans USER.md (constaté 2026-09-30).
+            line = (
+                line.get("text", "") if isinstance(line, dict) else str(line)
+            ).strip()
             if line and line not in seen:
                 seen.add(line)
                 getattr(res, key).append(line)
