@@ -87,9 +87,10 @@ def identity_block(
 ) -> str:
     """Concatène SOUL/USER/MEMORY en un bloc borné pour le system prompt. Vide si rien.
 
-    Bornage simple par caractères (max_tokens * 4) : on tronque le bloc concaténé en
-    gardant l'ordre SOUL -> USER -> MEMORY. Le bornage fin (resserrage) est l'affaire de
-    `reflect` au Plan 2 ; ici on protège juste le budget de contexte.
+    Bornage par caractères (max_tokens * 4), ordre SOUL -> USER -> MEMORY, par LIGNES
+    entières (jamais une note coupée au milieu). Ce qui ne tient pas est journalisé
+    (`identity.tronquee`) : la coupe était silencieuse et visait les notes les plus
+    récentes, ajoutées en fin de MEMORY.md (constaté 2026-09-30).
     """
     # Le bloc identité ouvre le system prompt (injecté EN TÊTE par l'app) : SOUL est donc la
     # première chose lue, la définition qui fait foi. Le mode d'emploi opérationnel (outils,
@@ -110,5 +111,22 @@ def identity_block(
     block = "\n\n".join(parts)
     cap = max_tokens * _CHARS_PER_TOKEN
     if len(block) > cap:
-        block = block[:cap].rstrip() + "\n[…tronqué]"
+        kept, size = [], 0
+        lines = block.splitlines()
+        for ln in lines:
+            if size + len(ln) + 1 > cap:
+                break
+            kept.append(ln)
+            size += len(ln) + 1
+        dropped = [ln for ln in lines[len(kept) :] if ln.strip()]
+        from loom.agent.debuglog import log_event
+
+        log_event(
+            "identity.tronquee",
+            level="WARN",
+            lignes_perdues=len(dropped),
+            chars=len(block),
+            plafond=cap,
+        )
+        block = "\n".join(kept).rstrip() + f"\n[…{len(dropped)} ligne(s) tronquée(s)]"
     return block
