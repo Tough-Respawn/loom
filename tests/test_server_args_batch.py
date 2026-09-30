@@ -80,6 +80,16 @@ def test_checkpoint_min_step_par_modele():
     )
 
 
+def test_ctx_checkpoints_par_modele():
+    # Chaque checkpoint d'un hybride = état récurrent complet (150 Mio sur Bonsai 2).
+    a = _args(ctx_checkpoints=4)
+    assert a[a.index("--ctx-checkpoints") + 1] == "4"
+    assert "--ctx-checkpoints" not in _args()  # défaut serveur (32)
+    d = {"repo": "r/x", "filename": "x.gguf", "n_layers": 40, "size_mb": 100}
+    assert _parse_model({**d, "ctx_checkpoints": 4}, "x").ctx_checkpoints == 4
+    assert _parse_model(d, "x").ctx_checkpoints is None
+
+
 def test_context_par_slot_multiplie_par_n_parallel():
     # SÉMANTIQUE : `context` = fenêtre PAR SLOT (celle que calibre le bench et
     # que voit l'utilisateur). llama-server répartit -c sur les slots -> on
