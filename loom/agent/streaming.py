@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from loom.agent.compaction import _message_chars
+from loom.agent.calltrace import traced_create
 from loom.agent.debuglog import _debug, log_event
 
 
@@ -306,6 +307,7 @@ def _stream_model_turn(
     thinking: bool,
     st: dict,
     stream_holder: dict | None = None,
+    purpose: str = "turn",
 ) -> Iterator[tuple[str, object]]:
     """Un appel modèle streamé : relaie les events tels quels, remplit `collector`
     (tool_calls, finish_reason, looped) et pose le texte/raisonnement accumulés
@@ -324,7 +326,8 @@ def _stream_model_turn(
     )
     _t_req = time.monotonic()
     _first_ms: float | None = None
-    stream = oai.chat.completions.create(**kwargs)
+    # Rôle EXPLICITE (générateur : un contexte de thread fuirait entre deux yield).
+    stream = traced_create(oai, purpose, **kwargs)
     # Exposer le stream à `/cancel` pour libérer une lecture distante et son verrou.
     if stream_holder is not None:
         stream_holder["stream"] = stream
