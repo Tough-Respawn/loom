@@ -96,6 +96,20 @@ def test_finalize_model_toml(tmp_path, monkeypatch):
     assert raw["n_layers"] == 48
     assert raw["cpu_moe"] is True  # MoE détecté -> experts en RAM par défaut
     assert meta["expert_count"] == 128
+    assert "cache_isolation" not in raw  # pas de mémoire récurrente
+
+
+def test_finalize_modele_hybride_isole(tmp_path, monkeypatch):
+    d = tmp_path / "m"
+    write_model_toml(d, "org/r", "m.gguf", 100)
+    monkeypatch.setattr(
+        model_install,
+        "read_gguf_meta",
+        lambda p: {"architecture": "qwen35", "n_layers": 64, "recurrent": True},
+    )
+    finalize_model_toml(d, d / "m.gguf")
+    raw = tomllib.loads((d / "model.toml").read_text(encoding="utf-8"))
+    assert raw["cache_isolation"] is True
 
 
 def test_finalize_gguf_illisible_est_best_effort(tmp_path, monkeypatch):
