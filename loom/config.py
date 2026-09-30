@@ -99,6 +99,9 @@ class ModelConfig:
     dir: str = ""
     # Description courte affichée dans le sélecteur.
     description: str = ""
+    # Binaire llama-server propre à ce modèle (ex. un build qui porte une PR pas encore
+    # mergée) ; vide = le binaire global [server].bin.
+    server_bin: str = ""
 
 
 @dataclass
@@ -224,6 +227,7 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         checkpoint_min_step=d.get("checkpoint_min_step"),
         dir=d.get("dir", ""),
         description=str(d.get("description", "") or ""),
+        server_bin=str(d.get("server_bin", "") or ""),
     )
 
 

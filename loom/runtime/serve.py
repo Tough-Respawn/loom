@@ -138,7 +138,7 @@ def build_launch(
     else:
         threads = profile.cpu_threads
     return build_server_args(
-        server_bin=cfg.server_bin,
+        server_bin=cfg.model.server_bin or cfg.server_bin,
         model_path=str(model_path),
         port=cfg.port,
         context=cfg.context,
@@ -228,7 +228,7 @@ def launch_direct(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
     args = build_launch(cfg, profile, model_path, mmproj_path)
     return _run(
         args,
-        cfg.server_bin,
+        model.server_bin or cfg.server_bin,
         "Lance 'uv run loom-setup' pour installer llama.cpp, ou renseigne "
         "'bin' dans config/local.toml.",
     )

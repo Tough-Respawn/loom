@@ -15,6 +15,9 @@ filename = "mon-modele.Q4_K_M.gguf"          # nom exact du fichier GGUF dans le
 n_layers = 32                                # nb de couches du modèle (cf. la fiche du modèle)
 size_mb = 5000                               # taille approx. du GGUF en Mo (pour les logs/heuristiques)
 
+# --- Binaire llama-server propre à ce modèle (optionnel ; sinon [server].bin) ---
+# server_bin = "C:/chemin/vers/un-autre-build/bin/llama-server.exe"
+
 # --- Contexte (optionnel ; sinon valeur de [server].context dans loom.config.toml) ---
 # context = 24576
 
