@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 import time
 
+from loom.agent.debuglog import set_debug_log_path
 from loom.web.routes.helpers import (
     _ensure_local_server,
     _ensure_model,
@@ -104,6 +105,12 @@ def _prime_async(S, sess, *, wait_server: float = 0.0, require_running: bool = F
 
     def _run():
         try:
+            # Thread à part : sans ça, la reprise à chaud et l'amorçage finissaient
+            # dans le journal GLOBAL, invisibles pour loom.diag.trace (2026-09-30).
+            try:
+                set_debug_log_path(S.session_store.session_dir(sess.id) / "debug.log")
+            except Exception:  # noqa: BLE001 - journal best-effort
+                pass
             # AVANT tout démarrage de serveur : une calibration a la priorité absolue
             # sur la machine, et `wait_server` en relancerait un contre elle.
             if _calibration_en_cours():

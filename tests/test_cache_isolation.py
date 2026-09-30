@@ -10,8 +10,6 @@ from loom.runtime.swap import _model_cmd
 from loom.setup.topology import TOPO_RAM, ServerProbe, isolation_needed
 
 
-
-
 def test_isolation_needed_bimodal():
     assert isolation_needed(600, 590) is True
     assert isolation_needed(600, 5) is False
@@ -20,12 +18,16 @@ def test_isolation_needed_bimodal():
     assert isolation_needed(100, 49) is False
 
 
+def test_isolation_imposee_pour_memoire_recurrente():
+    # le cache RAM a rattrapé la pollution, mais le modèle reste hybride
+    assert isolation_needed(600, 5, recurrent=True) is True
+    assert isolation_needed(0, 0, recurrent=True) is True
+
+
 def test_isolation_needed_mesure_illisible_sans_verdict():
     # Ne jamais doubler le KV sur une sonde illisible.
     assert isolation_needed(0, 0) is False
     assert isolation_needed(0, 500) is False
-
-
 
 
 def test_probe_isolation_sequence(monkeypatch):
@@ -84,8 +86,6 @@ def test_probe_n_parallel_traverse_les_flags(monkeypatch):
     assert captured["n_parallel"] == 2
 
 
-
-
 def test_resolve_parallel():
     assert resolve_parallel(1, False) == 1
     assert resolve_parallel(1, True) == 2
@@ -119,8 +119,6 @@ def test_swap_cmd_monte_parallel_pour_le_modele_isole():
     assert "-c 8192" in sain
 
 
-
-
 def test_set_model_cache_isolation_ecrit_et_remplace(tmp_path):
     from loom.setup.cli import _set_model_cache_isolation
 
@@ -149,8 +147,6 @@ def test_set_model_cache_isolation_sans_toml_ne_leve_pas(tmp_path):
     from loom.setup.cli import _set_model_cache_isolation
 
     _set_model_cache_isolation(tmp_path / "absent.gguf", True, "d")  # no-op
-
-
 
 
 def test_slot_kv_off_par_defaut_et_reactivable(tmp_path):
