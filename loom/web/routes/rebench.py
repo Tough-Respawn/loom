@@ -77,8 +77,10 @@ def _run_calibration(S, spec, progress):
     iso_detail = ""
     try:
         first, back = probe.probe_isolation()
-        isolation = topo_mod.isolation_needed(first, back)
+        isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
         iso_detail = f"retour {back}/{first} tokens retraités"
+        if meta.get("recurrent"):
+            iso_detail += ", mémoire récurrente"
         if isolation:
             probe.n_parallel = 2
     except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans verdict

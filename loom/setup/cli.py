@@ -970,8 +970,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     iso_detail = ""
     try:
         first, back = probe.probe_isolation()
-        isolation = topo_mod.isolation_needed(first, back)
+        isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
         iso_detail = f"retour {back}/{first} tokens retraités"
+        if meta.get("recurrent"):
+            iso_detail += ", mémoire récurrente"
     except Exception as exc:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
         con.progress_end()
         con.say(

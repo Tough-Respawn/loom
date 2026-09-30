@@ -281,13 +281,21 @@ class ServerProbe:
             time.sleep(4)
 
 
-def isolation_needed(prompt_first: int, prompt_back: int) -> bool:
+def isolation_needed(
+    prompt_first: int, prompt_back: int, recurrent: bool | None = False
+) -> bool:
     """Verdict de la sonde d'isolation : True si le cache n'a PAS survécu à la
     pollution (le retour a retraité l'essentiel du prompt -> il faut isoler les
     appels annexes dans un 2e slot). En pratique la mesure est bimodale : retour
     ~= quelques tokens (cache natif) ou ~= 100 % (hybride) — 50 % tranche net.
     Mesure illisible (1er passage vide) -> False : on n'impose pas un doublement
-    de KV sans preuve."""
+    de KV sans preuve.
+
+    Mémoire récurrente -> True quoi que dise la sonde : un binaire récent y
+    rattrape A -> B -> A par le cache RAM, mais ce repli casse dès que le préfixe
+    bouge ou que le cache RAM est plein (Bonsai 2, 2026-09-30)."""
+    if recurrent:
+        return True
     if prompt_first <= 0:
         return False
     return prompt_back >= 0.5 * prompt_first
