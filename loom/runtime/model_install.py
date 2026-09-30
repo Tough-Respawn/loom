@@ -131,9 +131,10 @@ def probe_loadable(
 
 
 def finalize_model_toml(model_dir: str | Path, gguf_path: str | Path) -> dict:
-    """Complète model.toml depuis le header GGUF téléchargé : n_layers, et
+    """Complète model.toml depuis le header GGUF téléchargé : n_layers,
     cpu_moe = true si le modèle est un MoE (experts en RAM = notre défaut, cf.
-    règle du parc). Best-effort : un GGUF illisible laisse le toml tel quel."""
+    règle du parc), cache_isolation = true si sa mémoire est récurrente.
+    Best-effort : un GGUF illisible laisse le toml tel quel."""
     try:
         meta = read_gguf_meta(gguf_path)
     except (OSError, ValueError):
@@ -146,6 +147,12 @@ def finalize_model_toml(model_dir: str | Path, gguf_path: str | Path) -> dict:
         doc["n_layers"] = meta["n_layers"]
     if meta.get("expert_count"):
         doc["cpu_moe"] = True
+    if meta.get("recurrent") and "cache_isolation" not in doc:
+        # Deux slots d'emblée : sans ça reflect/titre écrasent la conversation, et
+        # un modèle ajouté par /add-model n'a jamais eu de sonde d'isolation.
+        doc.add(tomlkit.comment("Mémoire récurrente (en-tête GGUF) : appels annexes"))
+        doc.add(tomlkit.comment("sur le slot 1, la conversation garde le slot 0."))
+        doc["cache_isolation"] = True
     atomic_write_text(p, tomlkit.dumps(doc))
     return meta
 

@@ -60,6 +60,21 @@ def test_meta_dense_sans_experts(tmp_path):
     meta = read_gguf_meta(p)
     assert meta["n_layers"] == 32
     assert meta["expert_count"] is None
+    assert meta["recurrent"] is False
+
+
+def test_meta_memoire_recurrente(tmp_path):
+    # Bonsai 2 / Ornith (qwen35, Gated DeltaNet) portent des clés `<arch>.ssm.*`
+    p = tmp_path / "m.gguf"
+    _write(
+        p,
+        [
+            _kv_str(b"general.architecture", b"qwen35"),
+            _kv_u32(b"qwen35.block_count", 64),
+            _kv_u32(b"qwen35.ssm.state_size", 128),
+        ],
+    )
+    assert read_gguf_meta(p)["recurrent"] is True
 
 
 def test_pas_un_gguf(tmp_path):

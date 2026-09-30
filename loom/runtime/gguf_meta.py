@@ -52,7 +52,7 @@ def _read_value(f, vtype: int):
 def read_gguf_meta(path: str | Path) -> dict:
     """{'architecture','n_layers','context_length','expert_count', + champs
     d'attention pour le calcul du cache KV : 'head_count','head_count_kv',
-    'embedding_length','key_length'} (None si absents).
+    'embedding_length','key_length'} (None si absents), + 'recurrent' (bool).
 
     Lève ValueError si le fichier n'est pas un GGUF lisible — l'appelant traite ça
     en best-effort (un GGUF exotique n'empêche pas l'installation)."""
@@ -88,4 +88,13 @@ def read_gguf_meta(path: str | Path) -> dict:
         "head_count_kv": _int("attention.head_count_kv"),
         "embedding_length": _int("embedding_length"),
         "key_length": _int("attention.key_length"),
+        # Mémoire récurrente (Mamba/GDN `ssm.*`, RWKV `wkv.*`, LFM2 `shortconv.*`) :
+        # les checkpoints n'existent qu'aux débuts de messages, un appel annexe sur
+        # le slot de la conversation la fait recalculer.
+        "recurrent": any(
+            k.startswith(tuple(f"{arch}.{p}." for p in ("ssm", "wkv", "shortconv")))
+            for k in kv
+        )
+        if arch
+        else False,
     }
