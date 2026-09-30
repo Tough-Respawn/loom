@@ -460,6 +460,7 @@ class SubAgentRunner:
                     permission=self.permission,
                     # Compacter avant saturation évite les appels d'outils tronqués.
                     compact_after_tokens=threshold,
+                    purpose="subagent",
                     # Slot annexe : le cache du parent (slot 0) reste intact.
                     id_slot=self.client.annex_slot(tier),
                 )

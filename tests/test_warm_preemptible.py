@@ -65,9 +65,12 @@ def test_warm_context_publie_son_flux_et_signale_l_abandon():
     )
     t.start()
     assert stream.started.wait(timeout=2)
-    assert holder["stream"] is stream  # visible de l'extérieur, donc interruptible
+    # Publié (enveloppé par la trace d'appel) : visible de l'extérieur, donc
+    # interruptible — le fermer doit fermer le vrai flux.
+    assert holder.get("stream") is not None
     holder["abort"] = True
     holder["stream"].close()
+    assert stream.closed
     t.join(timeout=2)
     assert result == [False]  # abandonné, pas « amorcé »
     # Le flux est retiré, mais le signal RESTE : il vaut pour toute la maintenance
