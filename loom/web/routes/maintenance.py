@@ -22,12 +22,11 @@ def _post_turn_maintenance(
     answer,
     model,
     do_reflect,
-    kv_saved=False,
     title_request=None,
 ):
-    """Fin de tour déportée hors du flux SSE : reflect (apprentissage) PUIS
-    restauration du cache de la conversation (save fait en fin de génération ;
-    repli = ré-amorçage par re-prefill si le save a échoué). Local : sérialisé
+    """Fin de tour déportée hors du flux SSE : sauvegarde du slot de la
+    conversation, reflect (apprentissage) PUIS restauration de ce cache (repli =
+    ré-amorçage par re-prefill si le save a échoué). Local : sérialisé
     derrière le verrou (attend la fermeture du flux ; si l'utilisateur a déjà
     relancé, on passe après son tour). Distant : reflect seul."""
     is_local = bool(model) and model not in S.remote_model_ids
@@ -44,7 +43,6 @@ def _post_turn_maintenance(
         model=model or "",
         local=is_local,
         reflect=bool(do_reflect),
-        kv_saved=bool(kv_saved),
         titre=title_request is not None,
     )
 
@@ -61,7 +59,14 @@ def _post_turn_maintenance(
         S.local_busy["reason"] = "maintenance"
         _maint_log("verrou", t0, resultat="obtenu")
 
+    kv_saved = False
     try:
+        # Sauvegarde EN PREMIER, sous le verrou : ni reflect ni le titre n'ont encore
+        # touché le slot. Un message en attente la rend inutile (son tour sauvera).
+        if is_local and not _aborted():
+            t0 = time.monotonic()
+            kv_saved = bool(S.client.save_slot(model, "turnend.kv", session_id=sess.id))
+            _maint_log("sauvegarde", t0, resultat="ok" if kv_saved else "echec")
         if do_reflect:
             t0 = time.monotonic()
             try:
