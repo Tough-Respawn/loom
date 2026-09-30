@@ -159,6 +159,7 @@ def build_launch(
         checkpoint_min_step=(
             cfg.model.checkpoint_min_step or cfg.default_checkpoint_min_step
         ),
+        ctx_checkpoints=cfg.model.ctx_checkpoints,
         log_file=(server_log_path(cfg.model.id) if cfg.server_log_verbosity else None),
         log_verbosity=cfg.server_log_verbosity,
     )

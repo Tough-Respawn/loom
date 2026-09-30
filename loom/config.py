@@ -95,6 +95,9 @@ class ModelConfig:
     cache_isolation: bool = False
     # Rapprocher les checkpoints hybride/SWA borne le retraitement mais consomme plus de RAM.
     checkpoint_min_step: int | None = None
+    # Nombre max de checkpoints par slot (serveur : 32). Chacun pèse l'état récurrent
+    # complet (150 Mio sur Bonsai 2) : RAM et taille du save de fin de tour.
+    ctx_checkpoints: int | None = None
     # La découverte remplit ce dossier, base des chemins GGUF et mmproj.
     dir: str = ""
     # Description courte affichée dans le sélecteur.
@@ -229,6 +232,7 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         batch=d.get("batch"),
         cache_isolation=bool(d.get("cache_isolation", False)),
         checkpoint_min_step=d.get("checkpoint_min_step"),
+        ctx_checkpoints=d.get("ctx_checkpoints"),
         dir=d.get("dir", ""),
         description=str(d.get("description", "") or ""),
         server_bin=str(d.get("server_bin", "") or ""),

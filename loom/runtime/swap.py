@@ -58,6 +58,7 @@ def _model_cmd(
         ubatch=model.ubatch or default_ubatch,
         batch=model.batch or default_batch,
         checkpoint_min_step=model.checkpoint_min_step or default_checkpoint_min_step,
+        ctx_checkpoints=model.ctx_checkpoints,
         # L'isolation du cache est une propriété du modèle, pas de la machine.
         n_parallel=resolve_parallel(n_parallel, model.cache_isolation),
         log_file=server_log_path(model.id) if log_verbosity else None,
