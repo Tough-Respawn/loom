@@ -138,7 +138,13 @@ class CallTrace:
 
     def _log_request(self, kwargs: dict) -> None:
         elements = request_elements(kwargs)
-        key = (self.model, self.slot)
+        # Distant (pas de slot) : le cache du fournisseur est par préfixe, un titre ou un
+        # résumé n'évince pas la conversation — ne comparer qu'à la même famille d'appels
+        # (fausse alerte « outils » sur GLM-5.3 après un titre, 2026-09-30).
+        family = (
+            "conv" if self.purpose in ("turn", "prime", "keepwarm") else self.purpose
+        )
+        key = (self.model, self.slot) if self.slot is not None else (self.model, family)
         with _lock:
             prev = _last_elements.get(key)
             _last_elements[key] = elements

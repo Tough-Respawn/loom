@@ -865,43 +865,68 @@ class LoomClient:
         fast = oai.with_options(
             max_retries=0, timeout=60 if stream_holder is not None else 20
         )
-        for extra in attempts:
-            payload = {**base, **extra}
+        # Modèle qui raisonne QUOI QU'ON FASSE (GLM-5.3 : « always engages in
+        # thinking ») : couper le thinking est vain, chaque variante coûtait un appel
+        # payant (4 par session, 2026-09-30). Un seul appel, avec la marge pour
+        # raisonner puis titrer, retenu par modèle.
+        thinks = getattr(self, "_title_thinks", None)
+        if thinks is None:
+            thinks = self._title_thinks = set()
+        if model in thinks:
+            attempts = ()
+
+        def _once(payload: dict) -> tuple[str | None, bool]:
+            """(titre ou "", a raisonné) ; None = abandon (message arrivé)."""
             if local:
                 # Slot annexe : le titre ne doit pas écraser le cache du fil principal.
                 payload["extra_body"] = {
                     **payload.get("extra_body", {}),
                     "id_slot": self.annex_slot(model),
                 }
+            reasoned = False
+            if stream_holder is not None:
+                # INTERRUPTIBLE (maintenance séquentielle) : en flux, publié dans
+                # le porte-flux — un message utilisateur le ferme, on rend "".
+                if stream_holder.get("abort"):
+                    return None, False
+                stream = traced_create(fast, "title", **payload, stream=True)
+                if stream_holder.get("abort"):
+                    _close(stream)  # arrivé pendant l'ouverture : jamais lu
+                    return None, False
+                stream_holder["stream"] = stream
+                txt = ""
+                try:
+                    for kind, chunk in _iter_events(stream):
+                        if kind == "content":
+                            txt += chunk
+                        elif kind == "reasoning":
+                            reasoned = True
+                finally:
+                    _close(stream)
+                    stream_holder.pop("stream", None)
+                    if stream_holder.get("abort"):
+                        _debug("TITLE_ABANDON", "message arrivé pendant le titrage")
+                        return None, False
+            else:
+                resp = traced_create(fast, "title", **payload)
+                msg = resp.choices[0].message
+                txt = msg.content or ""
+                reasoned = bool(getattr(msg, "reasoning_content", None))
+            txt = txt.strip().strip('"').strip("'").strip()
+            return (txt.splitlines()[0][:60].strip() if txt else ""), reasoned
+
+        for extra in attempts:
             try:
-                if stream_holder is not None:
-                    # INTERRUPTIBLE (maintenance séquentielle) : en flux, publié dans
-                    # le porte-flux — un message utilisateur le ferme, on rend "".
-                    if stream_holder.get("abort"):
-                        return ""
-                    stream = traced_create(fast, "title", **payload, stream=True)
-                    if stream_holder.get("abort"):
-                        _close(stream)  # arrivé pendant l'ouverture : jamais lu
-                        return ""
-                    stream_holder["stream"] = stream
-                    txt = ""
-                    try:
-                        for kind, chunk in _iter_events(stream):
-                            if kind == "content":
-                                txt += chunk
-                    finally:
-                        _close(stream)
-                        stream_holder.pop("stream", None)
-                        if stream_holder.get("abort"):
-                            _debug("TITLE_ABANDON", "message arrivé pendant le titrage")
-                            return ""
-                else:
-                    resp = traced_create(fast, "title", **payload)
-                    txt = resp.choices[0].message.content or ""
-                txt = txt.strip().strip('"').strip("'").strip()
+                txt, reasoned = _once({**base, **extra})
+                if txt is None:
+                    return ""
                 if txt:
-                    return txt.splitlines()[0][:60].strip()
-                # réponse vide : cette variante ne donnera rien -> suivante
+                    return txt
+                if reasoned:
+                    # Il a réfléchi malgré la consigne : les autres variantes aussi.
+                    thinks.add(model)
+                    break
+                # réponse vide sans raisonnement : cette variante ne donnera rien
             except (APIConnectionError, APITimeoutError):
                 # Une panne de transport rend les autres variantes inutiles.
                 return ""
@@ -911,7 +936,17 @@ class LoomClient:
                     _debug("TITLE_ABANDON", "message arrivé pendant le titrage")
                     return ""
                 _debug("TITLE_ERR", str(e))
-        return ""
+                if "always engages in thinking" in str(e):
+                    thinks.add(model)
+                    break
+        if model not in thinks:
+            return ""
+        try:
+            txt, _ = _once({**base, "max_tokens": 1024})
+            return txt or ""
+        except Exception as e:  # noqa: BLE001 - titre cosmétique
+            _debug("TITLE_ERR", str(e))
+            return ""
 
     def describe_image(self, data_uri: str, question: str, model: str) -> str:
         """Fait décrire une image par un modèle VISION (`model`) pour un modèle de raisonnement
