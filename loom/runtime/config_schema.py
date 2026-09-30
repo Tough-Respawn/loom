@@ -436,7 +436,7 @@ CODE_DEFAULTS = {
     ("chat", "context_token_budget"): 3000,
     ("chat", "keep_recent_messages"): 6,
     ("chat", "web_port"): 8000,
-    ("chat", "identity_max_tokens"): 600,
+    ("chat", "identity_max_tokens"): 1200,
     ("chat", "project_memory_max_tokens"): 600,
     ("chat", "keepwarm_enabled"): True,
     ("chat", "keepwarm_interval"): 150,
