@@ -10,6 +10,7 @@ from loom.config import ModelConfig
 from loom.runtime.hardware import HardwareProfile
 from loom.runtime.ngl import resolve_ngl
 from loom.runtime.server_args import build_server_args, resolve_parallel
+from loom.runtime.serverlog import server_log_path
 from loom.utils import atomic_write_text
 
 
@@ -27,6 +28,7 @@ def _model_cmd(
     default_ubatch: int | None = None,
     default_batch: int | None = None,
     default_checkpoint_min_step: int | None = None,
+    log_verbosity: int | None = None,
 ) -> str:
     base = (
         model.dir or models_dir
@@ -58,6 +60,8 @@ def _model_cmd(
         checkpoint_min_step=model.checkpoint_min_step or default_checkpoint_min_step,
         # L'isolation du cache est une propriété du modèle, pas de la machine.
         n_parallel=resolve_parallel(n_parallel, model.cache_isolation),
+        log_file=server_log_path(model.id) if log_verbosity else None,
+        log_verbosity=log_verbosity,
     )
     return " ".join(_quote(str(a).replace("\\", "/")) for a in args)
 
@@ -80,6 +84,7 @@ def build_swap_config(
     default_ubatch: int | None = None,
     default_batch: int | None = None,
     default_checkpoint_min_step: int | None = None,
+    log_verbosity: int | None = None,
 ) -> dict:
     return {
         "models": {
@@ -96,6 +101,7 @@ def build_swap_config(
                     default_ubatch=default_ubatch,
                     default_batch=default_batch,
                     default_checkpoint_min_step=default_checkpoint_min_step,
+                    log_verbosity=log_verbosity,
                 )
             }
             for m in models

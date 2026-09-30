@@ -20,6 +20,7 @@ from loom.runtime.hardware import (
 from loom.runtime.models_fetch import ModelUnavailable, ensure_model
 from loom.runtime.ngl import resolve_ngl
 from loom.runtime.server_args import build_server_args, resolve_parallel
+from loom.runtime.serverlog import archive_all, server_log_path
 from loom.runtime.swap import build_swap_config, write_swap_yaml
 
 LOOM_DIR = Path(__file__).resolve().parent.parent  # = loom/ (le package)
@@ -158,6 +159,8 @@ def build_launch(
         checkpoint_min_step=(
             cfg.model.checkpoint_min_step or cfg.default_checkpoint_min_step
         ),
+        log_file=(server_log_path(cfg.model.id) if cfg.server_log_verbosity else None),
+        log_verbosity=cfg.server_log_verbosity,
     )
 
 
@@ -250,6 +253,7 @@ def _swap_config(cfg: RuntimeConfig, profile: HardwareProfile) -> dict:
         default_ubatch=cfg.default_ubatch,
         default_batch=cfg.default_batch,
         default_checkpoint_min_step=cfg.default_checkpoint_min_step,
+        log_verbosity=cfg.server_log_verbosity,
     )
 
 
@@ -370,6 +374,8 @@ def _main() -> int:
         _log(f"[loom] {exc}")
         return 1
     _log(f"[loom] {len(cfg.models)} modèle(s), défaut={cfg.default_model}")
+    # llama-server écrase son --log-file au démarrage : garder la session précédente.
+    archive_all()
 
     # Le routeur n'est utile qu'avec plusieurs modèles.
     if len(cfg.models) <= 1:

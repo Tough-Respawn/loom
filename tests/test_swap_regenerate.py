@@ -16,6 +16,7 @@ def test_regenerate_garde_les_reglages_machine(monkeypatch, tmp_path):
         default_ubatch=2048,
         default_batch=4096,
         default_checkpoint_min_step=1024,
+        server_log_verbosity=4,
     )
     seen = {}
     monkeypatch.setattr(serve, "load_config", lambda *a, **k: cfg)
@@ -29,3 +30,4 @@ def test_regenerate_garde_les_reglages_machine(monkeypatch, tmp_path):
     assert seen["default_ubatch"] == 2048
     assert seen["default_batch"] == 4096
     assert seen["default_checkpoint_min_step"] == 1024
+    assert seen["log_verbosity"] == 4  # journal llama-server conservé à la régénération

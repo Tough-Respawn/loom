@@ -50,6 +50,12 @@ def build_app(cfg):
         routes=routes,
     )
     client.slot_kv_enabled = cfg.slot_kv
+    # Archiver le journal llama-server d'un modèle avant que llama-swap ne le relance
+    # (llama-server écrase son --log-file au démarrage).
+    from loom.agent.calltrace import set_model_switch_hook
+    from loom.runtime.serverlog import archive_server_log
+
+    set_model_switch_hook(archive_server_log)
     # Les modèles hybrides exigent un binaire explicitement sûr pour la restauration KV.
     client.hot_resume_enabled = cfg.hot_resume
     client.restore_safe = cfg.restore_safe
