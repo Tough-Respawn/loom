@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+
+from loom.agent.debuglog import log_event
 from loom.extend.skills import (
     effective_skills,
     render_catalog,
@@ -12,8 +17,109 @@ from loom.web.routes.helpers import (
 from loom.web.routes.skills import _all_skills
 
 
+def _workspace_text(S, ws: str) -> str:
+    """Consigne du dossier de travail + loom.md du projet (contexte non fiable)."""
+    text = (
+        f"Tes commandes (run_shell) tournent dans "
+        f"`{ws}` et les chemins relatifs s'y résolvent - n'y répète pas le nom de ce "
+        "dossier dans tes chemins. Si une commande git échoue par « not a git "
+        "repository », c'est que CE dossier n'est pas un repo : fais UN list_dir pour "
+        "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
+        "même commande à l'identique."
+    )
+    from loom.memory.identity import project_block
+
+    _pm_blk = project_block(ws, max_tokens=S.settings["project_memory_max_tokens"])
+    return f"{text}\n\n{_pm_blk}" if _pm_blk else text
+
+
+def _explicit_key(S, conv) -> str:
+    """Empreinte des choix EXPLICITES de l'utilisateur. Seuls eux refigent le prompt ;
+    mémoire, skills appris, loom.md et dossier auto-adopté ne le réécrivent jamais."""
+    strong = bool(
+        conv.model
+        and conv.model in S.remote_model_ids
+        and conv.model not in S.remote_weak_ids
+    )
+    raw = json.dumps(
+        [
+            conv.model,
+            strong,
+            conv.system_prompt,
+            conv.goal,
+            sorted(conv.disabled_skills),
+            sorted(conv.skill_overrides.items()),
+        ],
+        ensure_ascii=False,
+    )
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
+
 
 def _build_system_prompt(S, conv, workspace=None):
+    """System prompt FIGÉ pour la session : rendu une fois, puis réutilisé tel quel
+    (append-only, préfixe KV stable). Rerendu seulement si un choix explicite change
+    (modèle, prompt de base, objectif, skills de la session). Retourne (texte, strong)."""
+    key = _explicit_key(S, conv)
+    frozen = conv.frozen_prompt
+    if frozen and frozen.get("key") == key and frozen.get("text"):
+        return frozen["text"], bool(frozen.get("strong"))
+    _ws = workspace if workspace is not None else _session(S).workspace
+    text, strong = _render_system_prompt(S, conv, workspace=_ws)
+    log_event(
+        "prompt.fige",
+        raison="premier" if not frozen else "choix_explicite",
+        chars=len(text),
+    )
+    conv.frozen_prompt = {"key": key, "text": text, "strong": strong, "workspace": _ws}
+    return text, strong
+
+
+_NOTE_RE = re.compile(r"^\[Changement de dossier de travail : (.+?)\]$", re.M)
+_NOTE_END = "\n[Fin du changement de dossier]\n\n"
+
+
+def _known_workspace(conv) -> str:
+    """Dossier que le modèle croit courant : la dernière note encore PRÉSENTE dans le
+    fil, sinon celui figé dans le system prompt. Relu dans le fil (et non mémorisé à
+    part) pour rester juste après un /fork ou une compaction qui retire la note."""
+    for m in reversed(conv.messages):
+        content = m.get("content")
+        if m.get("role") != "user":
+            continue
+        if isinstance(content, list):
+            content = " ".join(
+                p.get("text", "") for p in content if isinstance(p, dict)
+            )
+        found = _NOTE_RE.findall(str(content or ""))
+        if found:
+            return found[-1]
+    return (conv.frozen_prompt or {}).get("workspace", "")
+
+
+def strip_workspace_note(text: str) -> str:
+    """Texte saisi par l'utilisateur, sans la note de dossier ajoutée par Loom."""
+    if not _NOTE_RE.match(text or "") or _NOTE_END not in text:
+        return text
+    return text.split(_NOTE_END, 1)[1]
+
+
+def _workspace_note(S, conv, workspace: str) -> str:
+    """Note à placer EN TÊTE du prochain message utilisateur quand le dossier de travail
+    a changé depuis ce que le modèle connaît : le changement s'ajoute au fil au lieu de
+    réécrire le system prompt. Vide si rien à annoncer."""
+    if not conv.frozen_prompt or not workspace:
+        return ""
+    known = _known_workspace(conv)
+    if known == workspace:
+        return ""
+    log_event("prompt.note_dossier", avant=known, apres=workspace)
+    return (
+        f"[Changement de dossier de travail : {workspace}]\n"
+        f"{_workspace_text(S, workspace)}{_NOTE_END}"
+    )
+
+
+def _render_system_prompt(S, conv, workspace=None):
     """Construit le system prompt complet : identité always-on + base (strong/local) +
     catalogue des skills + déclaration du moteur + conventions OS + dossier de travail +
     objectif de session. Retourne (system_prompt, strong)."""
@@ -94,22 +200,7 @@ def _build_system_prompt(S, conv, workspace=None):
     # Garder le workspace volatil en fin de prompt et lié à la session cible.
     _ws = workspace if workspace is not None else _session(S).workspace
 
-    system_prompt += (
-        f"\n\n# Dossier de travail courant\nTes commandes (run_shell) tournent dans "
-        f"`{_ws}` et les chemins relatifs s'y résolvent - n'y répète pas le nom de ce "
-        "dossier dans tes chemins. Si une commande git échoue par « not a git "
-        "repository », c'est que CE dossier n'est pas un repo : fais UN list_dir pour "
-        "repérer le bon sous-dossier (puis `git -C <sous-dossier>`), ne relance pas la "
-        "même commande à l'identique."
-    )
-
-    # Injecter loom.md comme contexte non fiable, avec cache mtime pour stabiliser le préfixe.
-    from loom.memory.identity import project_block
-
-    _pm_blk = project_block(_ws, max_tokens=S.settings["project_memory_max_tokens"])
-
-    if _pm_blk:
-        system_prompt += f"\n\n{_pm_blk}"
+    system_prompt += "\n\n# Dossier de travail courant\n" + _workspace_text(S, _ws)
 
     # L'objectif guide la vérification sans ajouter un juge externe contradictoire.
     if conv.goal:
