@@ -13,7 +13,59 @@ from loom.web.routes.skills import _index_context
 # ---- Routes : socle (index, statiques, toggles) ---------------------------------------
 
 
+def llama_update_once(S) -> None:
+    """Une passe de veille llama.cpp : relit la config (un `track_prs` modifié compte
+    sans redémarrer) et publie le résultat dans S.llama_update. Le cache borne les
+    appels GitHub à un par 24 h ; la build du binaire, elle, est relue à chaque passe."""
+    from loom.config import load_config
+    from loom.runtime.llama_update import check
+    from loom.runtime.serve import REPO_ROOT
+
+    cfg = load_config(S.config_defaults_path, S.config_local_path)
+    if not cfg.update_check:
+        S.llama_update = None
+        return
+    S.llama_update = check(
+        cfg.server_bin,
+        cfg.track_prs,
+        cfg.rebuild_hint,
+        REPO_ROOT / "var" / "cache" / "llama_update.json",
+    )
+
+
+def llama_update_loop(S, first_delay_s: float = 30.0, period_s: float = 3600.0) -> None:
+    """Fil de veille : première passe après le boot (sans le ralentir), puis toutes
+    les heures (un binaire recompilé fait disparaître le bandeau dans l'heure)."""
+    import time
+
+    from loom.agent.debuglog import log_event
+
+    time.sleep(first_delay_s)
+    while True:
+        try:
+            llama_update_once(S)
+            res = S.llama_update or {}
+            log_event(
+                "llama_update",
+                build=res.get("current_build"),
+                latest=(res.get("latest") or {}).get("tag"),
+                notice=(res.get("notice") or {}).get("kind"),
+                error=res.get("error"),
+            )
+        except Exception as exc:  # noqa: BLE001 - la veille ne doit jamais tuer le serveur
+            log_event(
+                "llama_update", level="WARN", error=f"{type(exc).__name__}: {exc}"
+            )
+        time.sleep(period_s)
+
+
 def _register_misc_routes(app, S):
+    @app.get("/llama/update")
+    def llama_update_state():
+        # Lecture seule du dernier résultat de la veille : aucun appel réseau ici.
+        res = getattr(S, "llama_update", None) or {}
+        return {"notice": res.get("notice"), "current_build": res.get("current_build")}
+
     @app.get("/")
     def index() -> str:
         return render_template("index.html", **_index_context(S))

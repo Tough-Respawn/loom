@@ -193,6 +193,12 @@ class RuntimeConfig:
     server_log_verbosity: int = 4
     # Exclure les hybrides si le binaire ne préserve pas leurs checkpoints au restore.
     restore_safe: bool = False
+    # Veille quotidienne des mises à jour llama.cpp (bandeau, jamais d'installation).
+    update_check: bool = True
+    # PR ggml-org dont dépend le binaire maison : tant qu'une est ouverte, mettre à jour
+    # = recompiler (`rebuild_hint`) ; toutes mergées = le binaire officiel suffit.
+    track_prs: list[int] = field(default_factory=list)
+    rebuild_hint: str = ""
     # Réserver cette VRAM au cache KV et aux buffers pour éviter le spill partagé.
     gpu_kv_headroom_mb: int = 1024
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
@@ -485,6 +491,9 @@ def load_config(
         hot_resume=bool(s.get("hot_resume", False)),
         server_log_verbosity=int(s.get("log_verbosity", 4)),
         restore_safe=bool(s.get("restore_safe", False)),
+        update_check=bool(s.get("update_check", True)),
+        track_prs=[int(n) for n in s.get("track_prs", []) or []],
+        rebuild_hint=str(s.get("rebuild_hint", "") or ""),
         gpu_kv_headroom_mb=int(s.get("gpu_kv_headroom_mb", 1024)),
         override_n_gpu_layers=o.get("n_gpu_layers"),
         override_threads=o.get("threads"),

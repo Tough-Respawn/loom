@@ -595,6 +595,16 @@ def create_app(
     # Réamorcer au boot seulement si le serveur modèle tourne déjà.
     _boot_prime(S)
 
+    # Veille des mises à jour llama.cpp (bandeau, jamais d'installation). Seulement
+    # avec une vraie config : les tests construisent l'app sans chemins de config.
+    S.llama_update = None
+    if config_defaults_path and config_local_path:
+        from loom.web.routes.misc import llama_update_loop
+
+        threading.Thread(
+            target=llama_update_loop, args=(S,), daemon=True, name="loom-llama-update"
+        ).start()
+
     # Exposer l'état partagé permet aux tests d'inspecter directement ses invariants.
     app.S = S
 

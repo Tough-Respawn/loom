@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-02 : llama.cpp à jour, veille des mises à jour, --load-mode, setup v0.x
+
+- **Veille llama.cpp** (`loom/runtime/llama_update.py`) : au démarrage puis toutes les
+  heures (GitHub interrogé au plus une fois par 24 h, cache `var/cache/llama_update.json`),
+  compare la build du binaire configuré au dernier build nocturne et suit `[server]
+  track_prs`. Bandeau dans l'interface : recompiler (`rebuild_hint`) tant qu'une PR suivie
+  est ouverte, `uv run loom-setup` quand toutes sont mergées. N'installe jamais rien.
+  Un build maison est comparé sur sa base officielle (`upstream_build=` dans `BUILD.txt`) :
+  le numéro de build compte aussi les commits des PR.
+- `--no-mmap` retiré par llama.cpp (2026-09-09) : `--load-mode none` selon le binaire (PR #30).
+- loom-setup : releases `v0.x` sans binaire et `cudart` pris pour llama-server (PR #31).
+
 ## 2026-09-21 — décision par logits (mode « Jev » natif, llama-server stock)
 
 - `loom/agent/decide.py` : questions fermées (enum / booléen / entier) répondues sans
