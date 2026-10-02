@@ -73,6 +73,13 @@ def _quote(arg: str) -> str:
     return f'"{arg}"' if any(c.isspace() for c in arg) else arg
 
 
+# Délai /health accordé par llama-swap à un llama-server qui charge (défaut llama-swap :
+# 120 s, au-delà il le tue et le relance). Un MoE Q8 de 36 Go lu en RAM sur un PC chargé
+# l'a dépassé (vécu 2026-10-02 : 138 s perdues + une requête en 500). Large exprès : un
+# vrai blocage est déjà signalé par le disjoncteur et le journal llama-server.
+SWAP_HEALTH_TIMEOUT_S = 600
+
+
 def build_swap_config(
     models: list[ModelConfig],
     profile: HardwareProfile,
@@ -88,6 +95,7 @@ def build_swap_config(
     log_verbosity: int | None = None,
 ) -> dict:
     return {
+        "healthCheckTimeout": SWAP_HEALTH_TIMEOUT_S,
         "models": {
             m.id: {
                 "cmd": _model_cmd(
@@ -106,7 +114,7 @@ def build_swap_config(
                 )
             }
             for m in models
-        }
+        },
     }
 
 
