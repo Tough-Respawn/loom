@@ -1,6 +1,34 @@
-"""Construction (pure) de la ligne de commande llama-server."""
+"""Construction de la ligne de commande llama-server (pure, sauf la sonde mise en
+cache des flags du binaire : `no_mmap_args`)."""
 
 from __future__ import annotations
+
+import subprocess
+from functools import lru_cache
+
+
+@lru_cache(maxsize=16)
+def no_mmap_args(server_bin: str) -> list[str]:
+    """Flag « pas de mmap » compris par CE binaire. llama.cpp a retiré `--no-mmap`
+    le 2026-09-09 (#28334) au profit de `--load-mode none` : un binaire récent
+    refuse l'ancien flag (le serveur ne démarre pas), un ancien ignore le nouveau.
+    Sonde `--help` une fois par chemin ; binaire injoignable ou macro llama-swap
+    (`${...}`) -> ancien flag, comportement historique."""
+    if "${" in server_bin:
+        return ["--no-mmap"]
+    try:
+        res = subprocess.run(
+            [server_bin, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            encoding="utf-8",
+            errors="replace",
+        )
+        out = (res.stdout or "") + (res.stderr or "")
+    except Exception:  # noqa: BLE001 - sonde best-effort, jamais bloquante
+        return ["--no-mmap"]
+    return ["--load-mode", "none"] if "--load-mode" in out else ["--no-mmap"]
 
 
 def resolve_parallel(n_parallel: int, cache_isolation: bool) -> int:
@@ -93,9 +121,9 @@ def build_server_args(
             "--prio",
             "2",
         ]
-        # `--no-mmap` accélère les dGPU, mais peut épuiser la mémoire unifiée Vulkan.
+        # Sans mmap : accélère les dGPU, mais peut épuiser la mémoire unifiée Vulkan.
         if not unified_memory:
-            args.append("--no-mmap")
+            args += no_mmap_args(str(server_bin))
     else:
         # Hors profil GPU, honorer quand même des batchs EXPLICITES (mesurés par la
         # sonde ou posés dans model.toml) : ils étaient silencieusement ignorés sur
