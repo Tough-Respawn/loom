@@ -123,7 +123,43 @@ def fetch_latest_release(client, url: str = RELEASES_URL) -> dict:
         )
     if resp.status_code != 200:
         raise RuntimeError(f"GitHub a répondu {resp.status_code} sur {url}.")
-    return resp.json()
+    release = resp.json()
+    if url == RELEASES_URL:
+        release = _follow_nightly_pointer(client, release)
+    return release
+
+
+_TAG_URL = "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{tag}"
+
+
+def _follow_nightly_pointer(client, release: dict) -> dict:
+    """Depuis 2026-08, les versions stables `v0.x` de llama.cpp n'ont plus de
+    binaires : un seul asset `nightly-tag.txt` désigne le build `bNNNN` qui les
+    porte (pré-release). On suit ce pointeur (2 requêtes de plus) ; en cas
+    d'échec on rend la stable telle quelle (select_assets dira « aucun asset »)."""
+    assets = release.get("assets") or []
+    ptr = next((a for a in assets if a.get("name") == "nightly-tag.txt"), None)
+    if ptr is None or any("-bin-" in (a.get("name") or "") for a in assets):
+        return release
+    try:
+        r = client.get(ptr["browser_download_url"], follow_redirects=True)
+        tag = (r.text or "").strip() if r.status_code == 200 else ""
+        if not re.fullmatch(r"b\d+", tag):
+            return release
+        r = client.get(
+            _TAG_URL.format(tag=tag),
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "loom-setup",
+            },
+            follow_redirects=True,
+        )
+        if r.status_code != 200:
+            return release
+        nightly = r.json()
+    except Exception:  # noqa: BLE001 - pointeur best-effort
+        return release
+    return {**nightly, "stable_tag": release.get("tag_name")}
 
 
 def _asset_dict(a: dict) -> dict:
@@ -151,7 +187,9 @@ def select_assets(
     for pat in entry["patterns"]:
         rx = re.compile(pat, re.IGNORECASE)
         for a in assets:
-            if rx.search(a["name"]):
+            # Les DLL `cudart-llama-bin-win-cuda-…` matchent aussi le motif du
+            # binaire, et l'API les liste en premier (ordre alphabétique).
+            if rx.search(a["name"]) and not a["name"].lower().startswith("cudart-"):
                 chosen = a
                 break
         if chosen:
@@ -167,7 +205,11 @@ def select_assets(
     companion = entry.get("companion")
     if companion:
         rx = re.compile(companion, re.IGNORECASE)
-        comp = next((a for a in assets if rx.search(a["name"])), None)
+        comps = [a for a in assets if rx.search(a["name"])]
+        # DLL de la MÊME version CUDA que le binaire (12.4 avec 12.4, 13.x avec 13.x).
+        ver = re.search(r"cuda-(\d+\.\d+)", chosen["name"], re.IGNORECASE)
+        same = [a for a in comps if ver and f"cuda-{ver.group(1)}" in a["name"]]
+        comp = (same or comps or [None])[0]
         if comp is None:
             return None  # DLL CUDA introuvables -> pas d'install fiable
         plan.assets.append(_asset_dict(comp))
