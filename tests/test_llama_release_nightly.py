@@ -81,3 +81,42 @@ def test_llama_swap_non_concerne():
     c = _Client({lr.SWAP_RELEASES_URL: _Resp(json=swap)})
     assert lr.fetch_latest_release(c, url=lr.SWAP_RELEASES_URL)["tag_name"] == "v200"
     assert c.calls == [lr.SWAP_RELEASES_URL]
+
+
+# Liste RÉELLE de b11146 (ordre alphabétique de l'API GitHub : cudart en tête).
+_B11146_WIN = [
+    "cudart-llama-bin-win-cuda-12.4-x64.zip",
+    "cudart-llama-bin-win-cuda-13.4-arm64.zip",
+    "cudart-llama-bin-win-cuda-13.4-x64.zip",
+    "llama-b11146-bin-win-cpu-x64.zip",
+    "llama-b11146-bin-win-cuda-12.4-x64.zip",
+    "llama-b11146-bin-win-cuda-13.4-arm64.zip",
+    "llama-b11146-bin-win-cuda-13.4-x64.zip",
+    "llama-b11146-bin-win-vulkan-x64.zip",
+]
+
+
+def _rel(names):
+    return {
+        "tag_name": "b11146",
+        "assets": [{"name": n, "browser_download_url": n, "size": 1} for n in names],
+    }
+
+
+def test_cudart_jamais_pris_pour_le_binaire_et_meme_version():
+    plan = lr.select_assets(_rel(_B11146_WIN), "windows", "x64", True)
+    names = [a["name"] for a in plan.assets]
+    assert names == [
+        "llama-b11146-bin-win-cuda-12.4-x64.zip",
+        "cudart-llama-bin-win-cuda-12.4-x64.zip",
+    ]
+
+
+def test_dll_cuda_de_la_meme_version_que_le_binaire():
+    # Si seul le 13.4 existe en binaire, les DLL doivent être 13.4, pas 12.4.
+    names = [n for n in _B11146_WIN if "12.4" not in n or n.startswith("cudart")]
+    plan = lr.select_assets(_rel(names), "windows", "x64", True)
+    assert [a["name"] for a in plan.assets] == [
+        "llama-b11146-bin-win-cuda-13.4-x64.zip",
+        "cudart-llama-bin-win-cuda-13.4-x64.zip",
+    ]

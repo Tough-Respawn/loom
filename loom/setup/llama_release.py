@@ -187,7 +187,9 @@ def select_assets(
     for pat in entry["patterns"]:
         rx = re.compile(pat, re.IGNORECASE)
         for a in assets:
-            if rx.search(a["name"]):
+            # Les DLL `cudart-llama-bin-win-cuda-…` matchent aussi le motif du
+            # binaire, et l'API les liste en premier (ordre alphabétique).
+            if rx.search(a["name"]) and not a["name"].lower().startswith("cudart-"):
                 chosen = a
                 break
         if chosen:
@@ -203,7 +205,11 @@ def select_assets(
     companion = entry.get("companion")
     if companion:
         rx = re.compile(companion, re.IGNORECASE)
-        comp = next((a for a in assets if rx.search(a["name"])), None)
+        comps = [a for a in assets if rx.search(a["name"])]
+        # DLL de la MÊME version CUDA que le binaire (12.4 avec 12.4, 13.x avec 13.x).
+        ver = re.search(r"cuda-(\d+\.\d+)", chosen["name"], re.IGNORECASE)
+        same = [a for a in comps if ver and f"cuda-{ver.group(1)}" in a["name"]]
+        comp = (same or comps or [None])[0]
         if comp is None:
             return None  # DLL CUDA introuvables -> pas d'install fiable
         plan.assets.append(_asset_dict(comp))
