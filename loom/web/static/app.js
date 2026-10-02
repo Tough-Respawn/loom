@@ -1291,5 +1291,44 @@ document.addEventListener("change", (e) => {
 
 document.body.addEventListener("htmx:afterSwap", () => paintModelSelect());
 
+// Veille llama.cpp : bandeau si une build plus récente existe ou si une PR suivie est
+// mergée. Lecture seule (/llama/update ne contacte pas GitHub) ; rien n'est installé.
+// Fermer masque CE contenu : une build plus récente rouvre le bandeau (clé différente).
+const LU_KEY = "loomLlamaUpdateDismissed";
+async function llamaUpdateTick() {
+  let d;
+  try {
+    d = await (await fetch("/llama/update")).json();
+  } catch {
+    return;
+  }
+  const bar = document.getElementById("llama-update");
+  const n = d && d.notice;
+  let dismissed = null;
+  try {
+    dismissed = localStorage.getItem(LU_KEY);
+  } catch {}
+  if (!bar || !n || n.key === dismissed) {
+    if (bar) bar.hidden = true;
+    return;
+  }
+  document.getElementById("lu-msg").textContent = n.message;
+  const cmd = document.getElementById("lu-cmd");
+  const copy = document.getElementById("lu-copy");
+  cmd.textContent = n.command || "";
+  cmd.hidden = copy.hidden = !n.command;
+  copy.onclick = () => navigator.clipboard?.writeText(n.command).then(() => showToast("commande copiée"));
+  document.getElementById("lu-close").onclick = () => {
+    try {
+      localStorage.setItem(LU_KEY, n.key);
+    } catch {}
+    bar.hidden = true;
+  };
+  bar.hidden = false;
+}
+llamaUpdateTick();
+setTimeout(llamaUpdateTick, 45000); // première passe serveur ~30 s après le boot
+setInterval(llamaUpdateTick, 3600000);
+
 paintModelSelect();
 initKbdCheatsheet();

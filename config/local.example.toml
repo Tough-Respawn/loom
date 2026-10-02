@@ -10,6 +10,12 @@
 bin = "C:/tools/llama/llama-server.exe"
 swap_bin = "C:/tools/llama/llama-swap.exe"
 
+# Binaire maison compilé avec des PR llama.cpp non mergées : la veille quotidienne affiche
+# un bandeau quand un build officiel plus récent sort (commande de recompilation tant
+# qu'une PR est ouverte, `uv run loom-setup` quand toutes sont mergées). N'installe rien.
+# track_prs = [26004]
+# rebuild_hint = "C:/tools/build-llama-loom.bat"
+
 # ============================ Override GPU / CPU =============================
 [override]
 

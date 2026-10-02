@@ -29,6 +29,14 @@ hot_resume = false
 # true = build avec le fix (PR ggml-org #26004) : tous les modèles y ont droit.
 restore_safe = false
 
+# Veille des mises à jour llama.cpp : au démarrage puis toutes les 24 h, compare la build
+# du binaire au dernier build nocturne officiel et suit `track_prs` (numéros de PR
+# ggml-org/llama.cpp dont dépend un binaire maison). Affiche un bandeau, n'installe rien.
+# `rebuild_hint` : commande de recompilation montrée tant qu'une PR suivie est ouverte.
+update_check = true
+track_prs = []
+rebuild_hint = ""
+
 # Journal fichier de llama-server, un par modèle : var/logs/llama/<modèle>.log
 # (archivé dans archive/ avant d'être écrasé par un redémarrage). 4 = décisions de
 # cache (sauvegarde RAM, recherche, restauration, recalcul forcé) — ce qu'il faut
