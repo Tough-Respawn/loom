@@ -60,7 +60,7 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
 ## Ce que ça fait
 
 - 💬 **Chat web** local (Flask + Preact/htm, zéro build) avec **streaming SSE** et markdown.
-- 🧰 **27 outils activés par défaut** (selon `config/defaults.toml`), regroupés par usage :
+- 🧰 **28 outils activés par défaut** (selon `config/defaults.toml`), regroupés par usage :
   - **Localiser** : `find_files` (glob), `search_text` (grep), `list_dir`.
   - **Lire** : `read_file` (texte, et PDF / Excel / Word → texte extrait automatiquement),
     `read_image` (voir une image du disque : capture, schéma).
@@ -74,6 +74,10 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
   - **Exécuter** : `run_shell` (PowerShell/bash, garde-fou deny-list, tue l'arbre au timeout).
     `monitor` suit une commande de fond et injecte ses événements dans la conversation.
   - **Web** : `web_search`, `fetch_url` (dégradés proprement hors-ligne).
+  - **Vidéo** : `watch_video` lit ce qu'une vidéo **dit** (URL YouTube, Vimeo, TikTok… ou
+    fichier local) : titre, chapitres et transcript horodaté. Sous-titres existants d'abord,
+    sinon audio seul transcrit en local par faster-whisper sur CPU (la VRAM reste au LLM ;
+    modèle `small` de ~460 Mo téléchargé au premier usage). Ne voit **pas** les images.
   - **Vérifier le rendu** : `check_page` (charge une page HTML headless, exécute le JS,
     renvoie erreurs console + un **diagnostic de localisation** si la page hang),
     `serve_and_check` (démarre puis vérifie une application servie localement, et la garde
@@ -176,7 +180,9 @@ harness n'est **pas un bac à sable**.
   qu'il lit, isole l'exécution.
 - **Anti-SSRF (solide)** : `fetch_url` / `web_search` résolvent et **épinglent** l'IP validée,
   refusent les hôtes internes (loopback, lien-local, métadonnées cloud) et ne suivent pas les
-  redirections.
+  redirections. `watch_video` refuse aussi les hôtes internes (URL donnée, puis URL de
+  sous-titres et d'audio fournies par yt-dlp), mais n'épingle pas l'IP et ne revérifie ni les
+  redirections internes à yt-dlp ni les fragments HLS/DASH.
 - **Frontière de confiance (défense en profondeur)** : tout contenu externe (URL, PDF, image,
   sortie d'outil) est marqué comme **DONNÉE à analyser, jamais instruction à exécuter**. C'est un
   rappel injecté dans le contexte, pas une contrainte dure : il réduit le risque d'injection, il
@@ -238,7 +244,7 @@ Re-calibrer (nouveau matériel, nouveau modèle par défaut) : supprimer la tabl
 [rapport de préparation du 2026-08-02](docs/rapport-preparation-2026-08-02.md).
 
 - ✅ Runtime auto-adaptatif (offload MoE), sessions (titre inféré), vision, thinking, interruption, multi-modèles.
-- ✅ Agent tool-use : 27 outils armés par défaut, politique de décision + séquencement dans le prompt système.
+- ✅ Agent tool-use : 28 outils armés par défaut, politique de décision + séquencement dans le prompt système.
 - ✅ Garde-fous de boucle (stop naturel + plafond de tours + anti-répétition), durcis le
   2026-08-11 (boucles d'outils, échecs de sous-agents).
 - ✅ Sécurité d'ingestion : anti-SSRF (y compris NAT64/DNS64) + frontière de confiance (active même hors-ligne).
@@ -254,6 +260,8 @@ Re-calibrer (nouveau matériel, nouveau modèle par défaut) : supprimer la tabl
   mesurée et vitesse validée, décision tracée, fail-loud sur repli ; repli machine des réglages
   mesurés + sonde ubatch sur le vrai serveur (2026-08-04).
 - ✅ Banc d'éval (graders déterministes + juge LLM, campagnes non écrasables) et SearXNG auto-hébergé.
+- ✅ Lecture de vidéos : `watch_video` (transcript, sans images), validé de bout en bout sur
+  un modèle local (2026-10-03).
 - 🔜 Tranches plugins suivantes (hooks, agents), RAG pour les skills volumineux et audio.
 
 ## Stack
