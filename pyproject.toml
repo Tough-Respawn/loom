@@ -31,6 +31,14 @@ dependencies = [
     # PyYAML : importé par runtime/swap.py (config llama-swap). N'arrivait que par
     # huggingface-hub ; déclaré pour ne pas dépendre de ses choix de dépendances.
     "pyyaml>=6.0",
+    # watch_video : yt-dlp lit métadonnées + sous-titres ([deno] = runtime JS exigé
+    # par YouTube ; < 2026.8.19 = HTTP 403 selon claude-real-video) ; faster-whisper transcrit sur CPU quand il n'y a
+    # pas de sous-titres (décodage audio via PyAV, pas de ffmpeg requis).
+    "yt-dlp[default,deno]>=2026.8.19",
+    "faster-whisper>=1.2.0",
+    # av 19 a retiré av.open(metadata_errors=) qu'appelle faster-whisper 1.2.1 ;
+    # corrigé en amont (SYSTRAN/faster-whisper#1589), lever après la release suivante.
+    "av<19",
 ]
 
 [project.optional-dependencies]
