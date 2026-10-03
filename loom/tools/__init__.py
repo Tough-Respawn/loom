@@ -169,6 +169,10 @@ def build_registry(
             specs.append(make_web_search(wc))
         if "fetch_url" in enabled:
             specs.append(make_fetch_url(wc))
+    if "watch_video" in enabled:
+        from loom.tools.video import make_watch_video
+
+        specs.append(make_watch_video(workspace_dir))
     if "manage_todos" in enabled and conversation is not None:
         from loom.tools.todo import make_manage_todos
 

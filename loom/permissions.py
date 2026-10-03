@@ -30,6 +30,8 @@ READ_TOOLS = frozenset(
         "code_diagnostics",
         "web_search",
         "fetch_url",
+        # Lecture d'une vidéo : n'écrit que son cache (var/cache/videos).
+        "watch_video",
         "check_page",
         "manage_todos",
         "use_skill",

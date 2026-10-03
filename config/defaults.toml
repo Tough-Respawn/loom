@@ -120,7 +120,7 @@ enabled = [
     # Intelligence de code (Python only) : outils DIFFÉRÉS — jamais dans le
     # préfixe, chargés via tool_search quand le modèle en a besoin.
     "code_outline", "code_diagnostics",
-    "web_search", "fetch_url",
+    "web_search", "fetch_url", "watch_video",
     "dispatch_agent", "run_workflow", "manage_todos", "write_note", "read_note",
     "recall", "remember",
     "write_file", "append_file", "edit_file",

@@ -206,6 +206,7 @@ AVAILABLE_TOOLS = [
     {"name": "current_date", "label": "current_date", "danger": False},
     {"name": "web_search", "label": "web_search", "danger": False},
     {"name": "fetch_url", "label": "fetch_url", "danger": False},
+    {"name": "watch_video", "label": "watch_video", "danger": False},
     {"name": "check_page", "label": "check_page", "danger": False},
     {"name": "serve_and_check", "label": "serve_and_check", "danger": True},
     {"name": "dispatch_agent", "label": "dispatch_agent", "danger": False},
