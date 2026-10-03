@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-10-03 : outil watch_video (lire une vidéo)
+
+- **`watch_video`** (`loom/tools/video.py`, PR #34) : lit ce qu'une vidéo **dit**, à partir
+  d'une URL (YouTube et tout site géré par yt-dlp) ou d'un fichier local. Renvoie titre,
+  chaîne, durée, chapitres, extrait de description et transcript en paragraphes horodatés
+  d'environ 30 s. Pas d'images, par choix : la vision coûte cher en contexte local et exige
+  un modèle vision.
+- Sous-titres existants d'abord, sans télécharger la vidéo (manuels dans la langue demandée,
+  puis langue d'origine, puis auto d'origine, puis auto traduits) ; doublons des sous-titres
+  auto « roulants » retirés. Sinon audio seul + faster-whisper `small` int8 sur CPU, batch 8
+  beam 1, VAD Silero (6,9x le temps réel mesuré, contre 2,9x en beam 5 séquentiel).
+- Cache `var/cache/videos` ; au-delà de 24 000 caractères, transcript tronqué avec le
+  `read_file(start_line=…)` qui donne la suite. Sortie marquée frontière de confiance.
+- Anti-SSRF (PR #35) : hôtes internes refusés sur l'URL donnée ET sur les URL de sous-titres
+  et d'audio fournies par yt-dlp.
+- Dépendances : `yt-dlp[default,deno]`, `faster-whisper`, `av<19` (faster-whisper 1.2.1
+  incompatible PyAV 19, SYSTRAN/faster-whisper#1589).
+- Validé de bout en bout : ornith-1.5-35b-a3b (local) appelle l'outil seul et résume une
+  vidéo TED de 14 min (outil 6,8 s, sous-titres manuels).
+
 ## 2026-10-02 : llama.cpp à jour, veille des mises à jour, --load-mode, setup v0.x
 
 - **Veille llama.cpp** (`loom/runtime/llama_update.py`) : au démarrage puis toutes les

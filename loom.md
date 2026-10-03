@@ -36,10 +36,11 @@ from-claude-to-local-haranessed-llm/
 │   │   ├── session.py         #   sessions persistantes (titre inféré)
 │   │   ├── inline_image.py    #   vision (screenshot collé)
 │   │   └── reflect.py         #   capitalisation post-tour (mémoire)
-│   ├── tools/                 # 25 outils activés par défaut, plus options/MCP
+│   ├── tools/                 # 28 outils activés par défaut, plus options/MCP
 │   │   ├── search.py fs.py read.py      # localiser/lire (find_files, search_text, list_dir, read_file [texte+PDF/xlsx/docx], read_image)
 │   │   ├── shell.py format.py           # exécuter (run_shell), formater (ruff/prettier)
 │   │   ├── web.py                       # web_search, fetch_url (anti-SSRF)
+│   │   ├── video.py                     # watch_video (yt-dlp sous-titres, sinon faster-whisper CPU ; pas d'images)
 │   │   ├── browser.py                   # check_page, serve_and_check (Playwright)
 │   │   ├── todo.py agent.py note.py memory.py  # manage_todos, dispatch_agent, write/read_note, recall/remember
 │   │   ├── skills.py plugins.py         # use_skill, list/add/install plugins
@@ -110,7 +111,8 @@ uv run python -m evals.run_review_eval           # éval du skill code-review
 
 - **Mode permission livré à `allow`** : l'agent écrit et exécute du shell sans confirmation. La doc recommande de passer à `ask` (`config/defaults.toml` → `[permissions] mode`) hors environnement isolé.
 - **La deny-list n'est pas une frontière de sécurité** : elle bloque les formes évidentes (`rm -rf`, `format`, `dd if=`) mais un interpréteur (`python -c`) la contourne. Ne pas s'y fier contre un modèle hostile.
-- **Anti-SSRF + frontière de confiance** : `fetch_url`/`web_search` épingle l'IP et refuse les hôtes internes ; tout contenu externe est marqué DONNÉE (pas instruction). Défense en profondeur, pas garantie.
+- **Anti-SSRF + frontière de confiance** : `fetch_url`/`web_search` épingle l'IP et refuse les hôtes internes ; `watch_video` refuse les hôtes internes (URL donnée + URL média de yt-dlp) sans épingler l'IP ; tout contenu externe est marqué DONNÉE (pas instruction). Défense en profondeur, pas garantie.
+- **`watch_video` dépend de `av<19`** : faster-whisper 1.2.1 appelle `av.open(metadata_errors=)`, retiré en PyAV 19 (SYSTRAN/faster-whisper#1589, corrigé en amont, pas encore publié). Lever l'épinglage à la release suivante.
 - **Validation multi-niveaux** : pytest couvre le runtime et les routes ; Ruff couvre le
   statique ; le self-test valide les graders sans modèle ; Playwright reste requis pour
   les interactions et le rendu navigateur.
