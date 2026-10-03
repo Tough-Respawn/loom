@@ -114,8 +114,13 @@ def pick_track(info: dict, lang: str | None) -> tuple[str, dict, str] | None:
         k: v for k, v in (info.get("subtitles") or {}).items() if k != "live_chat"
     }
     auto = info.get("automatic_captions") or {}
-    orig = (info.get("language") or "").lower()
+    # "en-US" -> "en" : les clés de sous-titres sont souvent sans région.
+    orig = (info.get("language") or "").lower().split("-")[0]
     lang = (lang or "").lower().strip()
+    # Doublage IA de YouTube (vu 2026-10-03) : une piste "-orig" PAR langue doublée
+    # (ar-orig, bn-orig, en-orig…). Sans langue d'origine connue, un "-orig" n'est
+    # fiable que s'il est unique ; sinon Whisper, dont l'audio est l'original.
+    origs = [k for k in auto if k.lower().endswith("-orig")]
 
     def fmt(entries):
         for ext in _SUB_EXTS:
@@ -135,9 +140,11 @@ def pick_track(info: dict, lang: str | None) -> tuple[str, dict, str] | None:
         candidates.append((manual, lambda k: _lang_match(k, lang), "manuels"))
     if orig:
         candidates.append((manual, lambda k: _lang_match(k, orig), "manuels"))
-    candidates.append((auto, lambda k: k.lower().endswith("-orig"), "automatiques"))
     if orig:
+        candidates.append((auto, lambda k: k.lower() == f"{orig}-orig", "automatiques"))
         candidates.append((auto, lambda k: k.lower() == orig, "automatiques"))
+    elif len(origs) == 1:
+        candidates.append((auto, lambda k: k == origs[0], "automatiques"))
     candidates.append((manual, lambda k: True, "manuels"))
     if lang:
         candidates.append(
