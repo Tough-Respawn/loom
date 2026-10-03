@@ -119,3 +119,32 @@ def test_fichier_local_absent():
 
 def test_outil_de_lecture_sans_confirmation():
     assert "watch_video" in READ_TOOLS
+
+
+def test_url_de_sous_titre_interne_refusee(monkeypatch, tmp_path):
+    """Une page publique qui désigne un sous-titre sur un hôte interne : refus."""
+    monkeypatch.setattr(video, "CACHE_DIR", tmp_path)
+
+    class _FakeYdl:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {
+                "id": "x",
+                "subtitles": {"en": [{"ext": "vtt", "url": "http://127.0.0.1/s.vtt"}]},
+            }
+
+        def urlopen(self, url):  # ne doit jamais être atteint
+            raise AssertionError("urlopen appelé sur un hôte interne")
+
+    monkeypatch.setattr(video, "_ydl", lambda extra=None: _FakeYdl())
+    try:
+        video._from_url("https://example.com/v", None)
+    except video.ToolError as exc:
+        assert "refusée" in str(exc)
+    else:
+        raise AssertionError("ToolError attendue")

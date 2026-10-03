@@ -201,6 +201,16 @@ def _ydl_error(exc: Exception) -> ToolError:
     return ToolError(f"lecture de la vidéo impossible : {msg}{hint}")
 
 
+def _check_host(url: str) -> None:
+    """Anti-SSRF sur les URL que FOURNIT l'extracteur (sous-titres, audio) : une
+    page hostile peut désigner un hôte interne. Les redirections HTTP internes à
+    yt-dlp et les fragments HLS/DASH ne sont pas revérifiés (risque résiduel)."""
+    from loom.tools.web import _blocked_host_reason
+
+    if reason := _blocked_host_reason(url):
+        raise ToolError(f"URL média refusée : {reason}")
+
+
 def _cache_path(key: str) -> Path:
     return CACHE_DIR / (re.sub(r"[^A-Za-z0-9_.-]+", "_", key)[:120] + ".txt")
 
@@ -250,6 +260,7 @@ def _from_url(url: str, lang: str | None) -> tuple[str, str]:
     track = pick_track(info, lang)
     if track:
         key_lang, entry, nature = track
+        _check_host(entry["url"])
         try:
             with _ydl() as ydl:
                 raw = ydl.urlopen(entry["url"]).read().decode("utf-8", "replace")
@@ -284,7 +295,12 @@ def _transcribe_remote(url: str) -> tuple[list[tuple[float, str]], str]:
                     "outtmpl": str(Path(tmp) / "audio.%(ext)s"),
                 }
             ) as ydl:
-                ydl.extract_info(url, download=True)
+                # Résoudre d'abord, vérifier les hôtes média, PUIS télécharger.
+                info = ydl.extract_info(url, download=False)
+                for fmt in [info, *(info.get("requested_formats") or [])]:
+                    if fmt.get("url"):
+                        _check_host(fmt["url"])
+                ydl.process_ie_result(info, download=True)
         except DownloadError as exc:
             raise _ydl_error(exc) from exc
         files = [p for p in Path(tmp).iterdir() if p.is_file()]
