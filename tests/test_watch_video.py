@@ -84,6 +84,20 @@ def test_auto_traduit_en_dernier_recours():
     assert (key, entry["url"], nature) == ("fr", "u-srt", "automatiques traduits")
 
 
+def test_doublage_ia_prend_le_orig_de_la_langue_dorigine():
+    """Vécu 2026-10-03 (HU03WDFB_tQ) : 20 pistes '-orig', ar-orig en premier ;
+    la vidéo est en-US -> en-orig, jamais la première venue."""
+    auto = {k: _track() for k in ("ar-orig", "bn-orig", "en-orig", "fr-orig")}
+    key, _, _ = video.pick_track(
+        {"language": "en-US", "automatic_captions": auto}, None
+    )
+    assert key == "en-orig"
+    # Langue d'origine inconnue + plusieurs '-orig' : ambigu -> None (repli Whisper).
+    assert video.pick_track({"automatic_captions": auto}, None) is None
+    solo = {"automatic_captions": {"de-orig": _track(), "fr": _track()}}
+    assert video.pick_track(solo, None)[0] == "de-orig"
+
+
 def test_aucune_piste_exploitable():
     info = {"subtitles": {"en": [{"ext": "json3", "url": "j"}]}}
     assert video.pick_track(info, None) is None
