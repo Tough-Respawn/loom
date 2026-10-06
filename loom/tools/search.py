@@ -6,10 +6,12 @@ dossier de travail ; ignorent les dossiers lourds ; PLAFONNÉS (pas d'étouffeme
 
 from __future__ import annotations
 
+import glob as _glob
 import os
 import re
 import shutil
 import subprocess
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -136,7 +138,38 @@ def _display(p: Path, base: Path) -> str:
         return p.as_posix()
 
 
-def make_find_files(workspace_dir: str, *, max_results: int = 200) -> ToolSpec:
+def _walk_glob(base: Path, pattern: str, deadline: float):
+    """Fichiers sous `base` dont le chemin relatif matche `pattern` (glob, `**` inclus).
+
+    Contrairement à Path.glob, on n'ENTRE jamais dans les dossiers ignorés (.git,
+    .venv, node_modules…) : Path.glob les parcourait en entier avant de filtrer, et
+    `C:/Users/x/**/*.gguf` fouillait tout le profil (136 s vécus le 2026-10-06).
+    Lève TimeoutError au-delà de `deadline` (les fichiers déjà trouvés restent émis)."""
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    rx = re.compile(
+        _glob.translate(pattern, recursive=True, include_hidden=True, seps="/"), flags
+    )
+    # Sans `**`, inutile de descendre plus bas que la profondeur du motif.
+    max_depth = None if "**" in pattern else pattern.count("/")
+    for dirpath, dirnames, filenames in os.walk(base):
+        rel_dir = Path(dirpath).relative_to(base).as_posix()
+        depth = 0 if rel_dir == "." else rel_dir.count("/") + 1
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in _SKIP_DIRS and (max_depth is None or depth < max_depth)
+        ]
+        for name in filenames:
+            rel = name if rel_dir == "." else f"{rel_dir}/{name}"
+            if rx.match(rel):
+                yield base / rel
+        if time.monotonic() > deadline:
+            raise TimeoutError
+
+
+def make_find_files(
+    workspace_dir: str, *, max_results: int = 200, time_budget_s: float = 20.0
+) -> ToolSpec:
     """Outil find_files : liste les fichiers du workspace matchant un motif glob."""
     root = Path(workspace_dir)
 
@@ -147,23 +180,26 @@ def make_find_files(workspace_dir: str, *, max_results: int = 200) -> ToolSpec:
         base = root.resolve()
         gbase, gpat = _glob_base_and_pattern(base, pattern)
         hits: list[str] = []
+        partial = False
         try:
-            it = gbase.glob(gpat)
-        except (ValueError, NotImplementedError) as exc:
+            for p in _walk_glob(gbase, gpat, time.monotonic() + time_budget_s):
+                hits.append(_display(p, base))
+                if len(hits) >= max_results:
+                    break
+        except re.error as exc:
             raise ToolError(f"motif invalide : {pattern} ({exc})") from exc
-        for p in it:
-            if not p.is_file():
-                continue
-            shown = _display(p, base)
-            if _skipped(Path(shown)):
-                continue
-            hits.append(shown)
-            if len(hits) >= max_results:
-                break
+        except TimeoutError:
+            partial = True
+        note = (
+            f"\n[recherche arrêtée après {time_budget_s:.0f} s : résultats PARTIELS — "
+            "pars d'un dossier plus précis que la racine]"
+            if partial
+            else ""
+        )
         if not hits:
-            return f"aucun fichier ne correspond à : {pattern}"
+            return f"aucun fichier ne correspond à : {pattern}{note}"
         hits.sort()
-        return "\n".join(hits)
+        return "\n".join(hits) + note
 
     return ToolSpec(
         name="find_files",
