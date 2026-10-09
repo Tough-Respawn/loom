@@ -13,12 +13,14 @@ from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
 from loom.agent.compaction import (
     _SUMMARY_MARKER,
     _SUMMARY_SYSTEM,
+    _char_budget,
     _ctx_estimate,
     _flatten_for_summary,
     _force_fit,
     _inject_notes,
     _microcompact_tools,
     _message_chars,
+    _tokens_to_chars,
 )
 from loom.agent.debuglog import _debug, _debug_messages, log_event, tools_fingerprint
 from loom.agent.debuglog import context_fingerprint as context_fingerprint
@@ -1076,7 +1078,13 @@ class LoomClient:
     ) -> Iterator[tuple[str, object]]:
         """Compaction PRÉVENTIVE avant l'appel modèle : microcompact des vieux
         résultats d'outils, puis force-fit si un résultat RÉCENT est géant (local).
-        Ne stoppe jamais le tour ; met à jour st["refocus_done"]."""
+        Ne stoppe jamais le tour ; met à jour st["refocus_done"].
+
+        L'estimation part de st["ctx_anchor"] (usage RÉEL de l'appel précédent) quand
+        elle existe : la session c81fcc4bd207 (2026-10-09) est montée à 31k tokens sur
+        32k sans jamais déclencher ce chemin, caractères/3 ignorant les schémas d'outils
+        et le raisonnement conservé."""
+        anchor = st.get("ctx_anchor")
         # Deux arguments tronqués signalent une fenêtre saturée ; forcer la compaction
         # car demander une sortie plus courte ne réduit pas l'entrée.
         if st.get("truncated_streak", 0) >= 2 and not self.is_remote(model):
@@ -1085,12 +1093,12 @@ class LoomClient:
             _force_fit(
                 convo,
                 system_prompt,
-                max((compact_after_tokens or 0) * 3, len(system_prompt) + 4000),
+                _char_budget(compact_after_tokens, system_prompt, anchor),
             )
             _debug(
                 "COMPACT_TRONCATURE",
                 "2 tool calls tronqués de suite -> compaction forcée "
-                f"(~{_ctx_estimate(system_prompt, convo)} tokens).",
+                f"(~{_ctx_estimate(system_prompt, convo, anchor)} tokens).",
             )
             yield (
                 "tool_result",
@@ -1104,12 +1112,16 @@ class LoomClient:
                     ),
                 },
             )
-            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
+            yield (
+                "context_estimate",
+                {"tokens": _ctx_estimate(system_prompt, convo, anchor)},
+            )
         # Vider les anciens résultats avant l'appel quand le contexte approche sa limite.
         if not compact_after_tokens:
             return
-        # Le code tokenise densément ; 3 caractères/token déclenche prudemment plus tôt.
-        approx = (len(system_prompt) + sum(_message_chars(m) for m in convo)) // 3
+        # Compteur serveur + delta (ancre), sinon 3 caractères/token : le code tokenise
+        # densément, ce ratio déclenche prudemment plus tôt.
+        approx = _ctx_estimate(system_prompt, convo, anchor)
         if approx <= compact_after_tokens:
             return
         cleared = _microcompact_tools(convo, keep_recent_tools)
@@ -1120,19 +1132,22 @@ class LoomClient:
                 f"> seuil {compact_after_tokens}).",
             )
             # Corriger la jauge avant que l'appel suivant fournisse son usage réel.
-            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
+            yield (
+                "context_estimate",
+                {"tokens": _ctx_estimate(system_prompt, convo, anchor)},
+            )
         # Un résultat récent géant survit au microcompact ; force-fit l'entrée locale
         # avant l'appel pour éviter un overflow réactif.
         if (
             not self.is_remote(model)
-            and _ctx_estimate(system_prompt, convo) > compact_after_tokens
+            and _ctx_estimate(system_prompt, convo, anchor) > compact_after_tokens
         ):
             # Le plancher couvre le prompt incompressible et un minimum de travail ;
             # sinon un budget impossible ferait supprimer puis relire le même contexte.
             _force_fit(
                 convo,
                 system_prompt,
-                max(compact_after_tokens * 3, len(system_prompt) + 4000),
+                _char_budget(compact_after_tokens, system_prompt, anchor),
             )
             if refocus_note and not st["refocus_done"]:
                 st["refocus_done"] = True
@@ -1140,7 +1155,7 @@ class LoomClient:
             _debug(
                 "FORCE_FIT_PREVENTIF",
                 f"un résultat récent trop gros -> clip avant l'appel "
-                f"(~{_ctx_estimate(system_prompt, convo)} tokens <= seuil "
+                f"(~{_ctx_estimate(system_prompt, convo, anchor)} tokens <= seuil "
                 f"{compact_after_tokens}).",
             )
             yield (
@@ -1154,7 +1169,10 @@ class LoomClient:
                     ),
                 },
             )
-            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
+            yield (
+                "context_estimate",
+                {"tokens": _ctx_estimate(system_prompt, convo, anchor)},
+            )
 
     def _handle_stream_api_error(
         self,
@@ -1175,12 +1193,17 @@ class LoomClient:
         force_fits / refocus_done dans st."""
         kind = _classify_stream_error(exc)
         log_event("api.error", level="WARN", kind=kind, msg=str(exc)[:140])
+        # Un 400 n'apporte aucun usage : l'ancre de l'appel précédent reste la référence.
+        anchor = st.get("ctx_anchor")
         # Un overflow d'entrée exige de compacter les résultats, pas de raccourcir la
         # sortie. Conserver les messages du modèle évite de refaire le travail.
         if kind == "context_overflow":
             # Un 400 ne fournit aucun usage : publier l'estimation qui a débordé avant
             # la compaction pour que la jauge reste honnête.
-            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
+            yield (
+                "context_estimate",
+                {"tokens": _ctx_estimate(system_prompt, convo, anchor)},
+            )
             # Commencer par vider les anciens résultats, sans appel LLM.
             if st["overflow_retries"] < max_overflow_retries:
                 st["overflow_retries"] += 1
@@ -1214,7 +1237,7 @@ class LoomClient:
                 )
                 yield (
                     "context_estimate",
-                    {"tokens": _ctx_estimate(system_prompt, convo)},
+                    {"tokens": _ctx_estimate(system_prompt, convo, anchor)},
                 )
                 st["action"] = "continue"
                 return
@@ -1256,7 +1279,7 @@ class LoomClient:
                     )
                     yield (
                         "context_estimate",
-                        {"tokens": _ctx_estimate(system_prompt, convo)},
+                        {"tokens": _ctx_estimate(system_prompt, convo, anchor)},
                     )
                     st["action"] = "continue"
                     return
@@ -1264,9 +1287,19 @@ class LoomClient:
             # jusqu'à compenser l'erreur d'estimation caractères/token.
             st["force_fits"] += 1
             shrink = max(0.12, 0.7 ** st["force_fits"])
-            base = compact_after_tokens or _ctx_estimate(system_prompt, convo) or 8000
+            base = (
+                compact_after_tokens
+                or _ctx_estimate(system_prompt, convo, anchor)
+                or 8000
+            )
+            # Cible en tokens, convertie en caractères VIA l'ancre : × 3 direct sur une
+            # estimation ancrée donnait un budget au-dessus du fil réel, donc huit passes
+            # sans réduction puis un faux « contexte irréductible ».
             # Appliquer la réduction à la conversation, jamais au prompt incompressible.
-            budget = max(len(system_prompt) + 1500, int(base * 3 * shrink))
+            budget = max(
+                len(system_prompt) + 1500,
+                _tokens_to_chars(int(base * shrink), anchor),
+            )
             _force_fit(convo, system_prompt, budget)
             if refocus_note and not st["refocus_done"]:
                 st["refocus_done"] = True
@@ -1276,12 +1309,12 @@ class LoomClient:
                 level="WARN",
                 kind="context_force_fit",
                 force_fit=st["force_fits"],
-                est_tokens=_ctx_estimate(system_prompt, convo),
+                est_tokens=_ctx_estimate(system_prompt, convo, anchor),
             )
             _debug(
                 "FORCE_FIT",
                 f"passe {st['force_fits']} : contexte clippé sous ~{budget} car. "
-                f"(~{_ctx_estimate(system_prompt, convo)} tokens), reprise.",
+                f"(~{_ctx_estimate(system_prompt, convo, anchor)} tokens), reprise.",
             )
             yield (
                 "tool_result",
@@ -1294,7 +1327,10 @@ class LoomClient:
                     ),
                 },
             )
-            yield ("context_estimate", {"tokens": _ctx_estimate(system_prompt, convo)})
+            yield (
+                "context_estimate",
+                {"tokens": _ctx_estimate(system_prompt, convo, anchor)},
+            )
             if st["force_fits"] < 8:
                 st["action"] = "continue"
                 return
@@ -1462,6 +1498,7 @@ class LoomClient:
                 m.get("role") == "assistant" and "reasoning_content" in m for m in convo
             ),
             "reasoning_history_retries": 0,
+            "ctx_anchor": None,  # (prompt_tokens, chars) de la dernière requête à usage réel
             "text": "",  # texte accumulé du dernier appel modèle
             "reasoning": "",  # raisonnement accumulé du dernier appel modèle
             "action": "",  # issue posée par le dernier sous-générateur

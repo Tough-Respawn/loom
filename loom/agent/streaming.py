@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from loom.agent.compaction import _message_chars
+from loom.agent.compaction import _anchor_from_usage, _convo_chars, _message_chars
 from loom.agent.calltrace import traced_create
 from loom.agent.debuglog import _debug, log_event
 
@@ -318,6 +318,9 @@ def _stream_model_turn(
     reasoning = ""
     saw_usage = False
     _first_byte = True
+    # Caractères de CETTE requête : avec l'usage réel du serveur, ils forment l'ancre
+    # du budget de contexte des appels suivants (compteur + delta des messages).
+    sent_chars = _convo_chars(system_prompt, convo)
     log_event(
         "turn.request",
         model=api_model,
@@ -344,6 +347,9 @@ def _stream_model_turn(
                 reasoning += chunk
             elif kind == "usage":
                 saw_usage = True
+                anchor = _anchor_from_usage(chunk, sent_chars)
+                if anchor:
+                    st["ctx_anchor"] = anchor
                 log_event(
                     "usage",
                     prompt=chunk.get("prompt_tokens"),

@@ -38,8 +38,15 @@ def _tool_args_chars(m: dict) -> int:
 
 
 def _message_chars(m: dict) -> int:
-    """Taille approx. d'un message complet : contenu + arguments d'outils."""
-    return _msg_chars(m.get("content")) + _tool_args_chars(m)
+    """Taille approx. d'un message complet : contenu + arguments d'outils + raisonnement
+    conservé (`reasoning_content`, rejoué par le gabarit après un appel d'outil : la
+    session c81fcc4bd207 en a renvoyé ~8k tokens invisibles à l'ancien comptage)."""
+    reasoning = m.get("reasoning_content")
+    return (
+        _msg_chars(m.get("content"))
+        + _tool_args_chars(m)
+        + (len(reasoning) if isinstance(reasoning, str) else 0)
+    )
 
 
 def _shrink_tool_args(m: dict, floor: int = 200) -> dict:
@@ -187,17 +194,22 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
 
     _CLIP_FLOOR = 200
 
-    def _longest(skip: int) -> tuple[int, int]:
-        """(index, taille) du message au contenu le plus long, hors `skip`."""
-        idx, longest = -1, 0
+    def _longest(skip: int) -> tuple[int, int, str]:
+        """(index, taille, champ) du plus long contenu ou raisonnement conservé, hors
+        `skip`. Le raisonnement rejoué après un appel d'outil peut peser plus que tout
+        résultat : sans le réduire, il ne resterait qu'à supprimer des messages."""
+        idx, longest, field = -1, 0, "content"
         for i, m in enumerate(convo):
             if i == skip:
                 continue
             c = m.get("content")
             n = len(c) if isinstance(c, str) else _msg_chars(c)
             if n > longest:
-                longest, idx = n, i
-        return idx, longest
+                longest, idx, field = n, i, "content"
+            r = m.get("reasoning_content")
+            if isinstance(r, str) and len(r) > longest:
+                longest, idx, field = len(r), i, "reasoning_content"
+        return idx, longest, field
 
     guard = 0
     while _total() > budget_chars and guard < 5000:
@@ -213,9 +225,9 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
             default=-1,
         )
         # Sous ce plancher, marqueur + extraits ne réduisent plus strictement le message.
-        idx, longest = _longest(skip=task_idx)
+        idx, longest, field = _longest(skip=task_idx)
         if longest <= _CLIP_FLOOR:  # plus rien d'autre : la tâche en dernier recours
-            idx, longest = _longest(skip=-1)
+            idx, longest, field = _longest(skip=-1)
         # Les arguments d'anciens appels d'outils (fichiers écrits) passent avant les
         # contenus : les réduire ne touche ni la tâche ni les résultats récents.
         args_idx, args_len = -1, 0
@@ -229,7 +241,7 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
                 convo[args_idx] = shrunk
                 continue
         if idx >= 0 and longest > _CLIP_FLOOR:
-            c = convo[idx].get("content")
+            c = convo[idx].get(field)
             if isinstance(c, str):
                 # Garder tête et queue : la conclusion ou l'erreur se trouve souvent à la fin.
                 keep = max(120, len(c) // 2)
@@ -237,7 +249,7 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
                 tail = keep - head
                 convo[idx] = {
                     **convo[idx],
-                    "content": c[:head]
+                    field: c[:head]
                     + " …[milieu tronqué pour tenir dans le contexte]… "
                     + c[len(c) - tail :],
                 }
@@ -264,9 +276,59 @@ def _force_fit(convo: list[dict], system_prompt: str, budget_chars: int) -> bool
     return _total() <= budget_chars
 
 
-def _ctx_estimate(system_prompt: str, convo: list[dict]) -> int:
-    # Estimer à 3 caractères/token pour rafraîchir la jauge avant le prochain usage réel.
-    return (len(system_prompt) + sum(_message_chars(m) for m in convo)) // 3
+def _convo_chars(system_prompt: str, convo: list[dict]) -> int:
+    """Caractères du prompt système et des messages tels qu'ils seront envoyés."""
+    return len(system_prompt) + sum(_message_chars(m) for m in convo)
+
+
+def _anchor_from_usage(usage: dict, sent_chars: int) -> dict | None:
+    """Ancre de budget depuis l'usage RÉEL d'un appel : (tokens comptés par le serveur
+    pour la requête, caractères de cette requête). None si l'usage est estimé ou sans
+    compteur : une estimation ancrée sur une estimation n'apporterait rien."""
+    if not isinstance(usage, dict) or usage.get("estimated"):
+        return None
+    prompt_tokens = usage.get("prompt_tokens") or 0
+    if prompt_tokens <= 0:
+        return None
+    return {"prompt_tokens": int(prompt_tokens), "chars": int(sent_chars)}
+
+
+def _tokens_to_chars(target_tokens: int, anchor: dict | None) -> int:
+    """Caractères de la prochaine requête correspondant à `target_tokens`. Avec ancre :
+    caractères ancrés + écart au compteur × 3 (négatif si la requête ancrée dépassait
+    déjà la cible). Sans ancre : 3 car./token. Multiplier directement une estimation
+    ancrée par 3 surestimait le budget : le compteur serveur inclut des tokens sans
+    caractères (schémas d'outils, gabarit), et `_force_fit` ne réduisait rien."""
+    if anchor:
+        return anchor["chars"] + (target_tokens - anchor["prompt_tokens"]) * 3
+    return target_tokens * 3
+
+
+def _char_budget(
+    compact_after_tokens: int | None, system_prompt: str, anchor: dict | None
+) -> int:
+    """Budget en caractères équivalent au seuil, pour `_force_fit`. Plancher : prompt
+    système + 4 000, pour laisser la tâche et un minimum de travail."""
+    floor = len(system_prompt) + 4000
+    if not compact_after_tokens:
+        return floor
+    return max(floor, _tokens_to_chars(compact_after_tokens, anchor))
+
+
+def _ctx_estimate(
+    system_prompt: str, convo: list[dict], anchor: dict | None = None
+) -> int:
+    """Tokens estimés de la PROCHAINE requête.
+
+    Avec une ancre (usage réel de la requête précédente) : compteur serveur + les seuls
+    caractères ajoutés ou retirés depuis, à 3 car./token. Le compteur serveur inclut ce
+    que les caractères ne voient pas (schémas d'outils, gabarit) ; le delta suit les
+    résultats d'outils ajoutés, le raisonnement conservé et les compactions.
+    Sans ancre (premier appel, usage absent ou estimé) : 3 caractères/token sur tout."""
+    chars = _convo_chars(system_prompt, convo)
+    if anchor:
+        return max(0, anchor["prompt_tokens"] + (chars - anchor["chars"]) // 3)
+    return chars // 3
 
 
 def _inject_notes(notes_provider, convo: list[dict]) -> Iterator[tuple[str, object]]:
