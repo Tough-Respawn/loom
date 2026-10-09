@@ -1700,6 +1700,9 @@ class LoomClient:
                     return
                 continue
 
+            # Un appel d'outil est un progrès : deux réflexions coupées séparées par un
+            # outil exécuté ne sont pas « de suite » (revue 2026-10-09).
+            st["length_empty_streak"] = 0
             yield from _check_no_progress(tool_calls, strong, repeat_limit, st)
             if st["action"] == "done":
                 return

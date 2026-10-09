@@ -59,6 +59,25 @@ def test_deux_reflexions_coupees_de_suite_arretent_le_tour():
     assert "coupée" in "".join(only(events, "content"))
 
 
+def test_un_appel_d_outil_remet_le_compteur_a_zero():
+    # réflexion coupée -> outil exécuté -> réflexion coupée : les deux coupures ne sont
+    # pas consécutives, un travail utile a eu lieu entre elles (revue 2026-10-09).
+    reg = FakeRegistry({"read_file": lambda a: "contenu"})
+    client, fake = make_client(
+        [
+            _coupe(reasoning="r" * 50),
+            turn_tools([("c1", "read_file", '{"path": "x"}')]),
+            _coupe(reasoning="r" * 50),
+            turn_text("fini."),
+        ]
+    )
+    events, done = collect(
+        client.stream_chat_tools(list(USER), SYSTEM, registry=reg, max_tokens=8_192)
+    )
+    assert done["reason"] == "natural"
+    assert len(fake.calls) == 4
+
+
 def test_un_fragment_de_texte_remet_le_compteur_a_zero():
     client, fake = make_client(
         [
