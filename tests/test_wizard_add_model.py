@@ -23,8 +23,6 @@ def deps(existing=(), hits=None, files=None, remote_models=None, removable=None)
     )
 
 
-
-
 def test_start_sans_arg_demande_le_type():
     r = wizard.start("", deps())
     assert r.state == {"step": "kind"}
@@ -76,8 +74,6 @@ def test_etat_inconnu_annule_proprement():
     assert r.state is None
 
 
-
-
 def test_choices_sur_menu_type_et_confirmations():
     r = wizard.start("", deps())
     assert r.choices == ["local", "distant", "image", "vidéo"]
@@ -90,8 +86,6 @@ def test_choices_sur_menu_type_et_confirmations():
     assert r.choices == ["oui", "annuler"]
     r = wizard.step({"step": "i_id", "ikind": "image"}, "mon-modele", deps())
     assert r.choices is None
-
-
 
 
 def test_rebench_liste_et_confirmation():
@@ -141,11 +135,11 @@ def test_rebench_apply_oui_et_annulation():
         "ubatch": None,
         "batch": None,
         "ubatch_detail": "",
+        # Idem pour la sonde de placement des poids.
+        "placement": None,
     }
     r = wizard.step(st, "non", deps())
     assert r.state is None and r.action is None and "inchangé" in r.reply
-
-
 
 
 def test_remove_liste_avec_rappel_et_confirmations_par_kind():
@@ -173,8 +167,6 @@ def test_remove_liste_avec_rappel_et_confirmations_par_kind():
     assert "workflow.json" in c.reply and "PAS touchés" in c.reply
     ok = wizard.step(c.state, "oui", deps(removable=items))
     assert ok.action == {"kind": "remove", "id": "img", "model_kind": "image"}
-
-
 
 
 def test_flux_image_complet_avec_chemin():
@@ -267,8 +259,6 @@ def test_i_workflow_warning_placeholder_transmis():
     assert r.action["kind"] == "install_image" and "{PROMPT} absent" in r.reply
 
 
-
-
 def test_start_distant_et_url_routent_vers_le_flux_distant():
     r = wizard.start("distant", deps())
     assert r.state == {"step": "r_id"}
@@ -348,7 +338,6 @@ def test_distant_sans_liste_ni_avance_ni_cle():
     assert r.action["record"]["vision"] is False
 
 
-
 REMOVABLE = [
     {"id": "qwen-local", "kind": "local", "label": "qwen-local — local, 5.4 Go"},
     {"id": "glm-flash", "kind": "remote", "label": "glm-flash — distant (glm-4.7)"},
@@ -386,7 +375,6 @@ def test_remove_sans_rien_a_supprimer():
     r = wizard.start_remove(deps())
     assert r.state is None and r.action is None
     assert "Aucun modèle" in r.reply
-
 
 
 HITS = [

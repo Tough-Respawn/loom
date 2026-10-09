@@ -371,6 +371,8 @@ def _step_b_apply(state, t, deps):
             "ubatch": state.get("ubatch"),
             "batch": state.get("batch"),
             "ubatch_detail": state.get("ubatch_detail", ""),
+            # Placement des poids mesuré avec ce contexte : appliqué d'un bloc aussi.
+            "placement": state.get("placement"),
         },
     )
 

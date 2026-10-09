@@ -174,6 +174,56 @@ def test_rebench_applique_le_verdict_isolation(env, monkeypatch):
     assert "context = 4096" in toml_txt
 
 
+def test_rebench_applique_le_placement_mesure(env, monkeypatch):
+    # Contexte inchangé, mais la sonde de placement a mesuré tout-GPU +19 % contre
+    # experts-CPU (Ornith, 2026-10-09) : verdict nommé, puis écrit dans le model.toml.
+    calib = dict(
+        CALIB,
+        context=4096,
+        placement={
+            "label": "gpu_total",
+            "ngl": 999,
+            "cpu_moe": False,
+            "n_cpu_moe": None,
+            "tg_ts": 14.4,
+            "pp_ts": 262.0,
+            "gain_pct": 19.0,
+            "mecanisme": "gpu_total adopté : génération 14.4 t/s contre 12.1 (experts_cpu), +19 %",
+        },
+        placement_avant={"cpu_moe": True, "n_cpu_moe": None, "n_gpu_layers": None},
+    )
+    r = _launch(env, monkeypatch, calib=calib)
+    assert "lancée" in _sse_texts(r.data)
+    txt = _wait_verdict(env)
+    assert "placement → gpu_total" in txt and "+19" in txt
+    r = env.web.post("/chat", data={"message": "oui"})
+    assert "Application" in _sse_texts(r.data)
+    toml_txt = (env.mdir / "model.toml").read_text(encoding="utf-8")
+    assert "cpu_moe = false" in toml_txt and "n_gpu_layers = 999" in toml_txt
+    assert "context = 4096" in toml_txt
+
+
+def test_rebench_placement_identique_ne_change_rien(env, monkeypatch):
+    calib = dict(
+        CALIB,
+        context=4096,
+        placement={
+            "label": "experts_cpu",
+            "ngl": 999,
+            "cpu_moe": True,
+            "n_cpu_moe": None,
+            "tg_ts": 12.1,
+            "pp_ts": 217.0,
+            "gain_pct": None,
+            "mecanisme": "experts_cpu conservé : gpu_total à +3 % de tg, sous la marge de 5 %",
+        },
+        placement_avant={"cpu_moe": True, "n_cpu_moe": None, "n_gpu_layers": None},
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "déjà au top" in txt and "sous la marge" in txt
+
+
 def test_rebench_echec_calibration_message_persiste(env, monkeypatch):
     _launch(env, monkeypatch, error=RuntimeError("binaire llama-server introuvable"))
     txt = _wait_verdict(env)

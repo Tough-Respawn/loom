@@ -232,8 +232,11 @@ class Deps:
     sleep: object = time.sleep
     gpu_vram_total_mb: object = topo_mod.gpu_vram_total_mb
     make_probe: object = topo_mod.ServerProbe  # (**kw) -> objet avec .run(ctx, depth)
+    ram_total_mb: object = None  # () -> int (RAM totale, Mo) ; défaut psutil
 
     def __post_init__(self):
+        if self.ram_total_mb is None:
+            self.ram_total_mb = _real_ram_total_mb
         if self.fetch_release is None:
             self.fetch_release = _real_fetch_release
         if self.fetch_swap_release is None:
@@ -246,6 +249,12 @@ class Deps:
             self.search_models = search_models
         if self.cpu_physical is None:
             self.cpu_physical = _real_cpu_physical
+
+
+def _real_ram_total_mb() -> int:
+    import psutil
+
+    return int(psutil.virtual_memory().total // (1024 * 1024))
 
 
 def _real_fetch_release() -> dict:
@@ -820,6 +829,60 @@ def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> No
     atomic_write_text(p, "\n".join(lines) + "\n")
 
 
+def _set_model_placement(gguf_path: Path, placement, detail: str) -> None:
+    """Écrit le placement MESURÉ des poids (loom.setup.placement) dans le model.toml :
+    `cpu_moe`, `n_cpu_moe` et `n_gpu_layers` posés ou RETIRÉS selon le candidat élu
+    (tout GPU -> n_gpu_layers = 999 explicite, pour ne pas dépendre de la VRAM libre
+    au lancement ; CPU seul -> 0 ; experts partiels -> n_cpu_moe). Un seul tampon,
+    remplacé à chaque mesure ; le reste du fichier est intact."""
+    p = Path(gguf_path).parent / "model.toml"
+    if not p.is_file():
+        return
+    wanted: dict[str, str | None] = {
+        "cpu_moe": "true" if placement.cpu_moe else "false",
+        "n_cpu_moe": (
+            str(placement.n_cpu_moe) if placement.n_cpu_moe is not None else None
+        ),
+        "n_gpu_layers": {"gpu_total": "999", "cpu": "0"}.get(placement.label),
+    }
+    stamp = f"# placement élu par la sonde — {placement.label} : {detail}"
+    out: list[str] = []
+    done: set[str] = set()
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("# placement élu par la sonde"):
+            continue  # ancien tampon : réécrit ci-dessous
+        code = line.split("#")[0].strip().replace(" ", "")
+        key = next((k for k in wanted if code.startswith(f"{k}=")), None)
+        if key is None:
+            out.append(line)
+            continue
+        val = wanted[key]
+        if val is None or key in done:
+            continue  # clé retirée pour ce placement (ou doublon)
+        out.append(f"{key} = {val}")
+        done.add(key)
+    missing = [
+        f"{k} = {v}" for k, v in wanted.items() if v is not None and k not in done
+    ]
+    first = next(
+        (
+            i
+            for i, line in enumerate(out)
+            if any(
+                line.split("#")[0].strip().replace(" ", "").startswith(f"{k}=")
+                for k in done
+            )
+        ),
+        None,
+    )
+    if first is None:
+        out += ["", stamp, *missing]
+    else:
+        out[first + 1 : first + 1] = missing
+        out.insert(first, stamp)
+    atomic_write_text(p, "\n".join(out) + "\n")
+
+
 def _set_model_ubatch(gguf_path: Path, ubatch: int, batch: int, detail: str) -> None:
     """Écrit les batchs de prefill MESURÉS par la sonde d'ubatch dans le model.toml
     (vérité par modèle : l'optimum dépend de l'architecture et du quant). Remplace
@@ -940,15 +1003,13 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         return
 
     # Mesurer pente et débit avec les vrais flags évite les erreurs d'une formule KV théorique.
-    import psutil
-
     vram_total = deps.gpu_vram_total_mb()
     topo = topo_mod.discover_topology(
         meta, deps.has_gpu_backend(server_bin), vram_total
     )
     headroom = int((raw_cfg.get("server") or {}).get("gpu_kv_headroom_mb", 640) or 640)
     # Utiliser la RAM totale rend la recommandation reproductible.
-    ram_total_mb = int(psutil.virtual_memory().total // (1024 * 1024))
+    ram_total_mb = int(deps.ram_total_mb())
     budget = topo_mod.memory_budget_mb(topo, vram_total, ram_total_mb, headroom)
     model_toml = _read_model_toml(gguf_path)
     is_moe = bool(meta.get("expert_count"))
@@ -964,6 +1025,45 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         cpu_moe=bool(model_toml.get("cpu_moe", is_moe)),
         n_cpu_moe=model_toml.get("n_cpu_moe"),
     )
+    # Placement MESURÉ des poids (où vivent denses et experts) AVANT isolation et
+    # calibration : elles mesurent ainsi la configuration qui servira vraiment. La VRAM
+    # vient du profil matériel (Vulkan compris), pas du seul nvidia-smi ; mémoire
+    # unifiée = le device est la RAM. Cf. loom/setup/placement.py (Ornith, 2026-10-09).
+    from dataclasses import replace as _dc_replace
+
+    from loom.setup import placement as place_mod
+
+    kv_mb = bench_mod.kv_bytes_per_token(meta) * 65536 // (1024 * 1024)
+    candidats = place_mod.placement_candidates(
+        moe=is_moe,
+        n_layers=meta.get("n_layers"),
+        model_size_mb=model_size_mb,
+        kv_mb=kv_mb,
+        gpu_backend=bool(deps.has_gpu_backend(server_bin) and hw.has_gpu),
+        vram_total_mb=int(hw.vram_total_mb or vram_total or 0),
+        ram_total_mb=ram_total_mb,
+        uma=not hw.vram_is_discrete,
+        headroom_mb=headroom,
+    )
+    con.progress("sonde de placement (où vivent les poids)…")
+    try:
+        pl_res = place_mod.probe_placement(
+            lambda pl: _dc_replace(
+                probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
+            ),
+            candidats,
+            progress=lambda m: con.progress(f"placement : {m}"),
+        )
+    except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
+        pl_res = None
+    con.progress_end()
+    if pl_res and pl_res["mesures"]:
+        # Comparaison faite : la suite (isolation, calibration, ubatch) mesure l'élu.
+        pl = pl_res["placement"]
+        probe = _dc_replace(
+            probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
+        )
+        con.say(f"  [ok] placement : {pl.describe()} — {pl_res['mecanisme']}")
     # Mesurer l'isolation avant la calibration pour inclure le KV du second slot.
     con.progress("sonde d'isolation du cache (A -> pollution -> A)…")
     isolation: bool | None = None
@@ -1046,6 +1146,19 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "context_valide_jusqua": calib["valide_jusqua"],
         },
     }
+    if pl_res:
+        values["bench"]["placement"] = pl_res["placement"].label
+        values["bench"]["placement_mecanisme"] = pl_res["mecanisme"]
+        if pl_res["tg_ts"] is not None:
+            values["bench"]["placement_tg_ts"] = pl_res["tg_ts"]
+            values["bench"]["placement_pp_ts"] = pl_res["pp_ts"]
+        if pl_res["gain_pct"] is not None:
+            values["bench"]["placement_gain_pct"] = pl_res["gain_pct"]
+        if pl_res["mesures"]:
+            values["bench"]["placement_mesures"] = {
+                k: {kk: vv for kk, vv in v.items()}
+                for k, v in pl_res["mesures"].items()
+            }
     # Repli MACHINE : un modèle ajouté plus tard n'est jamais benché et tombait sur les
     # constantes aveugles de llama-server. On n'écrit QUE ce qui a été mesuré.
     if ub_res:
@@ -1071,6 +1184,16 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     set_local_values(PERSONAL_CONFIG_PATH, values)
     # La pente dépend de l'architecture; persister donc le contexte par modèle.
     _set_model_context(gguf_path, context, calib["mecanisme"])
+    if pl_res and pl_res["mesures"]:
+        # Le placement n'est écrit que s'il a été COMPARÉ (un seul candidat = rien à dire).
+        import datetime as _dt
+
+        build = deps.verify_binary(server_bin) or "build ?"
+        _set_model_placement(
+            gguf_path,
+            pl_res["placement"],
+            f"{_dt.date.today().isoformat()}, {build} — {pl_res['mecanisme']}",
+        )
     if ub_res:
         _set_model_ubatch(
             gguf_path,
@@ -1089,6 +1212,16 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         f"  [ok] context={context} ({topo}, pente {calib['slope_kb_tok']} Ko/token "
         f"mesurée, vitesse validée jusqu'à {calib['valide_jusqua']} tokens)"
     )
+    if pl_res and pl_res["tg_ts"] is not None:
+        gain_pl = (
+            f", {pl_res['gain_pct']:+.0f} % de génération vs {pl_res['baseline']}"
+            if pl_res["gain_pct"] is not None
+            else ""
+        )
+        con.say(
+            f"  [ok] placement={pl_res['placement'].label} ({pl_res['tg_ts']} t/s gén., "
+            f"{pl_res['pp_ts']} t/s prefill sur {place_mod.PLACEMENT_PROBE_PROMPT} tokens{gain_pl})"
+        )
     if ub_res:
         gain = (
             f", +{ub_res['gain_pct']:.0f} % de prefill"

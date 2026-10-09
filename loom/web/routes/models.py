@@ -140,6 +140,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             from loom.setup.cli import (
                 _set_model_cache_isolation,
                 _set_model_context,
+                _set_model_placement,
                 _set_model_ubatch,
             )
 
@@ -158,6 +159,23 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                     gguf, a["ubatch"], a["batch"], a.get("ubatch_detail", "")
                 )
                 applied += f" + ubatch={a['ubatch']}/batch={a['batch']}"
+            if a.get("placement"):
+                import datetime as _dt
+
+                from loom.setup.placement import Placement
+
+                pl = a["placement"]
+                _set_model_placement(
+                    gguf,
+                    Placement(
+                        pl["label"],
+                        int(pl["ngl"]),
+                        cpu_moe=bool(pl.get("cpu_moe")),
+                        n_cpu_moe=pl.get("n_cpu_moe"),
+                    ),
+                    f"{_dt.date.today().isoformat()} (/rebench) — {pl.get('mecanisme', '')}",
+                )
+                applied += f" + placement={pl['label']}"
             spec["context"] = a["context"]
             S.model_contexts[a["id"]] = a["context"]
             _regen_swap_yaml(S)

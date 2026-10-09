@@ -9,6 +9,72 @@ from pathlib import Path
 _REBENCH = {"job": None}
 
 
+def _measure_placement(
+    probe,
+    meta: dict,
+    *,
+    model_size_mb: int,
+    hw,
+    ram_total_mb: int,
+    headroom_mb: int,
+    gpu_backend: bool,
+    progress,
+):
+    """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
+    (verdict sérialisable | None, sonde alignée sur l'élu). None quand il n'y a rien à
+    comparer (un seul candidat faisable) ou rien de mesurable : la calibration vaut
+    alors avec les flags actuels du modèle."""
+    from dataclasses import replace as _dc_replace
+
+    from loom.setup import bench as bench_mod
+    from loom.setup import placement as place_mod
+
+    kv_mb = bench_mod.kv_bytes_per_token(meta) * 65536 // (1024 * 1024)
+    cands = place_mod.placement_candidates(
+        moe=bool(meta.get("expert_count")),
+        n_layers=meta.get("n_layers"),
+        model_size_mb=int(model_size_mb or 0),
+        kv_mb=kv_mb,
+        gpu_backend=bool(gpu_backend),
+        vram_total_mb=int(getattr(hw, "vram_total_mb", 0) or 0),
+        ram_total_mb=int(ram_total_mb),
+        uma=not getattr(hw, "vram_is_discrete", True),
+        headroom_mb=headroom_mb,
+    )
+    try:
+        res = place_mod.probe_placement(
+            lambda pl: _dc_replace(
+                probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
+            ),
+            cands,
+            progress=progress,
+        )
+    except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
+        res = None
+    if not res or not res["mesures"]:
+        return None, probe
+    pl = res["placement"]
+    probe = _dc_replace(probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe)
+    verdict = {
+        "label": pl.label,
+        "ngl": pl.ngl,
+        "cpu_moe": pl.cpu_moe,
+        "n_cpu_moe": pl.n_cpu_moe,
+        "tg_ts": res["tg_ts"],
+        "pp_ts": res["pp_ts"],
+        "gain_pct": res["gain_pct"],
+        "baseline": res["baseline"],
+        "mecanisme": res["mecanisme"],
+        "mesures": res["mesures"],
+    }
+    return verdict, probe
+
+
+def _placement_implied_ngl(label: str):
+    """n_gpu_layers que _set_model_placement écrira pour ce label (None = retiré)."""
+    return {"gpu_total": 999, "cpu": 0}.get(label)
+
+
 def _run_calibration(S, spec, progress):
     """Cœur de mesure (préconditions + topologie + calibrate), avec les flags EXACTS
     du modèle. Lève RuntimeError actionnable si la machine n'est pas prête.
@@ -69,6 +135,22 @@ def _run_calibration(S, spec, progress):
         cpu_moe=bool(mt.get("cpu_moe", is_moe)),
         n_cpu_moe=mt.get("n_cpu_moe"),
     )
+    # Placement MESURÉ avant isolation et calibration (même séquence que loom-setup) :
+    # la VRAM vient du profil matériel (Vulkan compris), le device est la RAM en UMA.
+    from loom.runtime.hardware import detect_hardware
+
+    hw = detect_hardware(str(server_bin))
+    progress("sonde de placement (où vivent les poids)…")
+    pl_verdict, probe = _measure_placement(
+        probe,
+        meta,
+        model_size_mb=int(spec.get("size_mb") or mt.get("size_mb") or 0),
+        hw=hw,
+        ram_total_mb=ram,
+        headroom_mb=headroom,
+        gpu_backend=bool(bench_mod.has_gpu_backend(server_bin) and hw.has_gpu),
+        progress=progress,
+    )
     # Sonde d'isolation AVANT la calibration : si le modèle exige un 2e slot,
     # la calibration doit mesurer avec le KV réellement doublé (même séquence
     # que loom-setup step_bench — le conseilleur simule l'exécutant).
@@ -106,6 +188,12 @@ def _run_calibration(S, spec, progress):
         calib["ubatch_probe"] = None
     calib["ubatch_avant"] = mt.get("ubatch")
     calib["batch_avant"] = mt.get("batch")
+    calib["placement"] = pl_verdict
+    calib["placement_avant"] = {
+        "cpu_moe": bool(mt.get("cpu_moe", is_moe)),
+        "n_cpu_moe": mt.get("n_cpu_moe"),
+        "n_gpu_layers": mt.get("n_gpu_layers"),
+    }
     return calib, gguf
 
 
@@ -152,11 +240,24 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 f"sonde ubatch : prefill optimal à ub={ub['ubatch']} / b={ub['batch']} "
                 f"({ub['pp_ts']:.0f} t/s{gain})."
             )
-        if new == current and not iso_change and not ub_change:
+        # Placement des poids : changement si les flags que l'on écrirait diffèrent
+        # de ceux du model.toml (cpu_moe, n_cpu_moe, n_gpu_layers implicite).
+        pl = calib.get("placement")
+        pl_avant = calib.get("placement_avant") or {}
+        pl_change = bool(pl) and (
+            bool(pl["cpu_moe"]) != bool(pl_avant.get("cpu_moe"))
+            or pl.get("n_cpu_moe") != pl_avant.get("n_cpu_moe")
+            or _placement_implied_ngl(pl["label"]) != pl_avant.get("n_gpu_layers")
+        )
+        if pl is None:
+            pl_line = "sonde de placement : non comparée (un seul candidat faisable, ou illisible)."
+        else:
+            pl_line = f"sonde de placement : {pl['mecanisme']}."
+        if new == current and not iso_change and not ub_change and not pl_change:
             msg = (
                 f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
                 f"mesuré {new} ({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n"
-                "Rien à changer."
+                f"{pl_line}\nRien à changer."
             )
             wiz = None
         else:
@@ -176,11 +277,18 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
             if ub_change:
                 av = calib.get("ubatch_avant") or "défaut"
                 changes.append(f"ubatch {av} → {ub['ubatch']} (b={ub['batch']})")
+            if pl_change:
+                gain = (
+                    f" ({pl['gain_pct']:+.0f} % de génération)"
+                    if pl.get("gain_pct") is not None
+                    else ""
+                )
+                changes.append(f"placement → {pl['label']}{gain}")
             msg = (
                 f"Verdict pour « {mid} » : " + " · ".join(changes) + "\n"
                 f"(pente {calib['slope_kb_tok']} Ko/token, vitesse validée "
                 f"jusqu'à {calib['valide_jusqua']} tokens)\n"
-                f"mécanisme : {calib['mecanisme']}\n{iso_line}\n{ub_line}\n"
+                f"mécanisme : {calib['mecanisme']}\n{iso_line}\n{ub_line}\n{pl_line}\n"
                 "Tape « oui » pour appliquer — toute autre réponse laisse tout "
                 "en l'état."
             )
@@ -200,6 +308,12 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                     f"{ub['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens"
                     if ub_change
                     else ""
+                ),
+                # Placement mesuré AVEC ce contexte et ces slots : appliqué d'un bloc.
+                "placement": (
+                    {k: v for k, v in pl.items() if k != "mesures"}
+                    if pl_change
+                    else None
                 ),
             }
     except (RuntimeError, ValueError) as exc:
