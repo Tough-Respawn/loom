@@ -255,13 +255,17 @@ def _msg_no_match(pattern: str, scanned: int | None, note: str = "") -> str:
     )
 
 
-def _rg_count_files(rg: str, search_dir: Path, g_args: list[str]) -> int | None:
-    """Nombre de fichiers que ripgrep AURAIT parcourus (`rg --files`, mêmes `-g`, mêmes
-    règles d'ignore) : distingue un périmètre vide d'une vraie absence du motif.
+def _rg_count_files(
+    rg: str, search_dir: Path, g_args: list[str], max_file_bytes: int
+) -> int | None:
+    """Nombre de fichiers que ripgrep A parcourus (`rg --files`, mêmes `-g`, même
+    `--max-filesize`, mêmes règles d'ignore) : distingue un périmètre vide d'une vraie
+    absence du motif. Un fichier trop gros n'a pas été lu : il n'est pas compté (revue
+    2026-10-09, `rg --files --max-filesize` l'exclut bien).
     None si rg échoue (le négatif reste alors sans décompte)."""
     try:
         proc = subprocess.run(
-            [rg, "--files", *g_args, "."],
+            [rg, "--files", "--max-filesize", str(max_file_bytes), *g_args, "."],
             cwd=str(search_dir),
             capture_output=True,
             text=True,
@@ -339,7 +343,7 @@ def _rg_search(
         if len(out) >= max_matches:
             break
     if not out:
-        scanned = _rg_count_files(rg, search_dir, g_args)
+        scanned = _rg_count_files(rg, search_dir, g_args, max_file_bytes)
         if scanned == 0:
             return _msg_no_files(globf, pattern)
         return _msg_no_match(pattern, scanned)

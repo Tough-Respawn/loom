@@ -94,17 +94,28 @@ def test_sans_glob_le_budget_de_temps_s_applique(tmp_path, monkeypatch):
 
 class _FauxRg:
     """Émule les deux invocations de rg : la recherche (rien trouvé, code 1) et
-    `--files` (liste des fichiers du périmètre, une par ligne)."""
+    `--files` (liste des fichiers du périmètre, une par ligne), en honorant
+    `--max-filesize` comme le vrai binaire (vérifié par la revue du 2026-10-09).
+    `files` : noms, ou {nom: taille en octets}."""
 
     def __init__(self, files):
-        self.files = list(files)
+        self.files = dict(files) if isinstance(files, dict) else dict.fromkeys(files, 0)
         self.cmds: list[list[str]] = []
 
     def __call__(self, cmd, **kw):
-        self.cmds.append(list(cmd))
+        cmd = list(cmd)
+        self.cmds.append(cmd)
         if "--files" in cmd:
-            stdout = "".join(f"{f}\n" for f in self.files)
-            return subprocess.CompletedProcess(cmd, 0 if self.files else 1, stdout, "")
+            limit = (
+                int(cmd[cmd.index("--max-filesize") + 1])
+                if "--max-filesize" in cmd
+                else None
+            )
+            kept = [
+                f for f, size in self.files.items() if limit is None or size <= limit
+            ]
+            stdout = "".join(f"{f}\n" for f in kept)
+            return subprocess.CompletedProcess(cmd, 0 if kept else 1, stdout, "")
         return subprocess.CompletedProcess(cmd, 1, "", "")
 
 
@@ -135,7 +146,51 @@ def test_rg_perimetre_vide_est_dit_explicitement(tmp_path, monkeypatch):
     assert "aucun fichier parcouru" in out and "aucune correspondance" not in out
 
 
+def test_rg_un_fichier_exclu_par_sa_taille_n_est_pas_compte_comme_parcouru(
+    tmp_path, monkeypatch
+):
+    # La recherche ignore les fichiers > max_file_bytes : le décompte doit appliquer la
+    # même borne, sinon un fichier jamais lu est annoncé « parcouru ».
+    ws, _ = _arbre(tmp_path)
+    faux = _FauxRg({"a.py": 100, "gros.py": 5_000_000})
+    out = _outil_rg(ws, monkeypatch, faux).run({"pattern": "ZZZ", "glob": "src"})
+    assert out == "aucune correspondance pour : ZZZ (1 fichiers parcourus)"
+    recherche = next(c for c in faux.cmds if "--files" not in c)
+    decompte = next(c for c in faux.cmds if "--files" in c)
+    assert "--max-filesize" in decompte
+    assert (
+        recherche[recherche.index("--max-filesize") + 1]
+        == decompte[decompte.index("--max-filesize") + 1]
+    )
+
+
+def _gros_fichier(ws):
+    """Un fichier de src/ qui contient le motif ZZZ mais dépasse 50 octets."""
+    (ws / "src" / "gros.py").write_text("ZZZ " + "x" * 100 + "\n", encoding="utf-8")
+
+
+def test_repli_python_exclut_aussi_les_fichiers_trop_gros_du_decompte(
+    tmp_path, monkeypatch
+):
+    ws, _ = _arbre(tmp_path)
+    _gros_fichier(ws)
+    out = _outil(ws, monkeypatch, max_file_bytes=50).run(
+        {"pattern": "ZZZ", "glob": "src"}
+    )
+    assert out == "aucune correspondance pour : ZZZ (2 fichiers parcourus)"
+
+
 _RG_REEL = search._rg_path()
+
+
+@pytest.mark.skipif(_RG_REEL is None, reason="ripgrep absent de cette machine")
+def test_rg_reel_exclut_les_fichiers_trop_gros_du_decompte(tmp_path):
+    ws, _ = _arbre(tmp_path)
+    _gros_fichier(ws)
+    out = make_search_text(str(ws), max_file_bytes=50).run(
+        {"pattern": "ZZZ", "glob": "src"}
+    )
+    assert out == "aucune correspondance pour : ZZZ (2 fichiers parcourus)"
 
 
 @pytest.mark.skipif(_RG_REEL is None, reason="ripgrep absent de cette machine")
