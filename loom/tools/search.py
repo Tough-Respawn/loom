@@ -109,14 +109,20 @@ def _glob_base_and_pattern(root: Path, pattern: str) -> tuple[Path, str]:
     Motif RELATIF -> (root, motif). Motif ABSOLU (ex. `C:/a/b/**/*.py`) -> on prend le
     plus long préfixe SANS joker comme base, et le reste comme motif (pathlib ne sait
     pas globber un motif absolu directement). Sert à chercher hors du dossier de travail.
+
+    Un chemin concret qui est un DOSSIER est un périmètre : tout ce qu'il contient
+    (`**/*`). Avant (2026-10-09, session c81fcc4bd207) il désignait un fichier nommé
+    comme le dossier : zéro fichier lu, « aucune correspondance », pris pour un fait.
     """
+    magic = ("*", "?", "[")
     p = Path(pattern)
     if not p.is_absolute():
+        if not any(m in pattern for m in magic) and (root / pattern).is_dir():
+            return (root / pattern).resolve(), "**/*"
         # Un motif sans dossier est récursif, comme avec ripgrep ou fd.
         if "/" not in pattern and "\\" not in pattern and "**" not in pattern:
             pattern = "**/" + pattern
         return root.resolve(), pattern
-    magic = ("*", "?", "[")
     base_parts: list[str] = []
     rest: list[str] = []
     for part in p.parts:
@@ -125,7 +131,11 @@ def _glob_base_and_pattern(root: Path, pattern: str) -> tuple[Path, str]:
         else:
             base_parts.append(part)
     base = Path(*base_parts) if base_parts else p
-    if not rest:  # chemin concret sans joker -> matche ce seul nom
+    if (
+        not rest
+    ):  # chemin concret sans joker : un dossier = périmètre, sinon ce seul nom
+        if base.is_dir():
+            return base, "**/*"
         return base.parent, base.name
     return base, "/".join(rest)
 
@@ -298,44 +308,67 @@ def _py_search(
     max_matches: int,
     max_file_bytes: int,
     max_files_scanned: int,
+    time_budget_s: float = 20.0,
 ) -> str:
-    """Scanner regex pur Python (repli quand ripgrep est absent/incompatible)."""
+    """Scanner regex pur Python (repli quand ripgrep est absent/incompatible).
+
+    Un négatif dit combien de fichiers ont été LUS : « aucun fichier parcouru » (le
+    périmètre était vide : la recherche n'a rien prouvé) n'est pas « aucune
+    correspondance (N fichiers parcourus) »."""
     try:
         rx = re.compile(pattern)
     except re.error as exc:
         raise ToolError(f"expression régulière invalide : {exc}") from exc
+    partial = False
     if globf:
         gbase, gpat = _glob_base_and_pattern(base, globf)
-        files = gbase.glob(gpat)
+        # Sans entrer dans les dossiers ignorés : un périmètre externe (worktree
+        # llama.cpp…) traîne un .git et des builds que Path.glob fouillerait en entier.
+        files = _walk_glob(gbase, gpat, time.monotonic() + time_budget_s)
     else:
         files = base.rglob("*")
     out: list[str] = []
     scanned = 0
-    for p in files:
-        if len(out) >= max_matches or scanned >= max_files_scanned:
-            break
-        if not p.is_file():
-            continue
-        shown = _display(p, base)
-        if _skipped(Path(shown)):
-            continue
-        if not globf and p.suffix.lower() not in _TEXT_EXT:
-            continue
-        try:
-            if p.stat().st_size > max_file_bytes:
+    try:
+        for p in files:
+            if len(out) >= max_matches or scanned >= max_files_scanned:
+                break
+            if not p.is_file():
                 continue
-            text = p.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        scanned += 1
-        for i, line in enumerate(text.splitlines(), 1):
-            if rx.search(line):
-                out.append(f"{shown}:{i}: {line.strip()[:200]}")
-                if len(out) >= max_matches:
-                    break
+            shown = _display(p, base)
+            if _skipped(Path(shown)):
+                continue
+            if not globf and p.suffix.lower() not in _TEXT_EXT:
+                continue
+            try:
+                if p.stat().st_size > max_file_bytes:
+                    continue
+                text = p.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            scanned += 1
+            for i, line in enumerate(text.splitlines(), 1):
+                if rx.search(line):
+                    out.append(f"{shown}:{i}: {line.strip()[:200]}")
+                    if len(out) >= max_matches:
+                        break
+    except TimeoutError:
+        partial = True
+    note = (
+        f"\n[recherche arrêtée après {time_budget_s:.0f} s : résultats PARTIELS "
+        f"({scanned} fichiers parcourus) — restreins le périmètre]"
+        if partial
+        else ""
+    )
     if not out:
-        return f"aucune correspondance pour : {pattern}"
-    return "\n".join(out)
+        if scanned == 0:
+            return (
+                f"aucun fichier parcouru dans le périmètre : {globf or '.'} — la "
+                f"recherche de « {pattern} » n'a rien prouvé ; vérifie le chemin ou "
+                f"le motif de fichiers{note}"
+            )
+        return f"aucune correspondance pour : {pattern} ({scanned} fichiers parcourus){note}"
+    return "\n".join(out) + note
 
 
 def make_search_text(
@@ -344,6 +377,7 @@ def make_search_text(
     max_matches: int = 80,
     max_file_bytes: int = 1_000_000,
     max_files_scanned: int = 3000,
+    time_budget_s: float = 20.0,
 ) -> ToolSpec:
     """Outil search_text : grep regex sur le contenu des fichiers du workspace.
 
@@ -364,6 +398,13 @@ def make_search_text(
         base = root.resolve()
         if globf:
             search_dir, gpat = _glob_base_and_pattern(base, globf)
+            # Chemin concret absent : rien à parcourir, le dire plutôt que rendre un
+            # « aucune correspondance » indistinguable d'un vrai zéro.
+            if not any(m in gpat for m in "*?[") and not (search_dir / gpat).exists():
+                return (
+                    f"aucun fichier parcouru dans le périmètre : {globf} — ce chemin "
+                    f"n'existe pas ; la recherche de « {pattern} » n'a rien prouvé"
+                )
         else:
             search_dir, gpat = base, ""
         rg = _rg_path()
@@ -374,7 +415,13 @@ def make_search_text(
             if res is not None:
                 return res
         return _py_search(
-            base, pattern, globf, max_matches, max_file_bytes, max_files_scanned
+            base,
+            pattern,
+            globf,
+            max_matches,
+            max_file_bytes,
+            max_files_scanned,
+            time_budget_s,
         )
 
     return ToolSpec(
@@ -382,9 +429,12 @@ def make_search_text(
         description=(
             "Searches for a REGULAR EXPRESSION in file contents and returns the "
             "matches (file:line: text). Use it to find WHERE a symbol, a string, or a "
-            "function is defined/used. Optional 'glob' filter relative to the working "
-            "directory (e.g. '**/*.py') or absolute to search elsewhere. To read an "
-            "entire file, use read_file instead."
+            "function is defined/used. Optional 'glob': a file filter relative to the "
+            "working directory (e.g. '**/*.py'), an absolute one to search elsewhere "
+            "(e.g. 'C:/src/**/*.cpp'), or a FOLDER path (relative or absolute) to "
+            "search everything under it. A negative result states how many files were "
+            "read: 'aucun fichier parcouru' means nothing was searched, not that the "
+            "text is absent. To read an entire file, use read_file instead."
         ),
         parameters={
             "type": "object",
@@ -395,7 +445,10 @@ def make_search_text(
                 },
                 "glob": {
                     "type": "string",
-                    "description": "Optional glob filter on files (e.g. '**/*.js').",
+                    "description": (
+                        "Optional file filter (e.g. '**/*.js') or folder path to "
+                        "search under (e.g. 'src' or 'C:/Users/me/project')."
+                    ),
                 },
             },
             "required": ["pattern"],
