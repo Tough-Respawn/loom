@@ -237,6 +237,45 @@ def make_find_files(
 _RG_LINE = re.compile(r"^(.*?):(\d+):(.*)$")
 
 
+def _msg_no_files(globf: str, pattern: str, note: str = "") -> str:
+    """Négatif SANS valeur de preuve : aucun fichier n'a été lu."""
+    return (
+        f"aucun fichier parcouru dans le périmètre : {globf or '.'} — la recherche "
+        f"de « {pattern} » n'a rien prouvé ; vérifie le chemin ou le motif de "
+        f"fichiers{note}"
+    )
+
+
+def _msg_no_match(pattern: str, scanned: int | None, note: str = "") -> str:
+    """Négatif étayé : N fichiers lus, aucun ne contient le motif."""
+    if scanned is None:  # décompte indisponible (rg en échec sur --files)
+        return f"aucune correspondance pour : {pattern}{note}"
+    return (
+        f"aucune correspondance pour : {pattern} ({scanned} fichiers parcourus){note}"
+    )
+
+
+def _rg_count_files(rg: str, search_dir: Path, g_args: list[str]) -> int | None:
+    """Nombre de fichiers que ripgrep AURAIT parcourus (`rg --files`, mêmes `-g`, mêmes
+    règles d'ignore) : distingue un périmètre vide d'une vraie absence du motif.
+    None si rg échoue (le négatif reste alors sans décompte)."""
+    try:
+        proc = subprocess.run(
+            [rg, "--files", *g_args, "."],
+            cwd=str(search_dir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode not in (0, 1):  # 1 = aucun fichier, pas une erreur
+        return None
+    return sum(1 for line in proc.stdout.splitlines() if line.strip())
+
+
 def _rg_search(
     rg: str,
     base: Path,
@@ -245,13 +284,20 @@ def _rg_search(
     gpat: str,
     max_matches: int,
     max_file_bytes: int,
+    globf: str = "",
 ) -> str | None:
     """Recherche via ripgrep. Renvoie le texte de résultat, ou None si `rg` échoue
     (motif incompatible avec la regex Rust, erreur d'exécution) -> repli Python.
 
     On lance `rg` avec cwd=search_dir et chemin `.` : les chemins sortis sont RELATIFS
     (pas de `C:` initial qui casserait le parsing `fichier:ligne:texte` sous Windows).
-    On les réabsolutise pour l'affichage relatif-à-base, comme le repli Python."""
+    On les réabsolutise pour l'affichage relatif-à-base, comme le repli Python.
+    Un négatif est qualifié par `rg --files` sur le même périmètre (aucun fichier lu,
+    ou N fichiers lus sans correspondance)."""
+    if gpat:
+        g_args = ["-g", gpat]
+    else:
+        g_args = [a for d in _SKIP_DIRS for a in ("-g", f"!{d}")]
     cmd = [
         rg,
         "--line-number",
@@ -262,13 +308,9 @@ def _rg_search(
         str(max_file_bytes),
         "-e",
         pattern,
+        *g_args,
+        ".",
     ]
-    if gpat:
-        cmd += ["-g", gpat]
-    else:
-        for d in _SKIP_DIRS:
-            cmd += ["-g", f"!{d}"]
-    cmd.append(".")
     try:
         proc = subprocess.run(
             cmd,
@@ -297,7 +339,10 @@ def _rg_search(
         if len(out) >= max_matches:
             break
     if not out:
-        return f"aucune correspondance pour : {pattern}"
+        scanned = _rg_count_files(rg, search_dir, g_args)
+        if scanned == 0:
+            return _msg_no_files(globf, pattern)
+        return _msg_no_match(pattern, scanned)
     return "\n".join(out)
 
 
@@ -326,7 +371,9 @@ def _py_search(
         # llama.cpp…) traîne un .git et des builds que Path.glob fouillerait en entier.
         files = _walk_glob(gbase, gpat, time.monotonic() + time_budget_s)
     else:
-        files = base.rglob("*")
+        # Même parcours sans `glob` : élagage AVANT d'entrer, budget de temps (rglob
+        # filtrait après parcours et ne s'arrêtait jamais — revue 2026-10-09).
+        files = _walk_glob(base, "**/*", time.monotonic() + time_budget_s)
     out: list[str] = []
     scanned = 0
     try:
@@ -362,12 +409,8 @@ def _py_search(
     )
     if not out:
         if scanned == 0:
-            return (
-                f"aucun fichier parcouru dans le périmètre : {globf or '.'} — la "
-                f"recherche de « {pattern} » n'a rien prouvé ; vérifie le chemin ou "
-                f"le motif de fichiers{note}"
-            )
-        return f"aucune correspondance pour : {pattern} ({scanned} fichiers parcourus){note}"
+            return _msg_no_files(globf, pattern, note)
+        return _msg_no_match(pattern, scanned, note)
     return "\n".join(out) + note
 
 
@@ -410,7 +453,14 @@ def make_search_text(
         rg = _rg_path()
         if rg:
             res = _rg_search(
-                rg, base, Path(search_dir), pattern, gpat, max_matches, max_file_bytes
+                rg,
+                base,
+                Path(search_dir),
+                pattern,
+                gpat,
+                max_matches,
+                max_file_bytes,
+                globf,
             )
             if res is not None:
                 return res

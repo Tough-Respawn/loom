@@ -4,6 +4,11 @@ dossier sans joker -> « aucune correspondance » alors qu'AUCUN fichier n'avait
 (le motif désignait un fichier nommé comme le dossier) ; le modèle en a conclu « aucun
 backend NPU dans l'arbre, c'est un fait » (459 occurrences réelles)."""
 
+import os
+import subprocess
+
+import pytest
+
 from loom.tools import search
 from loom.tools.search import make_search_text
 
@@ -57,6 +62,92 @@ def test_zero_correspondance_dit_combien_de_fichiers_ont_ete_lus(tmp_path, monke
     ws, _ = _arbre(tmp_path)
     out = _outil(ws, monkeypatch).run({"pattern": "ZZZ", "glob": "src"})
     assert out == "aucune correspondance pour : ZZZ (2 fichiers parcourus)"
+
+
+def test_sans_glob_les_dossiers_ignores_ne_sont_pas_parcourus(tmp_path, monkeypatch):
+    # Sans `glob`, le repli passait par rglob : dossiers ignorés filtrés APRÈS parcours.
+    ws, _ = _arbre(tmp_path)
+    (ws / "node_modules" / "pkg").mkdir(parents=True)
+    (ws / "node_modules" / "pkg" / "n.py").write_text("npu\n", encoding="utf-8")
+    visited = []
+    real_walk = os.walk
+
+    def spy(top, *a, **k):
+        for dirpath, dirnames, filenames in real_walk(top, *a, **k):
+            visited.append(dirpath)
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(search.os, "walk", spy)
+    out = _outil(ws, monkeypatch).run({"pattern": "npu"})
+    assert "src/a.py:1:" in out and "node_modules" not in out
+    assert visited and not any("node_modules" in v for v in visited)
+
+
+def test_sans_glob_le_budget_de_temps_s_applique(tmp_path, monkeypatch):
+    ws, _ = _arbre(tmp_path)
+    out = _outil(ws, monkeypatch, time_budget_s=-1).run({"pattern": "npu"})
+    assert "PARTIELS" in out
+
+
+# ---- chemin ripgrep : même distinction des négatifs -----------------------------------
+
+
+class _FauxRg:
+    """Émule les deux invocations de rg : la recherche (rien trouvé, code 1) et
+    `--files` (liste des fichiers du périmètre, une par ligne)."""
+
+    def __init__(self, files):
+        self.files = list(files)
+        self.cmds: list[list[str]] = []
+
+    def __call__(self, cmd, **kw):
+        self.cmds.append(list(cmd))
+        if "--files" in cmd:
+            stdout = "".join(f"{f}\n" for f in self.files)
+            return subprocess.CompletedProcess(cmd, 0 if self.files else 1, stdout, "")
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+
+def _outil_rg(ws, monkeypatch, faux):
+    monkeypatch.setattr(search, "_rg_path", lambda: "rg")
+    monkeypatch.setattr(search.subprocess, "run", faux)
+    return make_search_text(str(ws))
+
+
+def test_rg_zero_correspondance_dit_combien_de_fichiers_ont_ete_lus(
+    tmp_path, monkeypatch
+):
+    ws, _ = _arbre(tmp_path)
+    faux = _FauxRg(["a.py", "b.py"])
+    out = _outil_rg(ws, monkeypatch, faux).run({"pattern": "ZZZ", "glob": "src"})
+    assert out == "aucune correspondance pour : ZZZ (2 fichiers parcourus)"
+    recherche = next(c for c in faux.cmds if "--files" not in c)
+    decompte = next(c for c in faux.cmds if "--files" in c)
+    # Même périmètre (-g) pour la recherche et le décompte.
+    assert recherche[recherche.index("-g") + 1] == decompte[decompte.index("-g") + 1]
+
+
+def test_rg_perimetre_vide_est_dit_explicitement(tmp_path, monkeypatch):
+    ws, _ = _arbre(tmp_path)
+    out = _outil_rg(ws, monkeypatch, _FauxRg([])).run(
+        {"pattern": "npu", "glob": "**/*.rs"}
+    )
+    assert "aucun fichier parcouru" in out and "aucune correspondance" not in out
+
+
+_RG_REEL = search._rg_path()
+
+
+@pytest.mark.skipif(_RG_REEL is None, reason="ripgrep absent de cette machine")
+def test_rg_reel_distingue_les_deux_negatifs(tmp_path):
+    ws, _ = _arbre(tmp_path)
+    outil = make_search_text(str(ws))
+    assert outil.run({"pattern": "ZZZ", "glob": "src"}) == (
+        "aucune correspondance pour : ZZZ (2 fichiers parcourus)"
+    )
+    vide = outil.run({"pattern": "npu", "glob": "**/*.rs"})
+    assert "aucun fichier parcouru" in vide and "aucune correspondance" not in vide
+    assert "src/a.py:1:" in outil.run({"pattern": "npu", "glob": "src"})
 
 
 def test_temps_depasse_resultats_partiels(tmp_path, monkeypatch):
