@@ -173,14 +173,17 @@ def test_raisonnement_conserve_apres_outil_est_compte_et_reduit():
 def test_raisonnement_abandonne_apres_length_ne_compte_pas():
     # Même volume de raisonnement, mais coupé par `length` : la continuation ne garde
     # que le texte visible, donc rien de ce volume n'entre dans la prochaine requête.
+    # Plafond de sortie atteint (completion = max_tokens) : il reste de la place.
     premier = [
         chunk(reasoning="r" * 9_000),
         chunk(content="début", finish="length"),
-        usage_chunk(prompt=20_000),
+        usage_chunk(prompt=20_000, completion=2_048),
     ]
     client, fake = make_client([premier, turn_text(" et fin.")])
     events, done = collect(
-        client.stream_chat_tools(list(USER), PETIT_SYSTEM, compact_after_tokens=20_500)
+        client.stream_chat_tools(
+            list(USER), PETIT_SYSTEM, max_tokens=2_048, compact_after_tokens=20_500
+        )
     )
     assert done["reason"] == "natural"
     assert not _compactions(events)

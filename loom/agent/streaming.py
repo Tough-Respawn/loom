@@ -321,6 +321,7 @@ def _stream_model_turn(
     # Caractères de CETTE requête : avec l'usage réel du serveur, ils forment l'ancre
     # du budget de contexte des appels suivants (compteur + delta des messages).
     sent_chars = _convo_chars(system_prompt, convo)
+    st["last_usage"] = None  # usage RÉEL de cet appel, pour qualifier un `length`
     log_event(
         "turn.request",
         model=api_model,
@@ -350,6 +351,7 @@ def _stream_model_turn(
                 anchor = _anchor_from_usage(chunk, sent_chars)
                 if anchor:
                     st["ctx_anchor"] = anchor
+                    st["last_usage"] = chunk
                 log_event(
                     "usage",
                     prompt=chunk.get("prompt_tokens"),

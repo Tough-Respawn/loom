@@ -12,6 +12,7 @@ from loom.agent.toolsets import _BROWSER_CHECKS, _STATE_CHANGERS, _VERIFY_TOOLS
 
 
 _VERIFY_STREAK_NOTE = 3  # nb de checks verts consécutifs avant d'annoter le résultat
+_MAX_LENGTH_EMPTY = 2  # réflexions coupées de suite sans texte ni outil avant d'arrêter
 
 
 def _verify_streak_update(name: str, ok: bool, streak: int) -> int:
@@ -23,6 +24,23 @@ def _verify_streak_update(name: str, ok: bool, streak: int) -> int:
     if name in _BROWSER_CHECKS:
         return streak + 1 if ok else 0
     return streak
+
+
+def _length_cause(finish_reason, usage, max_tokens) -> str | None:
+    """Pourquoi le serveur a rendu `length` : "output_cap" (notre max_tokens atteint, il
+    reste de la place dans la fenêtre), "context_full" (génération arrêtée AVANT le
+    plafond : le slot était plein — session c81fcc4bd207, dix appels finis à 32 768
+    tokens exactement), "unknown" (pas de plafond connu ou usage estimé : un distant
+    sans cap applique sa propre limite). None hors `length`.
+
+    llama-server rend `length` dans les deux cas ; seul le nombre de tokens générés
+    les distingue. Un token d'écart avec le plafond reste le plafond."""
+    if finish_reason != "length":
+        return None
+    if not isinstance(usage, dict) or usage.get("estimated") or not max_tokens:
+        return "unknown"
+    completion = usage.get("completion_tokens") or 0
+    return "context_full" if completion < max_tokens - 1 else "output_cap"
 
 
 # Après un force-fit, casser le motif des anciens tours sans ordonner de recommencer.
@@ -249,12 +267,33 @@ def _dispatch_no_tool_calls(
     ):
         st["length_continues"] += 1
         if text:
+            st["length_empty_streak"] = 0
             convo.append({"role": "assistant", "content": text})
             nudge = (
                 "Ta réponse a été coupée par la limite de tokens. CONTINUE "
                 "exactement là où tu t'es arrêté, sans répéter ce qui précède."
             )
         else:
+            # Réflexion coupée sans un mot de réponse ni d'outil : la relance ne
+            # rejoue pas la réflexion, le modèle la recommence et se fait recouper
+            # (session c81fcc4bd207 : sept fois de suite). Deux fois = pas de progrès.
+            st["length_empty_streak"] = st.get("length_empty_streak", 0) + 1
+            if st["length_empty_streak"] >= _MAX_LENGTH_EMPTY:
+                log_event(
+                    "guard",
+                    level="WARN",
+                    kind="length_no_progress",
+                    streak=st["length_empty_streak"],
+                )
+                yield (
+                    "content",
+                    "\n[génération interrompue : la réflexion a été coupée "
+                    f"{st['length_empty_streak']} fois de suite sans produire de "
+                    "réponse ni d'appel d'outil. Reformule ou découpe la demande.]",
+                )
+                yield ("done", {"reason": "length_no_progress"})
+                st["action"] = "done"
+                return
             nudge = (
                 "Ta réflexion a été coupée par la limite de tokens. Termine et "
                 "DONNE ta réponse (ou émets l'appel d'outil) MAINTENANT, plus "

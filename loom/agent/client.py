@@ -30,6 +30,7 @@ from loom.agent.guards import (
     _REFOCUS_NOTE,
     _check_no_progress,
     _dispatch_no_tool_calls,
+    _length_cause,
     _loom_nudge,
 )
 from loom.agent.guards import _claims_missing_artifact as _claims_missing_artifact
@@ -1174,6 +1175,67 @@ class LoomClient:
                 {"tokens": _ctx_estimate(system_prompt, convo, anchor)},
             )
 
+    def _recover_context_full(
+        self,
+        collector: dict,
+        convo: list[dict],
+        system_prompt: str,
+        max_tokens: int | None,
+        compact_after_tokens: int | None,
+        keep_recent_tools: int,
+        st: dict,
+    ) -> Iterator[tuple[str, object]]:
+        """Génération arrêtée faute de place dans la fenêtre (`length` AVANT max_tokens) :
+        libérer de la place avant la relance de continuation. Sinon le modèle
+        re-réfléchit dans le reliquat et se fait recouper (session c81fcc4bd207 : dix
+        appels finis à 32 768 tokens exactement, puis 400). Une passe déterministe :
+        microcompact des vieux résultats, puis force-fit vers la cible."""
+        usage = st.get("last_usage")
+        cause = _length_cause(collector.get("finish_reason"), usage, max_tokens)
+        if cause != "context_full":
+            return
+        anchor = st.get("ctx_anchor")
+        # Position d'arrêt = taille du slot : la seule mesure directe de la fenêtre ici.
+        window = (usage.get("prompt_tokens") or 0) + (
+            usage.get("completion_tokens") or 0
+        )
+        target = compact_after_tokens or max(
+            window // 2, window - (max_tokens or 0) - 1024
+        )
+        cleared = _microcompact_tools(convo, keep_recent_tools)
+        if _ctx_estimate(system_prompt, convo, anchor) > target:
+            _force_fit(
+                convo, system_prompt, _char_budget(target, system_prompt, anchor)
+            )
+        estimate = _ctx_estimate(system_prompt, convo, anchor)
+        log_event(
+            "guard",
+            level="WARN",
+            kind="context_full",
+            window=window,
+            target=target,
+            cleared=cleared,
+            est_tokens=estimate,
+        )
+        _debug(
+            "CONTEXT_FULL",
+            f"génération arrêtée fenêtre pleine ({window} tokens) : {cleared} "
+            f"résultat(s) vidé(s), cible ~{target} tokens, estimation ~{estimate}.",
+        )
+        yield (
+            "tool_result",
+            {
+                "name": "(compaction)",
+                "ok": True,
+                "preview": (
+                    f"Fenêtre pleine en cours de génération ({window} tokens) : "
+                    f"{cleared} ancien(s) résultat(s) d'outil allégé(s), contexte "
+                    f"ramené vers ~{target} tokens avant de reprendre."
+                ),
+            },
+        )
+        yield ("context_estimate", {"tokens": estimate})
+
     def _handle_stream_api_error(
         self,
         exc: Exception,
@@ -1466,7 +1528,8 @@ class LoomClient:
         Chaque sortie émet un event terminal ('done', {'reason': ...}) : 'natural'
         (stop du modèle), 'repeat_stop', 'loop_degenerate', 'max_iters',
         'context_irreducible', 'output_overflow', 'api_error', 'empty_response'
-        (réponse vide malgré les relances). Les consommateurs
+        (réponse vide malgré les relances), 'length_no_progress' (réflexion coupée
+        plusieurs fois de suite sans texte ni outil). Les consommateurs
         qui ne s'en servent pas l'ignorent (dispatch if/elif) ; les évals s'en
         servent comme stop_reason mesurable au lieu de pattern-matcher les textes.
         """
@@ -1499,6 +1562,8 @@ class LoomClient:
             ),
             "reasoning_history_retries": 0,
             "ctx_anchor": None,  # (prompt_tokens, chars) de la dernière requête à usage réel
+            "last_usage": None,  # usage réel du dernier appel (qualifie un `length`)
+            "length_empty_streak": 0,  # réflexions coupées de suite sans texte ni outil
             "text": "",  # texte accumulé du dernier appel modèle
             "reasoning": "",  # raisonnement accumulé du dernier appel modèle
             "action": "",  # issue posée par le dernier sous-générateur
@@ -1599,6 +1664,16 @@ class LoomClient:
                         f"{len(salvaged)} appel(s) d'outil récupéré(s) du texte.",
                     )
             if not tool_calls:
+                # Fenêtre pleine en génération : libérer AVANT la relance de continuation.
+                yield from self._recover_context_full(
+                    collector,
+                    convo,
+                    system_prompt,
+                    max_tokens,
+                    compact_after_tokens,
+                    keep_recent_tools,
+                    st,
+                )
                 # Sans outil, traiter les gardes de fin avant d'accepter le stop naturel.
                 yield from _dispatch_no_tool_calls(
                     collector,

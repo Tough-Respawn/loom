@@ -136,6 +136,7 @@ _SUB_FAILED_STOPS = frozenset(
     {
         "api_error",
         "empty_response",
+        "length_no_progress",
         "repeat_stop",
         "loop_degenerate",
         "max_iters",
