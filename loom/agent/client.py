@@ -43,7 +43,7 @@ from loom.agent.streaming import (
     build_create_kwargs,
 )
 from loom.agent.streaming import _turn_timing_fields as _turn_timing_fields
-from loom.agent.calltrace import traced_create
+from loom.agent.calltrace import _note_model, traced_create
 from loom.agent.toolrun import (
     _allowed_without_asking,
     _run_tools_parallel,
@@ -480,6 +480,12 @@ class LoomClient:
         else:
             motif = ""
         self._last_slot_body = None
+        if not motif and model:
+            # Un POST /upstream/<modèle>/slots/0 fait (re)lancer le serveur par
+            # llama-swap, qui tronque son journal au démarrage : signaler le changement
+            # de modèle AVANT, pour que le crochet archive le journal précédent (session
+            # c81fcc4bd207 : restore après un passage sur ornith, journal de 4 h perdu).
+            _note_model(model)
         t0 = _time.monotonic()
         ok = self._slot_action_impl(model, action, name, force)
         body = self._last_slot_body or {}

@@ -79,3 +79,40 @@ def test_crochet_appele_seulement_au_changement_de_modele(monkeypatch):
     for model in ["a", "a", "b", "b", "a"]:
         calltrace._note_model(model)
     assert seen == ["a", "b", "a"]
+
+
+def test_crochet_appele_avant_une_action_de_slot(monkeypatch):
+    # Session c81fcc4bd207 (2026-10-09) : après un passage sur ornith, le keep-warm a
+    # restauré le slot Bonsai via /upstream/<modèle>/slots/0 -> llama-swap a relancé
+    # le serveur, qui a tronqué son journal ; le crochet (attaché aux seuls
+    # chat/completions) n'a archivé qu'après : 276 lignes au lieu de la session.
+    from loom.agent.client import LoomClient
+
+    order = []
+    monkeypatch.setattr(calltrace, "_last_model", "ornith")
+    monkeypatch.setattr(
+        calltrace, "_model_switch_hook", lambda m: order.append(("archive", m))
+    )
+    client = LoomClient("http://127.0.0.1:9/v1")
+    monkeypatch.setattr(
+        client,
+        "_slot_action_impl",
+        lambda model, action, name, force=False: order.append(("post", model)) or True,
+    )
+    assert client._slot_action("bonsai", "restore", "turnend.kv", force=True)
+    assert order == [("archive", "bonsai"), ("post", "bonsai")]
+
+
+def test_action_de_slot_refusee_ne_signale_aucun_changement(monkeypatch):
+    # Refusée (slot_kv coupé, pas de one-shot) : aucun POST, donc aucun serveur relancé.
+    from loom.agent.client import LoomClient
+
+    order = []
+    monkeypatch.setattr(calltrace, "_last_model", "ornith")
+    monkeypatch.setattr(
+        calltrace, "_model_switch_hook", lambda m: order.append(("archive", m))
+    )
+    client = LoomClient("http://127.0.0.1:9/v1")
+    monkeypatch.setattr(client, "_slot_action_impl", lambda *a, **k: False)
+    assert client._slot_action("bonsai", "restore", "turnend.kv") is False
+    assert order == []
