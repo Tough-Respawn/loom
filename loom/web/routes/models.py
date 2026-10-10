@@ -173,7 +173,8 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                         cpu_moe=bool(pl.get("cpu_moe")),
                         n_cpu_moe=pl.get("n_cpu_moe"),
                     ),
-                    f"{_dt.date.today().isoformat()} (/rebench) — {pl.get('mecanisme', '')}",
+                    f"{_dt.date.today().isoformat()} (/rebench, "
+                    f"{pl.get('build') or 'build ?'}) — {pl.get('mecanisme', '')}",
                 )
                 applied += f" + placement={pl['label']}"
             spec["context"] = a["context"]

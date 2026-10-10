@@ -73,7 +73,12 @@ def _wait_verdict(env, timeout=10.0):
     while time.time() < deadline:
         for p in (env.tmp / "sessions").rglob("timeline.jsonl"):
             txt = p.read_text(encoding="utf-8")
-            if "Verdict" in txt or "déjà au top" in txt or "échouée" in txt:
+            if (
+                "Verdict" in txt
+                or "déjà au top" in txt
+                or "mesures disponibles" in txt
+                or "échouée" in txt
+            ):
                 return txt
         time.sleep(0.1)
     raise AssertionError("verdict jamais posté")
@@ -137,11 +142,16 @@ def test_rebench_job_poste_verdict_et_etat_apply(env, monkeypatch):
     assert m["context"] == 8192
 
 
-def test_rebench_deja_au_top(env, monkeypatch):
+def test_rebench_rien_a_changer_sans_comparaison_ne_dit_pas_deja_au_top(
+    env, monkeypatch
+):
+    # Contexte inchangé mais AUCUNE comparaison de placement exploitable : le verdict
+    # correspond aux preuves disponibles, il ne proclame pas « déjà au top ».
     r = _launch(env, monkeypatch, calib=dict(CALIB, context=4096))
     assert "lancée" in _sse_texts(r.data)
     txt = _wait_verdict(env)
-    assert "déjà au top" in txt
+    assert "déjà au top" not in txt
+    assert "mesures disponibles" in txt and "placement" in txt
     # PAS d'état wizard b_apply persisté : rien à « appliquer »
     sessions = "".join(
         p.read_text(encoding="utf-8")
@@ -215,13 +225,87 @@ def test_rebench_placement_identique_ne_change_rien(env, monkeypatch):
             "tg_ts": 12.1,
             "pp_ts": 217.0,
             "gain_pct": None,
+            "compare": True,
             "mecanisme": "experts_cpu conservé : gpu_total à +3 % de tg, sous la marge de 5 %",
+        },
+        placement_avant={"cpu_moe": True, "n_cpu_moe": None, "n_gpu_layers": None},
+        cache_verifie={
+            "first": 600,
+            "back": 4,
+            "annex_slot": 1,
+            "slots": 2,
+            "reused": True,
+        },
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    # Preuves complètes (contexte validé, placement comparé, cache vérifié) : « déjà au top ».
+    assert "déjà au top" in txt and "sous la marge" in txt
+    assert "cache réutilisé" in txt and "4/600" in txt
+
+
+def test_rebench_verdict_dit_quand_le_cache_n_est_pas_reutilise(env, monkeypatch):
+    calib = dict(
+        CALIB,
+        context=4096,
+        isolation=True,
+        isolation_detail="retour 590/600 tokens retraités",
+        isolation_avant=False,
+        cache_verifie={
+            "first": 600,
+            "back": 580,
+            "annex_slot": 1,
+            "slots": 2,
+            "reused": False,
+        },
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "NON réutilisé" in txt and "580/600" in txt
+
+
+def test_rebench_apply_ecrit_le_build_et_garde_les_echantillons(env, monkeypatch):
+    calib = dict(
+        CALIB,
+        context=4096,
+        build="b7000-abc1234",
+        placement={
+            "label": "gpu_total",
+            "ngl": 999,
+            "cpu_moe": False,
+            "n_cpu_moe": None,
+            "tg_ts": 14.4,
+            "pp_ts": 262.0,
+            "gain_pct": 19.0,
+            "compare": True,
+            "mecanisme": "gpu_total adopté : génération 14.4 t/s contre 12.1 (experts_cpu), +19 %",
+            "mesures": {
+                "gpu_total": {
+                    "tg_ts": 14.4,
+                    "echantillons": [{"tg_ts": 14.0}, {"tg_ts": 14.8}],
+                }
+            },
         },
         placement_avant={"cpu_moe": True, "n_cpu_moe": None, "n_gpu_layers": None},
     )
     _launch(env, monkeypatch, calib=calib)
-    txt = _wait_verdict(env)
-    assert "déjà au top" in txt and "sous la marge" in txt
+    _wait_verdict(env)
+    # L'état d'application conserve les mesures détaillées (échantillons compris).
+    # Le worker poste le verdict PUIS sauvegarde la session : attendre l'état persisté.
+    deadline = time.time() + 10.0
+    sessions = ""
+    while time.time() < deadline and "b_apply" not in sessions:
+        sessions = "".join(
+            p.read_text(encoding="utf-8")
+            for p in (env.tmp / "sessions").rglob("session.json")
+        )
+        time.sleep(0.05)
+    assert "echantillons" in sessions and "b7000-abc1234" in sessions
+    r = env.web.post("/chat", data={"message": "oui"})
+    assert "Application" in _sse_texts(r.data)
+    toml_txt = (env.mdir / "model.toml").read_text(encoding="utf-8")
+    assert "n_gpu_layers = 999" in toml_txt
+    assert "b7000-abc1234" in toml_txt  # le build du moteur dans le commentaire
 
 
 def test_rebench_echec_calibration_message_persiste(env, monkeypatch):

@@ -225,16 +225,23 @@ class ServerProbe:
             return max(1, len(text) // 2)
 
     def _completion(
-        self, prompt: str, n_predict: int, cache_prompt: bool = False
+        self,
+        prompt: str,
+        n_predict: int,
+        cache_prompt: bool = False,
+        id_slot: int | None = None,
     ) -> dict:
-        body = json.dumps(
-            {
-                "prompt": prompt,
-                "n_predict": n_predict,
-                "temperature": 0.0,
-                "cache_prompt": cache_prompt,
-            }
-        ).encode()
+        payload = {
+            "prompt": prompt,
+            "n_predict": n_predict,
+            "temperature": 0.0,
+            "cache_prompt": cache_prompt,
+        }
+        if id_slot is not None:
+            # Slot EXPLICITE : rejouer le routage de Loom (conversation sur 0, annexes
+            # sur 1 quand il existe), pas le choix du serveur.
+            payload["id_slot"] = int(id_slot)
+        body = json.dumps(payload).encode()
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/completion",
             data=body,
@@ -334,6 +341,53 @@ class ServerProbe:
         finally:
             self._kill(proc)
             time.sleep(4)
+
+    def verify_cache(self, ctx: int = 4096) -> dict:
+        """Vérification du cache avec la configuration FINALE : la séquence RÉELLE de
+        Loom — conversation A sur le slot 0, appel annexe B routé sur le slot final
+        (1 s'il y en a deux, sinon 0), retour de A sur le slot 0 — réutilise-t-elle le
+        cache ? Renvoie {first, back, annex_slot, slots, reused} ; `back` = tokens
+        retraités au retour (timings.prompt_n), `reused` par cache_reused()."""
+        annex_slot = 1 if self.n_parallel >= 2 else 0
+        phrase_a = "La conversation garde son cache quand les annexes sont routées. "
+        phrase_b = "Un titre ou une réflexion annexe vient occuper un autre slot. "
+        prompt_a = phrase_a * 60
+        proc = self._start(ctx)
+        try:
+            r1 = self._completion(prompt_a, 8, cache_prompt=True, id_slot=0)
+            self._completion(phrase_b * 60, 8, cache_prompt=True, id_slot=annex_slot)
+            r3 = self._completion(
+                prompt_a + "Et maintenant ?", 8, cache_prompt=True, id_slot=0
+            )
+            first = int((r1.get("timings") or {}).get("prompt_n") or 0)
+            back = int((r3.get("timings") or {}).get("prompt_n") or 0)
+            return {
+                "first": first,
+                "back": back,
+                "annex_slot": annex_slot,
+                "slots": int(self.n_parallel),
+                "reused": cache_reused(first, back),
+            }
+        finally:
+            self._kill(proc)
+            time.sleep(4)
+
+
+def cache_reused(prompt_first: int, prompt_back: int) -> bool | None:
+    """Verdict de la vérification finale : True si le retour a retraité moins de la
+    moitié du prompt (cache réutilisé), False sinon, None si la mesure est illisible.
+    Même seuil bimodal que la sonde d'isolation."""
+    if prompt_first <= 0:
+        return None
+    return prompt_back < 0.5 * prompt_first
+
+
+def cache_check_text(v: dict) -> str:
+    """Résumé lisible d'un résultat de verify_cache()."""
+    return (
+        f"retour {v.get('back')}/{v.get('first')} tokens retraités, annexe sur le slot "
+        f"{v.get('annex_slot')}, {v.get('slots')} slot(s)"
+    )
 
 
 def isolation_needed(
@@ -435,9 +489,7 @@ def calibrate(
     if not valide:
         # Un plancher n'est pas une mesure : le dire, pour que personne ne lise
         # « 4096 » comme un contexte validé en vitesse.
-        mecanisme += (
-            f" — contexte {context} = repli NON validé (aucun barreau de vitesse validé)"
-        )
+        mecanisme += f" — contexte {context} = repli NON validé (aucun barreau de vitesse validé)"
     return {
         "context": int(context),
         "valide": bool(valide),

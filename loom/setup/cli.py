@@ -1114,6 +1114,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         con.say(
             f"  [attention] placement : {pl_res['mecanisme']} — flags actuels conservés."
         )
+    # Slots pendant la mesure de placement (l'isolation vient après) : tracé tel quel.
+    pl_slots = int(getattr(probe, "n_parallel", 1) or 1)
     if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
         # Élu (comparé, ou seul candidat validé) : la suite (isolation, calibration,
         # ubatch) mesure cette configuration-là.
@@ -1188,6 +1190,38 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         ub_res = None
     con.progress_end()
 
+    # Vérifier le CACHE avec la configuration FINALE (placement élu, slots décidés,
+    # batchs mesurés) : conversation sur le slot 0, appel annexe routé comme Loom le
+    # fera, retour — le cache doit être réutilisé. C'est la preuve qui justifie de
+    # traiter le gros prefill comme un coût amorti.
+    cache_v = None
+    con.progress("vérification du cache avec la configuration finale…")
+    try:
+        probe_final = (
+            _dc_replace(probe, ubatch=ub_res["ubatch"], batch=ub_res["batch"])
+            if ub_res
+            else probe
+        )
+        cache_v = probe_final.verify_cache()
+    except Exception as exc:  # noqa: BLE001 - vérification best-effort, jamais fatale
+        con.progress_end()
+        con.say(f"  [attention] vérification du cache impossible ({exc}).")
+    else:
+        con.progress_end()
+        if cache_v.get("reused") is True:
+            con.say(
+                "  [ok] cache réutilisé après routage des appels annexes "
+                f"({topo_mod.cache_check_text(cache_v)})."
+            )
+        elif cache_v.get("reused") is False:
+            con.say(
+                "  [attention] cache NON réutilisé avec la configuration finale "
+                f"({topo_mod.cache_check_text(cache_v)})."
+            )
+        else:
+            con.say("  [attention] vérification du cache illisible.")
+    build = deps.verify_binary(server_bin) or "build ?"
+
     values = {
         "server": {"context": context},
         "override": {"threads": best["threads"]},
@@ -1208,11 +1242,22 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "kv_estime_mb": kv_mb,
         },
     }
+    if cache_v and cache_v.get("reused") is not None:
+        values["bench"]["cache_verifie"] = bool(cache_v["reused"])
+        values["bench"]["cache_verifie_detail"] = topo_mod.cache_check_text(cache_v)
     if pl_res:
         pl_elu = pl_res.get("placement")
         values["bench"]["placement"] = pl_elu.key if pl_elu else "aucun (échec)"
         values["bench"]["placement_mecanisme"] = pl_res["mecanisme"]
         values["bench"]["placement_compare"] = bool(pl_res.get("compare"))
+        # Avec quoi le placement a été mesuré : moteur, slots, flags machine.
+        values["bench"]["placement_build"] = build
+        values["bench"]["placement_slots"] = pl_slots
+        values["bench"]["placement_flags"] = {
+            "threads": int(best["threads"]),
+            "gpu_tuning": bool(hw.has_gpu),
+            "unified_memory": bool(not hw.vram_is_discrete),
+        }
         values["bench"]["placement_ctx_final"] = pl_res["ctx_final"]
         values["bench"]["placement_depth_final"] = pl_res["depth_final"]
         values["bench"]["placement_finalistes"] = list(pl_res.get("finalistes") or [])
@@ -1262,7 +1307,6 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         # Écrit ce qui a été VALIDÉ (comparé, ou candidat unique validé au contexte utile).
         import datetime as _dt
 
-        build = deps.verify_binary(server_bin) or "build ?"
         _set_model_placement(
             gguf_path,
             pl_res["placement"],
@@ -1276,7 +1320,14 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             f"{ub_res['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens",
         )
     if isolation is not None:
-        _set_model_cache_isolation(gguf_path, isolation, iso_detail)
+        cache_txt = ""
+        if cache_v and cache_v.get("reused") is not None:
+            cache_txt = (
+                " ; cache réutilisé après routage"
+                if cache_v["reused"]
+                else " ; cache NON réutilisé avec la configuration finale"
+            ) + f" ({topo_mod.cache_check_text(cache_v)})"
+        _set_model_cache_isolation(gguf_path, isolation, iso_detail + cache_txt)
     gpu_txt = f", offload GPU -ngl {best['ngl']}" if best["ngl"] > 0 else ""
     con.say(
         f"  Mesuré : génération {best['tg_ts']:.1f} t/s · prefill "

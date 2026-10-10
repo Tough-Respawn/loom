@@ -325,6 +325,16 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         def probe_isolation(self, ctx=4096):
             return 600, 4
 
+        def verify_cache(self, ctx=4096):
+            # Séquence réelle avec les slots finaux : le cache est réutilisé.
+            return {
+                "first": 600,
+                "back": 4,
+                "annex_slot": 0,
+                "slots": self.n_parallel,
+                "reused": True,
+            }
+
         def run(self, ctx, depth):
             from loom.setup.topology import ProbeResult
 
@@ -364,11 +374,22 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         or "capacité" in local["bench"]["context_mecanisme"]
     )
     assert local["bench"]["tg_ts"] == 3.4
-    # Persister le verdict mesuré d'isolation dans le profil.
-    mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
+    # Persister le verdict mesuré d'isolation dans le profil, avec la vérification du
+    # cache sur la configuration FINALE (séquence réelle, slots finaux).
+    mt_txt = (mdir / "model.toml").read_text(encoding="utf-8")
+    mt = tomllib.loads(mt_txt)
     assert mt["cache_isolation"] is False
+    assert "cache réutilisé" in mt_txt and "4/600" in mt_txt
+    assert local["bench"]["cache_verifie"] is True
+    assert "4/600" in local["bench"]["cache_verifie_detail"]
+    # La trace du placement dit avec quoi il a été mesuré : moteur, slots, flags machine.
+    assert local["bench"]["placement_build"] == "b5321"
+    assert local["bench"]["placement_slots"] == 1
+    assert local["bench"]["placement_flags"]["threads"] == 10
+    assert local["bench"]["placement_flags"]["gpu_tuning"] is True
     out = "\n".join(printed)
     assert "cache survit à la pollution" in out
+    assert "cache réutilisé" in out
     assert "3.4 t/s" in out.replace(",", ".") or "3,4 t/s" in out
 
     def no_bench(*a, **k):
@@ -388,8 +409,6 @@ def test_aucun_asset_compatible(monkeypatch, tmp_path):
     assert code == 0  # guidage manuel n'est pas un échec
     out = "\n".join(printed)
     assert "[manuel]" in out and "config/local.toml" in out
-
-
 
 
 def _modele_incomplet(tmp_path, monkeypatch):
@@ -490,8 +509,6 @@ def test_recherche_accepte_une_url_hf(monkeypatch, tmp_path):
     )
     assert probed == ["org/Mon-Repo-GGUF"]
     assert report.outcomes[-1].status == "fait"
-
-
 
 
 def test_step_swap_installe_et_configure(monkeypatch, tmp_path):

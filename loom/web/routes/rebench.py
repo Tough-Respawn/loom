@@ -52,7 +52,9 @@ def _measure_placement(
         ram_total_mb=int(ram_total_mb),
         uma=not getattr(hw, "vram_is_discrete", True),
         headroom_mb=headroom_mb,
-        current=place_mod.placement_from_config(mt or {}, n_layers=meta.get("n_layers")),
+        current=place_mod.placement_from_config(
+            mt or {}, n_layers=meta.get("n_layers")
+        ),
         profile=profile,
     )
     prefill_c, pp_floor = place_mod.constraints_from_config(raw or {})
@@ -254,6 +256,26 @@ def _run_calibration(S, spec, progress):
         calib["ubatch_probe"] = None
     calib["ubatch_avant"] = mt.get("ubatch")
     calib["batch_avant"] = mt.get("batch")
+    # Vérifier le cache avec la configuration FINALE (placement élu, slots décidés,
+    # batchs mesurés) : la séquence réelle de Loom doit réutiliser le cache.
+    try:
+        from dataclasses import replace as _dc_replace
+
+        ub = calib.get("ubatch_probe")
+        probe_final = (
+            _dc_replace(probe, ubatch=ub["ubatch"], batch=ub["batch"]) if ub else probe
+        )
+        progress("vérification du cache avec la configuration finale…")
+        calib["cache_verifie"] = probe_final.verify_cache()
+    except Exception:  # noqa: BLE001 - vérification best-effort : le verdict le dira
+        calib["cache_verifie"] = None
+    # Le moteur avec lequel tout a été mesuré, pour le commentaire du model.toml.
+    try:
+        from loom.setup.llama_release import verify_binary
+
+        calib["build"] = verify_binary(str(server_bin)) or "build ?"
+    except Exception:  # noqa: BLE001 - best-effort
+        calib["build"] = "build ?"
     calib["ctx_utile"] = ctx_utile
     calib["placement"] = pl_verdict
     calib["placement_avant"] = {
@@ -268,6 +290,7 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     """Thread du job : mesure, verdict comparé, message PERSISTÉ + état b_apply si
     une application a du sens. `job.done` posé EN DERNIER (le stream lit final)."""
     from loom.setup import bench as bench_mod
+    from loom.setup import topology as topo_mod
 
     spec = next((m for m in S.local_model_specs if m.get("id") == mid), None)
     try:
@@ -320,6 +343,22 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
             pl_line = "sonde de placement : non comparée (un seul candidat faisable, ou illisible)."
         else:
             pl_line = f"sonde de placement : {pl['mecanisme']}."
+        # Vérification du cache avec la configuration finale (séquence réelle, slots finaux).
+        cv = calib.get("cache_verifie")
+        if not cv or cv.get("reused") is None:
+            cache_line = (
+                "vérification du cache (configuration finale) : non faite ou illisible."
+            )
+        elif cv["reused"]:
+            cache_line = (
+                "vérification du cache (configuration finale) : cache réutilisé après "
+                f"routage des appels annexes ({topo_mod.cache_check_text(cv)})."
+            )
+        else:
+            cache_line = (
+                "vérification du cache (configuration finale) : cache NON réutilisé "
+                f"({topo_mod.cache_check_text(cv)})."
+            )
         # Un plancher n'est pas une mesure : le verdict le dit.
         valide = bool(calib.get("valide", True))
         vitesse_txt = (
@@ -328,16 +367,28 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
             else f"contexte {new} = repli NON validé, aucun barreau de vitesse mesuré"
         )
         if new == current and not iso_change and not ub_change and not pl_change:
-            msg = (
-                f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
-                f"mesuré {new} ({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n"
-                f"{pl_line}\nRien à changer."
-            )
+            # « Déjà au top » exige des PREUVES complètes : contexte validé en vitesse,
+            # placement COMPARÉ, cache vérifié. Sinon le verdict dit ce qui manque.
+            manques = []
             if not valide:
+                manques.append("contexte non validé en vitesse (repli)")
+            if pl is None or not pl.get("compare", True):
+                manques.append("placement non comparé")
+            if not cv or cv.get("reused") is None:
+                manques.append("cache non vérifié")
+            elif not cv["reused"]:
+                manques.append("cache NON réutilisé")
+            if not manques:
                 msg = (
-                    f"« {mid} » : contexte actuel {current} = repli {new} NON validé "
-                    f"({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n{pl_line}\n"
-                    "Rien à changer, mais rien n'a été prouvé en vitesse."
+                    f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
+                    f"mesuré {new} ({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n"
+                    f"{pl_line}\n{cache_line}\nRien à changer."
+                )
+            else:
+                msg = (
+                    f"« {mid} » : rien à changer d'après les mesures disponibles — "
+                    f"{', '.join(manques)}. Contexte actuel {current} = mesuré {new} "
+                    f"({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n{pl_line}\n{cache_line}"
                 )
             wiz = None
         else:
@@ -368,6 +419,7 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 f"Verdict pour « {mid} » : " + " · ".join(changes) + "\n"
                 f"(pente {calib['slope_kb_tok']} Ko/token, {vitesse_txt})\n"
                 f"mécanisme : {calib['mecanisme']}\n{iso_line}\n{ub_line}\n{pl_line}\n"
+                f"{cache_line}\n"
                 "Tape « oui » pour appliquer — toute autre réponse laisse tout "
                 "en l'état."
             )
@@ -388,11 +440,10 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                     if ub_change
                     else ""
                 ),
-                # Placement mesuré AVEC ce contexte et ces slots : appliqué d'un bloc.
+                # Placement mesuré AVEC ce contexte et ces slots : appliqué d'un bloc,
+                # avec ses mesures détaillées (échantillons) et le build du moteur.
                 "placement": (
-                    {k: v for k, v in pl.items() if k != "mesures"}
-                    if pl_change
-                    else None
+                    dict(pl, build=calib.get("build")) if pl_change else None
                 ),
             }
     except (RuntimeError, ValueError) as exc:
