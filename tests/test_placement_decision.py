@@ -153,8 +153,8 @@ def test_generation_equivalente_le_prefill_departage_meme_contre_la_base():
     alt = Placement("gpu_total", 999, ubatch=512, batch=2048)
     best, mecanisme = pick_placement(
         {
-            "gpu_total@ub2048": _m(11.2, 124.0, 1.8),
-            "gpu_total@ub512": _m(11.3, 212.1, 0.0),
+            "gpu_total@ub2048@b4096": _m(11.2, 124.0, 1.8),
+            "gpu_total@ub512@b2048": _m(11.3, 212.1, 0.0),
         },
         [base, alt],
     )
@@ -163,13 +163,49 @@ def test_generation_equivalente_le_prefill_departage_meme_contre_la_base():
     assert PLACEMENT_PP_TIEBREAK_PCT == 10.0
 
 
+def test_les_quatre_mesures_reelles_d_ornith_elisent_gpu_total_ub512():
+    """Revue P1 (2026-10-10) : rejouées telles quelles depuis la session 4f2047f991f0,
+    la règle de 2ff84b9 élisait experts_cpu@ub2048 (-6,7 % de génération, dispersion
+    6,7 %, prefill 217 > 212). La dispersion n'élargit pas la perte acceptable : seule
+    la marge explicite borne l'équivalence."""
+    base = Placement("gpu_total", 999, ubatch=2048, batch=4096, actuel=True)
+    cands = [
+        base,
+        Placement("experts_cpu", 999, cpu_moe=True, ubatch=2048, batch=4096),
+        Placement("gpu_total", 999, ubatch=512, batch=2048),
+        Placement("experts_cpu", 999, cpu_moe=True, ubatch=512, batch=2048),
+    ]
+    reel = {
+        "gpu_total@ub2048@b4096": _m(11.2, 124.0, 1.8),
+        "experts_cpu@ub2048@b4096": _m(10.45, 217.2, 6.7),
+        "gpu_total@ub512@b2048": _m(11.3, 212.1, 0.0),
+        "experts_cpu@ub512@b2048": _m(10.65, 180.55, 0.9),
+    }
+    best, mecanisme = pick_placement(reel, cands)
+    assert best.key == "gpu_total@ub512@b2048"
+    assert "équivalente" in mecanisme and "+71" in mecanisme
+
+
+def test_une_forte_dispersion_n_elargit_pas_la_perte_de_generation_acceptable():
+    base = Placement("gpu_total", 999, ubatch=2048, batch=4096, actuel=True)
+    alt = Placement("experts_cpu", 999, cpu_moe=True, ubatch=2048, batch=4096)
+    best, mecanisme = pick_placement(
+        {
+            "gpu_total@ub2048@b4096": _m(11.2, 124.0, 1.8),
+            "experts_cpu@ub2048@b4096": _m(10.45, 217.2, 6.7),
+        },
+        [base, alt],
+    )
+    assert best is base and "conservé" in mecanisme
+
+
 def test_generation_equivalente_prefill_equivalent_garde_la_base():
     base = Placement("gpu_total", 999, ubatch=2048, batch=4096, actuel=True)
     alt = Placement("gpu_total", 999, ubatch=512, batch=2048)
     best, mecanisme = pick_placement(
         {
-            "gpu_total@ub2048": _m(11.2, 124.0, 1.8),
-            "gpu_total@ub512": _m(11.3, 130.0, 0.0),
+            "gpu_total@ub2048@b4096": _m(11.2, 124.0, 1.8),
+            "gpu_total@ub512@b2048": _m(11.3, 130.0, 0.0),
         },
         [base, alt],
     )
@@ -181,8 +217,8 @@ def test_generation_equivalente_prefill_pire_garde_la_base():
     alt = Placement("gpu_total", 999, ubatch=512, batch=2048)
     best, _ = pick_placement(
         {
-            "gpu_total@ub2048": _m(11.2, 124.0, 1.8),
-            "gpu_total@ub512": _m(11.3, 90.0, 0.0),
+            "gpu_total@ub2048@b4096": _m(11.2, 124.0, 1.8),
+            "gpu_total@ub512@b2048": _m(11.3, 90.0, 0.0),
         },
         [base, alt],
     )

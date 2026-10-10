@@ -91,7 +91,8 @@ class Placement:
             base = f"gpu_partiel_ngl{self.ngl}"
         else:
             base = self.label
-        return f"{base}@ub{self.ubatch}" if self.ubatch else base
+        # Les DEUX paramètres : (512, 4096) et (512, 2048) ne se confondent pas.
+        return f"{base}@ub{self.ubatch}@b{self.batch}" if self.ubatch else base
 
     @classmethod
     def from_flags(
@@ -964,15 +965,16 @@ def pick_placement(
     if not gagnants:
         if len(valid) == 1:
             return base, f"{base.key} : seul candidat mesuré{suffixe}"
-        # Génération ÉQUIVALENTE à la base (écart dans la marge ou la dispersion) : le
-        # prefill départage, même contre la base, s'il est NETTEMENT meilleur.
+        # Génération ÉQUIVALENTE à la base — écart dans la MARGE explicite, et elle
+        # seule : une forte dispersion déclenche un affinage ou une indécision, elle
+        # n'élargit pas la perte de génération acceptable (revue P1 : experts-CPU à
+        # -6,7 % passait pour équivalent grâce à sa dispersion de 6,7 %). Le prefill
+        # départage alors, même contre la base, s'il est NETTEMENT meilleur.
         pp_base = float(valid[base.key].get("pp_ts") or 0)
         equivalents_base = {
             k: v
             for k, v in valid.items()
-            if k != base.key
-            and abs((v["tg_ts"] / base_tg - 1) * 100)
-            <= max(margin_pct, disp_base, float(v.get("tg_disp_pct") or 0))
+            if k != base.key and abs((v["tg_ts"] / base_tg - 1) * 100) <= margin_pct
         }
         if equivalents_base and pp_base > 0:
             k_pp = max(
