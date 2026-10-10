@@ -20,6 +20,14 @@ from loom.setup.placement import Placement
 _NOW = datetime(2026, 10, 10, 13, 0, 0)
 
 
+def test_les_tests_n_archivent_jamais_dans_le_vrai_var_bench(tmp_path):
+    """Garde-fou de conftest : 427 archives « loc-test » avaient fui dans le dépôt."""
+    from loom.setup import archive as _archive
+
+    assert _archive.BENCH_DIR == tmp_path / "var" / "bench"
+    assert _archive.BENCH_DIR != _archive.REPO_ROOT / "var" / "bench"
+
+
 def test_archive_ecrit_un_json_horodate_par_modele(tmp_path):
     payload = {
         "verdict": {"placement": Placement("gpu_total", 999, ubatch=512, batch=2048)},

@@ -12,6 +12,16 @@ from loom.web.app import create_app
 FAKE_MODEL = "fake-model"
 
 
+@pytest.fixture(autouse=True)
+def _archives_bench_isolees(tmp_path, monkeypatch):
+    """Aucun test n'écrit dans le VRAI var/bench du dépôt : le worker /rebench et
+    loom-setup archivent chaque bench (archive.BENCH_DIR). Sans ce garde-fou, les tests
+    /rebench y avaient laissé 427 archives « loc-test » (constaté le 2026-10-10)."""
+    from loom.setup import archive as _archive
+
+    monkeypatch.setattr(_archive, "BENCH_DIR", tmp_path / "var" / "bench")
+
+
 @pytest.fixture()
 def tmp_env(tmp_path):
     """Arborescence isolée : tout ce que l'app écrit reste sous tmp_path."""
