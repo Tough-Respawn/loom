@@ -875,6 +875,16 @@ def _archive_setup(
         con.say(f"  [attention] archive du bench non écrite ({exc}).")
 
 
+def _mmproj_mb(path) -> int:
+    """Poids du projecteur multimodal (catalogue de son GGUF), en Mo : une allocation
+    hôte CERTAINE au démarrage (--no-mmproj-offload). 0 si illisible ou absent."""
+    try:
+        w = read_gguf_meta(path).get("weights") or {}
+    except (ValueError, OSError):
+        return 0
+    return int(w.get("total", 0) or 0) // (1024 * 1024)
+
+
 def _sans_none(obj):
     """Copie récursive sans valeurs None : TOML n'a pas de null, tomlkit refuse."""
     if isinstance(obj, dict):
@@ -1045,40 +1055,15 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         meta.get("n_layers"),
         moe=moe,
     )
-    combos = len(threads) * len(ngl)
-    con.say(
-        f"  On mesure la vitesse réelle sur TON modèle ({gguf_path.name}) : "
-        f"{combos} combinaisons de threads{' et offload GPU' if len(ngl) > 1 else ''}."
-    )
-    con.say("  Durée : ~2-10 min selon la machine (CPU à fond, c'est normal).")
-    if not con.confirm("Lancer le bench maintenant ?"):
-        con.say("  [passé] Sauté — relançable à tout moment : uv run loom-setup.")
-        report.add("bench", "ignore", "refusé (relançable)")
-        return
+    from dataclasses import replace as _dc_replace
 
-    con.progress("bench en cours… (llama-bench, plusieurs minutes)")
-    try:
-        # progress -> chaque mesure terminée s'affiche (ligne \r + chrono) au lieu
-        # d'un silence de plusieurs minutes.
-        rows = deps.run_bench(
-            bench_bin, gguf_path, threads, ngl, n_cpu_moe=ncmoe, progress=con.progress
-        )
-    except RuntimeError as exc:
-        con.progress_end()
-        con.say(f"  [échec] {exc}")
-        report.add("bench", "echec", str(exc))
-        return
-    con.progress_end()
-    best = bench_mod.pick_best(rows)
-    if best is None:
-        con.say("  [échec] Aucune mesure de génération exploitable.")
-        report.add("bench", "echec", "sortie llama-bench vide")
-        return
+    from loom.runtime.model_profile import ModelProfile
+    from loom.setup import placement as place_mod
 
-    # Mesurer pente et débit avec les vrais flags évite les erreurs d'une formule KV théorique.
-    # La VRAM vient d'abord du profil de l'exécutant (`--list-devices`, Vulkan compris) ;
-    # nvidia-smi n'est qu'un repli — sinon une AMD passe en topologie « ram » et la
-    # sonde mesure sans profil GPU (vécu 2026-10-09).
+    # Entrées PURES du précontrôle et du contrôle d'étape 2, calculées AVANT tout
+    # chargement (revue n°16). La VRAM vient d'abord du profil de l'exécutant
+    # (`--list-devices`, Vulkan compris) ; nvidia-smi n'est qu'un repli — sinon une AMD
+    # passe en topologie « ram » et la sonde mesure sans profil GPU (vécu 2026-10-09).
     vram_total = int(hw.vram_total_mb or deps.gpu_vram_total_mb() or 0)
     topo = topo_mod.discover_topology(meta, gpu_ok, vram_total)
     server_cfg = raw_cfg.get("server") or {}
@@ -1092,7 +1077,113 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     )
     is_moe = bool(meta.get("expert_count"))
     mmproj_name = model_toml.get("mmproj_filename")
-    from loom.setup import placement as place_mod
+    profile = ModelProfile.from_meta(meta, model_size_mb=model_size_mb)
+    # Compte rendu PROGRESSIF (archive.BENCH_SCHEMA), créé AVANT tout chargement :
+    # une sortie de précontrôle ou un échec de llama-bench s'archivent aussi.
+    trace: dict = {
+        "source": "loom-setup",
+        "etape": "précontrôle",
+        "gguf": str(gguf_path),
+        "server_bin": probe_bin,
+        "materiel": hw,
+        "llama_bench": None,
+        "profil": profile.describe(),
+    }
+    # PRÉCONTRÔLE (revue n°16, étape 1) : les démarrages serveur tiennent-ils, au
+    # plancher, AVANT llama-bench et la sonde d'isolation ? Même comptabilité que le
+    # contrôle d'étape 2 (mêmes VRAM, RAM, UMA, checkpoints) ; métadonnées incomplètes :
+    # « incertain », flux inchangé.
+    pc = place_mod.precontrole(
+        profile,
+        meta,
+        model_size_mb=model_size_mb,
+        hw=hw,
+        gpu_backend=gpu_ok,
+        vram_total_mb=vram_total,
+        ram_total_mb=ram_total_mb,
+        uma=not hw.vram_is_discrete,
+        headroom_mb=headroom,
+        base_slots=topo_mod.probe_slots(server_cfg, False),
+        ctx_checkpoints=model_toml.get("ctx_checkpoints"),
+        current=place_mod.current_placement(
+            model_toml,
+            n_layers=meta.get("n_layers"),
+            size_mb=model_size_mb,
+            profile=hw,
+            override_ngl=(raw_cfg.get("override") or {}).get("n_gpu_layers"),
+            headroom=headroom,
+        ),
+        mmproj_mb=(_mmproj_mb(gguf_path.parent / mmproj_name) if mmproj_name else 0),
+    )
+    trace["precontrole"] = pc
+    pc_texte = place_mod.precontrole_texte(pc)
+    if pc["verdict"] in ("impossible", "hors_budget"):
+        con.say(
+            f"  [échec] {pc_texte} — aucun processus modèle lancé, configuration "
+            "inchangée."
+        )
+        report.add("bench", "echec", pc["raison"])
+        _archive_setup(
+            con, trace, echec={"etape": "précontrôle", "erreur": pc["raison"]}
+        )
+        return
+    con.say(f"  [{'attention' if pc['verdict'] == 'incertain' else 'ok'}] {pc_texte}")
+    # llama-bench : un seul -ngl qui échoue fait échouer toute l'invocation — ceux dont
+    # la borne device dépasse la VRAM connue sont retirés (données complètes).
+    filtre = place_mod.filtre_llama_bench(
+        profile,
+        ngl=ngl,
+        ncmoe=ncmoe,
+        complet=pc["complet"],
+        hw=hw,
+        meme_binaire=(probe_bin == str(server_bin)),
+    )
+    pc["llama_bench"] = filtre
+    for retire in filtre["retires"]:
+        con.say(
+            f"  [attention] llama-bench : -ngl {retire['ngl']} retiré — "
+            f"{retire['raison']}."
+        )
+    if filtre["ngl"] == [0] and ngl != [0]:
+        con.say(f"  [attention] llama-bench : {filtre['note']}.")
+    ngl, ncmoe = filtre["ngl"], filtre["ncmoe"]
+    combos = len(threads) * len(ngl)
+    con.say(
+        f"  On mesure la vitesse réelle sur TON modèle ({gguf_path.name}) : "
+        f"{combos} combinaisons de threads{' et offload GPU' if len(ngl) > 1 else ''}."
+    )
+    con.say("  Durée : ~2-10 min selon la machine (CPU à fond, c'est normal).")
+    if not con.confirm("Lancer le bench maintenant ?"):
+        con.say("  [passé] Sauté — relançable à tout moment : uv run loom-setup.")
+        report.add("bench", "ignore", "refusé (relançable)")
+        return
+
+    con.progress("bench en cours… (llama-bench, plusieurs minutes)")
+    trace["etape"] = "llama-bench"
+    try:
+        # progress -> chaque mesure terminée s'affiche (ligne \r + chrono) au lieu
+        # d'un silence de plusieurs minutes.
+        rows = deps.run_bench(
+            bench_bin, gguf_path, threads, ngl, n_cpu_moe=ncmoe, progress=con.progress
+        )
+    except RuntimeError as exc:
+        con.progress_end()
+        con.say(f"  [échec] {exc}")
+        report.add("bench", "echec", str(exc))
+        _archive_setup(con, trace, echec={"etape": "llama-bench", "erreur": str(exc)})
+        return
+    con.progress_end()
+    best = bench_mod.pick_best(rows)
+    if best is None:
+        con.say("  [échec] Aucune mesure de génération exploitable.")
+        report.add("bench", "echec", "sortie llama-bench vide")
+        _archive_setup(
+            con,
+            trace,
+            echec={"etape": "llama-bench", "erreur": "sortie llama-bench vide"},
+        )
+        return
+    trace["llama_bench"] = best
 
     # Configuration ACTUELLE résolue comme l'exécutant (resolve_ngl) : réglages du
     # model.toml, sinon l'override machine — celui que ce bench va écrire pour un
@@ -1142,54 +1233,89 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         # Flags machine et mode de mesure mémoire dérivés du profil de l'exécutant.
         profile=hw,
     )
-    from dataclasses import replace as _dc_replace
-
-    from loom.runtime.model_profile import ModelProfile
-    from loom.setup import placement as place_mod
-
-    # Isolation D'ABORD (sur la configuration actuelle) : le placement se compare
-    # ensuite avec les slots FINAUX — le KV du second slot compte dans la faisabilité
-    # et dans la mesure (revue du 2026-10-10 : « mêmes slots »).
-    # Compte rendu PROGRESSIF (archive.BENCH_SCHEMA) : archivé même si une étape échoue.
-    trace: dict = {
-        "source": "loom-setup",
-        "etape": "isolation",
-        "gguf": str(gguf_path),
-        "server_bin": probe_bin,
-        "materiel": hw,
-        "llama_bench": best,
-    }
-    con.progress("sonde d'isolation du cache (A -> pollution -> A)…")
+    # Isolation D'ABORD : le placement se compare ensuite avec les slots FINAUX — le KV
+    # du second slot compte dans la faisabilité et dans la mesure (« mêmes slots »).
+    # La sonde tourne sur une COPIE à 1 slot (scénario A -> B -> A : à 2 slots, B
+    # partirait sur le slot libre et la pollution n'aurait jamais lieu), avec le
+    # démarrage prévu s'il tient à 4096 x 1, sinon un démarrage plus modeste ; le
+    # verdict pose les slots de la sonde PRINCIPALE (revue n°16).
+    trace["etape"] = "isolation"
+    iso = place_mod.demarrage_isolation(
+        profile,
+        meta,
+        flags={
+            "ngl": probe.ngl,
+            "cpu_moe": probe.cpu_moe,
+            "n_cpu_moe": probe.n_cpu_moe,
+        },
+        complet=pc["complet"],
+        model_size_mb=model_size_mb,
+        gpu_backend=gpu_ok,
+        vram_total_mb=vram_total,
+        ram_total_mb=ram_total_mb,
+        uma=not hw.vram_is_discrete,
+        headroom_mb=headroom,
+        gpu_tuning=bool(hw.has_gpu),
+    )
     isolation: bool | None = None
     iso_detail = ""
     first = back = 0
-    try:
-        first, back = probe.probe_isolation()
-        isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
-        iso_detail = f"retour {back}/{first} tokens retraités"
+    slots_mesure = 0
+    if not iso["lancer"]:
         if meta.get("recurrent"):
-            iso_detail += ", mémoire récurrente"
-    except Exception as exc:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
-        con.progress_end()
-        iso_detail = f"sonde illisible ({exc}) — isolation actuelle conservée"
-        con.say(
-            f"  [attention] sonde d'isolation illisible ({exc}) — verdict non écrit, "
-            f"isolation actuelle conservée ({probe.n_parallel} slot(s))."
-        )
+            # Verdict imposé par la mémoire récurrente (topology.isolation_needed) : la
+            # sonde n'apporterait que l'affichage, pas un chargement condamné.
+            isolation = True
+            probe.n_parallel = topo_mod.probe_slots(server_cfg, True)
+            iso_detail = f"non mesurée — {iso['raison']}"
+            con.say(f"  [ok] isolation imposée, sonde non lancée : {iso['raison']}.")
+        else:
+            iso_detail = (
+                f"sonde non lancée ({iso['raison']}) — isolation actuelle conservée"
+            )
+            con.say(f"  [attention] {iso_detail}.")
     else:
-        con.progress_end()
-        marque = "[attention]" if isolation else "[ok]"
-        # Nouveau verdict : il remplace l'isolation actuelle (dans les deux sens).
-        probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
-        # Libellé honnête : ce que la mesure a montré, et pourquoi on isole quand même.
-        con.say(f"  {marque} {topo_mod.isolation_text(isolation, first, back)}")
+        if iso["modeste"]:
+            con.say(f"  [attention] sonde d'isolation : {iso['raison']}.")
+        sonde_iso = _dc_replace(
+            probe,
+            n_parallel=1,
+            ngl=iso["flags"]["ngl"],
+            cpu_moe=iso["flags"]["cpu_moe"],
+            n_cpu_moe=iso["flags"]["n_cpu_moe"],
+        )
+        slots_mesure = 1
+        con.progress("sonde d'isolation du cache (A -> pollution -> A)…")
+        try:
+            first, back = sonde_iso.probe_isolation()
+            isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
+            iso_detail = f"retour {back}/{first} tokens retraités"
+            if meta.get("recurrent"):
+                iso_detail += ", mémoire récurrente"
+        except Exception as exc:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
+            con.progress_end()
+            iso_detail = f"sonde illisible ({exc}) — isolation actuelle conservée"
+            con.say(
+                f"  [attention] sonde d'isolation illisible ({exc}) — verdict non écrit, "
+                f"isolation actuelle conservée ({probe.n_parallel} slot(s))."
+            )
+        else:
+            con.progress_end()
+            marque = "[attention]" if isolation else "[ok]"
+            # Nouveau verdict : il remplace l'isolation actuelle (dans les deux sens).
+            probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
+            # Libellé honnête : ce que la mesure a montré, et pourquoi on isole quand même.
+            con.say(f"  {marque} {topo_mod.isolation_text(isolation, first, back)}")
     trace["isolation"] = {
         "necessaire": isolation,
         "first": first,
         "back": back,
         "detail": iso_detail,
         "avant": bool(model_toml.get("cache_isolation", False)),
-        "slots_mesure": probe.n_parallel,
+        # Slots de la MESURE (copie à 1 slot) et slots RETENUS pour la suite.
+        "slots_mesure": slots_mesure,
+        "slots_retenus": probe.n_parallel,
+        "demarrage": iso,
     }
     # Placement MESURÉ des poids (où vivent denses et experts) x couples de batchs,
     # AVANT la calibration : elle mesure ainsi la configuration qui servira vraiment.

@@ -530,11 +530,22 @@ def test_etape_bench_reglage_final_en_echec_n_ecrit_rien(monkeypatch, tmp_path):
 
 
 def _harnais_bench(
-    monkeypatch, tmp_path, fake_probe_cls, assume_yes=True, ram_total_mb=64_000
+    monkeypatch,
+    tmp_path,
+    fake_probe_cls,
+    assume_yes=True,
+    ram_total_mb=64_000,
+    hw=None,
+    meta=None,
+    run_bench=None,
 ):
     """Harnais commun des scénarios de bench : binaire, model.toml minimal, GGUF factice,
     lignes llama-bench, deps. Renvoie (con, printed, deps, mdir). La RAM totale est
-    FIXÉE (la faisabilité hôte en dépend : pas la RAM de la machine de test)."""
+    FIXÉE (la faisabilité hôte en dépend : pas la RAM de la machine de test). `hw`
+    remplace le profil matériel, `meta` les métadonnées GGUF (le GGUF factice donne
+    sinon {}), `run_bench` le faux llama-bench."""
+    if meta is not None:
+        monkeypatch.setattr(cli, "read_gguf_meta", lambda p: meta)
     _patch_paths(monkeypatch, tmp_path)
     exe = tmp_path / "rt" / "llama-server.exe"
     exe.parent.mkdir()
@@ -557,22 +568,30 @@ def _harnais_bench(
     deps = _deps(
         tmp_path,
         ram_available_mb=lambda: 10_240,
-        run_bench=lambda b, m, t, g, n_cpu_moe=0, progress=None: rows,
+        run_bench=run_bench or (lambda b, m, t, g, n_cpu_moe=0, progress=None: rows),
         find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
         has_gpu_backend=lambda sb: True,
         cpu_physical=lambda: 10,
         gpu_vram_total_mb=lambda: 6_144,
         ram_total_mb=lambda: ram_total_mb,
         make_probe=fake_probe_cls,
-        detect_hardware=lambda server_bin=None: HardwareProfile(
-            True, "GPU 20Go", 20_000, 16, vram_is_discrete=True
+        detect_hardware=lambda server_bin=None: (
+            hw or HardwareProfile(True, "GPU 20Go", 20_000, 16, vram_is_discrete=True)
         ),
     )
     return con, printed, deps, mdir
 
 
-def _fake_probe_cls(run_impl, isolation=(600, 4)):
+def _fake_probe_cls(run_impl, isolation=(600, 4), journal=None):
+    """Fausse sonde compatible dataclasses.replace. `journal` (liste) enregistre chaque
+    CONSTRUCTION et chaque LANCEMENT (probe_isolation, run, verify_cache) avec les flags
+    — la preuve « aucun processus modèle » ne doit pas reposer sur une exception, que
+    les `except Exception` du bench avaleraient."""
     from dataclasses import dataclass as _dc
+
+    def _note(kind, s, *extra):
+        if journal is not None:
+            journal.append((kind, s.ngl, s.cpu_moe, s.n_cpu_moe, s.n_parallel, *extra))
 
     @_dc
     class _FakeProbe:
@@ -591,10 +610,15 @@ def _fake_probe_cls(run_impl, isolation=(600, 4)):
         ctx_checkpoints: object = None
         profile: object = None
 
+        def __post_init__(self):
+            _note("construite", self)
+
         def probe_isolation(self, ctx=4096):
+            _note("isolation", self, ctx)
             return isolation
 
         def verify_cache(self, ctx=4096):
+            _note("verify_cache", self, ctx)
             return {
                 "first": 600,
                 "back": 4,
@@ -604,9 +628,269 @@ def _fake_probe_cls(run_impl, isolation=(600, 4)):
             }
 
         def run(self, ctx, depth):
+            _note("run", self, ctx, depth)
             return run_impl(ctx, depth)
 
     return _FakeProbe
+
+
+_MIB = 1024 * 1024
+
+
+def _meta_complete(n=40, par_mb=300, sortie_mb=300, emb_mb=300):
+    """Métadonnées COMPLÈTES d'un dense (catalogue, dimensions KV, clés optionnelles
+    absentes comme dans un vrai en-tête) : le précontrôle peut conclure."""
+    return {
+        "architecture": "llama",
+        "n_layers": n,
+        "context_length": 32768,
+        "expert_count": None,
+        "expert_used_count": None,
+        "head_count": 32,
+        "head_count_kv": 8,
+        "embedding_length": 4096,
+        "key_length": 128,
+        "value_length": 128,
+        "sliding_window": None,
+        "sliding_window_pattern": None,
+        "full_attention_interval": None,
+        "recurrent": False,
+        "split_count": None,
+        "key_length_mla": None,
+        "kv_lora_rank": None,
+        "shared_kv_layers": None,
+        "key_length_swa": None,
+        "value_length_swa": None,
+        "head_count_kv_array": False,
+        "arrays": {},
+        "weights": {
+            "total": (n * par_mb + sortie_mb + emb_mb) * _MIB,
+            "familles": {"embeddings": emb_mb * _MIB, "output": sortie_mb * _MIB},
+            "par_couche": [par_mb * _MIB] * n,
+            "experts_par_couche": [0] * n,
+            "couches_attention": list(range(n)),
+            "couches_recurrentes": [],
+            "couches_nextn": [],
+            "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+        },
+    }
+
+
+def _gpu(vram_total, vram_free=None, *, discret=True, backend="CUDA", count=1):
+    return HardwareProfile(
+        True,
+        f"GPU {vram_total}",
+        vram_total if vram_free is None else vram_free,
+        16,
+        vram_total_mb=vram_total,
+        backend=backend,
+        vram_is_discrete=discret,
+        gpu_count=count,
+    )
+
+
+def _bench_espion(appels):
+    rows = [
+        {"threads": 10, "ngl": 0, "kind": "tg", "ts": 3.4},
+        {"threads": 10, "ngl": 0, "kind": "pp", "ts": 25.0},
+    ]
+
+    def run_bench(b, m, t, g, n_cpu_moe=0, progress=None):
+        appels.append({"threads": list(t), "ngl": list(g), "ncmoe": n_cpu_moe})
+        return rows
+
+    return run_bench
+
+
+def _rien_ne_doit_tourner(ctx, depth):
+    raise AssertionError("aucune mesure ne doit être lancée")
+
+
+def _scenario_sortie_precontrole(monkeypatch, tmp_path, hw, ram):
+    journal: list = []
+    appels: list = []
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_rien_ne_doit_tourner, journal=journal),
+        assume_yes=False,
+        ram_total_mb=ram,
+        hw=hw,
+        meta=_meta_complete(),
+        run_bench=_bench_espion(appels),
+    )
+    avant = (mdir / "model.toml").read_text(encoding="utf-8")
+    code = run(con, deps)
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    return code, "\n".join(printed), journal, appels, mdir, avant, archives
+
+
+def test_precontrole_impossibilite_etablie_aucun_processus_modele(
+    monkeypatch, tmp_path
+):
+    """TEST DÉCISIF de la revue n°16 (loom-setup) : impossibilité établie (12 600 Mo de
+    poids résidents, GPU discret de 6 144 Mo + 4 000 Mo de RAM) → ni llama-bench, ni
+    sonde construite ou lancée ; verdict explicite ; une archive « précontrôle »."""
+    code, out, journal, appels, mdir, avant, archives = _scenario_sortie_precontrole(
+        monkeypatch, tmp_path, _gpu(6144), 4000
+    )
+    assert code != 0
+    assert appels == [] and journal == []
+    assert "démarrage impossible" in out and "aucun processus modèle lancé" in out
+    assert "Lancer le bench maintenant" not in out  # sortie AVANT la confirmation
+    assert "aucun placement comparé" not in out.lower()  # pas la sortie de l'étape 2
+    assert (mdir / "model.toml").read_text(encoding="utf-8") == avant
+    local = tomllib.loads(
+        (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
+    )
+    assert "bench" not in local
+    assert len(archives) == 1
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "précontrôle"
+    assert arch["precontrole"]["verdict"] == "impossible"
+    assert arch["precontrole"]["complet"] is True
+    assert arch["llama_bench"] is None and arch["isolation"] is None
+    assert arch["materiel"]["gpu_name"] == "GPU 6144" and arch["gguf"]
+
+
+def test_precontrole_hors_budget_au_plancher_aucun_processus_modele(
+    monkeypatch, tmp_path
+):
+    """Mémoire unifiée seulement présumée (Vulkan) : pas d'« établi », mais aucun
+    placement ne tient même à 4096 x 1 → sortie avant tout chargement, dite telle."""
+    hw = _gpu(48_789, 46_350, discret=False, backend="Vulkan")
+    code, out, journal, appels, mdir, avant, archives = _scenario_sortie_precontrole(
+        monkeypatch, tmp_path, hw, 4000
+    )
+    assert code != 0 and appels == [] and journal == []
+    assert "hors budget même au contexte plancher" in out
+    assert "aucun processus modèle lancé" in out
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "précontrôle"
+    assert arch["precontrole"]["verdict"] == "hors_budget"
+    assert arch["precontrole"]["etabli"] is False
+
+
+def test_precontrole_metadonnees_incompletes_flux_inchange(monkeypatch, tmp_path):
+    """Contre-test : même machine, GGUF illisible (meta {}) → « incertain », llama-bench
+    et la sonde tournent comme avant ; l'étape 2 tranche."""
+    journal: list = []
+    appels: list = []
+
+    def run_impl(ctx, depth):
+        from loom.setup.topology import ProbeResult
+
+        r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+        if depth:
+            r.tg_ts, r.pp_ts = 5.0, 20.0
+        return r
+
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(run_impl, journal=journal),
+        ram_total_mb=4000,
+        hw=_gpu(6144),
+        run_bench=_bench_espion(appels),
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert "précontrôle incertain" in out and "flux inchangé" in out
+    assert appels and appels[0]["ngl"]  # llama-bench a tourné, liste non filtrée
+    assert any(e[0] == "isolation" for e in journal)
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["precontrole"]["verdict"] == "incertain"
+
+
+def test_precontrole_retire_les_ngl_impossibles_de_llama_bench(monkeypatch, tmp_path):
+    """-ngl 99 (12 300 Mo certains sur le device) ne tient pas dans 6 144 Mo de VRAM : un
+    seul -ngl qui échoue faisait échouer tout llama-bench — il est retiré, et dit."""
+    appels: list = []
+
+    def run_impl(ctx, depth):
+        from loom.setup.topology import ProbeResult
+
+        r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+        if depth:
+            r.tg_ts, r.pp_ts = 5.0, 20.0
+        return r
+
+    # VRAM libre (20 000) incohérente avec le total (6 144) : ngl_candidates garde 99.
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(run_impl),
+        hw=_gpu(6144, 20_000),
+        meta=_meta_complete(),
+        run_bench=_bench_espion(appels),
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert appels and 99 not in appels[0]["ngl"] and 0 in appels[0]["ngl"]
+    assert "-ngl 99" in out and "VRAM" in out
+
+
+def test_isolation_sur_une_copie_a_un_slot_demarrage_modeste(monkeypatch, tmp_path):
+    """La sonde d'isolation tourne sur une COPIE à 1 slot. Le démarrage prévu (tout GPU,
+    12 300 Mo) ne tient pas dans 8 192 Mo de VRAM : elle part sur un offload partiel qui
+    tient ; la sonde principale garde la configuration prévue."""
+    journal: list = []
+
+    def run_impl(ctx, depth):
+        from loom.setup.topology import ProbeResult
+
+        r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+        if depth:
+            r.tg_ts, r.pp_ts = 5.0, 20.0
+        return r
+
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(run_impl, journal=journal),
+        ram_total_mb=32_000,
+        hw=_gpu(8192, 8000),
+        meta=_meta_complete(),
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 12600\n'
+        "n_gpu_layers = 999\n",
+        encoding="utf-8",
+    )
+    run(con, deps)
+    construites = [e for e in journal if e[0] == "construite"]
+    isolations = [e for e in journal if e[0] == "isolation"]
+    assert construites[0][1] == 999  # sonde principale : configuration prévue
+    assert len(isolations) == 1
+    _, ngl, _cpu_moe, _ncmoe, slots, _ctx = isolations[0]
+    assert slots == 1 and 0 < ngl < 40
+    out = "\n".join(printed)
+    assert "ne tient pas" in out
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["isolation"]["demarrage"]["modeste"] is True
+    assert arch["isolation"]["slots_mesure"] == 1
+
+
+def test_echec_de_llama_bench_archive(monkeypatch, tmp_path):
+    """Le compte rendu existe désormais avant llama-bench : son échec est archivé."""
+
+    def run_bench(b, m, t, g, n_cpu_moe=0, progress=None):
+        raise RuntimeError("llama-bench a échoué : vulkan: out of memory")
+
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_rien_ne_doit_tourner),
+        run_bench=run_bench,
+    )
+    assert run(con, deps) != 0
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    assert len(archives) == 1
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "llama-bench"
+    assert "out of memory" in arch["echec"]["erreur"]
 
 
 def test_etape_bench_erreur_d_entree_sortie_en_calibration_est_archivee(
@@ -767,6 +1051,7 @@ def test_etape_bench_part_de_l_isolation_actuelle_si_la_sonde_echoue(
         {"threads": 10, "ngl": 99, "kind": "pp", "ts": 25.0},
     ]
     sondes: list = []
+    isolations: list = []
 
     @_dc
     class _FakeProbe:
@@ -789,6 +1074,7 @@ def test_etape_bench_part_de_l_isolation_actuelle_si_la_sonde_echoue(
             sondes.append(self)
 
         def probe_isolation(self, ctx=4096):
+            isolations.append(self)
             raise RuntimeError("health timeout")
 
         def verify_cache(self, ctx=4096):
@@ -817,14 +1103,19 @@ def test_etape_bench_part_de_l_isolation_actuelle_si_la_sonde_echoue(
         has_gpu_backend=lambda sb: True,
         cpu_physical=lambda: 10,
         gpu_vram_total_mb=lambda: 6_144,
+        ram_total_mb=lambda: 64_000,
         make_probe=_FakeProbe,
         detect_hardware=lambda server_bin=None: HardwareProfile(
             True, "GPU 20Go", 20_000, 16, vram_is_discrete=True
         ),
     )
     assert run(con, deps) == 0
-    # Toutes les sondes (initiale et clones) ont mesuré à 2 slots.
-    assert sondes and all(s.n_parallel == 2 for s in sondes)
+    # La sonde d'isolation tourne sur une COPIE à 1 slot (scénario A -> B -> A : à 2
+    # slots, B partirait sur le slot libre) ; toutes les AUTRES sondes (initiale et
+    # clones) ont mesuré à 2 slots, l'isolation actuelle étant conservée.
+    assert len(isolations) == 1 and isolations[0].n_parallel == 1
+    autres = [s for s in sondes if s is not isolations[0]]
+    assert autres and all(s.n_parallel == 2 for s in autres)
     mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
     assert mt["cache_isolation"] is True  # conservé : pas de nouveau verdict
 
