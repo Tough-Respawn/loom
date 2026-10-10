@@ -732,9 +732,19 @@ def placement_candidates(**kw) -> list[Placement]:
 
 #: Contexte plancher du précontrôle : celui de useful_context (jamais moins).
 PRECONTROLE_CTX = 4096
-#: Checkpoints que la sonde d'isolation peut créer : au plus 2 par prompt brut
-#: (tools/server/server-context.cpp:3986-4061) x 3 prompts (ServerProbe.probe_isolation).
-ISOLATION_CHECKPOINTS = 6
+#: Checkpoints qu'un prompt brut crée au plus dans son slot
+#: (tools/server/server-context.cpp:3986-4061).
+CHECKPOINTS_PAR_PROMPT = 2
+#: Listes de checkpoints vivantes au pic de la sonde d'isolation (A -> B -> A', 1 slot,
+#: ServerProbe.probe_isolation) : celle du slot et les copies des entrées A et B du
+#: cache de prompts RAM — prompt_save COPIE les checkpoints (server-task.cpp:1782-1791),
+#: l'éviction ne borne que la liste du slot (server-context.cpp:2543-2551).
+ISOLATION_LISTES = 3
+#: États de séquence complets (KV + état récurrent) copiés dans ce cache au pic : A et
+#: B sauvegardés (server-context.cpp:308-332 et 1775-1786).
+ISOLATION_ETATS = 2
+#: Tokens d'un prompt de la sonde d'isolation, borne haute (721 et 781 mesurés).
+ISOLATION_TOKENS = 1024
 #: Cellules de KV d'un test llama-bench : -p 128 / -n 16 arrondis à 256
 #: (src/llama-context.cpp:369), une séquence, cache f16 (défaut de l'outil).
 LLAMA_BENCH_CELLS = 256
@@ -1194,9 +1204,10 @@ def demarrage_isolation(
 ) -> dict:
     """Démarrage de la sonde d'isolation : TOUJOURS 1 slot, 4096 tokens (à 2 slots,
     l'appel B part sur le slot libre et la pollution n'a jamais lieu). Les flags
-    prévus (bruts) s'ils tiennent — comptabilité de la sonde : ISOLATION_CHECKPOINTS,
-    jamais plus que le `ctx_checkpoints` passé au serveur (il évince au-delà) —,
-    sinon, données complètes, le premier candidat du plan à 4096 x 1 ; mémoire
+    prévus (bruts) s'ils tiennent — comptabilité de la sonde au pic, côté hôte :
+    ISOLATION_LISTES listes de min(CHECKPOINTS_PAR_PROMPT, `ctx_checkpoints`)
+    checkpoints et ISOLATION_ETATS états de séquence copiés dans le cache de prompts
+    RAM —, sinon, données complètes, le premier candidat du plan à 4096 x 1 ; mémoire
     récurrente : verdict imposé, sonde non lancée. Données incomplètes : le démarrage
     prévu, inchangé (le serveur tranchera). `prevu_tient` : le démarrage prévu tient-il
     d'après l'estimation (None : inconnu) — information de trace ; la garde du repli
@@ -1219,22 +1230,29 @@ def demarrage_isolation(
         }
     base["prevu_tient"] = False
     n = meta.get("n_layers")
-    cp = ISOLATION_CHECKPOINTS
+    cp_slot = CHECKPOINTS_PAR_PROMPT
     if ctx_checkpoints is not None:
-        cp = min(cp, max(0, int(ctx_checkpoints)))
+        cp_slot = min(cp_slot, max(0, int(ctx_checkpoints)))
     est = memory_estimate_mb(
         profile,
         PRECONTROLE_CTX,
         gpu_tuning=gpu_tuning,
         slots=1,
-        checkpoints=cp,
+        checkpoints=ISOLATION_LISTES * cp_slot,
     )
+    # Le cache de prompts RAM (actif par défaut, --cache-ram 8192) garde A et B en
+    # états COMPLETS au pic : KV de leurs tokens + état récurrent, côté hôte.
+    kv_type = "q8_0" if gpu_tuning else "f16"
+    etats = profile.recurrent_live_bytes() + profile.kv_bytes(
+        ISOLATION_TOKENS, kv_type, 1
+    )
+    hote_mb = est["host_mb"] + int(ISOLATION_ETATS * etats // _MIB)
     ok, why = _flags_tiennent(
         profile,
         meta,
         flags=flags,
         kv_mb=est["device_mb"],
-        host_extra_mb=est["host_mb"],
+        host_extra_mb=hote_mb,
         model_size_mb=model_size_mb,
         gpu_backend=gpu_backend,
         vram_total_mb=vram_total_mb,
@@ -1260,7 +1278,7 @@ def demarrage_isolation(
         n_layers=n,
         model_size_mb=int(model_size_mb or 0),
         kv_mb=est["device_mb"],
-        host_extra_mb=est["host_mb"],
+        host_extra_mb=hote_mb,
         gpu_backend=bool(gpu_backend),
         vram_total_mb=int(vram_total_mb or 0),
         ram_total_mb=int(ram_total_mb or 0),

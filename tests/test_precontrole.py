@@ -575,14 +575,33 @@ def test_isolation_non_lancee_si_rien_ne_tient_a_4096():
 
 
 def test_isolation_checkpoints_bornes_par_le_ctx_checkpoints_du_modele():
-    """La sonde crée au plus 6 checkpoints, jamais plus que le `ctx_checkpoints` passé au
-    serveur (il évince au-delà). Hybride sur 8 Go + 4 000 Mo : 6 x 150 Mo de checkpoints
-    ne tiennent pas côté hôte (928 Mo), 0 si — compter 6 refusait à tort un démarrage
-    qui tient, et `prevu_tient` décide désormais d'une sortie."""
+    """Le slot garde au plus `ctx_checkpoints` checkpoints (il évince au-delà).
+    Hybride sur 8 Go + 4 000 Mo : 6 x 150 Mo de checkpoints ne tiennent pas côté hôte
+    (928 Mo), 0 si — compter 6 refusait à tort un démarrage qui tient."""
     meta = _hybride()
     assert _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000)["prevu_tient"] is False
     d = _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000, ctx_checkpoints=0)
     assert d["prevu_tient"] is True and d["lancer"] is True
+
+
+def test_isolation_compte_les_copies_du_cache_de_prompts():
+    """Vérification adverse de L8 : A -> B -> A' sur 1 slot culmine, côté hôte, à TROIS
+    listes de checkpoints (le slot, et les entrées A et B du cache de prompts RAM, que
+    prompt_save COPIE — l'éviction ne borne que la liste du slot) et DEUX états complets
+    de séquence (A et B sauvegardés). Hybride sur 8 Go + 4 000 Mo, ctx_checkpoints = 2 :
+    Loom comptait 299 Mo (« tient ») pour ~1 260 au pic. Avec 0 checkpoint, les deux
+    états restent (~370 Mo)."""
+    meta = _hybride()
+    deux = _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000, ctx_checkpoints=2)
+    assert deux["prevu_tient"] is False
+    assert (
+        _iso(meta, NVIDIA_8G, PREVU_GPU, ram=3500, ctx_checkpoints=0)["prevu_tient"]
+        is False
+    )  # 300 + ~370 > 428
+    assert (
+        _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000, ctx_checkpoints=0)["prevu_tient"]
+        is True
+    )  # 300 + ~370 <= 928
 
 
 def _repli(meta, hw, flags, *, ram, slots, complet=True, ctx_checkpoints=None):
