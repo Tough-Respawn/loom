@@ -121,12 +121,14 @@ def note_application(
     path: Path | str, applied: dict, *, now: datetime | None = None
 ) -> None:
     """Complète une archive par la trace de ce qui a été APPLIQUÉ (date + réglages).
-    Best-effort : une archive absente ou illisible n'empêche jamais l'application."""
+    Renvoie True si l'annotation est écrite, False sinon (archive absente, illisible,
+    disque plein…) : n'empêche jamais l'application, mais l'appelant doit le DIRE —
+    une configuration appliquée sans trace ne doit pas passer pour tracée."""
     p = Path(path)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return
+        return False
     data["application"] = {
         "date": (now or datetime.now()).isoformat(timespec="seconds"),
         **_json_safe(applied),
@@ -136,4 +138,5 @@ def note_application(
             p, json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n"
         )
     except OSError:
-        return
+        return False
+    return True

@@ -842,9 +842,11 @@ def _archive_setup(
         path = archive_mod.archive_bench(
             model_id, archive_mod.bench_payload(**trace, echec=echec)
         )
-        if applied is not None:
-            archive_mod.note_application(path, applied)
         con.say(f"  archive : {path}")
+        if applied is not None and not archive_mod.note_application(path, applied):
+            con.say(
+                "  [attention] configuration appliquée, annotation de l'archive échouée."
+            )
     except Exception as exc:  # noqa: BLE001 - l'archive n'empêche jamais le bench
         con.say(f"  [attention] archive du bench non écrite ({exc}).")
 
@@ -1271,10 +1273,11 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             budget_mb=budget,
             progress=lambda m: con.progress(f"calibration : {m}"),
         )
-    except (RuntimeError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 - erreurs opérationnelles comprises (OSError…)
         con.progress_end()
         con.say(
-            f"  [échec] calibration échouée ({exc}) — context inchangé, relance loom-setup."
+            f"  [échec] calibration échouée ({type(exc).__name__}: {exc}) — context "
+            "inchangé, relance loom-setup."
         )
         report.add("bench", "echec", f"calibration contexte : {exc}")
         _archive_setup(con, trace, echec={"etape": "calibration", "erreur": str(exc)})

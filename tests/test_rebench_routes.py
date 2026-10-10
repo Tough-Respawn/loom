@@ -423,6 +423,53 @@ def test_rebench_echec_archive_la_trace_partielle(env, monkeypatch):
     assert arch["materiel"]["gpu_name"] == "GPU test" and "application" not in arch
 
 
+def test_rebench_erreur_d_entree_sortie_finalise_le_job_et_archive(env, monkeypatch):
+    """Revue 2026-10-10 : seules RuntimeError / ValueError étaient rattrapées ; une
+    FileNotFoundError ou PermissionError pendant la calibration laissait le job sans fin
+    et sans archive."""
+    from loom.setup import archive as _archive
+
+    monkeypatch.setattr(_archive, "BENCH_DIR", env.tmp / "var" / "bench")
+    _launch(
+        env,
+        monkeypatch,
+        error=PermissionError("accès refusé au GGUF"),
+        before_error={"etape": "calibration"},
+    )
+    txt = _wait_verdict(env)
+    assert "échouée" in txt and "accès refusé" in txt
+    archives = list((env.tmp / "var" / "bench" / "loc-test").glob("*.json"))
+    assert len(archives) == 1
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert (
+        arch["echec"]["etape"] == "calibration"
+        and "accès refusé" in arch["echec"]["erreur"]
+    )
+    # Le job est bien terminé : un nouveau /rebench n'est pas « déjà en cours ».
+    r = env.web.post("/chat", data={"message": "/rebench loc-test"})
+    assert "déjà en cours" not in _sse_texts(r.data)
+
+
+def test_rebench_apply_dit_quand_l_annotation_de_l_archive_echoue(env, monkeypatch):
+    from loom.setup import archive as _archive
+    from loom.web.routes import models as models_routes
+
+    monkeypatch.setattr(_archive, "BENCH_DIR", env.tmp / "var" / "bench")
+    calib = dict(CALIB, context=8192, final=_FINAL)
+    _launch(env, monkeypatch, calib=calib)
+    _wait_verdict(env)
+    assert "b_apply" in _sessions_text(env, needles=("b_apply",))  # état persisté
+    monkeypatch.setattr(
+        models_routes, "note_application", lambda *a, **k: False, raising=False
+    )
+    monkeypatch.setattr(_archive, "note_application", lambda *a, **k: False)
+    r = env.web.post("/chat", data={"message": "oui"})
+    body = _sse_texts(r.data)
+    assert "Application" in body
+    assert "appliquée" in body and "annotation de l'archive échouée" in body
+    assert "context = 8192" in (env.mdir / "model.toml").read_text(encoding="utf-8")
+
+
 def test_rebench_signale_une_archive_non_ecrite(env, monkeypatch):
     from loom.setup import archive as _archive
 

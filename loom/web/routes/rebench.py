@@ -682,10 +682,15 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                     # Validation du réglage final : conservée avec le verdict.
                     "final": calib.get("final"),
                 }
-    except (RuntimeError, ValueError) as exc:
-        msg = f"❌ Recalibration de « {mid} » échouée : {exc} — config inchangée."
+    except Exception as exc:  # noqa: BLE001 - erreurs opérationnelles comprises (OSError…)
+        # Une FileNotFoundError ou PermissionError pendant la calibration laissait le job
+        # sans fin et sans archive : tout échec devient un verdict d'échec archivé.
+        msg = (
+            f"❌ Recalibration de « {mid} » échouée : {type(exc).__name__}: {exc} — "
+            "config inchangée."
+        )
         wiz = None
-        erreur = str(exc)
+        erreur = f"{type(exc).__name__}: {exc}"
     # Archive DURABLE du bench (var/bench/<modèle>/<horodatage>.json) : le compte rendu
     # PROGRESSIF (schéma commun), en échec comme en succès — l'état de session est
     # consommé par « oui » ou effacé par « annuler », pas l'archive. Un échec
@@ -704,19 +709,24 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
             wiz["archive"] = str(arch)
     except Exception as exc:  # noqa: BLE001 - l'archive n'empêche jamais le verdict
         msg += f"\n⚠ archive non écrite : {exc}"
-    got = chat_lock.acquire(timeout=2)
     try:
-        conv = sess.conversation
-        # Journal seulement : un compte rendu de commande n'est pas un tour que le
-        # modèle doit relire (cf. model_admin._persist_wizard_exchange).
-        if wiz is not None:
-            conv.set_wizard(wiz)
-        S.session_store.append_event(sess.id, "text", {"text": msg})
-        S.session_store.save(sess)
+        got = chat_lock.acquire(timeout=2)
+        try:
+            conv = sess.conversation
+            # Journal seulement : un compte rendu de commande n'est pas un tour que le
+            # modèle doit relire (cf. model_admin._persist_wizard_exchange).
+            if wiz is not None:
+                conv.set_wizard(wiz)
+            S.session_store.append_event(sess.id, "text", {"text": msg})
+            S.session_store.save(sess)
+        finally:
+            if got:
+                chat_lock.release()
+        job.final = msg
+        # Boutons du verdict (l'état b_apply attend oui/annuler) — lus par le stream.
+        job.choices = ["oui", "annuler"] if wiz is not None else None
     finally:
-        if got:
-            chat_lock.release()
-    job.final = msg
-    # Boutons du verdict (l'état b_apply attend oui/annuler) — lus par le stream.
-    job.choices = ["oui", "annuler"] if wiz is not None else None
-    job.done = True
+        # TOUJOURS finaliser : le flux et le verrou anti-double attendent ce drapeau.
+        if getattr(job, "final", None) is None:
+            job.final = msg
+        job.done = True

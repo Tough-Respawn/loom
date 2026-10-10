@@ -177,12 +177,14 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                     f"{pl.get('build') or 'build ?'}) — {pl.get('mecanisme', '')}",
                 )
                 applied += f" + placement={pl['label']}"
+            note_ok = True
             if a.get("archive"):
-                # Archive durable du bench : noter ce qui vient d'être appliqué.
+                # Archive durable du bench : noter ce qui vient d'être appliqué. Un
+                # échec d'annotation est DIT : appliqué, mais sans trace.
                 from loom.setup.archive import note_application
 
                 pl_a = a.get("placement") or {}
-                note_application(
+                note_ok = note_application(
                     a["archive"],
                     {
                         "context": a["context"],
@@ -199,6 +201,11 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                 f"\n✅ {applied} écrit dans le model.toml de "
                 f"« {a['id']} » — effet au prochain chargement du modèle."
             )
+            if not note_ok:
+                extra_reply += (
+                    "\n⚠ configuration appliquée, annotation de l'archive échouée "
+                    f"({a.get('archive')})."
+                )
     elif res.action and res.action["kind"] == "upsert_remote":
         rec = {k: v for k, v in res.action["record"].items() if v is not None}
         roots = _models_roots(S)

@@ -97,5 +97,19 @@ def test_compte_rendu_commun_aux_deux_parcours():
     assert bench_payload(source="x", couples=[(512, 2048)])["couples"] == [(512, 2048)]
 
 
-def test_note_application_tolere_une_archive_absente(tmp_path):
-    note_application(tmp_path / "absent.json", {"context": 1})  # ne lève pas
+def test_note_application_dit_si_elle_a_echoue(tmp_path, monkeypatch):
+    """Revue 2026-10-10 : l'annotation absorbait les erreurs — configuration appliquée
+    sans trace, à l'insu de l'utilisateur. Elle renvoie désormais True/False."""
+    from loom.setup import archive as archive_mod
+
+    p = archive_bench("m", {"verdict": {"context": 65536}}, root=tmp_path, now=_NOW)
+    assert note_application(p, {"context": 65536}, now=_NOW) is True
+    assert (
+        note_application(tmp_path / "absent.json", {"context": 1}) is False
+    )  # ne lève pas
+
+    def _plein(*a, **k):
+        raise OSError("disque plein")
+
+    monkeypatch.setattr(archive_mod, "atomic_write_text", _plein)
+    assert note_application(p, {"context": 1}) is False

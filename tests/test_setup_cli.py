@@ -526,6 +526,132 @@ def test_etape_bench_reglage_final_en_echec_n_ecrit_rien(monkeypatch, tmp_path):
     assert arch["materiel"]["gpu_name"] == "GPU 20Go" and "application" not in arch
 
 
+def _harnais_bench(monkeypatch, tmp_path, fake_probe_cls, assume_yes=True):
+    """Harnais commun des scénarios de bench : binaire, model.toml minimal, GGUF factice,
+    lignes llama-bench, deps. Renvoie (con, printed, deps, mdir)."""
+    _patch_paths(monkeypatch, tmp_path)
+    exe = tmp_path / "rt" / "llama-server.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"")
+    (tmp_path / "config" / "local.toml").write_text(
+        f'[server]\nbin = "{str(exe).replace(chr(92), "/")}"\n', encoding="utf-8"
+    )
+    mdir = tmp_path / "models" / "local" / "text" / "m1"
+    mdir.mkdir(parents=True)
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 1\nsize_mb = 5600\n',
+        encoding="utf-8",
+    )
+    (mdir / "m.gguf").write_bytes(b"pas-un-vrai-gguf")
+    rows = [
+        {"threads": 10, "ngl": 99, "kind": "tg", "ts": 3.4},
+        {"threads": 10, "ngl": 99, "kind": "pp", "ts": 25.0},
+    ]
+    con, printed = _console(assume_yes=assume_yes)
+    deps = _deps(
+        tmp_path,
+        ram_available_mb=lambda: 10_240,
+        run_bench=lambda b, m, t, g, n_cpu_moe=0, progress=None: rows,
+        find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
+        has_gpu_backend=lambda sb: True,
+        cpu_physical=lambda: 10,
+        gpu_vram_total_mb=lambda: 6_144,
+        make_probe=fake_probe_cls,
+        detect_hardware=lambda server_bin=None: HardwareProfile(
+            True, "GPU 20Go", 20_000, 16, vram_is_discrete=True
+        ),
+    )
+    return con, printed, deps, mdir
+
+
+def _fake_probe_cls(run_impl, isolation=(600, 4)):
+    from dataclasses import dataclass as _dc
+
+    @_dc
+    class _FakeProbe:
+        server_bin: str = ""
+        model_path: str = ""
+        threads: int = 0
+        ngl: int = 0
+        topology: str = ""
+        mmproj_path: object = None
+        cpu_moe: bool = False
+        n_cpu_moe: object = None
+        n_parallel: int = 1
+        ubatch: object = None
+        batch: object = None
+        checkpoint_min_step: object = None
+        ctx_checkpoints: object = None
+        profile: object = None
+
+        def probe_isolation(self, ctx=4096):
+            return isolation
+
+        def verify_cache(self, ctx=4096):
+            return {
+                "first": 600,
+                "back": 4,
+                "annex_slot": 0,
+                "slots": self.n_parallel,
+                "reused": True,
+            }
+
+        def run(self, ctx, depth):
+            return run_impl(ctx, depth)
+
+    return _FakeProbe
+
+
+def test_etape_bench_erreur_d_entree_sortie_en_calibration_est_archivee(
+    monkeypatch, tmp_path
+):
+    """Revue 2026-10-10 : une PermissionError pendant la calibration n'était pas
+    rattrapée (seules RuntimeError / ValueError l'étaient) : pas d'archive, pas de
+    compte rendu."""
+    from loom.setup.topology import ProbeResult
+
+    def run_impl(ctx, depth):
+        if depth is None:
+            # Premier barreau de PENTE de la calibration : erreur d'E/S.
+            raise PermissionError("accès refusé au GGUF")
+        r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+        r.tg_ts, r.pp_ts = 5.0, 20.0
+        return r
+
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch, tmp_path, _fake_probe_cls(run_impl)
+    )
+    assert run(con, deps) != 0  # le pas bench est en échec, pas un plantage
+    out = "\n".join(printed)
+    assert "calibration échouée" in out and "accès refusé" in out
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    assert len(archives) == 1
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "calibration"
+    assert "accès refusé" in arch["echec"]["erreur"]
+    assert arch["placement"]  # les mesures déjà faites sont conservées
+
+
+def test_etape_bench_dit_quand_l_annotation_de_l_archive_echoue(monkeypatch, tmp_path):
+    from loom.setup import archive as _archive
+    from loom.setup.topology import ProbeResult
+
+    monkeypatch.setattr(_archive, "note_application", lambda *a, **k: False)
+
+    def run_impl(ctx, depth):
+        r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+        if depth:
+            r.tg_ts, r.pp_ts = 5.0, 20.0
+        return r
+
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch, tmp_path, _fake_probe_cls(run_impl)
+    )
+    assert run(con, deps) == 0  # la configuration EST appliquée
+    out = "\n".join(printed)
+    assert "appliquée" in out and "annotation de l'archive échouée" in out
+
+
 def test_etape_bench_part_de_l_isolation_actuelle_si_la_sonde_echoue(
     monkeypatch, tmp_path
 ):
