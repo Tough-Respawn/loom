@@ -551,6 +551,14 @@ def test_step_bench_mesure_les_threads_sur_un_placement_avec_calcul_cpu(
                 # 5 threads (physiques/2) : +20 % de génération sur ce partiel.
                 r.tg_ts = 6.0 if self.threads == 5 else 5.0
                 r.pp_ts = 40.0
+                # Journal serveur lu par la sonde : 3 checkpoints créés sur 32 possibles.
+                r.checkpoints = {
+                    "effectifs": 3,
+                    "plafond": 32,
+                    "crees": 3,
+                    "taille_mb": 149.6,
+                    "source": "journal serveur",
+                }
             return r
 
     con, printed = _console(assume_yes=True)
@@ -582,8 +590,13 @@ def test_step_bench_mesure_les_threads_sur_un_placement_avec_calcul_cpu(
     assert local["bench"]["threads_modele"] == 5
     assert local["bench"]["threads_mesures"]["t5"]["tg_ts"] == 6.0
     assert local["override"]["threads"] == 10  # l'override machine (llama-bench) reste
+    # Checkpoints EFFECTIFS du réglage final (lus dans le journal serveur), à côté du
+    # plafond estimé : 32 est un maximum, pas le nombre créé pendant la mesure.
+    assert local["bench"]["checkpoints_effectifs"] == 3
+    assert local["bench"]["final_echantillons"][0]["checkpoints"]["effectifs"] == 3
     out = "\n".join(printed)
     assert "threads" in out and "+20" in out
+    assert "checkpoints effectifs 3" in out and "plafond 32 par slot" in out
     # Les sondes de threads ont tourné sur le placement élu, au contexte de la finale.
     assert any(s.threads == 5 and 0 < s.ngl < 40 for s in sondes)
 

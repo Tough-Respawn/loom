@@ -1483,7 +1483,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             f"  [{marque}] réglage final {final['placement']} (ctx {final['ctx']}, "
             f"{final['slots']} slot(s), ub {final['ubatch']}/b {final['batch']}) : "
             f"génération {final['tg_ts']} t/s, prefill {final['pp_ts']} t/s à profondeur "
-            f"{final['depth']}{coh}"
+            f"{final['depth']}{coh}{place_mod.checkpoints_text(final)}"
         )
     cache_v = None
     con.progress("vérification du cache avec la configuration finale…")
@@ -1557,6 +1557,11 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         for k in ("ubatch", "batch", "ecart_pct", "coherent"):
             if final.get(k) is not None:
                 values["bench"][f"final_{k}"] = final[k]
+        # Checkpoints EFFECTIFS du réglage final (journal serveur), à côté du plafond
+        # estimé (`checkpoints_estimes`) : 32 est un maximum, pas le nombre créé.
+        for k in ("checkpoints_effectifs", "checkpoints_detail"):
+            if final.get(k) is not None:
+                values["bench"][k] = final[k]
     if pl_res:
         pl_elu = pl_res.get("placement")
         # `placement` = l'identité du placement ; le couple de batchs est tracé à part

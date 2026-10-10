@@ -29,8 +29,11 @@ est précédée de son propre warmup jetable.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -108,6 +111,75 @@ class ProbeResult:
     # sa quantité ne se compare pas.
     prompt_n: int | None = None
     predicted_n: int | None = None
+    # Checkpoints d'état récurrent EFFECTIVEMENT créés pendant la mesure, lus dans le
+    # journal du serveur (parse_checkpoints) : {effectifs, plafond, crees, taille_mb,
+    # min_spacing, source} — ou {source: "non mesuré : …"} quand le journal est muet.
+    checkpoints: dict | None = None
+
+
+_RE_CP_CREATED = re.compile(
+    r"id\s+(\d+)\s*\|.*?created context checkpoint (\d+) of (\d+) \(.*?size = "
+    r"([\d.]+) MiB\)"
+)
+_RE_CP_ENABLED = re.compile(
+    r"context checkpoints enabled, max = (\d+), min spacing = (\d+)"
+)
+
+
+def _log_tail(text: str, n: int = 4) -> str:
+    """Fin du journal serveur pour un message d'erreur : les lignes d'erreur (« E »)
+    d'abord, sinon les dernières lignes ; "" sans journal."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    errs = [ln for ln in lines if " E " in f" {ln} "]
+    pick = (errs or lines)[-n:]
+    return " — journal serveur : " + " | ".join(ln[:200] for ln in pick)
+
+
+def parse_checkpoints(text: str) -> dict:
+    """Checkpoints d'état récurrent créés pendant une mesure, d'après le journal de
+    llama-server (verbosité 4). « slot … id S | … created context checkpoint N of M
+    (…, size = X MiB) » : N est le nombre VIVANT dans le slot S après création (un
+    remplacement recrée au même rang ; un slot réinitialisé repart de 1), M le plafond
+    PAR SLOT (`ctx_checkpoints`, 32 par défaut — un maximum, pas le nombre créé).
+    Vivants = dernier N de chaque slot, additionnés (vérifié sur Bonsai 2, 2026-10-10).
+    Sans aucune ligne : non mesuré, dit tel quel (modèle sans état récurrent, ou
+    journal muet). Jamais de None dans le résultat : il finit dans local.toml."""
+    text = text or ""
+    created = _RE_CP_CREATED.findall(text)
+    enabled = _RE_CP_ENABLED.search(text)
+    if created:
+        par_slot: dict[str, int] = {}
+        for slot, n, _m, _s in created:
+            par_slot[str(int(slot))] = int(n)  # le DERNIER compte du slot fait foi
+        par_slot = dict(sorted(par_slot.items(), key=lambda kv: int(kv[0])))
+        out = {
+            "effectifs": sum(par_slot.values()),
+            "par_slot": par_slot,
+            "max_par_slot": max(par_slot.values()),
+            "plafond": int(created[-1][2]),
+            "crees": len(created),
+            "taille_mb": round(float(created[-1][3]), 1),
+            "source": "journal serveur (lignes « created context checkpoint »)",
+        }
+        if enabled:
+            out["min_spacing"] = int(enabled.group(2))
+        return out
+    if enabled:
+        return {
+            "effectifs": 0,
+            "plafond": int(enabled.group(1)),
+            "crees": 0,
+            "min_spacing": int(enabled.group(2)),
+            "source": "journal serveur : checkpoints activés, aucun créé pendant la mesure",
+        }
+    if not text.strip():
+        return {"source": "non mesuré : journal serveur vide"}
+    return {
+        "source": "non mesuré : aucune ligne de checkpoint dans le journal serveur "
+        "(modèle sans état récurrent, ou journal muet)"
+    }
 
 
 @dataclass
@@ -137,6 +209,10 @@ class ServerProbe:
     # GPU, mémoire unifiée) en sont dérivés par effective.launch_flags, comme dans
     # serve.py et swap.py. Sans profil (tests, anciens appelants) la topologie décide.
     profile: object = None
+    # Verbosité du journal serveur, celle de l'exécutant ([server] log_verbosity, 4 par
+    # défaut) : en 3, llama-server n'écrit AUCUNE ligne de checkpoint (vérifié sur
+    # Bonsai 2, 2026-10-10), et le compte effectif serait toujours « non mesuré ».
+    log_verbosity: int = 4
     port: int = 8131
     health_timeout_s: int = 600
     popen: object = subprocess.Popen
@@ -144,6 +220,10 @@ class ServerProbe:
     vram_mb: object = None  # () -> Mo utilisés sur le device (GPU discret)
     ram_avail: object = None  # () -> Mo de RAM disponible (mémoire unifiée)
     _ram_before: int = field(default=0, init=False, repr=False)
+    # Journal du serveur sondé (stdout + stderr), fichier temporaire par lancement :
+    # lu après la mesure (checkpoints effectifs), puis supprimé.
+    _log_fh: object = field(default=None, init=False, repr=False)
+    _log_path: str | None = field(default=None, init=False, repr=False)
 
     def _flags(self) -> tuple[bool, bool]:
         """(gpu_tuning, unified_memory) de l'exécutant."""
@@ -272,13 +352,35 @@ class ServerProbe:
             checkpoint_min_step=self.checkpoint_min_step,
             ctx_checkpoints=self.ctx_checkpoints,
         )
+        if self.log_verbosity:
+            # Sans --log-file (le journal est capturé sur stdout/stderr) : -lv seul.
+            args += ["-lv", str(self.log_verbosity)]
         if self.memory_mode == "ram_delta":
             # Référence prise juste avant le lancement : le delta à /health est la
             # mémoire que CE serveur a prise au système.
             self._ram_before = self._ram_available()
-        proc = self.popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Journal du serveur dans un fichier temporaire (pas un tube : rien à vider) ;
+        # stdout ET stderr, llama.cpp loggant sur l'un ou l'autre selon les builds.
+        self._read_log()
+        fh = tempfile.NamedTemporaryFile(
+            "wb", prefix="loom-sonde-", suffix=".log", delete=False
+        )
+        self._log_fh, self._log_path = fh, fh.name
+        try:
+            proc = self.popen(args, stdout=fh, stderr=subprocess.STDOUT)
+        except BaseException:
+            self._read_log()  # pas de journal orphelin
+            raise
         t0 = time.monotonic()
         while time.monotonic() - t0 < self.health_timeout_s:
+            code = proc.poll() if hasattr(proc, "poll") else None
+            if code is not None:
+                # Serveur MORT (GGUF introuvable, OOM au chargement…) : inutile
+                # d'attendre le timeout de /health ; la cause est dans son journal.
+                raise RuntimeError(
+                    f"chargement KO à ctx={ctx} (llama-server sorti, code {code})"
+                    + _log_tail(self._read_log())
+                )
             try:
                 with urllib.request.urlopen(
                     f"http://127.0.0.1:{self.port}/health", timeout=3
@@ -288,10 +390,43 @@ class ServerProbe:
             except Exception:
                 time.sleep(3)
         self._kill(proc)
-        raise RuntimeError(f"chargement KO à ctx={ctx} (health timeout)")
+        raise RuntimeError(
+            f"chargement KO à ctx={ctx} (health timeout)" + _log_tail(self._read_log())
+        )
+
+    def _read_log(self) -> str:
+        """Ferme, lit et SUPPRIME le journal du dernier serveur lancé ; "" sans journal.
+        Best-effort : un fichier illisible ou verrouillé ne fait pas échouer la mesure."""
+        fh, path = self._log_fh, self._log_path
+        self._log_fh, self._log_path = None, None
+        if fh is None:
+            return ""
+        try:
+            fh.close()
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+        text = ""
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except Exception:  # noqa: BLE001 - best-effort
+            text = ""
+        # Juste après taskkill, le serveur peut tenir encore le fichier (WinError 32,
+        # vu en réel) : quelques essais espacés avant d'abandonner.
+        for essai in range(6):
+            try:
+                os.remove(path)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                if essai < 5:
+                    time.sleep(0.5)
+        return text
 
     def run(self, ctx: int, depth_tokens: int | None) -> ProbeResult:
         proc = self._start(ctx)
+        journal = ""
         try:
             res = ProbeResult(ctx=ctx, mem_mb=self._measure_mem(proc))
             if depth_tokens:
@@ -310,10 +445,15 @@ class ServerProbe:
                 res.pp_ts = round(t.get("prompt_per_second") or 0.0, 1)
                 res.prompt_n = int(t.get("prompt_n") or 0) or None
                 res.predicted_n = int(t.get("predicted_n") or 0) or None
-            return res
         finally:
             self._kill(proc)
             time.sleep(4)  # laisser la mémoire se libérer avant le barreau suivant
+            # Après l'attente : le serveur est mort et a lâché son journal.
+            journal = self._read_log()
+        # Checkpoints EFFECTIVEMENT créés pendant cette mesure (le plafond n'est qu'un
+        # maximum) : lus dans le journal du serveur, « non mesuré » quand il est muet.
+        res.checkpoints = parse_checkpoints(journal)
+        return res
 
     def probe_isolation(self, ctx: int = 4096) -> tuple[int, int]:
         """Sonde d'isolation du cache : (retraités au 1er passage, retraités au
@@ -340,6 +480,7 @@ class ServerProbe:
             return first, back
         finally:
             self._kill(proc)
+            self._read_log()
             time.sleep(4)
 
     def verify_cache(self, ctx: int = 4096) -> dict:
@@ -370,6 +511,7 @@ class ServerProbe:
             }
         finally:
             self._kill(proc)
+            self._read_log()
             time.sleep(4)
 
 

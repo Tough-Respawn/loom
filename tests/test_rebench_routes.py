@@ -331,6 +331,35 @@ def test_rebench_verdict_porte_la_validation_du_reglage_final(env, monkeypatch):
     assert "ne reproduit pas" not in txt
 
 
+def test_rebench_verdict_dit_les_checkpoints_effectifs_du_reglage_final(
+    env, monkeypatch
+):
+    """Revue 2026-10-10 : 32 est un plafond, pas le nombre créé pendant la mesure. Le
+    verdict dit le compte EFFECTIF lu dans le journal serveur, ou « non mesuré »."""
+    calib = dict(
+        CALIB,
+        context=8192,
+        final=dict(
+            _FINAL, checkpoints_effectifs=3, checkpoints_plafond=32, checkpoint_mb=149.6
+        ),
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "checkpoints effectifs 3" in txt and "plafond 32 par slot" in txt
+    assert "149.6" in txt
+
+
+def test_rebench_verdict_dit_checkpoints_non_mesures(env, monkeypatch):
+    calib = dict(
+        CALIB,
+        context=8192,
+        final=dict(_FINAL, checkpoints_detail="non mesuré : journal serveur vide"),
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "checkpoints : non mesuré" in txt
+
+
 def test_rebench_verdict_previent_quand_le_reglage_final_ne_reproduit_pas(
     env, monkeypatch
 ):

@@ -719,10 +719,13 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 )
             else:
                 coh = ""
+            from loom.setup.placement import checkpoints_text
+
             final_line = (
                 f"réglage final {fin['placement']} (ctx {fin['ctx']}, {fin['slots']} slots, "
                 f"ub {fin['ubatch']}/b {fin['batch']}) : génération {fin['tg_ts']} t/s, "
-                f"prefill {fin['pp_ts']} t/s à profondeur {fin['depth']}{coh}."
+                f"prefill {fin['pp_ts']} t/s à profondeur {fin['depth']}{coh}"
+                f"{checkpoints_text(fin)}."
             )
         # Un plancher n'est pas une mesure : le verdict le dit.
         valide = bool(calib.get("valide", True))

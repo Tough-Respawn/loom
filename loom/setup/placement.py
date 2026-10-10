@@ -605,7 +605,7 @@ def _agreger(echantillons: list[dict]) -> dict:
     if not tgs:
         return {"echec": "débit illisible"}
     mean = sum(tgs) / len(tgs)
-    return {
+    out = {
         "tg_ts": round(mean, 2),
         "pp_ts": round(sum(pps) / len(pps), 2) if pps else 0.0,
         "mem_mb": max(int(e.get("mem_mb") or 0) for e in echantillons),
@@ -615,6 +615,45 @@ def _agreger(echantillons: list[dict]) -> dict:
         else 0.0,
         "echantillons": list(echantillons),
     }
+    # Checkpoints EFFECTIFS (journal serveur, cf. topology.parse_checkpoints) : le
+    # maximum des échantillons, ou la raison pour laquelle rien n'a été mesuré. Rien
+    # quand la sonde ne rapporte pas de checkpoints du tout.
+    cps = [
+        e["checkpoints"] for e in echantillons if isinstance(e.get("checkpoints"), dict)
+    ]
+    if cps:
+        vus = [c for c in cps if c.get("effectifs") is not None]
+        if vus:
+            top = max(vus, key=lambda c: int(c["effectifs"]))
+            out["checkpoints_effectifs"] = int(top["effectifs"])  # vivants, tous slots
+            if top.get("max_par_slot") is not None:
+                out["checkpoints_max_par_slot"] = int(top["max_par_slot"])
+            if top.get("plafond") is not None:
+                out["checkpoints_plafond"] = int(top["plafond"])  # par slot
+            if top.get("taille_mb") is not None:
+                out["checkpoint_mb"] = float(top["taille_mb"])
+        out["checkpoints_detail"] = str((vus[-1] if vus else cps[-1]).get("source", ""))
+    return out
+
+
+def checkpoints_text(mesure: dict) -> str:
+    """Suffixe lisible d'une mesure agrégée : « ; checkpoints effectifs 4 (2 par slot au
+    plus, plafond 32 par slot ; 149.6 Mio chacun, ~598 Mio) », « ; checkpoints : non
+    mesuré : … », ou "" quand rien n'a été rapporté."""
+    n = (mesure or {}).get("checkpoints_effectifs")
+    if n is not None:
+        parts = []
+        if mesure.get("checkpoints_max_par_slot") is not None:
+            parts.append(f"{mesure['checkpoints_max_par_slot']} par slot au plus")
+        if mesure.get("checkpoints_plafond"):
+            parts.append(f"plafond {mesure['checkpoints_plafond']} par slot")
+        txt = f" ; checkpoints effectifs {n}"
+        if mesure.get("checkpoint_mb"):
+            taille = float(mesure["checkpoint_mb"])
+            parts.append(f"{taille} Mio chacun, ~{round(taille * int(n))} Mio")
+        return txt + (f" ({', '.join(parts)})" if parts else "")
+    detail = (mesure or {}).get("checkpoints_detail")
+    return f" ; checkpoints : {detail}" if detail else ""
 
 
 def _incertains(mesures: dict[str, dict]) -> list[str]:
@@ -699,6 +738,7 @@ def _mesurer(
                 "mem_mb": int(r.mem_mb or 0),
                 "prompt_n": getattr(r, "prompt_n", None),
                 "predicted_n": getattr(r, "predicted_n", None),
+                "checkpoints": getattr(r, "checkpoints", None),
             }
             samples[k].append({kk: vv for kk, vv in ech.items() if vv is not None})
 
@@ -1148,6 +1188,7 @@ def validate_final(
             "mem_mb": int(r.mem_mb or 0),
             "prompt_n": getattr(r, "prompt_n", None),
             "predicted_n": getattr(r, "predicted_n", None),
+            "checkpoints": getattr(r, "checkpoints", None),
         }
         echantillons.append({k: v for k, v in ech.items() if v is not None})
     m = _agreger(echantillons)
