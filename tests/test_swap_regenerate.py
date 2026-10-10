@@ -12,6 +12,7 @@ def test_regenerate_garde_les_reglages_machine(monkeypatch, tmp_path):
         models_dir=tmp_path,
         context=8192,
         override_n_gpu_layers=None,
+        override_threads=10,
         n_parallel=1,
         default_ubatch=2048,
         default_batch=4096,
@@ -31,3 +32,4 @@ def test_regenerate_garde_les_reglages_machine(monkeypatch, tmp_path):
     assert seen["default_batch"] == 4096
     assert seen["default_checkpoint_min_step"] == 1024
     assert seen["log_verbosity"] == 4  # journal llama-server conservé à la régénération
+    assert seen["override_threads"] == 10  # threads mesurés par le bench, comme serve.py

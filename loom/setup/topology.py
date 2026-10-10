@@ -21,8 +21,9 @@ Principes (chacun répond à un pattern de l'audit) :
 5. LA DÉCISION PORTE SON MÉCANISME : la trace dit quelle contrainte a mordu
    (capacité, vitesse, budget temps, limite du modèle). (P6)
 
-Le premier run llama-server d'une session mesure des débits ÷2 (caches froids,
-allocation pinnée) : chaque sonde de vitesse est précédée d'un warmup jetable.
+Un llama-server qui vient de démarrer mesure des débits ÷2 (caches froids,
+allocation pinnée) : chaque run relançant un serveur neuf, chaque mesure de vitesse
+est précédée de son propre warmup jetable.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 
+from loom.runtime.effective import launch_flags
 from loom.runtime.server_args import build_server_args
 
 TOPO_MOE_HYBRIDE = "moe_hybride"  # experts en RAM, attention + KV en VRAM
@@ -99,7 +101,7 @@ def capacity_ctx(
 @dataclass
 class ProbeResult:
     ctx: int
-    mem_mb: int  # VRAM (topologies GPU) ou RSS du process (topologie RAM)
+    mem_mb: int  # selon ServerProbe.memory_mode : device, delta de RAM (UMA) ou RSS
     tg_ts: float | None = None  # décode t/s à ~85 % de profondeur (si sondé)
     pp_ts: float | None = None
 
@@ -123,18 +125,54 @@ class ServerProbe:
     # Batchs de prefill sondés par probe_ubatch (None = défauts llama-server).
     ubatch: int | None = None
     batch: int | None = None
+    # Profil matériel de l'exécutant (`--list-devices`) : les flags machine (profil
+    # GPU, mémoire unifiée) en sont dérivés par effective.launch_flags, comme dans
+    # serve.py et swap.py. Sans profil (tests, anciens appelants) la topologie décide.
+    profile: object = None
     port: int = 8131
     health_timeout_s: int = 600
     popen: object = subprocess.Popen
     kill: object = None
-    vram_mb: object = None
-    warmed_up: bool = field(default=False, init=False)
+    vram_mb: object = None  # () -> Mo utilisés sur le device (GPU discret)
+    ram_avail: object = None  # () -> Mo de RAM disponible (mémoire unifiée)
+    _ram_before: int = field(default=0, init=False, repr=False)
+
+    def _flags(self) -> tuple[bool, bool]:
+        """(gpu_tuning, unified_memory) de l'exécutant."""
+        if self.profile is not None:
+            lf = launch_flags(self.profile, None)
+            return lf.gpu_tuning, lf.unified_memory
+        return self.topology != TOPO_RAM, False
+
+    @property
+    def memory_mode(self) -> str:
+        """Ce que `mem_mb` MESURE — une définition par type de machine :
+        - "rss" (pas de GPU) : working set du process, poids mmap compris ;
+        - "ram_delta" (mémoire unifiée) : RAM disponible du système AVANT le lancement
+          moins APRÈS /health. La VRAM y est la RAM : ce delta compte UNE fois poids,
+          KV et buffers du pilote, que ni nvidia-smi (absent sur AMD) ni le RSS
+          (allocations du pilote hors process) ne voient. Suppose une machine calme ;
+        - "device" (GPU discret) : mémoire utilisée du device (vram_mb() ou nvidia-smi)."""
+        gpu_tuning, unified = self._flags()
+        if not gpu_tuning:
+            return "rss"
+        return "ram_delta" if unified else "device"
+
+    def _ram_available(self) -> int:
+        if self.ram_avail is not None:
+            return int(self.ram_avail())
+        from loom.runtime.hardware import ram_available_mb
+
+        return ram_available_mb()
 
     def _measure_mem(self, proc) -> int:
-        if self.topology == TOPO_RAM:
+        mode = self.memory_mode
+        if mode == "rss":
             import psutil
 
             return int(psutil.Process(proc.pid).memory_info().rss // (1024 * 1024))
+        if mode == "ram_delta":
+            return max(0, self._ram_before - self._ram_available())
         if self.vram_mb is not None:
             return int(self.vram_mb())
         out = subprocess.run(
@@ -200,6 +238,7 @@ class ServerProbe:
     def _start(self, ctx: int):
         """Lance llama-server avec les flags EXACTS de l'exécutant et attend /health.
         Renvoie le process ; le tue et lève si le chargement échoue."""
+        gpu_tuning, unified = self._flags()
         args = build_server_args(
             server_bin=self.server_bin,
             model_path=self.model_path,
@@ -208,13 +247,18 @@ class ServerProbe:
             n_gpu_layers=self.ngl,
             threads=self.threads,
             mmproj_path=self.mmproj_path,
-            gpu_tuning=self.topology != TOPO_RAM,
+            gpu_tuning=gpu_tuning,
+            unified_memory=unified,
             n_parallel=self.n_parallel,
             cpu_moe=self.cpu_moe,
             n_cpu_moe=self.n_cpu_moe,
             ubatch=self.ubatch,
             batch=self.batch,
         )
+        if self.memory_mode == "ram_delta":
+            # Référence prise juste avant le lancement : le delta à /health est la
+            # mémoire que CE serveur a prise au système.
+            self._ram_before = self._ram_available()
         proc = self.popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t0 = time.monotonic()
         while time.monotonic() - t0 < self.health_timeout_s:
@@ -235,10 +279,9 @@ class ServerProbe:
             res = ProbeResult(ctx=ctx, mem_mb=self._measure_mem(proc))
             if depth_tokens:
                 phrase = "La pente mesurée vaut mieux que la formule du header. "
-                if not self.warmed_up:
-                    # Écarter le premier run dont les caches sont encore froids.
-                    self._completion(phrase * 40, 16)
-                    self.warmed_up = True
+                # Serveur NEUF à chaque run (caches froids, allocation pinnée) : un
+                # warmup jetable précède CHAQUE mesure, pas seulement la première.
+                self._completion(phrase * 40, 16)
                 # Mesurer la tokenisation réelle car sa densité varie fortement selon le modèle.
                 tok_per_rep = self._tokens_of(phrase)
                 # Réserver la génération et le surcoût du template dans la fenêtre.

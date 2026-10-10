@@ -1003,7 +1003,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         return
 
     # Mesurer pente et débit avec les vrais flags évite les erreurs d'une formule KV théorique.
-    vram_total = deps.gpu_vram_total_mb()
+    # La VRAM vient d'abord du profil de l'exécutant (`--list-devices`, Vulkan compris) ;
+    # nvidia-smi n'est qu'un repli — sinon une AMD passe en topologie « ram » et la
+    # sonde mesure sans profil GPU (vécu 2026-10-09).
+    vram_total = int(hw.vram_total_mb or deps.gpu_vram_total_mb() or 0)
     topo = topo_mod.discover_topology(
         meta, deps.has_gpu_backend(server_bin), vram_total
     )
@@ -1024,11 +1027,13 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         mmproj_path=str(gguf_path.parent / mmproj_name) if mmproj_name else None,
         cpu_moe=bool(model_toml.get("cpu_moe", is_moe)),
         n_cpu_moe=model_toml.get("n_cpu_moe"),
+        # Flags machine et mode de mesure mémoire dérivés du profil de l'exécutant.
+        profile=hw,
     )
     # Placement MESURÉ des poids (où vivent denses et experts) AVANT isolation et
-    # calibration : elles mesurent ainsi la configuration qui servira vraiment. La VRAM
-    # vient du profil matériel (Vulkan compris), pas du seul nvidia-smi ; mémoire
-    # unifiée = le device est la RAM. Cf. loom/setup/placement.py (Ornith, 2026-10-09).
+    # calibration : elles mesurent ainsi la configuration qui servira vraiment.
+    # Mémoire unifiée = le device est la RAM. Cf. loom/setup/placement.py (Ornith,
+    # 2026-10-09).
     from dataclasses import replace as _dc_replace
 
     from loom.setup import placement as place_mod
@@ -1040,7 +1045,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         model_size_mb=model_size_mb,
         kv_mb=kv_mb,
         gpu_backend=bool(deps.has_gpu_backend(server_bin) and hw.has_gpu),
-        vram_total_mb=int(hw.vram_total_mb or vram_total or 0),
+        vram_total_mb=vram_total,
         ram_total_mb=ram_total_mb,
         uma=not hw.vram_is_discrete,
         headroom_mb=headroom,

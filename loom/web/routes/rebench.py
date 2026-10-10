@@ -75,11 +75,36 @@ def _placement_implied_ngl(label: str):
     return {"gpu_total": 999, "cpu": 0}.get(label)
 
 
+def _probe_settings(
+    meta: dict, mt: dict, over: dict, hw, *, gpu_backend: bool, vram_fallback_mb: int
+) -> tuple[str, int, int, int]:
+    """(topologie, VRAM totale, threads, ngl) de la sonde, avec la dérivation de
+    l'EXÉCUTANT. La VRAM vient du profil `--list-devices` (Vulkan compris) et
+    nvidia-smi n'est qu'un repli : sans ça la 860M passait en topologie « ram » et
+    la sonde mesurait sans profil GPU. Threads = effective.launch_flags (override
+    machine, sinon cœurs physiques en GPU, tous en CPU). ngl : la borne PAR MODÈLE
+    (model.toml n_gpu_layers) PRIME — c'est elle qui évite le spill (gemma4 à
+    36/42) —, sinon doctrine MoE (99, experts en RAM), sinon l'override machine."""
+    from loom.runtime.effective import launch_flags
+    from loom.setup import topology as topo_mod
+
+    vram = int(getattr(hw, "vram_total_mb", 0) or vram_fallback_mb or 0)
+    topo = topo_mod.discover_topology(meta, bool(gpu_backend), vram)
+    threads = launch_flags(hw, over.get("threads")).threads
+    gpu = topo != topo_mod.TOPO_RAM
+    if mt.get("n_gpu_layers") is not None:
+        ngl = int(mt["n_gpu_layers"])
+    elif meta.get("expert_count") and gpu:
+        ngl = 99
+    else:
+        ngl = int(over.get("n_gpu_layers", 99 if gpu else 0))
+    return topo, vram, threads, ngl
+
+
 def _run_calibration(S, spec, progress):
     """Cœur de mesure (préconditions + topologie + calibrate), avec les flags EXACTS
     du modèle. Lève RuntimeError actionnable si la machine n'est pas prête.
     Isolé pour être stubbable dans les tests (aucun subprocess en CI)."""
-    import os
     import tomllib
 
     import psutil
@@ -102,28 +127,25 @@ def _run_calibration(S, spec, progress):
         raise RuntimeError(f"GGUF introuvable ({gguf})")
     meta = read_gguf_meta(gguf)
     is_moe = bool(meta.get("expert_count"))
-    vram = topo_mod.gpu_vram_total_mb()
-    topo = topo_mod.discover_topology(meta, bench_mod.has_gpu_backend(server_bin), vram)
+    # Le profil matériel de l'EXÉCUTANT (`--list-devices`, Vulkan compris) fixe la
+    # topologie, les flags machine de la sonde et le mode de mesure mémoire ;
+    # nvidia-smi n'est qu'un repli de VRAM.
+    from loom.runtime.hardware import detect_hardware
+
+    hw = detect_hardware(str(server_bin))
+    gpu_backend = bool(bench_mod.has_gpu_backend(server_bin) and hw.has_gpu)
+    over = raw.get("override") or {}
+    topo, vram, threads, ngl = _probe_settings(
+        meta,
+        mt,
+        over,
+        hw,
+        gpu_backend=gpu_backend,
+        vram_fallback_mb=topo_mod.gpu_vram_total_mb(),
+    )
     headroom = int((raw.get("server") or {}).get("gpu_kv_headroom_mb", 640) or 640)
     ram = int(psutil.virtual_memory().total // (1024 * 1024))
     budget = topo_mod.memory_budget_mb(topo, vram, ram, headroom)
-    over = raw.get("override") or {}
-    # Threads : même résolution que l'exécutant (serve.py) — override machine,
-    # sinon cœurs physiques (≈ logiques/2) en GPU, tous les threads en CPU pur.
-    logical = os.cpu_count() or 4
-    threads = int(
-        over.get("threads")
-        or (logical if topo == topo_mod.TOPO_RAM else max(1, logical // 2))
-    )
-    # ngl : la borne PAR MODÈLE (model.toml n_gpu_layers) PRIME — c'est elle qui
-    # évite le spill (ex. gemma4 à 36/42 couches). Sinon doctrine MoE (99, experts
-    # en RAM), sinon l'override machine.
-    if mt.get("n_gpu_layers") is not None:
-        ngl = int(mt["n_gpu_layers"])
-    elif is_moe and topo != topo_mod.TOPO_RAM:
-        ngl = 99
-    else:
-        ngl = int(over.get("n_gpu_layers", 99 if topo != topo_mod.TOPO_RAM else 0))
     mmproj = mt.get("mmproj_filename")
     probe = topo_mod.ServerProbe(
         server_bin=str(server_bin),
@@ -134,12 +156,10 @@ def _run_calibration(S, spec, progress):
         mmproj_path=str(mdir / mmproj) if mmproj else None,
         cpu_moe=bool(mt.get("cpu_moe", is_moe)),
         n_cpu_moe=mt.get("n_cpu_moe"),
+        profile=hw,
     )
     # Placement MESURÉ avant isolation et calibration (même séquence que loom-setup) :
-    # la VRAM vient du profil matériel (Vulkan compris), le device est la RAM en UMA.
-    from loom.runtime.hardware import detect_hardware
-
-    hw = detect_hardware(str(server_bin))
+    # le device est la RAM en mémoire unifiée.
     progress("sonde de placement (où vivent les poids)…")
     pl_verdict, probe = _measure_placement(
         probe,
@@ -148,7 +168,7 @@ def _run_calibration(S, spec, progress):
         hw=hw,
         ram_total_mb=ram,
         headroom_mb=headroom,
-        gpu_backend=bool(bench_mod.has_gpu_backend(server_bin) and hw.has_gpu),
+        gpu_backend=gpu_backend,
         progress=progress,
     )
     # Sonde d'isolation AVANT la calibration : si le modèle exige un 2e slot,

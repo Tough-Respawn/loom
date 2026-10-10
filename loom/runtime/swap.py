@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from loom.config import ModelConfig
+from loom.runtime.effective import launch_flags
 from loom.runtime.hardware import HardwareProfile
 from loom.runtime.ngl import resolve_ngl
 from loom.runtime.server_args import build_server_args, resolve_parallel
@@ -29,6 +30,7 @@ def _model_cmd(
     default_batch: int | None = None,
     default_checkpoint_min_step: int | None = None,
     log_verbosity: int | None = None,
+    override_threads: int | None = None,
 ) -> str:
     base = (
         model.dir or models_dir
@@ -38,20 +40,19 @@ def _model_cmd(
     ngl = resolve_ngl(model, profile, override_n_gpu_layers)
     ctx = model.context or context
     mmproj = f"{base}/{model.mmproj_filename}" if model.mmproj_filename else None
-    # Reprendre les réglages mono-modèle évite des performances différentes via le routeur.
-    threads = (
-        max(1, profile.cpu_threads // 2) if profile.has_gpu else profile.cpu_threads
-    )
+    # Mêmes flags machine que serve.py et que la sonde : une seule dérivation
+    # (effective.launch_flags), sinon le routeur mesure/sert une autre configuration.
+    flags = launch_flags(profile, override_threads)
     args = build_server_args(
         server_bin=model.server_bin or llama_bin,
         model_path=model_path,
         port="${PORT}",
         context=ctx,
         n_gpu_layers=ngl,
-        threads=threads,
+        threads=flags.threads,
         mmproj_path=mmproj,
-        gpu_tuning=profile.has_gpu,
-        unified_memory=not profile.vram_is_discrete,
+        gpu_tuning=flags.gpu_tuning,
+        unified_memory=flags.unified_memory,
         cpu_moe=model.cpu_moe,
         n_cpu_moe=model.n_cpu_moe,
         slot_save_dir=slot_save_dir,
@@ -93,6 +94,7 @@ def build_swap_config(
     default_batch: int | None = None,
     default_checkpoint_min_step: int | None = None,
     log_verbosity: int | None = None,
+    override_threads: int | None = None,
 ) -> dict:
     return {
         "healthCheckTimeout": SWAP_HEALTH_TIMEOUT_S,
@@ -111,6 +113,7 @@ def build_swap_config(
                     default_batch=default_batch,
                     default_checkpoint_min_step=default_checkpoint_min_step,
                     log_verbosity=log_verbosity,
+                    override_threads=override_threads,
                 )
             }
             for m in models

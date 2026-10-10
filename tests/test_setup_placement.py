@@ -298,6 +298,10 @@ def test_step_bench_mesure_le_placement_et_l_ecrit(monkeypatch, tmp_path):
         n_parallel: int = 1
         ubatch: object = None
         batch: object = None
+        profile: object = None
+
+        def __post_init__(self):
+            sondes.append(self)
 
         def probe_isolation(self, ctx=4096):
             return 600, 4
@@ -308,6 +312,7 @@ def test_step_bench_mesure_le_placement_et_l_ecrit(monkeypatch, tmp_path):
                 r.tg_ts, r.pp_ts = (12.1, 217.0) if self.cpu_moe else (14.4, 262.0)
             return r
 
+    sondes: list = []
     con, printed = _console(assume_yes=True)
     deps = _deps(
         tmp_path,
@@ -336,6 +341,10 @@ def test_step_bench_mesure_le_placement_et_l_ecrit(monkeypatch, tmp_path):
     assert local["bench"]["placement"] == "gpu_total"
     assert local["bench"]["placement_gain_pct"] == 19.0
     assert "tout sur GPU" in "\n".join(printed)
+    # Fidélité : sans nvidia-smi, la VRAM vient du profil -> topologie GPU (pas « ram »),
+    # et la sonde reçoit le profil de l'exécutant pour en dériver ses flags machine.
+    assert sondes and sondes[0].topology == "moe_hybride"
+    assert sondes[0].profile is not None and sondes[0].profile.vram_total_mb == 48_789
 
 
 # ---- câblage /rebench : helper de mesure ------------------------------------------------

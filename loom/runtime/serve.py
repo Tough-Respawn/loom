@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from loom.config import RuntimeConfig, load_config
+from loom.runtime.effective import launch_flags
 from loom.runtime.hardware import (
     HardwareProfile,
     detect_hardware,
@@ -131,23 +132,18 @@ def build_launch(
         cfg.override_n_gpu_layers,
         cfg.gpu_kv_headroom_mb,
     )
-    # L'hyperthreading ralentit la passe CPU quand le GPU traite le reste du modèle.
-    if cfg.override_threads:
-        threads = cfg.override_threads
-    elif profile.has_gpu:
-        threads = max(1, profile.cpu_threads // 2)
-    else:
-        threads = profile.cpu_threads
+    # Flags machine partagés avec llama-swap et la sonde (effective.launch_flags).
+    flags = launch_flags(profile, cfg.override_threads)
     return build_server_args(
         server_bin=cfg.model.server_bin or cfg.server_bin,
         model_path=str(model_path),
         port=cfg.port,
         context=cfg.context,
         n_gpu_layers=n_gpu,
-        threads=threads,
+        threads=flags.threads,
         mmproj_path=mmproj_path,
-        gpu_tuning=profile.has_gpu,
-        unified_memory=not profile.vram_is_discrete,
+        gpu_tuning=flags.gpu_tuning,
+        unified_memory=flags.unified_memory,
         n_parallel=resolve_parallel(cfg.n_parallel, cfg.model.cache_isolation),
         cpu_moe=cfg.model.cpu_moe,
         n_cpu_moe=cfg.model.n_cpu_moe,
@@ -255,6 +251,7 @@ def _swap_config(cfg: RuntimeConfig, profile: HardwareProfile) -> dict:
         default_batch=cfg.default_batch,
         default_checkpoint_min_step=cfg.default_checkpoint_min_step,
         log_verbosity=cfg.server_log_verbosity,
+        override_threads=cfg.override_threads,
     )
 
 
