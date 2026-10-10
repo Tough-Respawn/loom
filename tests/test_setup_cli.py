@@ -516,6 +516,104 @@ def test_etape_bench_reglage_final_en_echec_n_ecrit_rien(monkeypatch, tmp_path):
     assert "context" not in mt and "cache_isolation" not in mt
     out = "\n".join(printed)
     assert "NON écrits" in out and "ErrorOutOfDeviceMemory" in out
+    # P3 : l'échec est archivé avec l'étape, l'erreur et les mesures déjà faites.
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    assert len(archives) == 1
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "réglage final"
+    assert "ErrorOutOfDeviceMemory" in arch["echec"]["erreur"]
+    assert arch["calibration"]["context"] == 32_768 and arch["placement"]
+    assert arch["materiel"]["gpu_name"] == "GPU 20Go" and "application" not in arch
+
+
+def test_etape_bench_part_de_l_isolation_actuelle_si_la_sonde_echoue(
+    monkeypatch, tmp_path
+):
+    """P1 : un modèle déjà en `cache_isolation = true` tournera à 2 slots ; si la sonde
+    d'isolation échoue, placement, calibration et réglage final doivent mesurer à 2
+    slots, pas à 1. Un nouveau verdict seul remplace l'isolation actuelle."""
+    from dataclasses import dataclass as _dc
+
+    _patch_paths(monkeypatch, tmp_path)
+    exe = tmp_path / "rt" / "llama-server.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"")
+    (tmp_path / "config" / "local.toml").write_text(
+        f'[server]\nbin = "{str(exe).replace(chr(92), "/")}"\n', encoding="utf-8"
+    )
+    mdir = tmp_path / "models" / "local" / "text" / "m1"
+    mdir.mkdir(parents=True)
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 1\nsize_mb = 5600\n'
+        "cache_isolation = true\n",
+        encoding="utf-8",
+    )
+    (mdir / "m.gguf").write_bytes(b"pas-un-vrai-gguf")
+    rows = [
+        {"threads": 10, "ngl": 99, "kind": "tg", "ts": 3.4},
+        {"threads": 10, "ngl": 99, "kind": "pp", "ts": 25.0},
+    ]
+    sondes: list = []
+
+    @_dc
+    class _FakeProbe:
+        server_bin: str = ""
+        model_path: str = ""
+        threads: int = 0
+        ngl: int = 0
+        topology: str = ""
+        mmproj_path: object = None
+        cpu_moe: bool = False
+        n_cpu_moe: object = None
+        n_parallel: int = 1
+        ubatch: object = None
+        batch: object = None
+        checkpoint_min_step: object = None
+        ctx_checkpoints: object = None
+        profile: object = None
+
+        def __post_init__(self):
+            sondes.append(self)
+
+        def probe_isolation(self, ctx=4096):
+            raise RuntimeError("health timeout")
+
+        def verify_cache(self, ctx=4096):
+            return {
+                "first": 600,
+                "back": 4,
+                "annex_slot": 1,
+                "slots": self.n_parallel,
+                "reused": True,
+            }
+
+        def run(self, ctx, depth):
+            from loom.setup.topology import ProbeResult
+
+            r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+            if depth:
+                r.tg_ts, r.pp_ts = 5.0, 20.0
+            return r
+
+    con, _printed = _console(assume_yes=True)
+    deps = _deps(
+        tmp_path,
+        ram_available_mb=lambda: 10_240,
+        run_bench=lambda b, m, t, g, n_cpu_moe=0, progress=None: rows,
+        find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
+        has_gpu_backend=lambda sb: True,
+        cpu_physical=lambda: 10,
+        gpu_vram_total_mb=lambda: 6_144,
+        make_probe=_FakeProbe,
+        detect_hardware=lambda server_bin=None: HardwareProfile(
+            True, "GPU 20Go", 20_000, 16, vram_is_discrete=True
+        ),
+    )
+    assert run(con, deps) == 0
+    # Toutes les sondes (initiale et clones) ont mesuré à 2 slots.
+    assert sondes and all(s.n_parallel == 2 for s in sondes)
+    mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
+    assert mt["cache_isolation"] is True  # conservé : pas de nouveau verdict
 
 
 def test_aucun_asset_compatible(monkeypatch, tmp_path):

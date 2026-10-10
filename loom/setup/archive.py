@@ -48,6 +48,44 @@ def _json_safe(obj):
     return obj
 
 
+#: Schéma COMMUN du compte rendu d'un bench (loom-setup et /rebench) : les clés qui
+#: permettent de reproduire chaque mesure. Une trace progressive peut en porter
+#: d'autres (couples, étape courante…) : conservées.
+BENCH_SCHEMA = (
+    "source",
+    "etape",
+    "gguf",
+    "server_bin",
+    "build",
+    "materiel",
+    "flags",
+    "profil",
+    "contexte_utile",
+    "kv_estime_mb",
+    "llama_bench",
+    "isolation",
+    "plan",
+    "placement",
+    "placement_avant",
+    "calibration",
+    "ubatch",
+    "final",
+    "cache",
+    "ecrit",
+    "verdict_texte",
+    "verdict",
+    "echec",
+)
+
+
+def bench_payload(**sections) -> dict:
+    """Compte rendu au schéma commun : toutes les clés de BENCH_SCHEMA présentes (None
+    si absentes), plus les sections supplémentaires passées."""
+    out = {k: None for k in BENCH_SCHEMA}
+    out.update(sections)
+    return out
+
+
 def archive_bench(
     model_id: str,
     payload: dict,

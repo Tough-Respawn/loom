@@ -105,14 +105,31 @@ def _sessions_text(env, needles=(), timeout=20.0) -> str:
         time.sleep(0.05)
 
 
-def _launch(env, monkeypatch, calib=CALIB, error=None):
+# Trace progressive que la vraie _run_calibration remplit étape par étape (compte
+# rendu commun loom-setup / rebench) : le stub la rejoue.
+TRACE = {
+    "etape": "fin",
+    "gguf": "C:/models/fake.gguf",
+    "server_bin": "C:/rt/llama-server.exe",
+    "materiel": {"gpu_name": "GPU test", "vram_total_mb": 24_000},
+    "flags": {"threads": 8, "gpu_tuning": True, "unified_memory": False, "slots": 2},
+    "profil": ["architecture test, 32 couches (déclaré)"],
+    "plan": {"candidates": [{"key": "gpu_total"}], "non_explores": []},
+}
+
+
+def _launch(env, monkeypatch, calib=CALIB, error=None, trace=TRACE, before_error=None):
     from loom.web import routes
 
     monkeypatch.setitem(routes._REBENCH, "job", None)
 
-    def fake_run(S, spec, progress):
+    def fake_run(S, spec, progress, trace_out=None):
         progress("sonde 4096")
+        if trace_out is not None:
+            trace_out.update(trace)
         if error is not None:
+            if before_error and trace_out is not None:
+                trace_out.update(before_error)
             raise error
         return calib, env.mdir / "fake.gguf"
 
@@ -134,7 +151,9 @@ def test_rebench_confirmation_et_verdict_portent_des_boutons(env, monkeypatch):
 
     monkeypatch.setitem(routes._REBENCH, "job", None)
     monkeypatch.setattr(
-        routes.rebench, "_run_calibration", lambda S, spec, progress: (CALIB, None)
+        routes.rebench,
+        "_run_calibration",
+        lambda S, spec, progress, trace_out=None: (CALIB, None),
     )
     r = env.web.post("/chat", data={"message": "/rebench loc-test"})
     assert {"type": "choices", "options": ["oui", "annuler"]} in _sse_events(r.data)
@@ -366,10 +385,54 @@ def test_rebench_archive_le_verdict_puis_l_application(env, monkeypatch):
     assert arch["model_id"] == "loc-test" and arch["build"] == "b7000-abc1234"
     assert arch["calibration"]["context"] == 8192 and arch["final"]["tg_ts"] == 11.7
     assert "Verdict" in arch["verdict_texte"] and "application" not in arch
+    # Compte rendu COMMUN : matériel, binaire, flags, profil, plan — reproductible.
+    assert arch["materiel"]["gpu_name"] == "GPU test"
+    assert arch["server_bin"].endswith("llama-server.exe")
+    assert arch["flags"]["threads"] == 8 and arch["flags"]["slots"] == 2
+    assert arch["profil"] and arch["plan"]["candidates"]
     r = env.web.post("/chat", data={"message": "oui"})
     assert "Application" in _sse_texts(r.data)
     arch = json.loads(archives[0].read_text(encoding="utf-8"))
     assert arch["application"]["context"] == 8192
+
+
+def test_rebench_echec_archive_la_trace_partielle(env, monkeypatch):
+    """P3 : une exception pendant la calibration ne perd plus les mesures déjà faites —
+    la trace progressive est archivée avec l'étape et l'erreur."""
+    from loom.setup import archive as _archive
+
+    monkeypatch.setattr(_archive, "BENCH_DIR", env.tmp / "var" / "bench")
+    _launch(
+        env,
+        monkeypatch,
+        error=RuntimeError("health timeout à ctx=65536"),
+        before_error={
+            "etape": "calibration",
+            "isolation": {"necessaire": True, "first": 721, "back": 6},
+            "placement": {"key": "gpu_total@ub512@b2048", "tg_ts": 11.3},
+        },
+    )
+    txt = _wait_verdict(env)
+    assert "échouée" in txt
+    archives = list((env.tmp / "var" / "bench" / "loc-test").glob("*.json"))
+    assert len(archives) == 1
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "calibration"
+    assert "health timeout" in arch["echec"]["erreur"]
+    assert arch["isolation"]["first"] == 721 and arch["placement"]["tg_ts"] == 11.3
+    assert arch["materiel"]["gpu_name"] == "GPU test" and "application" not in arch
+
+
+def test_rebench_signale_une_archive_non_ecrite(env, monkeypatch):
+    from loom.setup import archive as _archive
+
+    def _boom(*a, **k):
+        raise OSError("disque plein")
+
+    monkeypatch.setattr(_archive, "archive_bench", _boom)
+    _launch(env, monkeypatch, calib=dict(CALIB, context=8192))
+    txt = _wait_verdict(env)
+    assert "archive non écrite" in txt and "disque plein" in txt
 
 
 def test_rebench_deja_au_top_exige_un_reglage_final_valide(env, monkeypatch):

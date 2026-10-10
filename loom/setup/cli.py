@@ -829,6 +829,26 @@ def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> No
     atomic_write_text(p, "\n".join(lines) + "\n")
 
 
+def _archive_setup(
+    con, trace: dict, *, echec: dict | None = None, applied: dict | None = None
+):
+    """Archive le compte rendu progressif d'un bench loom-setup (archive.bench_payload),
+    en échec (étape + erreur) comme en succès (+ application notée). Un échec d'écriture
+    est DIT, jamais silencieux, et n'empêche rien."""
+    from loom.setup import archive as archive_mod
+
+    model_id = Path(str(trace.get("gguf") or "modele")).parent.name or "modele"
+    try:
+        path = archive_mod.archive_bench(
+            model_id, archive_mod.bench_payload(**trace, echec=echec)
+        )
+        if applied is not None:
+            archive_mod.note_application(path, applied)
+        con.say(f"  archive : {path}")
+    except Exception as exc:  # noqa: BLE001 - l'archive n'empêche jamais le bench
+        con.say(f"  [attention] archive du bench non écrite ({exc}).")
+
+
 def _sans_none(obj):
     """Copie récursive sans valeurs None : TOML n'a pas de null, tomlkit refuse."""
     if isinstance(obj, dict):
@@ -1069,8 +1089,12 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         server_bin=probe_bin,
         model_path=str(gguf_path),
         threads=best["threads"],
-        # Slots de l'exécutant : [server] n_parallel global (l'isolation peut monter à 2).
-        n_parallel=topo_mod.probe_slots(server_cfg, None),
+        # Slots de l'exécutant : [server] n_parallel global monté par l'isolation
+        # ACTUELLE (model.toml) — un nouveau verdict seul la remplacera. Sans ça, une
+        # sonde d'isolation en échec faisait mesurer à 1 slot un modèle qui tourne à 2.
+        n_parallel=topo_mod.probe_slots(
+            server_cfg, bool(model_toml.get("cache_isolation"))
+        ),
         ngl=(
             cur_pl.ngl
             if (cur_pl is not None and topo != topo_mod.TOPO_RAM)
@@ -1100,6 +1124,15 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     # Isolation D'ABORD (sur la configuration actuelle) : le placement se compare
     # ensuite avec les slots FINAUX — le KV du second slot compte dans la faisabilité
     # et dans la mesure (revue du 2026-10-10 : « mêmes slots »).
+    # Compte rendu PROGRESSIF (archive.BENCH_SCHEMA) : archivé même si une étape échoue.
+    trace: dict = {
+        "source": "loom-setup",
+        "etape": "isolation",
+        "gguf": str(gguf_path),
+        "server_bin": probe_bin,
+        "materiel": hw,
+        "llama_bench": best,
+    }
     con.progress("sonde d'isolation du cache (A -> pollution -> A)…")
     isolation: bool | None = None
     iso_detail = ""
@@ -1112,16 +1145,26 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             iso_detail += ", mémoire récurrente"
     except Exception as exc:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
         con.progress_end()
+        iso_detail = f"sonde illisible ({exc}) — isolation actuelle conservée"
         con.say(
-            f"  [attention] sonde d'isolation illisible ({exc}) — verdict non écrit."
+            f"  [attention] sonde d'isolation illisible ({exc}) — verdict non écrit, "
+            f"isolation actuelle conservée ({probe.n_parallel} slot(s))."
         )
     else:
         con.progress_end()
         marque = "[attention]" if isolation else "[ok]"
-        if isolation:
-            probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
+        # Nouveau verdict : il remplace l'isolation actuelle (dans les deux sens).
+        probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
         # Libellé honnête : ce que la mesure a montré, et pourquoi on isole quand même.
         con.say(f"  {marque} {topo_mod.isolation_text(isolation, first, back)}")
+    trace["isolation"] = {
+        "necessaire": isolation,
+        "first": first,
+        "back": back,
+        "detail": iso_detail,
+        "avant": bool(model_toml.get("cache_isolation", False)),
+        "slots_mesure": probe.n_parallel,
+    }
     # Placement MESURÉ des poids (où vivent denses et experts) x couples de batchs,
     # AVANT la calibration : elle mesure ainsi la configuration qui servira vraiment.
     # Cf. loom/setup/placement.py (Ornith, 2026-10-09).
@@ -1160,6 +1203,25 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     couples = place_mod.batch_couples(
         (getattr(probe, "ubatch", None), getattr(probe, "batch", None))
     )
+    trace.update(
+        etape="placement",
+        profil=profile.describe(),
+        contexte_utile=ctx_utile,
+        kv_estime_mb=kv_mb,
+        plan=plan,
+        couples=couples,
+        contrainte_prefill=prefill_c,
+        prefill_floor_ratio=pp_floor,
+        flags={
+            "threads": int(best["threads"]),
+            "gpu_tuning": bool(hw.has_gpu),
+            "unified_memory": bool(not hw.vram_is_discrete),
+            "ubatch": getattr(probe, "ubatch", None),
+            "batch": getattr(probe, "batch", None),
+            "slots": int(getattr(probe, "n_parallel", 1) or 1),
+            "checkpoint_min_step": getattr(probe, "checkpoint_min_step", None),
+        },
+    )
     con.progress("sonde de placement (où vivent les poids, x batchs)…")
     try:
         pl_res = place_mod.probe_placement(
@@ -1177,6 +1239,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
         pl_res = None
     con.progress_end()
+    trace["placement"] = pl_res
+    trace["etape"] = "calibration"
     if pl_res and pl_res.get("placement") is None:
         con.say(
             f"  [attention] placement : {pl_res['mecanisme']} — flags actuels conservés."
@@ -1213,8 +1277,11 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             f"  [échec] calibration échouée ({exc}) — context inchangé, relance loom-setup."
         )
         report.add("bench", "echec", f"calibration contexte : {exc}")
+        _archive_setup(con, trace, echec={"etape": "calibration", "erreur": str(exc)})
         return
     con.progress_end()
+    trace["calibration"] = calib
+    trace["etape"] = "batchs"
     context = calib["context"]
 
     # Sonde d'ubatch sur la MÊME sonde serveur que la calibration (flags exacts,
@@ -1255,6 +1322,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     # batchs mesurés) : conversation sur le slot 0, appel annexe routé comme Loom le
     # fera, retour — le cache doit être réutilisé. C'est la preuve qui justifie de
     # traiter le gros prefill comme un coût amorti.
+    trace["ubatch"] = ub_res
+    trace["etape"] = "réglage final"
     # Sonde FINALE = placement élu + slots décidés + batchs mesurés. D'abord valider ce
     # réglage complet au contexte CALIBRÉ, à la profondeur de la comparaison : le
     # verdict n'assemble plus des mesures prises avec des paramètres différents.
@@ -1285,6 +1354,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "cause levée."
         )
         report.add("bench", "echec", f"réglage final non validé : {final['echec']}")
+        trace["final"] = final
+        _archive_setup(
+            con, trace, echec={"etape": "réglage final", "erreur": final["echec"]}
+        )
         return
     else:
         if final.get("coherent") is None:
@@ -1328,6 +1401,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         else:
             con.say("  [attention] vérification du cache illisible.")
     build = deps.verify_binary(probe_bin) or "build ?"
+    trace.update(final=final, cache=cache_v, build=build, etape="écriture")
 
     values = {
         "server": {"context": context},
@@ -1458,53 +1532,20 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
                 else " ; cache NON réutilisé avec la configuration finale"
             ) + f" ({topo_mod.cache_check_text(cache_v)})"
         _set_model_cache_isolation(gguf_path, isolation, iso_detail + cache_txt)
-    # Archive DURABLE du bench (var/bench/<modèle>/<horodatage>.json) : matériel, build,
-    # flags, profil, isolation, placement (échantillons compris), calibration, réglage
-    # final, cache, ce qui a été écrit — puis la trace de l'application (immédiate ici).
-    from loom.setup import archive as archive_mod
-
-    try:
-        arch_path = archive_mod.archive_bench(
-            gguf_path.parent.name,
-            {
-                "source": "loom-setup",
-                "gguf": str(gguf_path),
-                "server_bin": probe_bin,
-                "build": build,
-                "materiel": hw,
-                "flags": values["bench"].get("placement_flags"),
-                "profil": profile.describe(),
-                "contexte_utile": ctx_utile,
-                "kv_estime_mb": kv_mb,
-                "llama_bench": best,
-                "isolation": {
-                    "necessaire": isolation,
-                    "first": first,
-                    "back": back,
-                    "detail": iso_detail,
-                },
-                "plan": plan,
-                "placement": pl_res,
-                "calibration": calib,
-                "ubatch": ub_res,
-                "final": final,
-                "cache": cache_v,
-                "ecrit": values,
-            },
-        )
-        archive_mod.note_application(
-            arch_path,
-            {
-                "context": context,
-                "placement": (pl_res or {}).get("placement"),
-                "ubatch": (ub_res or {}).get("ubatch"),
-                "batch": (ub_res or {}).get("batch"),
-                "cache_isolation": isolation,
-            },
-        )
-        con.say(f"  archive : {arch_path}")
-    except Exception as exc:  # noqa: BLE001 - l'archive n'empêche jamais le bench
-        con.say(f"  [attention] archive du bench non écrite ({exc}).")
+    # Archive DURABLE du bench (var/bench/<modèle>/<horodatage>.json) : le compte rendu
+    # progressif complet, puis la trace de l'application (immédiate ici).
+    trace.update(ecrit=values, etape="fin")
+    _archive_setup(
+        con,
+        trace,
+        applied={
+            "context": context,
+            "placement": (pl_res or {}).get("placement"),
+            "ubatch": (ub_res or {}).get("ubatch"),
+            "batch": (ub_res or {}).get("batch"),
+            "cache_isolation": isolation,
+        },
+    )
     gpu_txt = f", offload GPU -ngl {best['ngl']}" if best["ngl"] > 0 else ""
     con.say(
         f"  Mesuré : génération {best['tg_ts']:.1f} t/s · prefill "

@@ -60,5 +60,42 @@ def test_note_application_complete_l_archive(tmp_path):
     assert d["verdict"]["context"] == 65536  # le reste est intact
 
 
+def test_compte_rendu_commun_aux_deux_parcours():
+    """Revue 2026-10-10 (P2) : l'archive /rebench omettait matériel, binaire, flags,
+    profil et plan. Un SCHÉMA commun, clés fixes, pour loom-setup et /rebench."""
+    from loom.setup.archive import bench_payload
+
+    p = bench_payload(source="/rebench", materiel={"gpu_name": "GPU"}, etape="fin")
+    for cle in (
+        "source",
+        "etape",
+        "gguf",
+        "server_bin",
+        "build",
+        "materiel",
+        "flags",
+        "profil",
+        "contexte_utile",
+        "kv_estime_mb",
+        "llama_bench",
+        "isolation",
+        "plan",
+        "placement",
+        "placement_avant",
+        "calibration",
+        "ubatch",
+        "final",
+        "cache",
+        "ecrit",
+        "verdict_texte",
+        "verdict",
+        "echec",
+    ):
+        assert cle in p
+    assert p["materiel"] == {"gpu_name": "GPU"} and p["build"] is None
+    # Une trace progressive peut porter des clés hors schéma : conservées, pas perdues.
+    assert bench_payload(source="x", couples=[(512, 2048)])["couples"] == [(512, 2048)]
+
+
 def test_note_application_tolere_une_archive_absente(tmp_path):
     note_application(tmp_path / "absent.json", {"context": 1})  # ne lève pas

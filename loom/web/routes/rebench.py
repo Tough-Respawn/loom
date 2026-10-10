@@ -24,6 +24,7 @@ def _measure_placement(
     raw: dict | None = None,
     override_ngl: int | None = None,
     slots: int = 1,
+    trace: dict | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand rien n'est
@@ -71,6 +72,14 @@ def _measure_placement(
     couples = place_mod.batch_couples(
         (getattr(probe, "ubatch", None), getattr(probe, "batch", None))
     )
+    if trace is not None:
+        # Compte rendu commun : de quoi reproduire la mesure.
+        trace["profil"] = profile.describe()
+        trace["kv_estime_mb"] = kv_mb
+        trace["plan"] = plan
+        trace["couples"] = couples
+        trace["contrainte_prefill"] = prefill_c
+        trace["prefill_floor_ratio"] = pp_floor
     try:
         res = place_mod.probe_placement(
             lambda pl: _dc_replace(
@@ -169,10 +178,14 @@ def _probe_settings(
     return topo, vram, threads, int(cur.ngl if cur is not None else 999)
 
 
-def _run_calibration(S, spec, progress):
+def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     """Cœur de mesure (préconditions + topologie + calibrate), avec les flags EXACTS
     du modèle. Lève RuntimeError actionnable si la machine n'est pas prête.
-    Isolé pour être stubbable dans les tests (aucun subprocess en CI)."""
+    Isolé pour être stubbable dans les tests (aucun subprocess en CI).
+
+    `trace_out` : compte rendu PROGRESSIF (schéma archive.BENCH_SCHEMA) rempli étape
+    par étape — l'archive le conserve même si une étape lève."""
+    trace = trace_out if trace_out is not None else {}
     import tomllib
 
     import psutil
@@ -204,6 +217,7 @@ def _run_calibration(S, spec, progress):
     # global) : détection matérielle, sonde et build tracé portent sur lui.
     probe_bin = topo_mod.model_server_bin(mt, str(server_bin))
     hw = detect_hardware(probe_bin)
+    trace.update(etape="préparation", gguf=str(gguf), server_bin=probe_bin, materiel=hw)
     # Le binaire fait foi (`--list-devices`) : un build statique n'a aucune DLL à côté.
     gpu_backend = bench_mod.gpu_backend_available(hw, probe_bin)
     over = raw.get("override") or {}
@@ -228,8 +242,10 @@ def _run_calibration(S, spec, progress):
     probe = topo_mod.ServerProbe(
         server_bin=probe_bin,
         model_path=str(gguf),
-        # Slots de l'exécutant : [server] n_parallel global (l'isolation peut monter à 2).
-        n_parallel=topo_mod.probe_slots(server_cfg, None),
+        # Slots de l'exécutant : [server] n_parallel global monté par l'isolation
+        # ACTUELLE (model.toml) — un nouveau verdict seul la remplacera. Sans ça, une
+        # sonde d'isolation en échec faisait mesurer à 1 slot un modèle qui tourne à 2.
+        n_parallel=topo_mod.probe_slots(server_cfg, bool(mt.get("cache_isolation"))),
         threads=threads,
         ngl=ngl,
         topology=topo,
@@ -250,6 +266,16 @@ def _run_calibration(S, spec, progress):
     # ensuite avec les slots FINAUX, le KV doublé compte dans la faisabilité et dans la
     # mesure (même séquence que loom-setup step_bench — le conseilleur simule l'exécutant).
     progress("sonde d'isolation du cache (A -> pollution -> A)…")
+    trace["etape"] = "isolation"
+    trace["flags"] = {
+        "threads": threads,
+        "gpu_tuning": bool(hw.has_gpu),
+        "unified_memory": bool(not hw.vram_is_discrete),
+        "ubatch": probe.ubatch,
+        "batch": probe.batch,
+        "slots": probe.n_parallel,
+        "checkpoint_min_step": probe.checkpoint_min_step,
+    }
     isolation = None
     iso_detail = ""
     iso_first, iso_back = 0, 0
@@ -260,10 +286,19 @@ def _run_calibration(S, spec, progress):
         iso_detail = f"retour {back}/{first} tokens retraités"
         if meta.get("recurrent"):
             iso_detail += ", mémoire récurrente"
-        if isolation:
-            probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
-    except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans verdict
-        pass
+        # Nouveau verdict : il remplace l'isolation actuelle (dans les deux sens).
+        probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
+    except Exception as exc:  # noqa: BLE001 - sonde best-effort : l'isolation actuelle reste
+        iso_detail = f"sonde illisible ({exc}) — isolation actuelle conservée"
+    trace["isolation"] = {
+        "necessaire": isolation,
+        "first": iso_first,
+        "back": iso_back,
+        "detail": iso_detail,
+        "avant": bool(mt.get("cache_isolation", False)),
+        "slots_mesure": probe.n_parallel,
+    }
+    trace["flags"]["slots"] = probe.n_parallel
     # Placement MESURÉ x couples de batchs, avant la calibration, faisabilité estimée au
     # contexte UTILE du modèle avec les slots finaux.
     from loom.setup.placement import useful_context
@@ -286,11 +321,21 @@ def _run_calibration(S, spec, progress):
         raw=raw,
         override_ngl=over.get("n_gpu_layers"),
         slots=int(getattr(probe, "n_parallel", 1) or 1),
+        trace=trace,
     )
+    trace["placement"] = pl_verdict
+    trace["placement_avant"] = {
+        "cpu_moe": bool(mt.get("cpu_moe", is_moe)),
+        "n_cpu_moe": mt.get("n_cpu_moe"),
+        "n_gpu_layers": mt.get("n_gpu_layers"),
+    }
+    trace["etape"] = "calibration"
     progress(f"topologie {topo}, budget {budget} Mo")
     calib = topo_mod.calibrate(
         probe, meta, topology=topo, budget_mb=budget, progress=progress
     )
+    trace["calibration"] = dict(calib)
+    trace["etape"] = "batchs"
     calib["isolation"] = isolation
     calib["isolation_detail"] = iso_detail
     calib["isolation_first"] = iso_first
@@ -324,6 +369,9 @@ def _run_calibration(S, spec, progress):
             calib["ubatch_probe"] = None
     calib["ubatch_avant"] = mt.get("ubatch")
     calib["batch_avant"] = mt.get("batch")
+    trace["ubatch"] = calib.get("ubatch_probe")
+    trace["ubatch_avant"] = [mt.get("ubatch"), mt.get("batch")]
+    trace["etape"] = "réglage final"
     # Sonde FINALE = placement élu + slots décidés + batchs mesurés : valider ce réglage
     # complet au contexte CALIBRÉ, à la profondeur de la comparaison, puis vérifier le
     # cache avec ce contexte alloué. Le verdict n'assemble plus des mesures prises avec
@@ -353,6 +401,8 @@ def _run_calibration(S, spec, progress):
             "echec": f"{type(exc).__name__}: {exc}",
             "ctx": calib["context"],
         }
+    trace["final"] = calib.get("final")
+    trace["etape"] = "cache"
     try:
         progress("vérification du cache avec la configuration finale…")
         calib["cache_verifie"] = probe_final.verify_cache(ctx=int(calib["context"]))
@@ -365,6 +415,10 @@ def _run_calibration(S, spec, progress):
         calib["build"] = verify_binary(probe_bin) or "build ?"
     except Exception:  # noqa: BLE001 - best-effort
         calib["build"] = "build ?"
+    trace["cache"] = calib.get("cache_verifie")
+    trace["build"] = calib.get("build")
+    trace["contexte_utile"] = ctx_utile
+    trace["etape"] = "fin"
     calib["ctx_utile"] = ctx_utile
     calib["placement"] = pl_verdict
     calib["placement_avant"] = {
@@ -373,6 +427,46 @@ def _run_calibration(S, spec, progress):
         "n_gpu_layers": mt.get("n_gpu_layers"),
     }
     return calib, gguf
+
+
+def _sections_from_calib(calib: dict, gguf) -> dict:
+    """Sections du compte rendu reconstituées depuis le résultat de calibration (repli
+    quand la trace progressive n'a pas tout : stubs, anciens appelants)."""
+    return {
+        "gguf": str(gguf),
+        "build": calib.get("build"),
+        "contexte_utile": calib.get("ctx_utile"),
+        "calibration": {
+            k: calib.get(k)
+            for k in (
+                "context",
+                "valide",
+                "mode",
+                "mecanisme",
+                "slope_kb_tok",
+                "base_mb",
+                "budget_mb",
+                "capacity_ctx",
+                "rungs",
+                "vitesses",
+                "valide_jusqua",
+                "duree_s",
+            )
+        },
+        "isolation": {
+            "necessaire": calib.get("isolation"),
+            "first": calib.get("isolation_first"),
+            "back": calib.get("isolation_back"),
+            "detail": calib.get("isolation_detail"),
+            "avant": calib.get("isolation_avant"),
+        },
+        "placement": calib.get("placement"),
+        "placement_avant": calib.get("placement_avant"),
+        "ubatch": calib.get("ubatch_probe"),
+        "ubatch_avant": [calib.get("ubatch_avant"), calib.get("batch_avant")],
+        "final": calib.get("final"),
+        "cache": calib.get("cache_verifie"),
+    }
 
 
 def _rebench_worker(S, sess, chat_lock, mid, job):
@@ -384,9 +478,16 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     spec = next((m for m in S.local_model_specs if m.get("id") == mid), None)
     calib = None
     _gguf = None
+    # Compte rendu PROGRESSIF (archive.BENCH_SCHEMA) : rempli étape par étape par
+    # _run_calibration, archivé même si une étape lève.
+    trace: dict = {"source": "/rebench"}
+    erreur: str | None = None
     try:
         calib, _gguf = _run_calibration(
-            S, spec, lambda m: setattr(job, "label", f"calibration : {m}")
+            S,
+            spec,
+            lambda m: setattr(job, "label", f"calibration : {m}"),
+            trace_out=trace,
         )
         current = int(spec.get("context") or S.context_window or 0)
         new = calib["context"]
@@ -584,60 +685,25 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     except (RuntimeError, ValueError) as exc:
         msg = f"❌ Recalibration de « {mid} » échouée : {exc} — config inchangée."
         wiz = None
-    if calib is not None:
-        # Archive DURABLE du bench (var/bench/<modèle>/<horodatage>.json) : l'état de
-        # session est consommé par « oui » ou effacé par « annuler », pas l'archive.
-        from loom.setup import archive as archive_mod
+        erreur = str(exc)
+    # Archive DURABLE du bench (var/bench/<modèle>/<horodatage>.json) : le compte rendu
+    # PROGRESSIF (schéma commun), en échec comme en succès — l'état de session est
+    # consommé par « oui » ou effacé par « annuler », pas l'archive. Un échec
+    # d'écriture est DIT dans le verdict, jamais silencieux.
+    from loom.setup import archive as archive_mod
 
-        try:
-            arch = archive_mod.archive_bench(
-                mid,
-                {
-                    "source": "/rebench",
-                    "gguf": str(_gguf),
-                    "build": calib.get("build"),
-                    "ctx_utile": calib.get("ctx_utile"),
-                    "calibration": {
-                        k: calib.get(k)
-                        for k in (
-                            "context",
-                            "valide",
-                            "mode",
-                            "mecanisme",
-                            "slope_kb_tok",
-                            "base_mb",
-                            "budget_mb",
-                            "capacity_ctx",
-                            "rungs",
-                            "vitesses",
-                            "valide_jusqua",
-                            "duree_s",
-                        )
-                    },
-                    "isolation": {
-                        "necessaire": calib.get("isolation"),
-                        "first": calib.get("isolation_first"),
-                        "back": calib.get("isolation_back"),
-                        "detail": calib.get("isolation_detail"),
-                        "avant": calib.get("isolation_avant"),
-                    },
-                    "placement": calib.get("placement"),
-                    "placement_avant": calib.get("placement_avant"),
-                    "ubatch": calib.get("ubatch_probe"),
-                    "ubatch_avant": [
-                        calib.get("ubatch_avant"),
-                        calib.get("batch_avant"),
-                    ],
-                    "final": calib.get("final"),
-                    "cache": calib.get("cache_verifie"),
-                    "verdict_texte": msg,
-                    "verdict": wiz,
-                },
-            )
-            if wiz is not None:
-                wiz["archive"] = str(arch)
-        except Exception:  # noqa: BLE001 - l'archive n'empêche jamais le verdict
-            pass
+    sections = _sections_from_calib(calib, _gguf) if calib is not None else {}
+    sections.update({k: v for k, v in trace.items() if v is not None})
+    if erreur is not None:
+        sections["echec"] = {"etape": trace.get("etape"), "erreur": erreur}
+    try:
+        arch = archive_mod.archive_bench(
+            mid, archive_mod.bench_payload(**sections, verdict_texte=msg, verdict=wiz)
+        )
+        if wiz is not None:
+            wiz["archive"] = str(arch)
+    except Exception as exc:  # noqa: BLE001 - l'archive n'empêche jamais le verdict
+        msg += f"\n⚠ archive non écrite : {exc}"
     got = chat_lock.acquire(timeout=2)
     try:
         conv = sess.conversation
