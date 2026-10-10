@@ -546,7 +546,9 @@ def _partial_dense(*, profile, layers, model_size_mb, kv_mb, budget, **fit_kw) -
     if not layers:
         return 0
     if profile is not None and profile.weights:
-        for k in range(layers - 1, 0, -1):
+        # Dès -ngl n_layers : toutes les couches sauf la 0, sortie comprise
+        # (src/llama-model.cpp:1619-1644) — le plus grand partiel, pas le total.
+        for k in range(layers, 0, -1):
             ok, _ = _fits(
                 Placement("gpu_partiel", k),
                 profile=profile,
@@ -823,22 +825,26 @@ def precontrole(
 ) -> dict:
     """Verdict AVANT tout chargement sur les démarrages SERVEUR :
 
-    - `impossible` (établi) : métadonnées et capacités complètes, poids côté CPU
+    - `impossible` (établi) : métadonnées et capacité physique connues, poids côté CPU
       résidents (GPU discret), et la somme des allocations CERTAINES du démarrage
       minimal — poids chargés, état récurrent x 1, mmproj ; KV compté 0 — dépasse
-      VRAM + RAM. Chaque octet résident est d'un seul côté : vrai pour TOUT placement ;
+      VRAM + RAM. Chaque octet résident est d'un seul côté : vrai pour TOUT placement,
+      sans pagination (fichier d'échange, repli de la mémoire épinglée) ;
     - `hors_budget` : métadonnées complètes et plan VIDE au contexte plancher (4096 par
       slot, slots de base) avec la MÊME comptabilité que l'étape 2 (`vram_total_mb`,
       `uma`, checkpoints, configuration actuelle de ce parcours) : par monotonie
-      (contexte >= 4096, slots >= base), l'étape 2 refuserait de toute façon ;
-    - `incertain` : métadonnées ou capacité incomplètes — flux inchangé ;
+      (contexte >= 4096, slots >= base), l'étape 2 refuserait de toute façon. Une
+      capacité physique inconnue n'y change rien (même VRAM que l'étape 2) : elle
+      interdit seulement l'« établi » ;
+    - `incertain` : métadonnées incomplètes — flux inchangé ;
     - `faisable` sinon.
     """
     meta = meta or {}
     inconnues = inconnues_decisives(profile, meta)
     capacite, inc_cap = _capacite(hw, ram_total_mb)
     toutes = inconnues + inc_cap
-    complet = not toutes
+    complet = not inconnues  # MÉTADONNÉES complètes
+    capacite_connue = not inc_cap
     residence = _residence(hw)
     loaded = profile.loaded_bytes() if profile is not None else None
     poids = int(loaded // _MIB) if loaded else 0
@@ -884,6 +890,7 @@ def precontrole(
         "verdict": "faisable",
         "etabli": False,
         "complet": complet,
+        "capacite_connue": capacite_connue,
         "inconnues": toutes,
         "capacite": capacite,
         "residence": residence,
@@ -899,7 +906,21 @@ def precontrole(
     }
     physique = capacite["vram_mb"] + capacite["ram_mb"]
     s = "s" if slots > 1 else ""
-    if complet and residence["certaine"] and borne["total_mb"] > physique:
+    if not capacite_connue:
+        non_etabli = f"capacité physique non établie : {', '.join(inc_cap)}"
+    elif not residence["certaine"]:
+        non_etabli = residence["raison"]
+    else:
+        non_etabli = (
+            f"allocations certaines {borne['total_mb']} Mo ≤ mémoire physique "
+            f"{physique} Mo"
+        )
+    if (
+        complet
+        and capacite_connue
+        and residence["certaine"]
+        and borne["total_mb"] > physique
+    ):
         res.update(
             verdict="impossible",
             etabli=True,
@@ -908,7 +929,8 @@ def precontrole(
                 f"démarrage minimal = poids chargés {poids} Mo + état récurrent {etat} Mo"
                 f" + mmproj {mmproj} Mo = {borne['total_mb']} Mo > mémoire physique "
                 f"(VRAM {capacite['vram_mb']} + RAM {capacite['ram_mb']} = {physique} "
-                "Mo), pour tout placement (GPU discret : poids côté CPU résidents)"
+                "Mo), pour tout placement, sans pagination (GPU discret : poids côté "
+                "CPU résidents)"
             ),
         )
     elif complet and not plan0.candidates:
@@ -928,7 +950,7 @@ def precontrole(
                 f"{postes['kv_mb']} Mo, état vivant {postes['etat_vivant_mb']} Mo, "
                 f"checkpoints {postes['checkpoints_mb']} Mo "
                 f"({postes['checkpoints_par_slot']} par slot){conseil}. Non établi "
-                f"physiquement ({residence['raison']})"
+                f"physiquement ({non_etabli})"
             ),
         )
     elif not complet:
@@ -948,12 +970,13 @@ def texte_etape2(
     ctx: int,
     slots: int,
     estimation: dict,
-    precontrole: str | None = None,
+    precontrole: dict | None = None,
 ) -> str:
     """Raison du refus de l'ÉTAPE 2 (contrôle au contexte utile, après l'isolation) :
     c'est le contexte DEMANDÉ qui ne tient pas, pas le démarrage (revue n°16) — le
-    contexte, les slots retenus, les postes chiffrés et, quand il a eu lieu, le
-    verdict du précontrôle (le démarrage au plancher, lui, passait)."""
+    contexte, les slots retenus, les postes chiffrés, ce que le précontrôle a établi au
+    plancher (« passait » seulement s'il l'a jugé faisable) et les leviers RÉELS :
+    context au-dessus du plancher, checkpoints s'il y en a, slots au-delà du plancher."""
     s = "s" if int(slots) > 1 else ""
     est = estimation or {}
     txt = (
@@ -962,12 +985,27 @@ def texte_etape2(
         f"Mo, état vivant {est.get('recurrent_live_mb', 0)} Mo, checkpoints "
         f"{est.get('checkpoints_mb', 0)} Mo"
     )
-    if precontrole:
+    pc = precontrole or {}
+    if not pc.get("verdict"):
+        return txt
+    plancher = int((pc.get("plan_plancher") or {}).get("slots") or 1)
+    if pc["verdict"] == "faisable":
+        sp = "s" if plancher > 1 else ""
         txt += (
-            f" ; le démarrage au plancher ({PRECONTROLE_CTX} par slot) passait "
-            f"(précontrôle : {precontrole}) : un context ou un ctx_checkpoints plus bas "
-            "dans model.toml réduirait ces postes"
+            f" ; le démarrage au plancher ({PRECONTROLE_CTX} par slot, {plancher} "
+            f"slot{sp}) passait (précontrôle)"
         )
+    elif pc["verdict"] == "incertain":
+        txt += " ; précontrôle incertain : faisabilité du démarrage au plancher non établie"
+    leviers = []
+    if int(ctx) > PRECONTROLE_CTX:
+        leviers.append("un context plus bas")
+    if int(est.get("checkpoints_mb", 0) or 0) > 0:
+        leviers.append("un ctx_checkpoints plus bas")
+    if int(slots) > plancher:
+        leviers.append("moins de slots")
+    if leviers:
+        txt += f" — leviers : {', '.join(leviers)}"
     return txt
 
 
@@ -976,7 +1014,8 @@ def precontrole_texte(res: dict) -> str:
     if not res:
         return "précontrôle : non fait"
     if res.get("verdict") in ("impossible", "hors_budget", "incertain"):
-        return f"précontrôle : {res['raison']}"
+        raison = str(res.get("raison") or "")
+        return raison if raison.startswith("précontrôle") else f"précontrôle : {raison}"
     plan = res.get("plan_plancher") or {}
     slots = int(plan.get("slots") or 1)
     s = "s" if slots > 1 else ""
@@ -1005,7 +1044,8 @@ def demarrage_isolation(
     prévus (bruts) s'ils tiennent — comptabilité de la sonde : ISOLATION_CHECKPOINTS —,
     sinon, données complètes, le premier candidat du plan à 4096 x 1 ; mémoire
     récurrente : verdict imposé, sonde non lancée. Données incomplètes : le démarrage
-    prévu, inchangé (le serveur tranchera)."""
+    prévu, inchangé (le serveur tranchera). `prevu_tient` : le démarrage prévu tient-il
+    d'après l'estimation (None : inconnu) — False, la suite ne doit pas y revenir."""
     meta = meta or {}
     flags = {
         "ngl": int(flags.get("ngl") or 0),
@@ -1018,6 +1058,7 @@ def demarrage_isolation(
         "ctx": PRECONTROLE_CTX,
         "lancer": True,
         "modeste": False,
+        "prevu_tient": None,
     }
     if not complet:
         return {
@@ -1025,6 +1066,7 @@ def demarrage_isolation(
             "raison": "métadonnées incomplètes : démarrage prévu, 1 slot (le serveur "
             "tranchera)",
         }
+    base["prevu_tient"] = False
     n = meta.get("n_layers")
     est = memory_estimate_mb(
         profile,
@@ -1057,6 +1099,7 @@ def demarrage_isolation(
     if ok:
         return {
             **base,
+            "prevu_tient": True,
             "raison": f"démarrage prévu à {PRECONTROLE_CTX} x 1 slot : {why}",
         }
     if meta.get("recurrent"):
@@ -1109,12 +1152,17 @@ def filtre_llama_bench(
     ncmoe: int,
     complet: bool,
     hw,
+    vram_total_mb: int,
+    ram_total_mb: int,
+    uma: bool,
+    headroom_mb: int,
     meme_binaire: bool = True,
 ) -> dict:
     """-ngl de llama-bench dont la borne DEVICE (poids offloadés selon la règle de
     llama.cpp, KV f16 de LLAMA_BENCH_CELLS cellules et état récurrent d'une séquence
-    sur les couches offloadées) dépasse la VRAM connue : retirés (un seul -ngl qui
-    échoue fait échouer toute l'invocation). Liste vide : repli sur -ngl 0. Données
+    sur les couches offloadées) dépasse le budget device — le MÊME que le précontrôle
+    et l'étape 2 (device_budget_mb, marge comprise) : retirés (un seul -ngl qui échoue
+    fait échouer toute l'invocation). Liste vide : repli sur -ngl 0. Données
     incomplètes, capacité inconnue ou llama-bench d'un autre binaire : inchangée."""
     liste = [int(g) for g in ngl]
     res = {"ngl": liste, "ncmoe": int(ncmoe or 0), "retires": [], "note": ""}
@@ -1134,6 +1182,8 @@ def filtre_llama_bench(
     ):
         res["note"] = "capacité VRAM inconnue ou non modélisée : liste inchangée"
         return res
+    vram_plan = int(vram_total_mb or 0) or vram
+    budget = device_budget_mb(vram_plan, int(ram_total_mb or 0), uma, int(headroom_mb))
     garde = []
     for g in liste:
         couches = profile.device_layers(ngl=g)
@@ -1141,23 +1191,28 @@ def filtre_llama_bench(
         kv = profile.kv_bytes(LLAMA_BENCH_CELLS, "f16", 1, layers=couches)
         etat = profile.recurrent_live_bytes(layers=couches)
         dev_mb = int((poids + kv + etat) // _MIB)
-        if dev_mb > vram:
+        if dev_mb > budget:
             res["retires"].append(
                 {
                     "ngl": g,
-                    "raison": f"impossible : {dev_mb} Mo certains sur le device > VRAM "
-                    f"{vram} Mo",
+                    "raison": f"dépasse le budget device : {dev_mb} Mo sur le device > "
+                    f"{budget} Mo (VRAM {vram_plan} Mo, marge {int(headroom_mb)} Mo)",
                 }
             )
         else:
             garde.append(g)
     if garde:
         res["ngl"] = garde
+        if garde == [0] and any(g != 0 for g in liste):
+            res["note"] = (
+                "tous les -ngl > 0 dépassent le budget device : -ngl 0 seul (CPU)"
+            )
     else:
         res.update(
             ngl=[0],
             ncmoe=0,
-            note="tous les -ngl candidats dépassent la VRAM : repli sur -ngl 0 (CPU)",
+            note="tous les -ngl candidats dépassent le budget device : repli sur -ngl "
+            "0 (CPU)",
         )
     return res
 

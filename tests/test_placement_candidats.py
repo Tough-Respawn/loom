@@ -370,6 +370,26 @@ def test_ventilation_partielle_suit_la_regle_des_couches_de_llama_cpp():
     assert host == 500 + 3 * 1000 + 300 + 50
 
 
+def test_partiel_dense_explore_ngl_egal_au_nombre_de_couches():
+    """Revue adverse : la recherche du partiel partait de n - 1 et sautait -ngl n (toutes
+    les couches sauf la 0, sortie comprise). 40 x 300 Mo + 300 de sortie, KV 680 Mo,
+    13 400 Mo de VRAM (budget 12 760) : tout-GPU (12 980) ne tient pas, -ngl 40
+    (12 000 + 663) si — c'est lui le partiel serré, pas -ngl 39."""
+    mib = 1024 * 1024
+    w = {
+        "total": (40 * 300 + 600) * mib,
+        "familles": {"embeddings": 300 * mib, "output": 300 * mib},
+        "par_couche": [300 * mib] * 40,
+        "experts_par_couche": [0] * 40,
+        "couches_attention": list(range(40)),
+        "couches_recurrentes": [],
+        "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+    }
+    prof = ModelProfile.from_meta({"n_layers": 40, "weights": w})
+    plan = _plan(model_size_mb=12_600, kv_mb=680, vram_total_mb=13_400, profile=prof)
+    assert _keys(plan)[0] == "gpu_partiel_ngl40"
+
+
 def test_plan_utilise_le_profil_pour_la_faisabilite():
     """Le catalogue dit combien pèsent VRAIMENT les experts : le nombre de couches à
     laisser sur CPU en découle, au lieu d'une proportion aveugle de la taille."""

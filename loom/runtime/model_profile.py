@@ -342,9 +342,11 @@ class ModelProfile:
         dup = 0
         if has_device and int(ngl) >= 1:
             out = int(fam.get("output", 0) or 0)
-            if out:
-                dev += out
-            else:
+            dev += out  # output.weight et output_norm : device de la sortie
+            liee = self.weights.get("sortie_liee")
+            if liee is None:  # catalogue sans la clé : déduit de la famille
+                liee = not out
+            if liee:
                 # Sortie liée : token_embd dupliqué sur le device de la sortie.
                 dup = int(fam.get("embeddings", 0) or 0)
                 dev += dup

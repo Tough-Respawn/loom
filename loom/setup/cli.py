@@ -1129,13 +1129,18 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         return
     con.say(f"  [{'attention' if pc['verdict'] == 'incertain' else 'ok'}] {pc_texte}")
     # llama-bench : un seul -ngl qui échoue fait échouer toute l'invocation — ceux dont
-    # la borne device dépasse la VRAM connue sont retirés (données complètes).
+    # la borne device dépasse le budget device du précontrôle (même VRAM, même marge)
+    # sont retirés (données complètes).
     filtre = place_mod.filtre_llama_bench(
         profile,
         ngl=ngl,
         ncmoe=ncmoe,
         complet=pc["complet"],
         hw=hw,
+        vram_total_mb=vram_total,
+        ram_total_mb=ram_total_mb,
+        uma=not hw.vram_is_discrete,
+        headroom_mb=headroom,
         meme_binaire=(probe_bin == str(server_bin)),
     )
     pc["llama_bench"] = filtre
@@ -1407,7 +1412,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             ctx=ctx_utile,
             slots=pl_slots,
             estimation=estimation,
-            precontrole=pc["verdict"],
+            precontrole=pc,
         )
         con.say(
             f"  [échec] {raison} — aucun placement comparé, calibration non lancée, "

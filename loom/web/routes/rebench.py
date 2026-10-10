@@ -42,7 +42,7 @@ def _measure_placement(
     logical: int | None = None,
     physical: int | None = None,
     vram_total_mb: int | None = None,
-    precontrole_verdict: str | None = None,
+    precontrole: dict | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand la sonde n'obtient
@@ -130,7 +130,7 @@ def _measure_placement(
                 ctx=int(useful_ctx or place_mod.PLACEMENT_PROBE_CTX),
                 slots=max(1, int(slots or 1)),
                 estimation=estimation,
-                precontrole=precontrole_verdict,
+                precontrole=precontrole,
             )
         )
     # Annoncée seulement maintenant : avant le contrôle, le dernier statut diffusé
@@ -571,7 +571,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         logical=os.cpu_count() or 4,
         physical=psutil.cpu_count(logical=False),
         vram_total_mb=vram,
-        precontrole_verdict=pc["verdict"],
+        precontrole=pc,
     )
     trace["placement"] = pl_verdict
     trace["placement_avant"] = {

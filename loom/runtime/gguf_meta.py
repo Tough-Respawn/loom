@@ -170,6 +170,9 @@ def _weights_summary(
         "couches_attention": sorted(couches_kv - couches_recurrentes - couches_nextn),
         "couches_recurrentes": sorted(couches_recurrentes),
         "couches_nextn": sorted(couches_nextn),
+        # Sortie liée : sans output.weight, llama.cpp duplique token_embd comme sortie
+        # (TENSOR_DUPLICATED). La famille « output » ne le dit pas : output_norm y entre.
+        "sortie_liee": "output.weight" not in sizes,
         "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
     }
 

@@ -379,6 +379,31 @@ def test_profil_sortie_liee_dupliquee_sur_le_device():
     assert prof.host_bytes(ngl=999) == 1000
 
 
+def test_sortie_liee_detectee_sur_un_catalogue_lu(tmp_path):
+    """Revue adverse : le lecteur range `output_norm` dans la famille « output » — une
+    sortie liée (aucun `output.weight`) n'était donc jamais vue, et la copie de
+    token_embd sur le device manquait. Le catalogue dit si la sortie est liée."""
+    tensors = [
+        ("token_embd.weight", 4096),
+        ("blk.0.attn_k.weight", 2048),
+        ("blk.1.attn_k.weight", 2048),
+        ("output_norm.weight", 32),
+    ]
+    kvs = {"general.architecture": "llama", "llama.block_count": 2}
+    meta = read_gguf_meta(_gguf(tmp_path / "liee.gguf", kvs, tensors))
+    assert meta["weights"]["sortie_liee"] is True
+    assert meta["weights"]["familles"]["output"] == 32  # output_norm seul
+    prof = ModelProfile.from_meta(meta)
+    assert prof.gpu_bytes(ngl=999) == 2 * 2048 + 32 + 4096
+    assert prof.gpu_bytes(ngl=1) == 32 + 4096
+    assert prof.host_bytes(ngl=999) == 4096
+    non_liee = read_gguf_meta(
+        _gguf(tmp_path / "non.gguf", kvs, tensors + [("output.weight", 1024)])
+    )
+    assert non_liee["weights"]["sortie_liee"] is False
+    assert ModelProfile.from_meta(non_liee).gpu_bytes(ngl=1) == 32 + 1024
+
+
 def test_profil_couches_sur_le_device_selon_ngl():
     prof = ModelProfile.from_meta(_meta(n_layers=4, full_attention_interval=2))
     assert prof.device_layers(ngl=999) == {0, 1, 2, 3}

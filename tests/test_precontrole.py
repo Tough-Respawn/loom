@@ -17,6 +17,7 @@ from loom.runtime.model_profile import ModelProfile
 from loom.setup.placement import (
     AucunPlacementFaisable,
     DemarrageImpossible,
+    Placement,
     demarrage_isolation,
     filtre_llama_bench,
     inconnues_decisives,
@@ -242,6 +243,9 @@ def test_impossibilite_etablie_par_la_somme_des_allocations_certaines():
     assert "mémoire physique" in res["raison"]
     assert "12600" in res["raison"] and "10144" in res["raison"]
     assert "tout placement" in res["raison"]
+    # Revue adverse : le fichier d'échange (Windows) et le repli de la mémoire épinglée
+    # CUDA pourraient charger au-delà de la RAM — l'« établi » vaut SANS pagination.
+    assert "sans pagination" in res["raison"]
 
 
 def test_metadonnees_incompletes_jamais_impossibles():
@@ -261,12 +265,22 @@ def test_memoire_unifiee_presumee_ne_rend_jamais_l_impossibilite_etablie():
     assert "contexte plancher" in res["raison"] and "4096" in res["raison"]
 
 
-def test_capacite_inconnue_ou_non_modelisee_rend_incertain():
+def test_capacite_inconnue_empeche_seulement_l_etabli():
+    """Revue adverse : une capacité inconnue (VRAM lue par nvidia-smi seulement, plusieurs
+    GPU listés) ne rend pas les MÉTADONNÉES incomplètes. Elle interdit l'« établi » ; le
+    plan au plancher, sur la même VRAM que l'étape 2 (repli compris), décide du reste —
+    sinon le démarrage modeste et le filtre llama-bench sautaient à tort."""
     vram_inconnue = HardwareProfile(
         True, "RTX", 6000, 16, vram_is_discrete=True, gpu_count=0
     )
-    res = _pc(_dense(), vram_inconnue, ram=4000)
-    assert res["verdict"] == "incertain" and any("VRAM" in i for i in res["inconnues"])
+    res = _pc(_dense(), vram_inconnue, ram=4000, vram=6144)
+    assert res["complet"] is True and res["capacite_connue"] is False
+    assert res["etabli"] is False and res["verdict"] == "hors_budget"
+    assert any("VRAM" in i for i in res["inconnues"])
+    assert "capacité" in res["raison"]
+    assert _pc(_dense(), vram_inconnue, ram=64_000, vram=24_576)["verdict"] == (
+        "faisable"
+    )
     deux_gpu = HardwareProfile(
         True,
         "RTX",
@@ -278,7 +292,7 @@ def test_capacite_inconnue_ou_non_modelisee_rend_incertain():
         gpu_count=2,
     )
     res = _pc(_dense(), deux_gpu, ram=4000)
-    assert res["verdict"] == "incertain"
+    assert res["etabli"] is False and res["verdict"] == "hors_budget"
     assert any("plusieurs GPU" in i for i in res["inconnues"])
 
 
@@ -291,6 +305,74 @@ def test_hors_budget_au_plancher_sans_impossibilite_physique():
     assert res["plan_plancher"]["candidats"] == []
     assert "contexte plancher" in res["raison"] and "1 slot" in res["raison"]
     assert "postes" in res["raison"]
+    # La raison du « non établi » est la VRAIE : la somme certaine tient physiquement
+    # (pas « GPU discret : poids résidents », qui rendrait l'établi possible).
+    assert "allocations certaines 9300 Mo ≤ mémoire physique 10144 Mo" in res["raison"]
+
+
+def test_slots_de_base_decisifs_au_plancher():
+    """Revue adverse (mutation) : forcer base_slots à 1 laissait la suite verte. Dense de
+    7 800 Mo, 6 Go + 6 000 Mo : 1 slot tient au plancher, 2 slots ([server] n_parallel)
+    non."""
+    meta = _dense(n=48, par_mb=150)
+    un = _pc(meta, NVIDIA_6G, ram=6000, base_slots=1)
+    assert un["verdict"] == "faisable" and un["plan_plancher"]["candidats"] == [
+        "gpu_partiel_ngl33"
+    ]
+    deux = _pc(meta, NVIDIA_6G, ram=6000, base_slots=2)
+    assert deux["verdict"] == "hors_budget" and "2 slots" in deux["raison"]
+
+
+def _hybride(n=64, par_mb=100):
+    """qwen35 : 1 couche d'attention sur 4, état récurrent de Bonsai 2 (149,6 Mio)."""
+    att = [i for i in range(n) if (i + 1) % 4 == 0]
+    rec = [i for i in range(n) if (i + 1) % 4 != 0]
+    w = {
+        "total": (n * par_mb + 600) * MIB,
+        "familles": {"embeddings": 300 * MIB, "output": 300 * MIB},
+        "par_couche": [par_mb * MIB] * n,
+        "experts_par_couche": [0] * n,
+        "couches_attention": att,
+        "couches_recurrentes": rec,
+        "couches_nextn": [],
+        "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+        "sortie_liee": False,
+    }
+    return _meta_hybride(
+        n_layers=n,
+        ssm_conv_kernel=4,
+        ssm_inner_size=6144,
+        ssm_state_size=128,
+        ssm_group_count=16,
+        weights=w,
+    )
+
+
+def test_etat_recurrent_et_checkpoints_decisifs_au_plancher():
+    """Mutations sans effet avant : état récurrent forcé à 0, checkpoints forcés à 0.
+    Hybride, 8 Go + 8 000 Mo : 32 checkpoints par slot (4 788 Mo) ne tiennent pas, 6 si —
+    et le conseil nomme le poste qui domine."""
+    meta = _hybride()
+    defaut = _pc(meta, NVIDIA_8G, ram=8000)
+    assert defaut["borne"]["etat_mb"] == 149
+    assert defaut["verdict"] == "hors_budget"
+    assert defaut["plan_plancher"]["postes"]["checkpoints_mb"] == 4788
+    assert "les checkpoints dominent" in defaut["raison"]
+    six = _pc(meta, NVIDIA_8G, ram=8000, ctx_checkpoints=6)
+    assert six["verdict"] == "faisable" and six["plan_plancher"]["candidats"] == [
+        "gpu_total"
+    ]
+
+
+def test_mmproj_decisif_pour_l_etabli():
+    """Mutation sans effet avant : mmproj forcé à 0. Dense de 10 200 Mo sur 6 Go +
+    4 200 Mo : sans mmproj, hors budget ; avec 900 Mo de mmproj (allocation hôte
+    certaine), au-delà de la mémoire physique."""
+    meta = _dense(n=40, par_mb=240)
+    assert _pc(meta, NVIDIA_6G, ram=4200)["verdict"] == "hors_budget"
+    res = _pc(meta, NVIDIA_6G, ram=4200, mmproj_mb=900)
+    assert res["verdict"] == "impossible" and res["borne"]["mmproj_mb"] == 900
+    assert res["borne"]["total_mb"] == 11_100
 
 
 def test_faisable_sur_une_machine_qui_porte_le_modele():
@@ -304,37 +386,40 @@ def test_plancher_vide_implique_etape_2_vide():
     plancher l'est aussi à l'étape 2. C'est ce qui autorise la sortie « hors budget »."""
     from loom.setup.placement import memory_estimate_mb
 
-    meta = _dense(n=30, par_mb=290)
-    prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
     vus_vides = 0
-    for ram in (4000, 8000, 12000, 16000):
-        for hw in (NVIDIA_6G, NVIDIA_8G):
-            res = _pc(meta, hw, ram=ram)
-            if res["plan_plancher"]["candidats"]:
-                continue
-            vus_vides += 1
-            est = memory_estimate_mb(prof, 32768, gpu_tuning=True, slots=2)
-            plan2 = plan_placements(
-                moe=False,
-                n_layers=30,
-                model_size_mb=_taille(meta),
-                kv_mb=est["device_mb"],
-                host_extra_mb=est["host_mb"],
-                gpu_backend=True,
-                vram_total_mb=hw.vram_total_mb,
-                ram_total_mb=ram,
-                uma=False,
-                headroom_mb=640,
-                profile=prof,
-            )
-            assert plan2.candidates == [], (ram, hw.vram_total_mb)
-    assert vus_vides >= 2  # le cas est vraiment exercé
+    for meta in (_dense(n=30, par_mb=290), _hybride()):
+        prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
+        n = meta["n_layers"]
+        for ram in (4000, 8000, 12000, 16000):
+            for hw in (NVIDIA_6G, NVIDIA_8G):
+                res = _pc(meta, hw, ram=ram)
+                if res["plan_plancher"]["candidats"]:
+                    continue
+                vus_vides += 1
+                est = memory_estimate_mb(prof, 32768, gpu_tuning=True, slots=2)
+                plan2 = plan_placements(
+                    moe=False,
+                    n_layers=n,
+                    model_size_mb=_taille(meta),
+                    kv_mb=est["device_mb"],
+                    host_extra_mb=est["host_mb"],
+                    gpu_backend=True,
+                    vram_total_mb=hw.vram_total_mb,
+                    ram_total_mb=ram,
+                    uma=False,
+                    headroom_mb=640,
+                    current=Placement("gpu_total", 999, actuel=True),
+                    profile=prof,
+                )
+                assert plan2.candidates == [], (n, ram, hw.vram_total_mb)
+    assert vus_vides >= 4  # le cas est vraiment exercé, dense ET hybride
 
 
 def test_texte_du_precontrole_par_verdict():
     assert "impossible" in precontrole_texte(_pc(_dense(), NVIDIA_6G, ram=4000))
     t = precontrole_texte(_pc(dict(_dense(), weights=None), NVIDIA_6G, ram=4000))
-    assert "incertain" in t and "flux inchangé" in t
+    assert t.startswith("précontrôle incertain : ") and "flux inchangé" in t
+    assert "précontrôle : précontrôle" not in t  # pas de double préfixe
     assert "faisable" in precontrole_texte(_pc(_dense(), NVIDIA_24G, ram=64_000))
 
 
@@ -365,15 +450,32 @@ def test_texte_de_l_etape_2_distingue_contexte_demande_et_demarrage():
     plan = PlacementPlan(
         [], [{"key": "cpu", "raison": "non exploré : ne tient pas — x"}]
     )
-    t = texte_etape2(plan, ctx=32768, slots=2, estimation=est, precontrole="faisable")
+    faisable_1 = {"verdict": "faisable", "plan_plancher": {"slots": 1}}
+    t = texte_etape2(plan, ctx=32768, slots=2, estimation=est, precontrole=faisable_1)
     assert t.startswith(
         "le contexte utile 32768 (2 slots) ne tient avec aucun placement"
     )
     assert "aucun placement faisable" in t  # raison du plan conservée
     assert f"KV {est['kv_mb']} Mo" in t and "postes à ce contexte" in t
-    assert "démarrage au plancher" in t and "faisable" in t
+    assert "le démarrage au plancher (4096 par slot, 1 slot) passait" in t
+    # Leviers RÉELS : contexte au-dessus du plancher, slots retenus > slots du plancher.
+    assert "un context plus bas" in t and "moins de slots" in t
     sans = texte_etape2(plan, ctx=8192, slots=1, estimation=est, precontrole=None)
     assert "(1 slot)" in sans and "démarrage au plancher" not in sans
+    # Revue adverse : « incertain » n'établit RIEN au plancher — jamais « passait ».
+    inc = texte_etape2(
+        plan,
+        ctx=8192,
+        slots=1,
+        estimation=est,
+        precontrole={"verdict": "incertain", "plan_plancher": {"slots": 1}},
+    )
+    assert "passait" not in inc and "non établie" in inc
+    # Au plancher déjà (4096), baisser le context ne peut rien.
+    plancher = texte_etape2(
+        plan, ctx=4096, slots=2, estimation=est, precontrole=faisable_1
+    )
+    assert "un context plus bas" not in plancher and "moins de slots" in plancher
 
 
 # ── démarrage de la sonde d'isolation (lot L3) ───────────────────────────────────
@@ -421,6 +523,20 @@ def test_isolation_non_lancee_pour_une_memoire_recurrente_si_le_prevu_ne_tient_p
 def test_isolation_metadonnees_incompletes_demarrage_prevu_inchange():
     d = _iso(_dense(), NVIDIA_8G, PREVU_GPU, ram=32_000, complet=False)
     assert d["lancer"] is True and d["modeste"] is False and d["flags"] == PREVU_GPU
+    assert d["prevu_tient"] is None  # inconnu : rien n'est conclu
+
+
+def test_isolation_dit_si_le_demarrage_prevu_tient():
+    """`prevu_tient` : False quand le démarrage prévu est refusé par l'estimation (données
+    complètes) — la suite ne doit jamais y revenir en repli (revue adverse)."""
+    assert _iso(_dense(), NVIDIA_24G, PREVU_GPU, ram=64_000)["prevu_tient"] is True
+    assert _iso(_dense(), NVIDIA_8G, PREVU_GPU, ram=32_000)["prevu_tient"] is False
+
+
+def test_isolation_non_lancee_si_rien_ne_tient_a_4096():
+    d = _iso(_dense(), NVIDIA_6G, PREVU_GPU, ram=4000)
+    assert d["lancer"] is False and d["prevu_tient"] is False
+    assert "aucun démarrage plus modeste" in d["raison"]
 
 
 def test_flags_bruts_ngl_0_cpu_moe_rien_sur_le_device():
@@ -438,7 +554,16 @@ def test_flags_bruts_ngl_0_cpu_moe_rien_sur_le_device():
 def _bench(meta, hw, ngl, ncmoe=0, *, complet=True, meme_binaire=True):
     prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
     return filtre_llama_bench(
-        prof, ngl=ngl, ncmoe=ncmoe, complet=complet, hw=hw, meme_binaire=meme_binaire
+        prof,
+        ngl=ngl,
+        ncmoe=ncmoe,
+        complet=complet,
+        hw=hw,
+        vram_total_mb=hw.vram_total_mb,
+        ram_total_mb=64_000,
+        uma=hw.has_gpu and not hw.vram_is_discrete,
+        headroom_mb=640,
+        meme_binaire=meme_binaire,
     )
 
 
@@ -447,6 +572,42 @@ def test_llama_bench_retire_les_ngl_impossibles_sur_le_device():
     assert f["ngl"] == [0, 22]
     assert [r["ngl"] for r in f["retires"]] == [99]
     assert "VRAM" in f["retires"][0]["raison"]
+    assert "budget device" in f["retires"][0]["raison"]
+
+
+def test_llama_bench_juge_contre_le_meme_budget_que_le_precontrole():
+    """Revue adverse : juger contre la VRAM BRUTE gardait un -ngl 999 -ncmoe 48 de
+    7 788 Mo sur 8 192 Mo (budget 7 552 : 640 Mo de marge pour calcul et pilote), le
+    placement même que le précontrôle refusait — et un seul échec perdait tout le bench."""
+    moe = _moe(n=48, dense_mb=155, experts_mb=400)
+    f = _bench(moe, NVIDIA_8G, [999], ncmoe=48)
+    assert f["ngl"] == [0] and f["ncmoe"] == 0 and "repli" in f["note"]
+
+
+def test_llama_bench_moe_n_cpu_moe_pris_en_compte():
+    """Mutation sans effet avant (gpu_bytes sans n_cpu_moe). MoE de 8 couches sur 8 Go :
+    tous les experts en RAM (-ncmoe 8) tiennent ; deux couches d'experts sur le device
+    (-ncmoe 6), non."""
+    f = _bench(_moe(), NVIDIA_8G, [999], ncmoe=8)
+    assert f["ngl"] == [999] and f["ncmoe"] == 8 and f["retires"] == []
+    f = _bench(_moe(), NVIDIA_8G, [999], ncmoe=6)
+    assert f["ngl"] == [0] and [r["ngl"] for r in f["retires"]] == [999]
+
+
+def test_llama_bench_note_quand_seul_ngl_0_reste():
+    """Revue adverse : « [attention] llama-bench : . » (note vide) quand 0 restait seul."""
+    petit = HardwareProfile(
+        True,
+        "RTX 2G",
+        2000,
+        16,
+        vram_total_mb=2048,
+        backend="CUDA",
+        vram_is_discrete=True,
+        gpu_count=1,
+    )
+    f = _bench(_dense(), petit, [0, 22, 99])
+    assert f["ngl"] == [0] and f["note"]
 
 
 def test_llama_bench_inchange_si_incomplet_ou_autre_binaire():
