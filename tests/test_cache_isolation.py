@@ -24,6 +24,22 @@ def test_isolation_imposee_pour_memoire_recurrente():
     assert isolation_needed(0, 0, recurrent=True) is True
 
 
+def test_isolation_text_distingue_perdu_impose_et_survit():
+    """Vu sur Ornith (2026-10-10) : « cache PERDU (retour 6/721) » alors que la mesure
+    montre un cache qui survit — les 2 slots étaient IMPOSÉS par la mémoire récurrente.
+    Le libellé doit dire ce que la mesure a montré et pourquoi on isole quand même."""
+    from loom.setup.topology import isolation_text
+
+    perdu = isolation_text(True, 600, 590)
+    assert "PERDU" in perdu and "590/600" in perdu
+    impose = isolation_text(True, 721, 6)
+    assert "PERDU" not in impose and "survit" in impose and "imposés" in impose
+    assert "6/721" in impose and "récurrente" in impose
+    sain = isolation_text(False, 600, 4)
+    assert "survit" in sain and "1 slot" in sain
+    assert "illisible" in isolation_text(None, 0, 0)
+
+
 def test_isolation_needed_mesure_illisible_sans_verdict():
     # Ne jamais doubler le KV sur une sonde illisible.
     assert isolation_needed(0, 0) is False

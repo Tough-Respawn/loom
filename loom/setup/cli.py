@@ -1147,16 +1147,11 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         )
     else:
         con.progress_end()
+        marque = "[attention]" if isolation else "[ok]"
         if isolation:
             probe.n_parallel = 2
-            con.say(
-                f"  [attention] cache PERDU après pollution du slot ({iso_detail}) "
-                "-> isolation par 2e slot (--parallel 2 pour ce modèle, KV x2)."
-            )
-        else:
-            con.say(
-                f"  [ok] cache survit à la pollution ({iso_detail}) — 1 slot suffit."
-            )
+        # Libellé honnête : ce que la mesure a montré, et pourquoi on isole quand même.
+        con.say(f"  {marque} {topo_mod.isolation_text(isolation, first, back)}")
     con.say(
         f"  Topologie découverte : {topo} (budget {budget} Mo). Calibration du "
         "contexte par PENTE MESURÉE + vitesse en profondeur (~5-15 min)…"

@@ -52,7 +52,10 @@ def test_placement_depuis_le_model_toml():
     )
     assert placement_from_config({"n_gpu_layers": 999}, n_layers=42).key == "gpu_total"
     assert placement_from_config({"n_gpu_layers": 42}, n_layers=42).key == "gpu_total"
-    assert placement_from_config({"cpu_moe": False}, n_layers=42) is None
+    # `cpu_moe = false` ÉCRIT (Ornith après le 2026-10-09) : l'exécutant met tout sur GPU
+    # (resolve_ngl -> 999 dès que la VRAM libre le permet) — c'est la config actuelle.
+    actuel = placement_from_config({"cpu_moe": False}, n_layers=42)
+    assert actuel.key == "gpu_total" and actuel.actuel is True
     assert placement_from_config({}, n_layers=42) is None
     assert placement_from_config({"cpu_moe": True}, n_layers=40).actuel is True
 

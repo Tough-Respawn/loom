@@ -402,6 +402,25 @@ def cache_check_text(v: dict) -> str:
     )
 
 
+def isolation_text(needed: bool | None, first: int, back: int) -> str:
+    """Libellé HONNÊTE du verdict d'isolation : ce que la mesure a montré, et pourquoi on
+    isole quand même. Vu sur Ornith (2026-10-10) : « cache PERDU (retour 6/721) » alors
+    que 6 tokens retraités = cache survécu ; les 2 slots étaient IMPOSÉS par la mémoire
+    récurrente (isolation_needed, recurrent=True)."""
+    if needed is None:
+        return "illisible (réglage inchangé)."
+    retour = f"retour {back}/{first} tokens retraités"
+    if not needed:
+        return f"cache survit à la pollution ({retour}) -> 1 slot suffit."
+    if first > 0 and back < 0.5 * first:
+        return (
+            f"cache survit ici à la pollution ({retour}) mais la mémoire est "
+            "récurrente : 2 slots imposés (le repli du cache RAM casse dès que le "
+            "préfixe bouge)."
+        )
+    return f"cache PERDU après pollution du slot ({retour}) -> 2 slots pour ce modèle."
+
+
 def isolation_needed(
     prompt_first: int, prompt_back: int, recurrent: bool | None = False
 ) -> bool:

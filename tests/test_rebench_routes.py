@@ -184,6 +184,22 @@ def test_rebench_applique_le_verdict_isolation(env, monkeypatch):
     assert "context = 4096" in toml_txt
 
 
+def test_rebench_isolation_imposee_par_la_recurrence_ne_dit_pas_perdu(env, monkeypatch):
+    calib = dict(
+        CALIB,
+        context=4096,
+        isolation=True,
+        isolation_first=721,
+        isolation_back=6,
+        isolation_detail="retour 6/721 tokens retraités, mémoire récurrente",
+        isolation_avant=False,
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "cache_isolation → true" in txt
+    assert "PERDU" not in txt and "survit" in txt and "imposés" in txt
+
+
 def test_rebench_applique_le_placement_mesure(env, monkeypatch):
     # Contexte inchangé, mais la sonde de placement a mesuré tout-GPU +19 % contre
     # experts-CPU (Ornith, 2026-10-09) : verdict nommé, puis écrit dans le model.toml.

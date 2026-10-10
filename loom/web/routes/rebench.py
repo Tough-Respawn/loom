@@ -229,8 +229,10 @@ def _run_calibration(S, spec, progress):
     progress("sonde d'isolation du cache (A -> pollution -> A)…")
     isolation = None
     iso_detail = ""
+    iso_first, iso_back = 0, 0
     try:
         first, back = probe.probe_isolation()
+        iso_first, iso_back = int(first), int(back)
         isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
         iso_detail = f"retour {back}/{first} tokens retraités"
         if meta.get("recurrent"):
@@ -245,6 +247,8 @@ def _run_calibration(S, spec, progress):
     )
     calib["isolation"] = isolation
     calib["isolation_detail"] = iso_detail
+    calib["isolation_first"] = iso_first
+    calib["isolation_back"] = iso_back
     calib["isolation_avant"] = bool(mt.get("cache_isolation", False))
     # Sonde d'ubatch sur la MÊME sonde serveur (flags exacts, n_parallel inclus) :
     # un modèle installé par /add-model n'a jamais eu la sienne — c'est ici qu'il
@@ -305,7 +309,12 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
         new = calib["context"]
         iso = calib.get("isolation")
         iso_change = iso is not None and iso != calib.get("isolation_avant", False)
-        if iso is None:
+        if "isolation_first" in calib:
+            # Libellé honnête : ce que la mesure a montré, et pourquoi on isole.
+            iso_line = "sonde d'isolation : " + topo_mod.isolation_text(
+                iso, calib["isolation_first"], calib["isolation_back"]
+            )
+        elif iso is None:
             iso_line = "sonde d'isolation : illisible (réglage inchangé)."
         elif iso:
             iso_line = (

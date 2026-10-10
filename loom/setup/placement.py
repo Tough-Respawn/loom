@@ -179,6 +179,10 @@ def placement_from_config(mt: dict, *, n_layers: int | None) -> Placement | None
         return Placement("experts_cpu", 999, cpu_moe=True, actuel=True)
     ngl = mt.get("n_gpu_layers")
     if ngl is None:
+        if "cpu_moe" in mt:
+            # `cpu_moe = false` ÉCRIT (MoE dont les experts restent sur GPU) : l'exécutant
+            # résout -ngl à 999 dès que la VRAM libre le permet -> tout GPU est l'actuel.
+            return Placement("gpu_total", 999, actuel=True)
         return None
     ngl = int(ngl)
     if ngl <= 0:
