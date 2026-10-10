@@ -593,6 +593,8 @@ def _sections_from_calib(calib: dict, gguf) -> dict:
                 "budget_mb",
                 "capacity_ctx",
                 "rungs",
+                # Points de pente avec leurs checkpoints effectifs (revue #14).
+                "rungs_detail",
                 "vitesses",
                 "valide_jusqua",
                 "duree_s",

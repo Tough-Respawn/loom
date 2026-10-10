@@ -681,24 +681,38 @@ def _agreger(echantillons: list[dict]) -> dict:
         vus = [c for c in cps if c.get("effectifs") is not None]
         if vus:
             top = max(vus, key=lambda c: int(c["effectifs"]))
-            out["checkpoints_effectifs"] = int(top["effectifs"])  # vivants, tous slots
+            out["checkpoints_effectifs"] = int(top["effectifs"])  # vivants en fin
+            # Pic simultané (la RAM réellement occupée), le plus haut des échantillons.
+            out["checkpoints_pic"] = max(int(c.get("pic", c["effectifs"])) for c in vus)
             if top.get("max_par_slot") is not None:
                 out["checkpoints_max_par_slot"] = int(top["max_par_slot"])
             if top.get("plafond") is not None:
                 out["checkpoints_plafond"] = int(top["plafond"])  # par slot
-            if top.get("taille_mb") is not None:
-                out["checkpoint_mb"] = float(top["taille_mb"])
-        out["checkpoints_detail"] = str((vus[-1] if vus else cps[-1]).get("source", ""))
+            taille = next(
+                (c["taille_mb"] for c in vus if c.get("taille_mb") is not None), None
+            )
+            if taille is not None:
+                out["checkpoint_mb"] = float(taille)
+        dernier = vus[-1] if vus else cps[-1]
+        detail = str(dernier.get("source", ""))
+        incertains = [c["incertain"] for c in cps if c.get("incertain")]
+        if incertains:
+            detail += f" ; incertain : {incertains[-1]}"
+        out["checkpoints_detail"] = detail
     return out
 
 
 def checkpoints_text(mesure: dict) -> str:
     """Suffixe lisible d'une mesure agrégée : « ; checkpoints effectifs 4 (2 par slot au
-    plus, plafond 32 par slot ; 149.6 Mio chacun, ~598 Mio) », « ; checkpoints : non
-    mesuré : … », ou "" quand rien n'a été rapporté."""
+    plus, plafond 32 par slot, 149.6 Mio chacun, ~598 Mio) », avec « pic N » quand des
+    checkpoints ont été supprimés en cours de mesure (la mémoire se chiffre au pic),
+    « ; checkpoints : non mesuré : … », ou "" quand rien n'a été rapporté."""
     n = (mesure or {}).get("checkpoints_effectifs")
     if n is not None:
+        pic = int(mesure.get("checkpoints_pic") or n)
         parts = []
+        if pic > int(n):
+            parts.append(f"pic {pic}")
         if mesure.get("checkpoints_max_par_slot") is not None:
             parts.append(f"{mesure['checkpoints_max_par_slot']} par slot au plus")
         if mesure.get("checkpoints_plafond"):
@@ -706,7 +720,11 @@ def checkpoints_text(mesure: dict) -> str:
         txt = f" ; checkpoints effectifs {n}"
         if mesure.get("checkpoint_mb"):
             taille = float(mesure["checkpoint_mb"])
-            parts.append(f"{taille} Mio chacun, ~{round(taille * int(n))} Mio")
+            au_pic = " au pic" if pic > int(n) else ""
+            parts.append(f"{taille} Mio chacun, ~{round(taille * pic)} Mio{au_pic}")
+        detail = str(mesure.get("checkpoints_detail") or "")
+        if "incertain" in detail:
+            parts.append(detail[detail.index("incertain") :])
         return txt + (f" ({', '.join(parts)})" if parts else "")
     detail = (mesure or {}).get("checkpoints_detail")
     return f" ; checkpoints : {detail}" if detail else ""

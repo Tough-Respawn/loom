@@ -489,7 +489,15 @@ def test_rebench_archive_le_verdict_puis_l_application(env, monkeypatch):
     from loom.setup import archive as _archive
 
     monkeypatch.setattr(_archive, "BENCH_DIR", env.tmp / "var" / "bench")
-    calib = dict(CALIB, context=8192, final=_FINAL, build="b7000-abc1234")
+    calib = dict(
+        CALIB,
+        context=8192,
+        final=_FINAL,
+        build="b7000-abc1234",
+        rungs_detail=[
+            {"ctx": 8192, "mem_mb": 3000, "checkpoints": {"effectifs": 0, "pic": 0}}
+        ],
+    )
     _launch(env, monkeypatch, calib=calib)
     _wait_verdict(env)
     archives = list((env.tmp / "var" / "bench" / "loc-test").glob("*.json"))
@@ -497,6 +505,8 @@ def test_rebench_archive_le_verdict_puis_l_application(env, monkeypatch):
     arch = json.loads(archives[0].read_text(encoding="utf-8"))
     assert arch["model_id"] == "loc-test" and arch["build"] == "b7000-abc1234"
     assert arch["calibration"]["context"] == 8192 and arch["final"]["tg_ts"] == 11.7
+    # Les points de pente gardent leurs checkpoints effectifs (revue #14).
+    assert arch["calibration"]["rungs_detail"][0]["checkpoints"]["effectifs"] == 0
     assert "Verdict" in arch["verdict_texte"] and "application" not in arch
     # Compte rendu COMMUN : matériel, binaire, flags, profil, plan — reproductible.
     assert arch["materiel"]["gpu_name"] == "GPU test"

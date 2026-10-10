@@ -124,6 +124,23 @@ _RE_CP_CREATED = re.compile(
 _RE_CP_ENABLED = re.compile(
     r"context checkpoints enabled, max = (\d+), min spacing = (\d+)"
 )
+# Événements qui changent le nombre de checkpoints d'un slot, d'après les messages de
+# tools/server/server-context.cpp (llama.cpp de Loom, 2026-10) :
+# - un de moins : « erased invalidated » (sans recréation), « erasing old » / « erasing
+#   context checkpoint too close » / « superseding » (une création suit et refixe) ;
+# - zéro : « clearing prompt with N tokens » (prompt_clear -> server_prompt::clear vide
+#   la liste) et « clearing cache for lora change » ;
+# - N : « restored N context checkpoint(s) from <fichier> ».
+_RE_CP_SLOT = re.compile(r"id\s+(\d+)\s*\|")
+_RE_CP_MOINS_UN = re.compile(
+    r"erased invalidated context checkpoint|erasing (?:old )?context checkpoint"
+    r"|superseding context checkpoint"
+)
+_RE_CP_ZERO = re.compile(r"clearing prompt with|clearing cache for lora change")
+_RE_CP_RESTORED = re.compile(r"restored (\d+) context checkpoint\(s\) from")
+# Rechargement d'un prompt depuis le cache RAM : le slot reprend les checkpoints de
+# l'entrée, dont le journal ne donne pas le nombre à cet endroit.
+_RE_CP_CACHE_LOAD = re.compile(r"found better prompt with")
 
 
 def _log_tail(text: str, n: int = 4) -> str:
@@ -138,33 +155,82 @@ def _log_tail(text: str, n: int = 4) -> str:
 
 
 def parse_checkpoints(text: str) -> dict:
-    """Checkpoints d'état récurrent créés pendant une mesure, d'après le journal de
-    llama-server (verbosité 4). « slot … id S | … created context checkpoint N of M
-    (…, size = X MiB) » : N est le nombre VIVANT dans le slot S après création (un
-    remplacement recrée au même rang ; un slot réinitialisé repart de 1), M le plafond
-    PAR SLOT (`ctx_checkpoints`, 32 par défaut — un maximum, pas le nombre créé).
-    Vivants = dernier N de chaque slot, additionnés (vérifié sur Bonsai 2, 2026-10-10).
-    Sans aucune ligne : non mesuré, dit tel quel (modèle sans état récurrent, ou
-    journal muet). Jamais de None dans le résultat : il finit dans local.toml."""
+    """Checkpoints d'état récurrent pendant une mesure, d'après le journal de
+    llama-server (verbosité 4), suivis ÉVÉNEMENT PAR ÉVÉNEMENT et par slot.
+    « id S | … created context checkpoint N of M (…, size = X MiB) » : N est le
+    nombre vivant dans le slot S après création, M le plafond PAR SLOT
+    (`ctx_checkpoints`, 32 par défaut — un maximum, pas le nombre créé). Suppressions
+    et remises à zéro (cf. _RE_CP_*) décrémentent ou vident le slot : deux créations
+    puis « clearing prompt » laissent 0 vivant, pas 2 (revue #14).
+
+    Renvoie `effectifs` (vivants en FIN de mesure, tous slots), `pic` (maximum
+    simultané pendant la mesure — c'est lui qui a occupé la RAM), `par_slot` (fin),
+    `max_par_slot`, `plafond`, `crees`, `supprimes`, `reinitialisations`, `taille_mb`,
+    `source`, et `incertain` quand un rechargement depuis le cache de prompts rend un
+    compte inconnu. Sans aucune ligne : non mesuré, dit tel quel. Jamais de None :
+    le résultat finit dans local.toml."""
     text = text or ""
-    created = _RE_CP_CREATED.findall(text)
     enabled = _RE_CP_ENABLED.search(text)
-    if created:
-        par_slot: dict[str, int] = {}
-        for slot, n, _m, _s in created:
-            par_slot[str(int(slot))] = int(n)  # le DERNIER compte du slot fait foi
+    par_slot: dict[str, int] = {}
+    pic = 0
+    crees = supprimes = reinit = 0
+    plafond = taille = None
+    incertain = ""
+    vu_evenement = False
+    for line in text.splitlines():
+        if _RE_CP_CACHE_LOAD.search(line):
+            incertain = (
+                "prompt rechargé depuis le cache de prompts RAM : compte du slot "
+                "inconnu jusqu'à la prochaine création"
+            )
+            continue
+        m_slot = _RE_CP_SLOT.search(line)
+        if not m_slot:
+            continue
+        slot = str(int(m_slot.group(1)))
+        m = _RE_CP_CREATED.search(line)
+        if m:
+            par_slot[slot] = int(m.group(2))
+            plafond, taille = int(m.group(3)), round(float(m.group(4)), 1)
+            crees += 1
+        elif _RE_CP_MOINS_UN.search(line):
+            par_slot[slot] = max(0, par_slot.get(slot, 0) - 1)
+            supprimes += 1
+        elif _RE_CP_ZERO.search(line):
+            if slot not in par_slot and not vu_evenement:
+                continue  # remise à zéro d'un slot vide avant toute création : neutre
+            par_slot[slot] = 0
+            reinit += 1
+        else:
+            m_r = _RE_CP_RESTORED.search(line)
+            if not m_r:
+                continue
+            par_slot[slot] = int(m_r.group(1))
+        vu_evenement = True
+        pic = max(pic, sum(par_slot.values()))
+    if vu_evenement and par_slot:
         par_slot = dict(sorted(par_slot.items(), key=lambda kv: int(kv[0])))
+        if plafond is None and enabled:
+            plafond = int(enabled.group(1))
         out = {
             "effectifs": sum(par_slot.values()),
+            "pic": pic,
             "par_slot": par_slot,
             "max_par_slot": max(par_slot.values()),
-            "plafond": int(created[-1][2]),
-            "crees": len(created),
-            "taille_mb": round(float(created[-1][3]), 1),
-            "source": "journal serveur (lignes « created context checkpoint »)",
+            "crees": crees,
+            "supprimes": supprimes,
+            "reinitialisations": reinit,
+            "source": "journal serveur (créations, suppressions et remises à zéro "
+            "suivies par slot)",
         }
+        if plafond is not None:
+            out["plafond"] = plafond
+        if taille is not None:
+            out["taille_mb"] = taille
         if enabled:
             out["min_spacing"] = int(enabled.group(2))
+        if incertain:
+            out["incertain"] = incertain
         return out
     if enabled:
         return {
@@ -601,6 +667,15 @@ def isolation_needed(
     return prompt_back >= 0.5 * prompt_first
 
 
+def _point(r, base: dict) -> dict:
+    """Un point de calibration avec ce que la sonde a rapporté en plus des chiffres
+    (checkpoints effectifs) — rien d'inventé quand elle ne rapporte rien."""
+    cp = getattr(r, "checkpoints", None)
+    if isinstance(cp, dict):
+        base["checkpoints"] = cp
+    return base
+
+
 def calibrate(
     probe,
     meta: dict,
@@ -621,10 +696,14 @@ def calibrate(
     model_limit = int(meta.get("context_length") or 32768)
 
     rungs = []
+    # Chaque point garde ce que la sonde a rapporté (checkpoints effectifs du journal
+    # serveur) : la pente se lit avec, l'archive le conserve (revue #14).
+    rungs_detail: list[dict] = []
     for ctx in (8192, 16384):
         say(f"pente : chargement à ctx={ctx}…")
         r = probe.run(ctx, None)
         rungs.append((r.ctx, r.mem_mb))
+        rungs_detail.append(_point(r, {"ctx": r.ctx, "mem_mb": r.mem_mb}))
     slope_bytes, base_mb = kv_slope(rungs)
     cap = capacity_ctx(slope_bytes, base_mb, budget_mb, model_limit)
 
@@ -656,7 +735,9 @@ def calibrate(
             )
             break
         vitesses.append(
-            {"ctx": ctx, "tg_ts": r.tg_ts, "pp_ts": r.pp_ts, "mem_mb": r.mem_mb}
+            _point(
+                r, {"ctx": ctx, "tg_ts": r.tg_ts, "pp_ts": r.pp_ts, "mem_mb": r.mem_mb}
+            )
         )
         if not r.tg_ts:
             mecanisme = f"débit illisible à ctx={ctx} — dernier barreau sain conservé"
@@ -691,6 +772,7 @@ def calibrate(
         "budget_mb": budget_mb,
         "capacity_ctx": cap,
         "rungs": rungs,
+        "rungs_detail": rungs_detail,
         "vitesses": vitesses,
         "valide_jusqua": valide,
         "duree_s": round(time.monotonic() - t0),

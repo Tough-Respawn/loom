@@ -69,6 +69,112 @@ def test_parse_checkpoints_compte_par_slot_puis_additionne():
     assert cp["effectifs"] == 2 and cp["par_slot"] == {"1": 2} and cp["crees"] == 4
 
 
+def _slt(slot, texte):
+    return f"0.07 I slot create_check: id  {slot} | task 7 | {texte}"
+
+
+def test_parse_checkpoints_suit_les_reinitialisations():
+    """Revue #14 P2 : deux créations puis `clearing prompt` -> le serveur a supprimé les
+    checkpoints (prompt_clear -> server_prompt::clear vide la liste), le parseur en
+    annonçait encore deux. Vivants en fin de mesure : 0 ; pic : 2."""
+    journal = "\n".join(
+        [
+            _ligne(0, 1, 2048),
+            _ligne(0, 2, 4096),
+            _slt(0, "clearing prompt with 7701 tokens"),
+        ]
+    )
+    cp = parse_checkpoints(journal)
+    assert cp["effectifs"] == 0 and cp["pic"] == 2 and cp["par_slot"] == {"0": 0}
+    assert cp["reinitialisations"] == 1 and cp["crees"] == 2
+    # Changement de LoRA : même remise à zéro.
+    cp = parse_checkpoints(
+        "\n".join(
+            [
+                _ligne(1, 1, 5),
+                _slt(1, "clearing cache for lora change. 0 loras -> 1 loras"),
+            ]
+        )
+    )
+    assert cp["effectifs"] == 0 and cp["pic"] == 1
+
+
+def test_parse_checkpoints_suit_les_suppressions():
+    """« erased invalidated » retire un checkpoint sans en recréer ; « erasing old » /
+    « too close » / « superseding » précèdent une création qui refixe le compte."""
+    efface = (
+        "erased invalidated context checkpoint (pos_min = 9, pos_max = 9, n_tokens = 10, "
+        "n_swa = 0, pos_next = 5, size = 149.626 MiB)"
+    )
+    journal = "\n".join(
+        [
+            _ligne(0, 1, 10),
+            _ligne(0, 2, 20),
+            _ligne(0, 3, 30),
+            _slt(0, efface),
+            _slt(0, efface),
+        ]
+    )
+    cp = parse_checkpoints(journal)
+    assert cp["effectifs"] == 1 and cp["pic"] == 3 and cp["supprimes"] == 2
+    # Remplacement au même rang (extrait réel Bonsai) : 3 vivants, pic 3.
+    cp = parse_checkpoints(JOURNAL)
+    assert cp["effectifs"] == 3 and cp["pic"] == 3
+    # Plafond atteint : « erasing old » puis création « 32 of 32 ».
+    plein = "\n".join(
+        [
+            _ligne(0, 32, 9000),
+            _slt(
+                0,
+                "erasing old context checkpoint (pos_min = 1, pos_max = 1, n_tokens = 2, size = 149.626 MiB)",
+            ),
+            _ligne(0, 32, 9600),
+        ]
+    )
+    assert parse_checkpoints(plein)["effectifs"] == 32
+
+
+def test_parse_checkpoints_restauration_et_cache_de_prompts():
+    restaure = _slt(0, "restored 3 context checkpoint(s) from 'C:/x/turnend.kv'")
+    assert parse_checkpoints(restaure)["effectifs"] == 3
+    # Rechargement depuis le cache de prompts RAM : le journal ne donne pas le compte
+    # du slot -> dit « incertain », jamais inventé.
+    journal = "\n".join(
+        [
+            _ligne(0, 2, 4096),
+            "0.09 I srv  get_availabl:  - found better prompt with f_keep = 0.9, f_sim = 0.8",
+        ]
+    )
+    cp = parse_checkpoints(journal)
+    assert cp["incertain"] and "cache de prompts" in cp["incertain"]
+
+
+def test_calibration_conserve_les_checkpoints_de_chaque_point():
+    """Revue #14 P2 : calibrate() abandonnait le champ `checkpoints` en construisant
+    ses points de pente et de vitesse. Chaque point archivé le porte désormais."""
+    from loom.setup.topology import calibrate
+
+    class _P:
+        def run(self, ctx, depth):
+            return ProbeResult(
+                ctx=ctx,
+                mem_mb=int(3000 + ctx * 0.01),
+                tg_ts=10.0 if depth else None,
+                pp_ts=200.0 if depth else None,
+                checkpoints=_cp(2 if depth else 0),
+            )
+
+    out = calibrate(
+        _P(), {"context_length": 32768}, topology="gpu_dense", budget_mb=40_000
+    )
+    assert [p["ctx"] for p in out["rungs_detail"]] == [8192, 16384]
+    assert all(p["checkpoints"]["effectifs"] == 0 for p in out["rungs_detail"])
+    assert out["vitesses"] and all(
+        v["checkpoints"]["effectifs"] == 2 for v in out["vitesses"]
+    )
+    assert out["rungs"] == [(p["ctx"], p["mem_mb"]) for p in out["rungs_detail"]]
+
+
 def test_parse_checkpoints_actives_mais_aucun_cree():
     cp = parse_checkpoints(JOURNAL.splitlines()[0])
     assert cp["effectifs"] == 0 and cp["plafond"] == 32 and cp["crees"] == 0
@@ -330,6 +436,12 @@ def test_reglage_final_porte_les_checkpoints_effectifs():
     texte = checkpoints_text(fin)
     assert "checkpoints effectifs 3" in texte and "plafond 32 par slot" in texte
     assert "~449 Mio" in texte  # 3 x 149,6
+    # Pic supérieur aux vivants de fin : le pic est dit, et c'est lui qui chiffre la
+    # mémoire (les checkpoints supprimés en cours de mesure ont occupé la RAM).
+    t = checkpoints_text(
+        {"checkpoints_effectifs": 0, "checkpoints_pic": 2, "checkpoint_mb": 149.6}
+    )
+    assert "effectifs 0" in t and "pic 2" in t and "~299 Mio au pic" in t
     assert "149.6" in checkpoints_text(fin)
     assert "non mesuré" in checkpoints_text({"checkpoints_detail": "non mesuré : vide"})
     assert checkpoints_text({"tg_ts": 1.0}) == ""
