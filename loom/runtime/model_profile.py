@@ -125,7 +125,13 @@ class ModelProfile:
         weights = meta.get("weights") or None
 
         n = int(n_layers or 0)
-        if weights and weights.get("couches_attention") is not None:
+        # Un catalogue SANS couche ne prouve rien : seul un catalogue qui liste des
+        # couches établit lesquelles portent (ou non) un cache KV.
+        if (
+            weights
+            and weights.get("couches_attention") is not None
+            and weights.get("par_couche")
+        ):
             attention = [int(i) for i in weights["couches_attention"]]
             recurrent_layers = [int(i) for i in weights.get("couches_recurrentes", [])]
             prov["couches_attention"] = "déduit (catalogue des tenseurs)"
@@ -139,6 +145,14 @@ class ModelProfile:
             prov["couches_attention"] = (
                 "inconnu (mémoire récurrente sans motif déclaré : toutes les couches "
                 "supposées à cache KV, borne haute)"
+            )
+        elif not n:
+            # Métadonnées absentes (GGUF illisible, repli `{}`) : RIEN n'est établi —
+            # surtout pas « aucune couche d'attention » (revue #14 : KV nul à tort).
+            attention = []
+            recurrent_layers = []
+            prov["couches_attention"] = (
+                "inconnu (nombre de couches inconnu : forfait KV de secours)"
             )
         else:
             attention = list(range(n))

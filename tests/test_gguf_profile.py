@@ -399,6 +399,37 @@ def test_profil_purement_recurrent_kv_nul_pas_un_forfait():
     assert flou.kv_bytes(1000, "q8_0") == 150_000 * 1000
 
 
+def test_metadonnees_inconnues_gardent_le_forfait_kv():
+    """Revue #14 P2 (2026-10-10) : `from_meta({})` (repli de loom-setup quand le GGUF est
+    illisible) rendait un KV NUL — « aucune couche connue » lu comme « aucune couche
+    d'attention établie ». Zéro est réservé à une absence d'attention ÉTABLIE (catalogue
+    des tenseurs) ; sinon forfait de secours et provenance « inconnu »."""
+    from loom.runtime.model_profile import KV_FALLBACK_BYTES_PER_TOKEN
+
+    vide = ModelProfile.from_meta({}, model_size_mb=5_600)
+    assert vide.kv_bytes(8192, "q8_0", 2) == KV_FALLBACK_BYTES_PER_TOKEN * 8192 * 2
+    assert vide.provenance["couches_attention"].startswith("inconnu")
+    assert vide.provenance["kv"].startswith("inconnu")
+    # Récurrent déclaré mais sans nombre de couches : inconnu aussi, pas zéro.
+    rec = ModelProfile.from_meta({"recurrent": True})
+    assert rec.kv_bytes(1000, "q8_0") == KV_FALLBACK_BYTES_PER_TOKEN * 1000
+    # Un catalogue VIDE de couches (poids sans couche) ne prouve rien non plus.
+    sans_couche = ModelProfile.from_meta(
+        {
+            "weights": {
+                "total": 0,
+                "familles": {},
+                "par_couche": [],
+                "experts_par_couche": [],
+                "couches_attention": [],
+                "couches_recurrentes": [],
+                "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+            }
+        }
+    )
+    assert sans_couche.kv_bytes(1000, "q8_0") == KV_FALLBACK_BYTES_PER_TOKEN * 1000
+
+
 def test_profil_sans_recurrence_etat_nul():
     prof = ModelProfile.from_meta(_meta(n_layers=8))
     assert (
