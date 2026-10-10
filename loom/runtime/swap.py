@@ -42,7 +42,7 @@ def _model_cmd(
     mmproj = f"{base}/{model.mmproj_filename}" if model.mmproj_filename else None
     # Mêmes flags machine que serve.py et que la sonde : une seule dérivation
     # (effective.launch_flags), sinon le routeur mesure/sert une autre configuration.
-    flags = launch_flags(profile, override_threads)
+    flags = launch_flags(profile, override_threads, model_threads=model.threads)
     args = build_server_args(
         server_bin=model.server_bin or llama_bin,
         model_path=model_path,

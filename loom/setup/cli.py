@@ -804,6 +804,30 @@ def _set_model_context(gguf_path: Path, context: int, mecanisme: str) -> None:
     atomic_write_text(p, "\n".join(lines) + "\n")
 
 
+def _set_model_threads(gguf_path: Path, threads: int, detail: str) -> None:
+    """Écrit les threads MESURÉS sur le placement élu dans le model.toml (option « par
+    modèle » : prioritaires sur [override] threads de la machine). Remplace la ligne
+    `threads =` existante ou l'ajoute, un seul tampon, le reste du fichier intact."""
+    p = Path(gguf_path).parent / "model.toml"
+    if not p.is_file():
+        return
+    lines = p.read_text(encoding="utf-8").splitlines()
+    stamp = f"# threads élus par la sonde (placement élu) — {detail}"
+    new_line = f"threads = {int(threads)}"
+    for i, line in enumerate(lines):
+        code = line.split("#")[0].strip().replace(" ", "")
+        if code.startswith("threads="):
+            lines[i] = new_line
+            if i == 0 or not lines[i - 1].strip().startswith("# threads élus"):
+                lines.insert(i, stamp)
+            else:
+                lines[i - 1] = stamp
+            break
+    else:
+        lines += ["", stamp, new_line]
+    atomic_write_text(p, "\n".join(lines) + "\n")
+
+
 def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> None:
     """Écrit le verdict MESURÉ de la sonde d'isolation dans le model.toml (vérité
     par modèle) : true = le cache ne survit pas à la pollution du slot -> serve
@@ -1260,6 +1284,48 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             batch=pl.batch or getattr(probe, "batch", None),
         )
         con.say(f"  [ok] placement : {pl.describe()} — {pl_res['mecanisme']}")
+    # Threads sur le placement ÉLU (option par modèle, 2026-10-10) : un placement avec
+    # du calcul CPU se mesure avec les candidats du parc, au contexte et à la
+    # profondeur de la finale ; tout GPU : non exploré, et la trace le dit.
+    th_res = None
+    pl_elu_th = (pl_res or {}).get("placement")
+    if pl_elu_th is not None and not place_mod.needs_cpu_compute(pl_elu_th):
+        th_res = {
+            "non_explore": (
+                f"non exploré : {pl_elu_th.key.split('@')[0]} sans calcul CPU attendu "
+                f"(threads machine {best['threads']} conservés)"
+            )
+        }
+        con.say(f"  threads : {th_res['non_explore']}")
+    elif pl_elu_th is not None and pl_res.get("mesures"):
+        th_options = place_mod.thread_options(
+            best["threads"], os.cpu_count() or 4, deps.cpu_physical()
+        )
+        con.progress("sonde de threads sur le placement élu…")
+        try:
+            th_res = place_mod.probe_threads(
+                lambda o: _dc_replace(probe, threads=o.threads),
+                th_options,
+                ctx=pl_res["ctx_final"],
+                depth=pl_res["depth_final"],
+                progress=lambda m: con.progress(f"threads : {m}"),
+            )
+        except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
+            th_res = None
+        con.progress_end()
+        if th_res:
+            th_res["placement"] = pl_elu_th.key.split("@")[0]
+            if th_res["threads"] != int(getattr(probe, "threads", best["threads"])):
+                probe = _dc_replace(probe, threads=th_res["threads"])
+            con.say(
+                f"  [ok] threads sur {th_res['placement']} : {th_res['threads']} — "
+                f"{th_res['mecanisme']}"
+            )
+        else:
+            con.say(
+                "  [attention] sonde de threads illisible — threads machine conservés."
+            )
+    trace["threads"] = th_res
     con.say(
         f"  Topologie découverte : {topo} (budget {budget} Mo). Calibration du "
         "contexte par PENTE MESURÉE + vitesse en profondeur (~5-15 min)…"
@@ -1429,6 +1495,13 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     if cache_v and cache_v.get("reused") is not None:
         values["bench"]["cache_verifie"] = bool(cache_v["reused"])
         values["bench"]["cache_verifie_detail"] = topo_mod.cache_check_text(cache_v)
+    if th_res and "non_explore" in th_res:
+        values["bench"]["threads_non_explore"] = th_res["non_explore"]
+    elif th_res:
+        values["bench"]["threads_modele"] = th_res["threads"]
+        values["bench"]["threads_placement"] = th_res.get("placement")
+        values["bench"]["threads_mecanisme"] = th_res["mecanisme"]
+        values["bench"]["threads_mesures"] = _sans_none(th_res["mesures"])
     if "echec" in final:
         values["bench"]["final_echec"] = final["echec"]
     else:
@@ -1526,6 +1599,17 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             ub_res.get("detail")
             or f"{ub_res['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens",
         )
+    if th_res and th_res.get("compare"):
+        # Vérité PAR MODÈLE : les threads mesurés sur son placement élu, prioritaires sur
+        # l'override machine (qui reste le repli des modèles non benchés).
+        import datetime as _dt
+
+        _set_model_threads(
+            gguf_path,
+            th_res["threads"],
+            f"{_dt.date.today().isoformat()} — {th_res['mecanisme']} (sur "
+            f"{th_res.get('placement')} à ctx {th_res['ctx']}, profondeur {th_res['depth']})",
+        )
     if isolation is not None:
         cache_txt = ""
         if cache_v and cache_v.get("reused") is not None:
@@ -1547,6 +1631,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "ubatch": (ub_res or {}).get("ubatch"),
             "batch": (ub_res or {}).get("batch"),
             "cache_isolation": isolation,
+            "threads": (th_res or {}).get("threads"),
         },
     )
     gpu_txt = f", offload GPU -ngl {best['ngl']}" if best["ngl"] > 0 else ""

@@ -482,6 +482,48 @@ def test_rebench_signale_une_archive_non_ecrite(env, monkeypatch):
     assert "archive non écrite" in txt and "disque plein" in txt
 
 
+def test_rebench_applique_les_threads_mesures(env, monkeypatch):
+    calib = dict(
+        CALIB,
+        context=4096,
+        threads_probe={
+            "threads": 5,
+            "baseline": 8,
+            "tg_ts": 6.0,
+            "pp_ts": 40.0,
+            "gain_pct": 20.0,
+            "compare": True,
+            "mesures": {"t8": {"tg_ts": 5.0}, "t5": {"tg_ts": 6.0}},
+            "mecanisme": "t5 adopté : génération 6.0 t/s contre 5.0 (t8), +20 %",
+            "placement": "gpu_partiel_ngl11",
+        },
+        threads_avant=None,
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "threads" in txt and "→ 5" in txt and "+20" in txt
+    assert "b_apply" in _sessions_text(env, needles=("b_apply",))
+    r = env.web.post("/chat", data={"message": "oui"})
+    assert "Application" in _sse_texts(r.data)
+    toml_txt = (env.mdir / "model.toml").read_text(encoding="utf-8")
+    assert "threads = 5" in toml_txt
+
+
+def test_rebench_threads_non_explores_rien_a_appliquer(env, monkeypatch):
+    calib = dict(
+        CALIB,
+        context=4096,
+        threads_probe={
+            "non_explore": "non exploré : tout GPU, aucun calcul CPU attendu"
+        },
+        threads_avant=None,
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "threads" in txt and "non exploré" in txt
+    assert "b_apply" not in _sessions_text(env, timeout=1.0)
+
+
 def test_rebench_deja_au_top_exige_un_reglage_final_valide(env, monkeypatch):
     # Preuves complètes sauf la validation finale : le verdict dit ce qui manque.
     calib = dict(

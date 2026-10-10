@@ -27,13 +27,20 @@ class LaunchFlags:
     )
 
 
-def launch_flags(profile: HardwareProfile, override_threads: int | None) -> LaunchFlags:
-    """Flags machine depuis le profil matériel (`--list-devices`) et l'override.
+def launch_flags(
+    profile: HardwareProfile,
+    override_threads: int | None,
+    model_threads: int | None = None,
+) -> LaunchFlags:
+    """Flags machine depuis le profil matériel (`--list-devices`) et les réglages.
 
-    threads : [override] threads (mesuré par le bench) s'il est renseigné ; sinon
+    threads : `threads` du model.toml (mesuré par le bench sur le placement élu de CE
+    modèle) s'il est renseigné ; sinon [override] threads de la machine ; sinon
     ~cœurs physiques (logiques / 2) avec un GPU — l'hyperthreading ralentit la
     passe CPU quand le GPU traite le reste du modèle — ; sinon tous les threads."""
-    if override_threads:
+    if model_threads:
+        threads = int(model_threads)
+    elif override_threads:
         threads = int(override_threads)
     elif profile.has_gpu:
         threads = max(1, profile.cpu_threads // 2)

@@ -139,6 +139,9 @@ def test_rebench_apply_oui_et_annulation():
         "placement": None,
         # Archive durable du bench : l'application y est notée quand elle existe.
         "archive": None,
+        # Threads mesurés sur le placement élu (par modèle).
+        "threads": None,
+        "threads_detail": "",
     }
     r = wizard.step(st, "non", deps())
     assert r.state is None and r.action is None and "inchangé" in r.reply

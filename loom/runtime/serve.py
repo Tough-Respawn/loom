@@ -133,7 +133,7 @@ def build_launch(
         cfg.gpu_kv_headroom_mb,
     )
     # Flags machine partagés avec llama-swap et la sonde (effective.launch_flags).
-    flags = launch_flags(profile, cfg.override_threads)
+    flags = launch_flags(profile, cfg.override_threads, model_threads=cfg.model.threads)
     return build_server_args(
         server_bin=cfg.model.server_bin or cfg.server_bin,
         model_path=str(model_path),

@@ -818,6 +818,88 @@ def probe_placement(
     )
 
 
+@dataclass(frozen=True)
+class ThreadsOption:
+    """Un nombre de threads candidat, sondé sur le placement ÉLU (clé `t<n>`)."""
+
+    threads: int
+    actuel: bool = False
+    # Jamais posés : la sonde de threads ne touche pas aux batchs de la configuration.
+    ubatch: int | None = None
+    batch: int | None = None
+
+    @property
+    def key(self) -> str:
+        return f"t{self.threads}"
+
+    def describe(self) -> str:
+        return f"{self.threads} threads" + (" — actuel" if self.actuel else "")
+
+
+def thread_options(
+    current: int, logical: int, physical: int | None
+) -> list[ThreadsOption]:
+    """Candidats de threads : l'ACTUEL d'abord (la base), puis les candidats du parc
+    (bench.thread_candidates : physiques/2, physiques, logiques) hors doublon, deux
+    au plus — un balayage économe sur la configuration élue."""
+    from loom.setup.bench import thread_candidates
+
+    cur = int(current)
+    autres = [c for c in thread_candidates(int(logical), physical) if c != cur]
+    return [ThreadsOption(cur, actuel=True)] + [ThreadsOption(c) for c in autres[:2]]
+
+
+def needs_cpu_compute(placement: Placement) -> bool:
+    """Du calcul CPU à régler ? Tout GPU : non (threads sans effet attendu — non
+    exploré, et la trace le dit). Experts ou couches sur CPU, CPU seul : oui."""
+    return placement.label != "gpu_total"
+
+
+def probe_threads(
+    make_probe,
+    options: list[ThreadsOption],
+    *,
+    ctx: int,
+    depth: int,
+    reps: int = PLACEMENT_REPS,
+    margin_pct: float = PLACEMENT_MARGIN_PCT,
+    progress=None,
+    time_budget_s: float = PLACEMENT_TIME_BUDGET_S,
+) -> dict | None:
+    """Sonde les threads sur la configuration ÉLUE (`make_probe(option)` renvoie une
+    sonde de cette configuration avec `option.threads`), au même contexte et à la
+    même profondeur que la finale, tours alternés, échantillons conservés ; la
+    génération décide, le prefill départage, l'actuel reste en cas d'indécision
+    (mêmes règles que pick_placement). Rien de mesurable -> None."""
+    say = progress or (lambda _m: None)
+    if not options:
+        return None
+    deadline = time.monotonic() + float(time_budget_s)
+    mesures = _mesurer(make_probe, options, ctx, depth, reps, say, deadline=deadline)
+    if not any("tg_ts" in v for v in mesures.values()):
+        return None
+    best, mecanisme = pick_placement(mesures, options, margin_pct)
+    base = options[0]
+    gain = None
+    if best.key != base.key and "tg_ts" in mesures.get(base.key, {}):
+        gain = round(
+            (mesures[best.key]["tg_ts"] / mesures[base.key]["tg_ts"] - 1) * 100, 1
+        )
+    m = mesures.get(best.key) or {}
+    return {
+        "threads": int(best.threads),
+        "baseline": int(base.threads),
+        "tg_ts": m.get("tg_ts"),
+        "pp_ts": m.get("pp_ts"),
+        "gain_pct": gain,
+        "mesures": mesures,
+        "ctx": int(ctx),
+        "depth": int(depth),
+        "compare": sum(1 for v in mesures.values() if "tg_ts" in v) >= 2,
+        "mecanisme": mecanisme,
+    }
+
+
 def validate_final(
     probe,
     *,

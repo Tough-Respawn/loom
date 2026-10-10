@@ -375,6 +375,9 @@ def _step_b_apply(state, t, deps):
             "placement": state.get("placement"),
             # Archive durable du bench : l'application y sera notée.
             "archive": state.get("archive"),
+            # Threads mesurés sur le placement élu (par modèle).
+            "threads": state.get("threads"),
+            "threads_detail": state.get("threads_detail", ""),
         },
     )
 

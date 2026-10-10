@@ -131,6 +131,66 @@ def _measure_placement(
     return verdict, probe
 
 
+def _measure_threads(
+    probe,
+    pl_verdict: dict | None,
+    *,
+    logical: int,
+    physical: int | None,
+    ctx: int,
+    depth: int,
+    progress,
+    n_layers: int | None = None,
+):
+    """Sonde de threads sur le placement ÉLU (option par modèle) : renvoie (verdict |
+    None, sonde alignée). Tout GPU : {"non_explore": …} sans mesure. Sans comparaison
+    de placement exploitable, la sonde porte la configuration actuelle : on la juge
+    par ses flags."""
+    from dataclasses import replace as _dc_replace
+
+    from loom.setup import placement as place_mod
+
+    if pl_verdict is not None:
+        pl_key = str(pl_verdict.get("key") or pl_verdict.get("label") or "").split("@")[
+            0
+        ]
+        cpu = pl_verdict.get("label") != "gpu_total"
+    else:
+        pl_obj = place_mod.Placement.from_flags(
+            int(getattr(probe, "ngl", 999) or 0),
+            bool(getattr(probe, "cpu_moe", False)),
+            getattr(probe, "n_cpu_moe", None),
+            n_layers,
+        )
+        pl_key, cpu = pl_obj.key, place_mod.needs_cpu_compute(pl_obj)
+    current = int(getattr(probe, "threads", 0) or 0)
+    if not cpu:
+        return {
+            "non_explore": (
+                f"non exploré : {pl_key} sans calcul CPU attendu (threads {current} "
+                "conservés)"
+            ),
+            "placement": pl_key,
+        }, probe
+    options = place_mod.thread_options(current, logical, physical)
+    try:
+        res = place_mod.probe_threads(
+            lambda o: _dc_replace(probe, threads=o.threads),
+            options,
+            ctx=ctx,
+            depth=depth,
+            progress=progress,
+        )
+    except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
+        res = None
+    if not res:
+        return None, probe
+    res["placement"] = pl_key
+    if res["threads"] != current:
+        probe = _dc_replace(probe, threads=res["threads"])
+    return res, probe
+
+
 def _placement_implied_ngl(pl: dict):
     """n_gpu_layers que _set_model_placement écrira pour ce verdict (None = retiré) :
     999 tout-GPU, 0 CPU seul, le -ngl exact d'un partiel dense."""
@@ -301,6 +361,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     trace["flags"]["slots"] = probe.n_parallel
     # Placement MESURÉ x couples de batchs, avant la calibration, faisabilité estimée au
     # contexte UTILE du modèle avec les slots finaux.
+    from loom.setup.placement import final_depth as place_mod_final_depth
     from loom.setup.placement import useful_context
 
     ctx_utile = useful_context(
@@ -329,6 +390,25 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         "n_cpu_moe": mt.get("n_cpu_moe"),
         "n_gpu_layers": mt.get("n_gpu_layers"),
     }
+    # Threads sur le placement ÉLU (option par modèle) : du calcul CPU se mesure avec
+    # les candidats du parc, au contexte et à la profondeur de la finale.
+    import os
+
+    trace["etape"] = "threads"
+    progress("sonde de threads sur le placement élu…")
+    th_verdict, probe = _measure_threads(
+        probe,
+        pl_verdict,
+        logical=os.cpu_count() or 4,
+        physical=psutil.cpu_count(logical=False),
+        ctx=int((pl_verdict or {}).get("ctx_final") or ctx_utile),
+        depth=int(
+            (pl_verdict or {}).get("depth_final") or place_mod_final_depth(ctx_utile)
+        ),
+        progress=progress,
+        n_layers=meta.get("n_layers"),
+    )
+    trace["threads"] = th_verdict
     trace["etape"] = "calibration"
     progress(f"topologie {topo}, budget {budget} Mo")
     calib = topo_mod.calibrate(
@@ -369,6 +449,8 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
             calib["ubatch_probe"] = None
     calib["ubatch_avant"] = mt.get("ubatch")
     calib["batch_avant"] = mt.get("batch")
+    calib["threads_probe"] = th_verdict
+    calib["threads_avant"] = mt.get("threads")
     trace["ubatch"] = calib.get("ubatch_probe")
     trace["ubatch_avant"] = [mt.get("ubatch"), mt.get("batch")]
     trace["etape"] = "réglage final"
@@ -464,6 +546,7 @@ def _sections_from_calib(calib: dict, gguf) -> dict:
         "placement_avant": calib.get("placement_avant"),
         "ubatch": calib.get("ubatch_probe"),
         "ubatch_avant": [calib.get("ubatch_avant"), calib.get("batch_avant")],
+        "threads": calib.get("threads_probe"),
         "final": calib.get("final"),
         "cache": calib.get("cache_verifie"),
     }
@@ -527,6 +610,21 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 f"sonde ubatch : prefill optimal à ub={ub['ubatch']} / b={ub['batch']} "
                 f"({ub['pp_ts']:.0f} t/s{gain})."
             )
+        # Threads mesurés sur le placement élu (par modèle) : changement si la valeur
+        # mesurée diffère du `threads` du model.toml.
+        th = calib.get("threads_probe")
+        th_avant = calib.get("threads_avant")
+        th_change = (
+            bool(th)
+            and th.get("threads") is not None
+            and (th.get("compare") and th["threads"] != th_avant)
+        )
+        if not th:
+            th_line = "sonde de threads : illisible (réglage inchangé)."
+        elif th.get("non_explore"):
+            th_line = f"sonde de threads : {th['non_explore']}."
+        else:
+            th_line = f"sonde de threads sur {th.get('placement')} : {th['mecanisme']}."
         # Placement des poids : changement si les flags que l'on écrirait diffèrent
         # de ceux du model.toml (cpu_moe, n_cpu_moe, n_gpu_layers implicite).
         pl = calib.get("placement")
@@ -584,7 +682,13 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
             if valide
             else f"contexte {new} = repli NON validé, aucun barreau de vitesse mesuré"
         )
-        if new == current and not iso_change and not ub_change and not pl_change:
+        if (
+            new == current
+            and not iso_change
+            and not ub_change
+            and not pl_change
+            and not th_change
+        ):
             # « Déjà au top » exige des PREUVES complètes : contexte validé en vitesse,
             # placement COMPARÉ, cache vérifié. Sinon le verdict dit ce qui manque.
             manques = []
@@ -604,14 +708,14 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 msg = (
                     f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
                     f"mesuré {new} ({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n"
-                    f"{pl_line}\n{final_line}\n{cache_line}\nRien à changer."
+                    f"{pl_line}\n{th_line}\n{final_line}\n{cache_line}\nRien à changer."
                 )
             else:
                 msg = (
                     f"« {mid} » : rien à changer d'après les mesures disponibles — "
                     f"{', '.join(manques)}. Contexte actuel {current} = mesuré {new} "
                     f"({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n{pl_line}\n"
-                    f"{final_line}\n{cache_line}"
+                    f"{th_line}\n{final_line}\n{cache_line}"
                 )
             wiz = None
         else:
@@ -638,11 +742,20 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                     else ""
                 )
                 changes.append(f"placement → {pl['label']}{gain}")
+            if th_change:
+                gain_th = (
+                    f" ({th['gain_pct']:+.0f} % de génération)"
+                    if th.get("gain_pct") is not None
+                    else ""
+                )
+                changes.append(
+                    f"threads {th_avant or 'machine'} → {th['threads']}{gain_th}"
+                )
             entete = (
                 f"Verdict pour « {mid} » : " + " · ".join(changes) + "\n"
                 f"(pente {calib['slope_kb_tok']} Ko/token, {vitesse_txt})\n"
                 f"mécanisme : {calib['mecanisme']}\n{iso_line}\n{ub_line}\n{pl_line}\n"
-                f"{final_line}\n{cache_line}\n"
+                f"{th_line}\n{final_line}\n{cache_line}\n"
             )
             if fin and "echec" in fin:
                 # Une baisse de vitesse avertit ; un échec de FONCTIONNEMENT empêche :
@@ -681,6 +794,14 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                     ),
                     # Validation du réglage final : conservée avec le verdict.
                     "final": calib.get("final"),
+                    # Threads mesurés sur le placement élu (par modèle).
+                    "threads": th["threads"] if th_change else None,
+                    "threads_detail": (
+                        f"{th.get('mecanisme', '')} (sur {th.get('placement')} à ctx "
+                        f"{th.get('ctx')}, profondeur {th.get('depth')})"
+                        if th_change
+                        else ""
+                    ),
                 }
     except Exception as exc:  # noqa: BLE001 - erreurs opérationnelles comprises (OSError…)
         # Une FileNotFoundError ou PermissionError pendant la calibration laissait le job

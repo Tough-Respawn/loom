@@ -58,6 +58,44 @@ def test_launch_flags_threads_override_puis_physiques_puis_tous():
     assert launch_flags(_CPU, override_threads=0).threads == 16  # 0 = non renseigné
 
 
+def test_launch_flags_threads_du_modele_priment_sur_la_machine():
+    """Option « par modèle » (validée le 2026-10-10) : model.toml `threads` prime sur
+    [override] threads, qui prime sur la dérivation physique/logique."""
+    from loom.runtime.effective import launch_flags
+
+    assert launch_flags(_UMA, override_threads=6, model_threads=12).threads == 12
+    assert launch_flags(_UMA, override_threads=6, model_threads=None).threads == 6
+    assert launch_flags(_UMA, override_threads=None, model_threads=0).threads == 8
+
+
+def test_swap_cmd_et_model_config_portent_les_threads_du_modele():
+    from loom.config import _parse_model
+
+    m = _parse_model(
+        {
+            "repo": "r/x",
+            "filename": "x.gguf",
+            "n_layers": 40,
+            "size_mb": 100,
+            "threads": 12,
+        },
+        "x",
+    )
+    assert m.threads == 12
+    cmd = _model_cmd(
+        m, _UMA, "llama-server", "/models", 8192, n_parallel=1, override_threads=6
+    )
+    args = shlex.split(cmd)
+    assert args[args.index("-t") + 1] == "12"
+    # Sans champ : inchangé (override machine, sinon cœurs physiques).
+    assert (
+        _parse_model(
+            {"repo": "r/x", "filename": "x.gguf", "n_layers": 40, "size_mb": 100}, "x"
+        ).threads
+        is None
+    )
+
+
 def test_launch_flags_gpu_tuning_et_memoire_unifiee_depuis_le_profil():
     from loom.runtime.effective import launch_flags
 

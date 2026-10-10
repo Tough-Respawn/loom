@@ -141,6 +141,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                 _set_model_cache_isolation,
                 _set_model_context,
                 _set_model_placement,
+                _set_model_threads,
                 _set_model_ubatch,
             )
 
@@ -177,6 +178,9 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                     f"{pl.get('build') or 'build ?'}) — {pl.get('mecanisme', '')}",
                 )
                 applied += f" + placement={pl['label']}"
+            if a.get("threads"):
+                _set_model_threads(gguf, int(a["threads"]), a.get("threads_detail", ""))
+                applied += f" + threads={a['threads']}"
             note_ok = True
             if a.get("archive"):
                 # Archive durable du bench : noter ce qui vient d'être appliqué. Un

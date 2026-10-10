@@ -360,6 +360,10 @@ def test_step_bench_mesure_le_placement_et_l_ecrit(monkeypatch, tmp_path):
     assert local["bench"]["placement"] == "gpu_total"
     assert local["bench"]["placement_gain_pct"] == 19.0
     assert "tout sur GPU" in "\n".join(printed)
+    # Tout GPU élu : pas de calcul CPU à régler, les threads ne sont PAS explorés et
+    # la trace le dit ; rien d'écrit dans le model.toml.
+    assert "threads" not in mt
+    assert "non exploré" in local["bench"]["threads_non_explore"]
     # Fidélité : sans nvidia-smi, la VRAM vient du profil -> topologie GPU (pas « ram »),
     # et la sonde reçoit le profil de l'exécutant pour en dériver ses flags machine.
     assert sondes and sondes[0].topology == "moe_hybride"
@@ -466,6 +470,121 @@ def test_step_bench_build_statique_sans_dll_garde_le_gpu(monkeypatch, tmp_path):
     )
     assert local["bench"]["context_mode"] == "moe_hybride"
     assert local["bench"]["placement"] in ("gpu_total", "experts_cpu")
+
+
+def test_step_bench_mesure_les_threads_sur_un_placement_avec_calcul_cpu(
+    monkeypatch, tmp_path
+):
+    """Dense trop gros pour la VRAM -> offload partiel élu -> du calcul CPU : les threads
+    sont mesurés sur CE placement (tours alternés, même contexte) et écrits dans le
+    model.toml, prioritaires sur l'override machine."""
+    import tomllib
+    from dataclasses import dataclass as _dc
+
+    from loom.runtime.hardware import HardwareProfile
+    from loom.setup import cli
+    from tests.test_setup_cli import _console, _deps, _patch_paths
+
+    _patch_paths(monkeypatch, tmp_path)
+    exe = tmp_path / "rt" / "llama-server.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"")
+    (tmp_path / "config" / "local.toml").write_text(
+        f'[server]\nbin = "{str(exe).replace(chr(92), "/")}"\n', encoding="utf-8"
+    )
+    mdir = tmp_path / "models" / "local" / "text" / "gros"
+    mdir.mkdir(parents=True)
+    (mdir / "model.toml").write_text(
+        'repo = "o/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 80000\n',
+        encoding="utf-8",
+    )
+    (mdir / "m.gguf").write_bytes(b"x")
+    monkeypatch.setattr(
+        cli,
+        "read_gguf_meta",
+        lambda p: {"n_layers": 40, "head_count_kv": 8, "key_length": 128},
+    )
+    rows = [
+        {"threads": 10, "ngl": 0, "kind": "tg", "ts": 3.0},
+        {"threads": 10, "ngl": 0, "kind": "pp", "ts": 20.0},
+        {"threads": 10, "ngl": 11, "kind": "tg", "ts": 5.0},
+        {"threads": 10, "ngl": 11, "kind": "pp", "ts": 40.0},
+    ]
+    sondes: list = []
+
+    @_dc
+    class FakeProbe:
+        server_bin: str
+        model_path: str
+        threads: int
+        ngl: int
+        topology: str
+        mmproj_path: object = None
+        cpu_moe: bool = False
+        n_cpu_moe: object = None
+        n_parallel: int = 1
+        ubatch: object = None
+        batch: object = None
+        checkpoint_min_step: object = None
+        ctx_checkpoints: object = None
+        profile: object = None
+
+        def __post_init__(self):
+            sondes.append(self)
+
+        def probe_isolation(self, ctx=4096):
+            return 600, 4
+
+        def verify_cache(self, ctx=4096):
+            return {
+                "first": 600,
+                "back": 4,
+                "annex_slot": 0,
+                "slots": 1,
+                "reused": True,
+            }
+
+        def run(self, ctx, depth):
+            r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+            if depth:
+                # 5 threads (physiques/2) : +20 % de génération sur ce partiel.
+                r.tg_ts = 6.0 if self.threads == 5 else 5.0
+                r.pp_ts = 40.0
+            return r
+
+    con, printed = _console(assume_yes=True)
+    deps = _deps(
+        tmp_path,
+        run_bench=lambda b, m, t, g, n_cpu_moe=0, progress=None: rows,
+        find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
+        has_gpu_backend=lambda sb: True,
+        cpu_physical=lambda: 10,
+        gpu_vram_total_mb=lambda: 24_000,
+        ram_total_mb=lambda: 64_000,
+        make_probe=FakeProbe,
+        detect_hardware=lambda server_bin=None: HardwareProfile(
+            True,
+            "GPU 24 Go",
+            23_000,
+            16,
+            vram_total_mb=24_000,
+            backend="CUDA",
+            vram_is_discrete=True,
+        ),
+    )
+    assert cli.run(con, deps) == 0
+    mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
+    assert mt["threads"] == 5
+    local = tomllib.loads(
+        (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
+    )
+    assert local["bench"]["threads_modele"] == 5
+    assert local["bench"]["threads_mesures"]["t5"]["tg_ts"] == 6.0
+    assert local["override"]["threads"] == 10  # l'override machine (llama-bench) reste
+    out = "\n".join(printed)
+    assert "threads" in out and "+20" in out
+    # Les sondes de threads ont tourné sur le placement élu, au contexte de la finale.
+    assert any(s.threads == 5 and 0 < s.ngl < 40 for s in sondes)
 
 
 def test_step_bench_binaire_du_modele_et_slots_globaux(monkeypatch, tmp_path):
