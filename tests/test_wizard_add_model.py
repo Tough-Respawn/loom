@@ -137,6 +137,8 @@ def test_rebench_apply_oui_et_annulation():
         "ubatch_detail": "",
         # Idem pour la sonde de placement des poids.
         "placement": None,
+        # Archive durable du bench : l'application y est notée quand elle existe.
+        "archive": None,
     }
     r = wizard.step(st, "non", deps())
     assert r.state is None and r.action is None and "inchangé" in r.reply

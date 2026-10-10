@@ -22,6 +22,10 @@ def test_placement_depuis_les_flags_d_une_sonde():
     assert Placement.from_flags(999, False, None, 41).key == "gpu_total"
     # -ngl 41 sur 41 couches laisse la sortie sur CPU : réglage exact conservé, pas 999.
     assert Placement.from_flags(41, False, None, 41).key == "gpu_partiel_ngl41"
+    # Au-delà du nombre de couches (99 sur 41), la sortie suit : c'est le total.
+    assert Placement.from_flags(99, False, None, 41).key == "gpu_total"
+    # Sans n_layers connu, seul 999 vaut total.
+    assert Placement.from_flags(99, False, None, None).key == "gpu_partiel_ngl99"
     assert Placement.from_flags(999, True, None, 41).key == "experts_cpu"
     assert Placement.from_flags(999, False, 20, 41).key == "experts_partiel_n20"
     assert Placement.from_flags(8, False, None, 41).key == "gpu_partiel_ngl8"

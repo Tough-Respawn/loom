@@ -112,9 +112,11 @@ class Placement:
         ngl = int(ngl)
         if ngl <= 0:
             return cls("cpu", 0, **kw)
-        if ngl >= 999:
+        if ngl >= 999 or (n_layers and ngl > int(n_layers)):
+            # Au-delà du nombre de couches (99 sur 41, 999…), llama.cpp offloade aussi la
+            # couche de sortie : c'est le total.
             return cls("gpu_total", 999, **kw)
-        # Réglage EXACT conservé, même à la frontière : -ngl n_layers n'est pas 999
+        # Réglage EXACT conservé jusqu'à la frontière : -ngl n_layers n'est pas le total
         # pour llama.cpp (la couche de sortie reste sur CPU, « 42/43 »).
         return cls("gpu_partiel", ngl, **kw)
 

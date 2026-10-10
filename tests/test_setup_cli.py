@@ -1,4 +1,5 @@
 # Parcours console complets avec effets externes simulés, sans réseau.
+import json
 import tomllib
 from types import SimpleNamespace
 
@@ -95,6 +96,9 @@ def _patch_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "PACKAGE_MODELS", tmp_path / "models")
     monkeypatch.setattr(cli, "RUNTIME_DIR", tmp_path / "var" / "runtime" / "llama")
     monkeypatch.setattr(cli, "SETUP_LOG", tmp_path / "var" / "logs" / "setup.log")
+    from loom.setup import archive as _archive
+
+    monkeypatch.setattr(_archive, "BENCH_DIR", tmp_path / "var" / "bench")
 
 
 def _deps(tmp_path, **over):
@@ -393,7 +397,19 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         local["bench"]["final_tg_ts"] == 5.0
         and local["bench"]["final_coherent"] is True
     )
+    # Archive DURABLE du bench : un JSON horodaté par modèle, mesures et verdict compris.
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    assert len(archives) == 1
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["model_id"] == "m1" and arch["build"] == "b5321"
+    assert arch["calibration"]["context"] == 32_768
+    assert arch["final"]["tg_ts"] == 5.0 and arch["cache"]["reused"] is True
+    assert arch["placement"]["placement"]["key"].startswith("gpu_total")
+    assert (
+        arch["application"]["context"] == 32_768
+    )  # loom-setup applique dans la foulée
     out = "\n".join(printed)
+    assert "archive :" in out
     assert "cache survit à la pollution" in out
     assert "cache réutilisé" in out
     assert "réglage final" in out

@@ -351,6 +351,27 @@ def test_rebench_reglage_final_en_echec_n_est_pas_applicable(env, monkeypatch):
     assert "context = 4096" in (env.mdir / "model.toml").read_text(encoding="utf-8")
 
 
+def test_rebench_archive_le_verdict_puis_l_application(env, monkeypatch):
+    """Archive durable : le verdict écrit un JSON horodaté sous var/bench/<modèle>/ (hors
+    état de session, qui peut être consommé ou annulé) ; « oui » y note l'application."""
+    from loom.setup import archive as _archive
+
+    monkeypatch.setattr(_archive, "BENCH_DIR", env.tmp / "var" / "bench")
+    calib = dict(CALIB, context=8192, final=_FINAL, build="b7000-abc1234")
+    _launch(env, monkeypatch, calib=calib)
+    _wait_verdict(env)
+    archives = list((env.tmp / "var" / "bench" / "loc-test").glob("*.json"))
+    assert len(archives) == 1
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["model_id"] == "loc-test" and arch["build"] == "b7000-abc1234"
+    assert arch["calibration"]["context"] == 8192 and arch["final"]["tg_ts"] == 11.7
+    assert "Verdict" in arch["verdict_texte"] and "application" not in arch
+    r = env.web.post("/chat", data={"message": "oui"})
+    assert "Application" in _sse_texts(r.data)
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["application"]["context"] == 8192
+
+
 def test_rebench_deja_au_top_exige_un_reglage_final_valide(env, monkeypatch):
     # Preuves complètes sauf la validation finale : le verdict dit ce qui manque.
     calib = dict(

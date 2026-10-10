@@ -1458,6 +1458,53 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
                 else " ; cache NON réutilisé avec la configuration finale"
             ) + f" ({topo_mod.cache_check_text(cache_v)})"
         _set_model_cache_isolation(gguf_path, isolation, iso_detail + cache_txt)
+    # Archive DURABLE du bench (var/bench/<modèle>/<horodatage>.json) : matériel, build,
+    # flags, profil, isolation, placement (échantillons compris), calibration, réglage
+    # final, cache, ce qui a été écrit — puis la trace de l'application (immédiate ici).
+    from loom.setup import archive as archive_mod
+
+    try:
+        arch_path = archive_mod.archive_bench(
+            gguf_path.parent.name,
+            {
+                "source": "loom-setup",
+                "gguf": str(gguf_path),
+                "server_bin": probe_bin,
+                "build": build,
+                "materiel": hw,
+                "flags": values["bench"].get("placement_flags"),
+                "profil": profile.describe(),
+                "contexte_utile": ctx_utile,
+                "kv_estime_mb": kv_mb,
+                "llama_bench": best,
+                "isolation": {
+                    "necessaire": isolation,
+                    "first": first,
+                    "back": back,
+                    "detail": iso_detail,
+                },
+                "plan": plan,
+                "placement": pl_res,
+                "calibration": calib,
+                "ubatch": ub_res,
+                "final": final,
+                "cache": cache_v,
+                "ecrit": values,
+            },
+        )
+        archive_mod.note_application(
+            arch_path,
+            {
+                "context": context,
+                "placement": (pl_res or {}).get("placement"),
+                "ubatch": (ub_res or {}).get("ubatch"),
+                "batch": (ub_res or {}).get("batch"),
+                "cache_isolation": isolation,
+            },
+        )
+        con.say(f"  archive : {arch_path}")
+    except Exception as exc:  # noqa: BLE001 - l'archive n'empêche jamais le bench
+        con.say(f"  [attention] archive du bench non écrite ({exc}).")
     gpu_txt = f", offload GPU -ngl {best['ngl']}" if best["ngl"] > 0 else ""
     con.say(
         f"  Mesuré : génération {best['tg_ts']:.1f} t/s · prefill "

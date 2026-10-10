@@ -382,6 +382,8 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     from loom.setup import topology as topo_mod
 
     spec = next((m for m in S.local_model_specs if m.get("id") == mid), None)
+    calib = None
+    _gguf = None
     try:
         calib, _gguf = _run_calibration(
             S, spec, lambda m: setattr(job, "label", f"calibration : {m}")
@@ -582,6 +584,60 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     except (RuntimeError, ValueError) as exc:
         msg = f"❌ Recalibration de « {mid} » échouée : {exc} — config inchangée."
         wiz = None
+    if calib is not None:
+        # Archive DURABLE du bench (var/bench/<modèle>/<horodatage>.json) : l'état de
+        # session est consommé par « oui » ou effacé par « annuler », pas l'archive.
+        from loom.setup import archive as archive_mod
+
+        try:
+            arch = archive_mod.archive_bench(
+                mid,
+                {
+                    "source": "/rebench",
+                    "gguf": str(_gguf),
+                    "build": calib.get("build"),
+                    "ctx_utile": calib.get("ctx_utile"),
+                    "calibration": {
+                        k: calib.get(k)
+                        for k in (
+                            "context",
+                            "valide",
+                            "mode",
+                            "mecanisme",
+                            "slope_kb_tok",
+                            "base_mb",
+                            "budget_mb",
+                            "capacity_ctx",
+                            "rungs",
+                            "vitesses",
+                            "valide_jusqua",
+                            "duree_s",
+                        )
+                    },
+                    "isolation": {
+                        "necessaire": calib.get("isolation"),
+                        "first": calib.get("isolation_first"),
+                        "back": calib.get("isolation_back"),
+                        "detail": calib.get("isolation_detail"),
+                        "avant": calib.get("isolation_avant"),
+                    },
+                    "placement": calib.get("placement"),
+                    "placement_avant": calib.get("placement_avant"),
+                    "ubatch": calib.get("ubatch_probe"),
+                    "ubatch_avant": [
+                        calib.get("ubatch_avant"),
+                        calib.get("batch_avant"),
+                    ],
+                    "final": calib.get("final"),
+                    "cache": calib.get("cache_verifie"),
+                    "verdict_texte": msg,
+                    "verdict": wiz,
+                },
+            )
+            if wiz is not None:
+                wiz["archive"] = str(arch)
+        except Exception:  # noqa: BLE001 - l'archive n'empêche jamais le verdict
+            pass
     got = chat_lock.acquire(timeout=2)
     try:
         conv = sess.conversation

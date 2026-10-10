@@ -1,0 +1,64 @@
+# tests/test_bench_archive.py
+"""Archive DURABLE et automatique des benchs (revue du 2026-10-10).
+
+Jusqu'ici les mesures ne vivaient que dans [bench] de local.toml (écrasé au bench
+suivant), dans des commentaires de model.toml et dans l'état d'application d'une
+session /rebench (consommé ou annulé). Le 3e run Ornith a perdu ses échantillons bruts
+quand le verdict a été annulé. Chaque bench écrit désormais un JSON horodaté sous
+var/bench/<modèle>/, complété par la trace de l'application quand elle a lieu.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+
+from loom.setup.archive import archive_bench, note_application
+from loom.setup.placement import Placement
+
+_NOW = datetime(2026, 10, 10, 13, 0, 0)
+
+
+def test_archive_ecrit_un_json_horodate_par_modele(tmp_path):
+    payload = {
+        "verdict": {"placement": Placement("gpu_total", 999, ubatch=512, batch=2048)},
+        "gguf": Path("C:/models/m.gguf"),
+        "mesures": {
+            "gpu_total@ub512@b2048": {"tg_ts": 11.3, "echantillons": [{"tg_ts": 11.3}]}
+        },
+        "rien": None,
+    }
+    p = archive_bench("ornith-1.5-35b-a3b", payload, root=tmp_path, now=_NOW)
+    assert p == tmp_path / "ornith-1.5-35b-a3b" / "20261010-130000.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    assert d["version"] == 1 and d["date"] == "2026-10-10T13:00:00"
+    assert d["model_id"] == "ornith-1.5-35b-a3b"
+    # Dataclass -> dict avec sa clé ; Path -> str ; None conservé (JSON le permet).
+    assert d["verdict"]["placement"]["key"] == "gpu_total@ub512@b2048"
+    assert d["verdict"]["placement"]["ubatch"] == 512
+    assert d["gguf"] == "C:/models/m.gguf" and d["rien"] is None
+    assert d["mesures"]["gpu_total@ub512@b2048"]["echantillons"][0]["tg_ts"] == 11.3
+
+
+def test_archive_ne_s_ecrase_pas_a_la_meme_seconde(tmp_path):
+    a = archive_bench("m", {"n": 1}, root=tmp_path, now=_NOW)
+    b = archive_bench("m", {"n": 2}, root=tmp_path, now=_NOW)
+    assert a != b and a.exists() and b.exists()
+    assert json.loads(a.read_text(encoding="utf-8"))["n"] == 1
+    assert json.loads(b.read_text(encoding="utf-8"))["n"] == 2
+
+
+def test_note_application_complete_l_archive(tmp_path):
+    p = archive_bench("m", {"verdict": {"context": 65536}}, root=tmp_path, now=_NOW)
+    note_application(
+        p, {"context": 65536, "placement": "gpu_total", "ubatch": 512}, now=_NOW
+    )
+    d = json.loads(p.read_text(encoding="utf-8"))
+    assert d["application"]["date"] == "2026-10-10T13:00:00"
+    assert d["application"]["context"] == 65536 and d["application"]["ubatch"] == 512
+    assert d["verdict"]["context"] == 65536  # le reste est intact
+
+
+def test_note_application_tolere_une_archive_absente(tmp_path):
+    note_application(tmp_path / "absent.json", {"context": 1})  # ne lève pas

@@ -177,6 +177,21 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                     f"{pl.get('build') or 'build ?'}) — {pl.get('mecanisme', '')}",
                 )
                 applied += f" + placement={pl['label']}"
+            if a.get("archive"):
+                # Archive durable du bench : noter ce qui vient d'être appliqué.
+                from loom.setup.archive import note_application
+
+                pl_a = a.get("placement") or {}
+                note_application(
+                    a["archive"],
+                    {
+                        "context": a["context"],
+                        "isolation": a.get("isolation"),
+                        "ubatch": a.get("ubatch"),
+                        "batch": a.get("batch"),
+                        "placement": pl_a.get("key") or pl_a.get("label"),
+                    },
+                )
             spec["context"] = a["context"]
             S.model_contexts[a["id"]] = a["context"]
             _regen_swap_yaml(S)
