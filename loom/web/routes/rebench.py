@@ -498,39 +498,50 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                     else ""
                 )
                 changes.append(f"placement → {pl['label']}{gain}")
-            msg = (
+            entete = (
                 f"Verdict pour « {mid} » : " + " · ".join(changes) + "\n"
                 f"(pente {calib['slope_kb_tok']} Ko/token, {vitesse_txt})\n"
                 f"mécanisme : {calib['mecanisme']}\n{iso_line}\n{ub_line}\n{pl_line}\n"
                 f"{final_line}\n{cache_line}\n"
-                "Tape « oui » pour appliquer — toute autre réponse laisse tout "
-                "en l'état."
             )
-            wiz = {
-                "step": "b_apply",
-                "id": mid,
-                "context": new,
-                "mecanisme": calib["mecanisme"],
-                # Verdict d'isolation appliqué EN MÊME TEMPS que le contexte : le
-                # contexte a été mesuré avec ce nombre de slots-là — appliquer l'un
-                # sans l'autre recréerait un couple (fenêtre, KV) jamais mesuré.
-                "isolation": iso if iso_change else None,
-                "isolation_detail": calib.get("isolation_detail", ""),
-                "ubatch": ub["ubatch"] if ub_change else None,
-                "batch": ub["batch"] if ub_change else None,
-                "ubatch_detail": (
-                    f"{ub['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens"
-                    if ub_change
-                    else ""
-                ),
-                # Placement mesuré AVEC ce contexte et ces slots : appliqué d'un bloc,
-                # avec ses mesures détaillées (échantillons) et le build du moteur.
-                "placement": (
-                    dict(pl, build=calib.get("build")) if pl_change else None
-                ),
-                # Validation du réglage final : conservée avec le verdict.
-                "final": calib.get("final"),
-            }
+            if fin and "echec" in fin:
+                # Une baisse de vitesse avertit ; un échec de FONCTIONNEMENT empêche :
+                # rien à appliquer, la configuration actuelle est conservée.
+                msg = entete + (
+                    "⛔ non applicable : la configuration finale complète n'a pas "
+                    "fonctionné — réglages actuels conservés."
+                )
+                wiz = None
+            else:
+                msg = entete + (
+                    "Tape « oui » pour appliquer — toute autre réponse laisse tout "
+                    "en l'état."
+                )
+                wiz = {
+                    "step": "b_apply",
+                    "id": mid,
+                    "context": new,
+                    "mecanisme": calib["mecanisme"],
+                    # Verdict d'isolation appliqué EN MÊME TEMPS que le contexte : le
+                    # contexte a été mesuré avec ce nombre de slots-là — appliquer l'un
+                    # sans l'autre recréerait un couple (fenêtre, KV) jamais mesuré.
+                    "isolation": iso if iso_change else None,
+                    "isolation_detail": calib.get("isolation_detail", ""),
+                    "ubatch": ub["ubatch"] if ub_change else None,
+                    "batch": ub["batch"] if ub_change else None,
+                    "ubatch_detail": (
+                        f"{ub['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens"
+                        if ub_change
+                        else ""
+                    ),
+                    # Placement mesuré AVEC ce contexte et ces slots : appliqué d'un bloc,
+                    # avec ses mesures détaillées (échantillons) et le build du moteur.
+                    "placement": (
+                        dict(pl, build=calib.get("build")) if pl_change else None
+                    ),
+                    # Validation du réglage final : conservée avec le verdict.
+                    "final": calib.get("final"),
+                }
     except (RuntimeError, ValueError) as exc:
         msg = f"❌ Recalibration de « {mid} » échouée : {exc} — config inchangée."
         wiz = None

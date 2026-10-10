@@ -1237,7 +1237,15 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         final = {"echec": f"{type(exc).__name__}: {exc}", "ctx": context}
     con.progress_end()
     if "echec" in final:
-        con.say(f"  [attention] réglage final non validé : {final['echec']}")
+        # Une baisse de vitesse avertit ; un échec de FONCTIONNEMENT empêche : rien
+        # n'est écrit, la configuration actuelle reste en place.
+        con.say(
+            f"  [échec] réglage final non validé ({final['echec']}) — réglages NON "
+            "écrits, configuration actuelle conservée. Relance loom-setup une fois la "
+            "cause levée."
+        )
+        report.add("bench", "echec", f"réglage final non validé : {final['echec']}")
+        return
     else:
         if final.get("coherent") is None:
             coh = ""

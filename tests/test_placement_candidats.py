@@ -51,7 +51,13 @@ def test_placement_depuis_le_model_toml():
         "gpu_partiel_ngl36"
     )
     assert placement_from_config({"n_gpu_layers": 999}, n_layers=42).key == "gpu_total"
-    assert placement_from_config({"n_gpu_layers": 42}, n_layers=42).key == "gpu_total"
+    # Frontière : -ngl 42 sur 42 couches n'est PAS 999 pour llama.cpp (la couche de sortie
+    # reste sur CPU, « 42/43 »). Le réglage exact est conservé tel quel.
+    assert (
+        placement_from_config({"n_gpu_layers": 42}, n_layers=42).key
+        == "gpu_partiel_ngl42"
+    )
+    assert placement_from_config({"n_gpu_layers": 42}, n_layers=42).estime is False
     # Sans réglage EXPLICITE, le fichier seul ne dit pas où tourne le modèle : c'est le
     # résolveur du runtime qui le sait (current_placement), pas une règle sur cpu_moe.
     assert placement_from_config({"cpu_moe": False}, n_layers=42) is None
@@ -105,6 +111,11 @@ def test_configuration_actuelle_resolue_comme_l_executant():
     assert (
         current_placement({"n_gpu_layers": 36}, profile=petite, **kw).key
         == "gpu_partiel_ngl36"
+    )
+    # Frontière n_layers : le runtime conserve 41, la référence aussi (pas 999).
+    assert (
+        current_placement({"n_gpu_layers": 41}, profile=large, **kw).key
+        == "gpu_partiel_ngl41"
     )
     # Sans profil matériel, impossible de résoudre : seuls les explicites comptent.
     assert current_placement({"cpu_moe": False}, profile=None, **kw) is None

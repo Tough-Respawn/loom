@@ -98,9 +98,11 @@ class Placement:
         ngl = int(ngl)
         if ngl <= 0:
             return cls("cpu", 0, **kw)
-        if n_layers and 0 < ngl < int(n_layers):
-            return cls("gpu_partiel", ngl, **kw)
-        return cls("gpu_total", 999, **kw)
+        if ngl >= 999:
+            return cls("gpu_total", 999, **kw)
+        # Réglage EXACT conservé, même à la frontière : -ngl n_layers n'est pas 999
+        # pour llama.cpp (la couche de sortie reste sur CPU, « 42/43 »).
+        return cls("gpu_partiel", ngl, **kw)
 
     def describe(self) -> str:
         if self.label == "cpu":
@@ -108,7 +110,9 @@ class Placement:
         elif self.label == "gpu_total":
             txt = "tout sur GPU (ngl 999)"
         elif self.label == "gpu_partiel":
-            txt = f"offload partiel (ngl {self.ngl}, estimé)"
+            txt = f"offload partiel (ngl {self.ngl}" + (
+                ", estimé)" if self.estime else ", réglage exact)"
+            )
         elif self.label == "experts_cpu":
             txt = "denses sur GPU, experts sur CPU (--cpu-moe)"
         else:
@@ -204,12 +208,7 @@ def placement_from_config(mt: dict, *, n_layers: int | None) -> Placement | None
     ngl = mt.get("n_gpu_layers")
     if ngl is None:
         return None
-    ngl = int(ngl)
-    if ngl <= 0:
-        return Placement("cpu", 0, actuel=True)
-    if n_layers and 0 < ngl < int(n_layers):
-        return Placement("gpu_partiel", ngl, actuel=True)
-    return Placement("gpu_total", 999, actuel=True)
+    return Placement.from_flags(int(ngl), False, None, n_layers, actuel=True)
 
 
 def current_placement(
@@ -245,11 +244,7 @@ def current_placement(
     )
     ngl = int(resolve_ngl(model, profile, override_ngl, headroom))
     why = "configuration actuelle (résolue comme l'exécutant)"
-    if ngl <= 0:
-        return Placement("cpu", 0, actuel=True, faisabilite=why)
-    if layers and ngl < layers:
-        return Placement("gpu_partiel", ngl, actuel=True, faisabilite=why)
-    return Placement("gpu_total", 999, actuel=True, faisabilite=why)
+    return Placement.from_flags(ngl, False, None, layers, actuel=True, faisabilite=why)
 
 
 def _fits(

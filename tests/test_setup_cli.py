@@ -408,6 +408,100 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
     assert "Déjà calibré" in "\n".join(printed2)
 
 
+def test_etape_bench_reglage_final_en_echec_n_ecrit_rien(monkeypatch, tmp_path):
+    """P1 (revue 2026-10-10) : si la configuration FINALE complète ne fonctionne pas,
+    loom-setup n'écrit aucun réglage (ni local.toml ni model.toml) et le dit."""
+    from dataclasses import dataclass as _dc
+
+    from loom.setup.placement import final_depth
+
+    _patch_paths(monkeypatch, tmp_path)
+    exe = tmp_path / "rt" / "llama-server.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"")
+    (tmp_path / "config" / "local.toml").write_text(
+        f'[server]\nbin = "{str(exe).replace(chr(92), "/")}"\n', encoding="utf-8"
+    )
+    mdir = tmp_path / "models" / "local" / "text" / "m1"
+    mdir.mkdir(parents=True)
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 1\nsize_mb = 5600\n',
+        encoding="utf-8",
+    )
+    (mdir / "m.gguf").write_bytes(b"pas-un-vrai-gguf")
+    rows = [
+        {"threads": 10, "ngl": 99, "kind": "tg", "ts": 3.4},
+        {"threads": 10, "ngl": 99, "kind": "pp", "ts": 25.0},
+    ]
+
+    @_dc
+    class _FakeProbe:
+        server_bin: str = ""
+        model_path: str = ""
+        threads: int = 0
+        ngl: int = 0
+        topology: str = ""
+        mmproj_path: object = None
+        cpu_moe: bool = False
+        n_cpu_moe: object = None
+        n_parallel: int = 1
+        ubatch: object = None
+        batch: object = None
+        checkpoint_min_step: object = None
+        ctx_checkpoints: object = None
+        profile: object = None
+
+        def probe_isolation(self, ctx=4096):
+            return 600, 4
+
+        def verify_cache(self, ctx=4096):
+            return {
+                "first": 600,
+                "back": 4,
+                "annex_slot": 0,
+                "slots": 1,
+                "reused": True,
+            }
+
+        def run(self, ctx, depth):
+            from loom.setup.topology import ProbeResult
+
+            # Seule la validation FINALE tourne à (contexte calibré 32 768, profondeur de
+            # la comparaison = final_depth du contexte utile 8 192) : elle échoue, tout
+            # le reste (barreaux à 27 852, ubatch à 8 192) fonctionne.
+            if ctx == 32_768 and depth == final_depth(8_192):
+                raise RuntimeError("ErrorOutOfDeviceMemory")
+            r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+            if depth:
+                r.tg_ts, r.pp_ts = 5.0, 20.0
+            return r
+
+    con, printed = _console(assume_yes=True)
+    deps = _deps(
+        tmp_path,
+        ram_available_mb=lambda: 10_240,
+        run_bench=lambda b, m, t, g, n_cpu_moe=0, progress=None: rows,
+        find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
+        has_gpu_backend=lambda sb: True,
+        cpu_physical=lambda: 10,
+        gpu_vram_total_mb=lambda: 6_144,
+        make_probe=_FakeProbe,
+        detect_hardware=lambda server_bin=None: HardwareProfile(
+            True, "GPU 20Go", 20_000, 16, vram_is_discrete=True
+        ),
+    )
+    # Le pas « bench » est en échec : code de sortie non nul, comme une calibration ratée.
+    assert run(con, deps) != 0
+    local = tomllib.loads(
+        (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
+    )
+    assert "bench" not in local and "context" not in (local.get("server") or {})
+    mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
+    assert "context" not in mt and "cache_isolation" not in mt
+    out = "\n".join(printed)
+    assert "NON écrits" in out and "ErrorOutOfDeviceMemory" in out
+
+
 def test_aucun_asset_compatible(monkeypatch, tmp_path):
     _patch_paths(monkeypatch, tmp_path)
     release = {"tag_name": "b1", "html_url": "https://gh/r", "assets": []}

@@ -307,6 +307,35 @@ def test_rebench_verdict_previent_quand_le_reglage_final_ne_reproduit_pas(
     assert "ne reproduit pas" in txt and "-24" in txt
 
 
+def test_rebench_reglage_final_en_echec_n_est_pas_applicable(env, monkeypatch):
+    """P1 (revue 2026-10-10) : la configuration finale n'a pas FONCTIONNÉ
+    (ErrorOutOfDeviceMemory) -> aucune proposition d'application, l'existant est
+    conservé. Une baisse de vitesse avertit ; un échec de fonctionnement empêche."""
+    calib = dict(
+        CALIB,
+        context=8192,  # un changement que l'on proposerait d'appliquer…
+        final={
+            "echec": "RuntimeError: ErrorOutOfDeviceMemory",
+            "ctx": 8192,
+            "depth": 4096,
+        },
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "non applicable" in txt and "ErrorOutOfDeviceMemory" in txt
+    # (la confirmation initiale dit « Tape « oui » pour lancer » ; le verdict, lui, ne
+    # propose plus d'appliquer)
+    assert "Tape « oui » pour appliquer" not in txt
+    # …mais rien à appliquer : pas d'état b_apply, et « oui » ne touche à rien.
+    sessions = "".join(
+        p.read_text(encoding="utf-8")
+        for p in (env.tmp / "sessions").rglob("session.json")
+    )
+    assert "b_apply" not in sessions
+    env.web.post("/chat", data={"message": "oui"})
+    assert "context = 4096" in (env.mdir / "model.toml").read_text(encoding="utf-8")
+
+
 def test_rebench_deja_au_top_exige_un_reglage_final_valide(env, monkeypatch):
     # Preuves complètes sauf la validation finale : le verdict dit ce qui manque.
     calib = dict(
