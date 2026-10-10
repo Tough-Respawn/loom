@@ -437,6 +437,13 @@ def test_rebench_aucun_placement_faisable_verdict_explicite_et_archive(
     txt = _wait_verdict(env)
     assert "aucun placement faisable" in txt and "50000" in txt
     assert "Recalibration" not in txt or "échouée" not in txt  # pas un plantage
+    # Revue #15 : la sonde d'isolation a DÉJÀ chargé le modèle avant le contrôle
+    # mémoire — « Rien n'a été mesuré » était faux. Ce qui est vrai :
+    assert (
+        "Aucun placement comparé, calibration non lancée, configuration inchangée."
+        in txt
+    )
+    assert "Rien n'a été mesuré" not in txt
     assert "b_apply" not in _sessions_text(env, timeout=1.0)
     archives = list((env.tmp / "var" / "bench" / "loc-test").glob("*.json"))
     arch = json.loads(archives[-1].read_text(encoding="utf-8"))

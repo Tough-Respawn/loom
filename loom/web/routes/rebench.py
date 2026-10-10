@@ -31,9 +31,12 @@ def _measure_placement(
     physical: int | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
-    (verdict sérialisable | None, sonde alignée sur l'élu). None quand rien n'est
-    mesurable ou que la validation du seul candidat échoue : la calibration vaut alors
-    avec les flags actuels du modèle. La faisabilité s'estime au contexte UTILE
+    (verdict sérialisable | None, sonde alignée sur l'élu). None quand la sonde n'obtient
+    aucune mesure exploitable (exception, présélection sans débit, mesures vides) ou que
+    la validation du seul candidat échoue : la calibration vaut alors avec les flags
+    actuels du modèle. Lève AucunPlacementFaisable quand aucun candidat (configuration
+    actuelle et CPU seul compris) ne tient d'après l'estimation : aucun placement
+    comparé, calibration non lancée. La faisabilité s'estime au contexte UTILE
     (`useful_ctx`) avec le type de cache de l'exécutant, via le profil GGUF ; la
     configuration ACTUELLE (`mt`) est la ligne de base ; `raw` porte les contraintes
     de prefill optionnelles ([placement]). Avec `logical` (cœurs), chaque finaliste à
@@ -49,6 +52,7 @@ def _measure_placement(
             int(probe.threads), int(logical), physical
         )
 
+    progress("estimation mémoire du placement (faisabilité device et hôte)…")
     profile = ModelProfile.from_meta(meta, model_size_mb=int(model_size_mb or 0))
     # Mémoire par contexte au-delà des poids : KV au contexte utile + état récurrent
     # (état vivant + checkpoints par slot) — la faisabilité des hybrides ne dépend plus
@@ -89,13 +93,18 @@ def _measure_placement(
     )
     if plan.aucun_faisable:
         # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation, CPU seul
-        # et configuration actuelle compris — on ne mesure ni n'applique rien.
+        # et configuration actuelle compris — aucun placement comparé, calibration non
+        # lancée, rien d'appliqué. La sonde d'isolation a déjà tourné dans
+        # _run_calibration (revue #15) : son verdict n'est conservé que dans l'archive.
         if trace is not None:
             trace["plan"] = plan
             trace["profil"] = profile.describe()
             trace["kv_estime_mb"] = kv_mb
             trace["hote_estime_mb"] = host_mb
         raise place_mod.AucunPlacementFaisable(plan.raison)
+    # Annoncée seulement maintenant : avant le contrôle, le dernier statut diffusé
+    # promettait une sonde qui ne tourne pas quand rien ne tient (revue #15).
+    progress("sonde de placement (où vivent les poids, x batchs)…")
     prefill_c, pp_floor = place_mod.constraints_from_config(raw or {})
     # Finalistes x deux couples (ubatch, batch) : celui de l'exécutant (la base) et
     # l'alternative du parc — la sonde ubatch séparée disparaît.
@@ -418,7 +427,8 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     ctx_utile = useful_context(
         mt.get("context"), server_cfg.get("context"), meta.get("context_length")
     )
-    progress("sonde de placement (où vivent les poids, x batchs)…")
+    # _measure_placement annonce l'estimation mémoire, puis la sonde de placement
+    # seulement APRÈS le contrôle de faisabilité (revue #15).
     pl_verdict, probe = _measure_placement(
         probe,
         meta,
@@ -882,9 +892,11 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 }
     except AucunPlacementFaisable as exc:
         # Pas un plantage : un résultat de l'estimation, dit tel quel (revue #14).
+        # Formulation exacte (revue #15) : la sonde d'isolation a déjà chargé le modèle,
+        # le contrôle mémoire intervient à l'étape placement.
         msg = (
-            f"⛔ « {mid} » : {exc}. Rien n'a été mesuré ni appliqué — configuration "
-            "actuelle conservée."
+            f"⛔ « {mid} » : {exc}. Aucun placement comparé, calibration non lancée, "
+            "configuration inchangée."
         )
         wiz = None
         erreur = str(exc)

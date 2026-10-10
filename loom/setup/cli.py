@@ -1226,9 +1226,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             f"{estimation['recurrent_live_mb']}), hôte {host_mb} Mio "
             f"({estimation['checkpoints']} checkpoints par slot, en RAM)"
         )
-    # Candidats par faisabilité (profil GGUF), la configuration ACTUELLE en base ; ce
-    # qu'on ne mesure pas est tracé « non exploré ». Contraintes de prefill optionnelles
-    # ([placement] dans local.toml) : explicite (N tokens en T s) ou plancher de confort.
+    # Candidats par faisabilité (profil GGUF), la configuration ACTUELLE en base si elle
+    # tient ; les candidats écartés sont tracés dans les non-explorés, avec leur raison.
+    # Contraintes de prefill optionnelles ([placement] dans local.toml) : explicite
+    # (N tokens en T s) ou plancher de confort.
     plan = place_mod.plan_placements(
         moe=is_moe,
         n_layers=meta.get("n_layers"),
@@ -1271,10 +1272,13 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     )
     if plan.aucun_faisable:
         # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation, CPU seul
-        # et configuration actuelle compris — ni mesure, ni calibration, ni écriture.
+        # et configuration actuelle compris — aucun placement comparé, calibration non
+        # lancée, réglages non écrits. Le contrôle arrive à l'étape placement, APRÈS
+        # llama-bench et la sonde d'isolation, qui ont déjà chargé le modèle (revue
+        # #15) ; seule l'archive d'échec est écrite.
         con.say(
-            f"  [échec] {plan.raison} — réglages NON écrits, configuration actuelle "
-            "conservée."
+            f"  [échec] {plan.raison} — aucun placement comparé, calibration non "
+            "lancée, réglages NON écrits (configuration inchangée)."
         )
         report.add("bench", "echec", plan.raison)
         _archive_setup(con, trace, echec={"etape": "placement", "erreur": plan.raison})
@@ -1469,7 +1473,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     con.progress_end()
     if final.get("bloquant"):
         # Contrainte EXPLICITE de prefill tenue par un candidat mais pas par le réglage
-        # final : ce qui a été demandé n'est pas livré — rien n'est écrit (revue #14).
+        # final : ce qui a été demandé n'est pas livré — réglages non écrits, seule
+        # l'archive d'échec l'est (revue #14).
         con.say(
             f"  [échec] réglage final {final.get('placement')} : génération "
             f"{final.get('tg_ts')} t/s{place_mod.final_checks_text(final)} — réglages "
@@ -1482,8 +1487,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         )
         return
     if "echec" in final:
-        # Une baisse de vitesse avertit ; un échec de FONCTIONNEMENT empêche : rien
-        # n'est écrit, la configuration actuelle reste en place.
+        # Une baisse de vitesse avertit ; un échec de FONCTIONNEMENT empêche : réglages
+        # non écrits (seule l'archive d'échec l'est), la configuration actuelle reste.
         con.say(
             f"  [échec] réglage final non validé ({final['echec']}) — réglages NON "
             "écrits, configuration actuelle conservée. Relance loom-setup une fois la "

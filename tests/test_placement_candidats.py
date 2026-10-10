@@ -171,9 +171,10 @@ def test_plan_sans_gpu_verifie_aussi_la_ram():
     assert "cpu" in {n["key"] for n in ko.non_explores}
 
 
-def test_plan_configuration_actuelle_infaisable_non_mesuree_et_dite():
+def test_plan_configuration_actuelle_infaisable_non_comparee_et_dite():
     """La configuration actuelle passe la même vérification : infaisable d'après
-    l'estimation, elle n'est pas mesurée (ni base) et la trace le dit."""
+    l'estimation, elle n'est ni comparée ni base, et la trace le dit. « Non comparée »,
+    pas « non mesurée » : la sonde d'isolation l'a déjà chargée (revue #15)."""
     plan = _plan(
         moe=True,
         model_size_mb=35_193,
@@ -183,8 +184,8 @@ def test_plan_configuration_actuelle_infaisable_non_mesuree_et_dite():
     assert "gpu_total" not in _keys(plan) and plan.candidates
     assert not any(c.actuel for c in plan.candidates)
     raisons = [n["raison"] for n in plan.non_explores if n["key"] == "gpu_total"]
-    assert len(raisons) == 1 and "configuration actuelle" in raisons[0]
-    assert "ne tient pas" in raisons[0]
+    assert len(raisons) == 1 and "configuration actuelle non comparée" in raisons[0]
+    assert "ne tient pas" in raisons[0] and "non mesurée" not in raisons[0]
     # Faisable, elle reste la base comme avant.
     plan = _plan(
         moe=True,

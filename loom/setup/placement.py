@@ -13,8 +13,9 @@ prefill. Le prefill départage les ex æquo.
 
 Principes :
 - les CANDIDATS viennent de la faisabilité mémoire (profil GGUF quand il existe),
-  jamais d'une doctrine ; la configuration ACTUELLE est la ligne de base ; ce qu'on
-  choisit de ne pas mesurer est tracé « non exploré », jamais « moins performant » ;
+  jamais d'une doctrine ; la configuration ACTUELLE est la ligne de base si elle tient
+  d'après la même estimation ; ce qu'on écarte est tracé dans les non-explorés avec sa
+  raison, jamais « moins performant » ;
 - une sonde PAR CANDIDAT, avec les flags exacts de l'exécutant (ServerProbe) ;
 - PRÉSÉLECTION rapide à profondeur fixe, puis les FINALISTES comparés au même contexte
   utile et à la même profondeur ; un candidat unique est quand même VALIDÉ ;
@@ -177,7 +178,9 @@ def constraints_from_config(raw: dict) -> tuple[PrefillConstraint | None, float 
 
 class AucunPlacementFaisable(RuntimeError):
     """Aucun placement (configuration actuelle et CPU seul compris) ne tient d'après
-    l'estimation mémoire : rien n'est mesuré ni appliqué, l'appelant le dit."""
+    l'estimation mémoire : aucun placement comparé, calibration non lancée, rien
+    d'appliqué — l'appelant le dit. Le contrôle intervient à l'étape placement : la
+    sonde d'isolation (et, dans loom-setup, llama-bench) a déjà chargé le modèle."""
 
 
 @dataclass
@@ -595,8 +598,10 @@ def plan_placements(
                 if k_prudent > 0:
                     _add_if_fits(Placement("gpu_partiel", k_prudent, estime=True))
     if not cands:
-        # Rien ne tient sur le device : CPU seul, VÉRIFIÉ en RAM comme les autres (il
-        # était ajouté sans contrôle — revue #14). Refusé lui aussi : plan vide.
+        # Aucun candidat GPU retenu (refus device ou hôte) : CPU seul, VÉRIFIÉ en RAM
+        # comme les autres (il était ajouté sans contrôle — revue #14). Refusé lui
+        # aussi, le plan n'est vide que si _with_current refuse aussi la configuration
+        # actuelle.
         _add_if_fits(
             Placement("cpu", 0),
             prefixe="rien ne tient sur le device, CPU seul — ",
@@ -618,7 +623,7 @@ def _with_current(
     """La configuration actuelle devient la ligne de base (candidat 0), ajoutée si elle
     n'est pas parmi les candidats générés ; elle sort des non-explorés. Elle passe la
     MÊME vérification (`check(pl) -> (tient, trace)`) : infaisable d'après
-    l'estimation, elle n'est ni mesurée ni base, et la trace le dit."""
+    l'estimation, elle n'est ni comparée ni base, et la trace le dit."""
     if current is None:
         return PlacementPlan(cands, non)
     idx = next((i for i, c in enumerate(cands) if c.key == current.key), None)
@@ -629,7 +634,9 @@ def _with_current(
             non.append(
                 {
                     "key": current.key,
-                    "raison": "configuration actuelle non mesurée : ne tient pas "
+                    # « Non comparée », pas « non mesurée » : la sonde d'isolation l'a
+                    # déjà chargée avant ce contrôle (revue #15).
+                    "raison": "configuration actuelle non comparée : ne tient pas "
                     f"d'après l'estimation — {why}",
                 }
             )

@@ -734,6 +734,7 @@ def test_measure_placement_rebench_renvoie_un_verdict_serialisable_et_la_sonde_e
         True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, vram_is_discrete=False
     )
     meta = {"n_layers": 40, "expert_count": 128, "head_count_kv": 4, "key_length": 256}
+    statuts: list[str] = []
     verdict, probe = _measure_placement(
         FakeProbe(),
         meta,
@@ -742,9 +743,11 @@ def test_measure_placement_rebench_renvoie_un_verdict_serialisable_et_la_sonde_e
         ram_total_mb=64_000,
         headroom_mb=640,
         gpu_backend=True,
-        progress=lambda m: None,
+        progress=statuts.append,
         mt={"cpu_moe": True},  # configuration actuelle = experts sur CPU (la base)
     )
+    # Le statut « sonde de placement » n'est annoncé qu'une fois la faisabilité établie.
+    assert any("sonde de placement" in s for s in statuts)
     assert verdict["label"] == "gpu_total" and verdict["gain_pct"] == 19.0
     assert verdict["cpu_moe"] is False and verdict["n_cpu_moe"] is None
     assert probe.cpu_moe is False  # la suite de la calibration mesure l'élu
@@ -849,6 +852,7 @@ def test_measure_placement_rebench_aucun_placement_faisable_leve():
     hw = HardwareProfile(
         True, "GPU 8 Go", 7_000, 16, vram_total_mb=8_000, vram_is_discrete=True
     )
+    statuts: list[str] = []
     with pytest.raises(AucunPlacementFaisable) as exc:
         _measure_placement(
             FakeProbe(),
@@ -858,9 +862,13 @@ def test_measure_placement_rebench_aucun_placement_faisable_leve():
             ram_total_mb=16_000,
             headroom_mb=640,
             gpu_backend=True,
-            progress=lambda m: None,
+            progress=statuts.append,
         )
     assert "aucun placement faisable" in str(exc.value) and "cpu" in str(exc.value)
+    # Revue #15 (relevé) : le dernier statut diffusé annonçait une sonde de placement
+    # qui ne tourne jamais. Seule l'estimation est annoncée avant le contrôle.
+    assert not any("sonde de placement" in s for s in statuts)
+    assert any("estimation mémoire" in s for s in statuts)
 
 
 def test_measure_placement_rebench_sans_comparaison_renvoie_none():

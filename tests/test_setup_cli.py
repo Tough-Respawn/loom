@@ -663,13 +663,17 @@ def test_etape_bench_aucun_placement_faisable_n_ecrit_rien_et_archive(
     assert run(con, deps) != 0
     out = "\n".join(printed)
     assert "aucun placement faisable" in out and "NON écrits" in out
-    assert lancés == []  # ni placement, ni calibration
+    # Revue #15 : formulation exacte — le contrôle arrive à l'étape placement.
+    assert "aucun placement comparé, calibration non lancée" in out
+    assert lancés == []  # ni comparaison de placement, ni calibration
     assert (mdir / "model.toml").read_text(encoding="utf-8") == avant
     archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
     assert len(archives) == 1
     arch = json.loads(archives[0].read_text(encoding="utf-8"))
     assert arch["echec"]["etape"] == "placement"
     assert "aucun placement faisable" in arch["echec"]["erreur"]
+    # … APRÈS llama-bench et la sonde d'isolation, qui ont déjà chargé le modèle.
+    assert arch["llama_bench"] and arch["isolation"]["first"] == 600
 
 
 def test_etape_bench_reglage_final_hors_contrainte_prefill_n_ecrit_rien(
