@@ -860,7 +860,8 @@ def _set_model_placement(gguf_path: Path, placement, detail: str) -> None:
             "gpu_partiel": str(placement.ngl),
         }.get(placement.label),
     }
-    key = getattr(placement, "key", placement.label)
+    # Identité du placement seul : les batchs ont leur propre tampon (ubatch/batch).
+    key = str(getattr(placement, "key", placement.label)).split("@")[0]
     stamp = f"# placement élu par la sonde — {key} : {detail}"
     out: list[str] = []
     done: set[str] = set()
@@ -1085,75 +1086,18 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         # Flags machine et mode de mesure mémoire dérivés du profil de l'exécutant.
         profile=hw,
     )
-    # Placement MESURÉ des poids (où vivent denses et experts) AVANT isolation et
-    # calibration : elles mesurent ainsi la configuration qui servira vraiment.
-    # Cf. loom/setup/placement.py (Ornith, 2026-10-09).
     from dataclasses import replace as _dc_replace
 
     from loom.runtime.model_profile import ModelProfile
     from loom.setup import placement as place_mod
 
-    # Profil GGUF : couches à cache KV, poids par famille — chaque donnée avec sa
-    # provenance. Le KV est estimé au contexte UTILE avec le type de cache de
-    # l'exécutant (q8_0 sous profil GPU), pas en f16 pour 65 536 tokens.
-    profile = ModelProfile.from_meta(meta, model_size_mb=model_size_mb)
-    for ligne in profile.describe():
-        con.say(f"  profil : {ligne}")
-    ctx_utile = place_mod.useful_context(
-        model_toml.get("context"), server_cfg.get("context"), meta.get("context_length")
-    )
-    kv_mb = place_mod.kv_estimate_mb(profile, ctx_utile, gpu_tuning=hw.has_gpu, slots=1)
-    # Candidats par faisabilité (profil GGUF), la configuration ACTUELLE en base ; ce
-    # qu'on ne mesure pas est tracé « non exploré ». Contraintes de prefill optionnelles
-    # ([placement] dans local.toml) : explicite (N tokens en T s) ou plancher de confort.
-    plan = place_mod.plan_placements(
-        moe=is_moe,
-        n_layers=meta.get("n_layers"),
-        model_size_mb=model_size_mb,
-        kv_mb=kv_mb,
-        gpu_backend=gpu_ok,
-        vram_total_mb=vram_total,
-        ram_total_mb=ram_total_mb,
-        uma=not hw.vram_is_discrete,
-        headroom_mb=headroom,
-        current=cur_pl,
-        profile=profile,
-    )
-    prefill_c, pp_floor = place_mod.constraints_from_config(raw_cfg)
-    con.progress("sonde de placement (où vivent les poids)…")
-    try:
-        pl_res = place_mod.probe_placement(
-            lambda pl: _dc_replace(
-                probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
-            ),
-            plan.candidates,
-            progress=lambda m: con.progress(f"placement : {m}"),
-            useful_ctx=ctx_utile,
-            non_explores=plan.non_explores,
-            prefill=prefill_c,
-            pp_floor_ratio=pp_floor,
-        )
-    except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
-        pl_res = None
-    con.progress_end()
-    if pl_res and pl_res.get("placement") is None:
-        con.say(
-            f"  [attention] placement : {pl_res['mecanisme']} — flags actuels conservés."
-        )
-    # Slots pendant la mesure de placement (l'isolation vient après) : tracé tel quel.
-    pl_slots = int(getattr(probe, "n_parallel", 1) or 1)
-    if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
-        # Élu (comparé, ou seul candidat validé) : la suite (isolation, calibration,
-        # ubatch) mesure cette configuration-là.
-        pl = pl_res["placement"]
-        probe = _dc_replace(
-            probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
-        )
-        con.say(f"  [ok] placement : {pl.describe()} — {pl_res['mecanisme']}")
-    # Mesurer l'isolation avant la calibration pour inclure le KV du second slot.
+    # Isolation D'ABORD (sur la configuration actuelle) : le placement se compare
+    # ensuite avec les slots FINAUX — le KV du second slot compte dans la faisabilité
+    # et dans la mesure (revue du 2026-10-10 : « mêmes slots »).
     con.progress("sonde d'isolation du cache (A -> pollution -> A)…")
     isolation: bool | None = None
     iso_detail = ""
+    first = back = 0
     try:
         first, back = probe.probe_isolation()
         isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
@@ -1172,6 +1116,78 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             probe.n_parallel = 2
         # Libellé honnête : ce que la mesure a montré, et pourquoi on isole quand même.
         con.say(f"  {marque} {topo_mod.isolation_text(isolation, first, back)}")
+    # Placement MESURÉ des poids (où vivent denses et experts) x couples de batchs,
+    # AVANT la calibration : elle mesure ainsi la configuration qui servira vraiment.
+    # Cf. loom/setup/placement.py (Ornith, 2026-10-09).
+    # Profil GGUF : couches à cache KV, poids par famille — chaque donnée avec sa
+    # provenance. Le KV est estimé au contexte UTILE avec le type de cache de
+    # l'exécutant (q8_0 sous profil GPU) et les slots FINAUX.
+    profile = ModelProfile.from_meta(meta, model_size_mb=model_size_mb)
+    for ligne in profile.describe():
+        con.say(f"  profil : {ligne}")
+    ctx_utile = place_mod.useful_context(
+        model_toml.get("context"), server_cfg.get("context"), meta.get("context_length")
+    )
+    pl_slots = int(getattr(probe, "n_parallel", 1) or 1)
+    kv_mb = place_mod.kv_estimate_mb(
+        profile, ctx_utile, gpu_tuning=hw.has_gpu, slots=pl_slots
+    )
+    # Candidats par faisabilité (profil GGUF), la configuration ACTUELLE en base ; ce
+    # qu'on ne mesure pas est tracé « non exploré ». Contraintes de prefill optionnelles
+    # ([placement] dans local.toml) : explicite (N tokens en T s) ou plancher de confort.
+    plan = place_mod.plan_placements(
+        moe=is_moe,
+        n_layers=meta.get("n_layers"),
+        model_size_mb=model_size_mb,
+        kv_mb=kv_mb,
+        gpu_backend=gpu_ok,
+        vram_total_mb=vram_total,
+        ram_total_mb=ram_total_mb,
+        uma=not hw.vram_is_discrete,
+        headroom_mb=headroom,
+        current=cur_pl,
+        profile=profile,
+    )
+    prefill_c, pp_floor = place_mod.constraints_from_config(raw_cfg)
+    # Les finalistes sont comparés x deux couples (ubatch, batch) : celui de
+    # l'exécutant (la base) et l'alternative du parc — la sonde ubatch séparée disparaît.
+    couples = place_mod.batch_couples(
+        (getattr(probe, "ubatch", None), getattr(probe, "batch", None))
+    )
+    con.progress("sonde de placement (où vivent les poids, x batchs)…")
+    try:
+        pl_res = place_mod.probe_placement(
+            lambda pl: _dc_replace(
+                probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
+            ),
+            plan.candidates,
+            progress=lambda m: con.progress(f"placement : {m}"),
+            useful_ctx=ctx_utile,
+            non_explores=plan.non_explores,
+            prefill=prefill_c,
+            pp_floor_ratio=pp_floor,
+            batch_couples=couples,
+        )
+    except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
+        pl_res = None
+    con.progress_end()
+    if pl_res and pl_res.get("placement") is None:
+        con.say(
+            f"  [attention] placement : {pl_res['mecanisme']} — flags actuels conservés."
+        )
+    if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
+        # Élu (comparé, ou seul candidat validé) avec ses batchs : la suite
+        # (calibration, validation finale) mesure cette configuration-là.
+        pl = pl_res["placement"]
+        probe = _dc_replace(
+            probe,
+            ngl=pl.ngl,
+            cpu_moe=pl.cpu_moe,
+            n_cpu_moe=pl.n_cpu_moe,
+            ubatch=pl.ubatch or getattr(probe, "ubatch", None),
+            batch=pl.batch or getattr(probe, "batch", None),
+        )
+        con.say(f"  [ok] placement : {pl.describe()} — {pl_res['mecanisme']}")
     con.say(
         f"  Topologie découverte : {topo} (budget {budget} Mo). Calibration du "
         "contexte par PENTE MESURÉE + vitesse en profondeur (~5-15 min)…"
@@ -1199,17 +1215,35 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     # aucune dépendance à llama-bench) : un seul levier à la fois, ajouté au couple
     # threads/ngl déjà gagnant, sur un prompt assez long pour que le levier existe
     # (à 128 tokens tout tient dans un micro-batch : aucun effet mesurable).
-    con.progress("sonde ubatch (prefill sur prompt long)…")
-    try:
-        from dataclasses import replace as _dc_replace
-
-        ub_res = bench_mod.probe_ubatch(
-            lambda ub, b: _dc_replace(probe, ubatch=ub, batch=b),
-            progress=lambda m: con.progress(f"sonde ubatch : {m}"),
-        )
-    except Exception:  # noqa: BLE001 - sonde best-effort, jamais fatale
-        ub_res = None
-    con.progress_end()
+    pl_elu = (pl_res or {}).get("placement")
+    if pl_elu is not None and pl_elu.ubatch:
+        # Les batchs viennent du 2x2 des finalistes (même contexte, même profondeur,
+        # mêmes slots que le placement) : la sonde ubatch séparée est obsolète.
+        ub_res = {
+            "ubatch": int(pl_elu.ubatch),
+            "batch": int(pl_elu.batch or pl_elu.ubatch),
+            "pp_ts": float(pl_res.get("pp_ts") or 0.0),
+            "gain_pct": None,
+            "mesures": {
+                k: v.get("pp_ts")
+                for k, v in (pl_res.get("mesures") or {}).items()
+                if "pp_ts" in v
+            },
+            "detail": (
+                f"{pl_res.get('pp_ts')} t/s à profondeur {pl_res.get('depth_final')} "
+                f"(finalistes x batchs, ctx {pl_res.get('ctx_final')})"
+            ),
+        }
+    else:
+        con.progress("sonde ubatch (prefill sur prompt long)…")
+        try:
+            ub_res = bench_mod.probe_ubatch(
+                lambda ub, b: _dc_replace(probe, ubatch=ub, batch=b),
+                progress=lambda m: con.progress(f"sonde ubatch : {m}"),
+            )
+        except Exception:  # noqa: BLE001 - sonde best-effort, jamais fatale
+            ub_res = None
+        con.progress_end()
 
     # Vérifier le CACHE avec la configuration FINALE (placement élu, slots décidés,
     # batchs mesurés) : conversation sur le slot 0, appel annexe routé comme Loom le
@@ -1328,7 +1362,15 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
                 values["bench"][f"final_{k}"] = final[k]
     if pl_res:
         pl_elu = pl_res.get("placement")
-        values["bench"]["placement"] = pl_elu.key if pl_elu else "aucun (échec)"
+        # `placement` = l'identité du placement ; le couple de batchs est tracé à part
+        # (`placement_config`, ubatch/batch).
+        values["bench"]["placement"] = (
+            pl_elu.key.split("@")[0] if pl_elu else "aucun (échec)"
+        )
+        values["bench"]["placement_config"] = pl_elu.key if pl_elu else "aucun"
+        values["bench"]["placement_couples"] = [
+            f"ub {ub}/b {b}" for ub, b in (pl_res.get("couples") or [])
+        ]
         values["bench"]["placement_mecanisme"] = pl_res["mecanisme"]
         values["bench"]["placement_compare"] = bool(pl_res.get("compare"))
         # Avec quoi le placement a été mesuré : moteur, slots, flags machine.
@@ -1398,7 +1440,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             gguf_path,
             ub_res["ubatch"],
             ub_res["batch"],
-            f"{ub_res['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens",
+            ub_res.get("detail")
+            or f"{ub_res['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens",
         )
     if isolation is not None:
         cache_txt = ""

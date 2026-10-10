@@ -24,6 +24,7 @@ Principes :
 
 from __future__ import annotations
 
+import copy
 import math
 import time
 from dataclasses import dataclass, field, replace
@@ -70,15 +71,22 @@ class Placement:
     estime: bool = False  # faisabilité seulement estimée (partiel) : peut échouer
     actuel: bool = False  # configuration actuelle du model.toml (ligne de base)
     faisabilite: str = ""  # comment la faisabilité a été établie (trace)
+    # Couple (ubatch, batch) de la configuration COMPLÈTE comparée (finalistes x
+    # batchs) ; None = les batchs de la sonde telle que fabriquée.
+    ubatch: int | None = None
+    batch: int | None = None
 
     @property
     def key(self) -> str:
-        """Identifiant qui porte les PARAMÈTRES : deux partiels ne se confondent pas."""
+        """Identifiant qui porte les PARAMÈTRES : deux partiels ne se confondent pas,
+        ni deux couples de batchs du même placement."""
         if self.label == "experts_partiel":
-            return f"experts_partiel_n{self.n_cpu_moe}"
-        if self.label == "gpu_partiel":
-            return f"gpu_partiel_ngl{self.ngl}"
-        return self.label
+            base = f"experts_partiel_n{self.n_cpu_moe}"
+        elif self.label == "gpu_partiel":
+            base = f"gpu_partiel_ngl{self.ngl}"
+        else:
+            base = self.label
+        return f"{base}@ub{self.ubatch}" if self.ubatch else base
 
     @classmethod
     def from_flags(
@@ -119,6 +127,8 @@ class Placement:
             txt = (
                 f"denses sur GPU, experts de {self.n_cpu_moe} couches sur CPU (estimé)"
             )
+        if self.ubatch:
+            txt += f" — ub {self.ubatch}/b {self.batch}"
         return txt + (" — configuration actuelle" if self.actuel else "")
 
 
@@ -167,6 +177,24 @@ def useful_context(
     if model_limit:
         ctx = min(ctx, int(model_limit))
     return max(4096, ctx)
+
+
+def batch_couples(current: tuple | None) -> list[tuple[int, int]]:
+    """Les couples (ubatch, batch) comparés sur les finalistes : celui de l'EXÉCUTANT
+    d'abord (model.toml, sinon machine, sinon défauts llama-server 512/2048 — c'est la
+    base), puis l'alternative du parc (bench.UBATCH_CANDIDATES). Deux au plus : le
+    2x2 est le point de départ économe validé par la revue du 2026-10-10."""
+    from loom.setup.bench import UBATCH_CANDIDATES
+
+    cur = (
+        (int(current[0]), int(current[1] or 0) or None)
+        if current and current[0]
+        else UBATCH_CANDIDATES[0]
+    )
+    if cur[1] is None:
+        cur = (cur[0], max(cur[0], UBATCH_CANDIDATES[0][1]))
+    out = [cur] + [tuple(c) for c in UBATCH_CANDIDATES if tuple(c) != cur]
+    return out[:2]
 
 
 def final_depth(ctx: int) -> int:
@@ -496,7 +524,14 @@ def _mesurer(
     out: dict[str, dict] = {}
     for c in cands:
         try:
-            sondes[c.key] = make_probe(c)
+            sonde = make_probe(c)
+            if c.ubatch is not None:
+                # Configuration COMPLÈTE : le couple (ubatch, batch) du candidat remplace
+                # celui de la sonde fabriquée — sur une COPIE, une sonde par configuration.
+                sonde = copy.copy(sonde)
+                sonde.ubatch = c.ubatch
+                sonde.batch = c.batch
+            sondes[c.key] = sonde
             samples[c.key] = []
         except Exception as exc:  # noqa: BLE001 - un candidat qui casse n'est PAS fatal
             out[c.key] = {"echec": f"{type(exc).__name__}: {exc}"}
@@ -561,45 +596,78 @@ def probe_placement(
     prefill: PrefillConstraint | None = None,
     pp_floor_ratio: float | None = None,
     time_budget_s: float = PLACEMENT_TIME_BUDGET_S,
+    batch_couples: list[tuple[int, int]] | None = None,
 ) -> dict | None:
     """Sonde les candidats avec le VRAI serveur (`make_probe(placement)` renvoie une
     sonde exposant `.run(ctx, depth) -> ProbeResult`, cf. topology.ServerProbe).
 
-    - un seul candidat : VALIDÉ une fois au contexte utile (charge, génère), non comparé ;
-    - plusieurs : PRÉSÉLECTION à (ctx, depth) `reps` fois, puis, si le contexte utile
-      dépasse `ctx`, les FINALISTES (la base + les meilleurs à PLACEMENT_FINALIST_PCT du
-      meilleur, PLACEMENT_MAX_FINALISTS au plus) remesurés au contexte utile et à
-      final_depth(utile) ; la décision (`pick_placement`) porte sur cette dernière
-      mesure. Rien de mesurable -> None (on n'écrit jamais une valeur inventée).
+    - un seul candidat : VALIDÉ une fois au contexte utile (charge, génère), non comparé
+      — avec `batch_couples`, ses couples de batchs, eux, sont comparés ;
+    - plusieurs : PRÉSÉLECTION à (ctx, depth) `reps` fois (couple de batchs actuel),
+      puis les FINALISTES (la base + les meilleurs à PLACEMENT_FINALIST_PCT du meilleur,
+      PLACEMENT_MAX_FINALISTS au plus) remesurés au contexte utile et à
+      final_depth(utile) — x chaque couple de `batch_couples` : des CONFIGURATIONS
+      COMPLÈTES au même contexte, à la même profondeur, aux mêmes slots, en tours
+      alternés ; la décision (`pick_placement`) porte sur cette dernière mesure, la
+      base étant la configuration actuelle EXACTE (placement + couple de l'exécutant).
+      Rien de mesurable -> None (on n'écrit jamais une valeur inventée).
 
-    Renvoie {placement (None si validation en échec), baseline, tg_ts, pp_ts, gain_pct,
-    mesures (phase décisive, par clé), preselection, finalistes, ctx_final, depth_final,
+    Renvoie {placement (None si validation en échec ; porte ubatch/batch quand des
+    couples ont été comparés), baseline, tg_ts, pp_ts, gain_pct, mesures (phase
+    décisive, par clé), preselection, finalistes, ctx_final, depth_final, couples,
     non_explores, compare, mecanisme}."""
     say = progress or (lambda _m: None)
     non = list(non_explores or [])
+    couples = [(int(c[0]), int(c[1])) for c in (batch_couples or [])]
     if not candidates:
         return None
     t0 = time.monotonic()
     deadline = t0 + float(time_budget_s)
-    two_phase = bool(useful_ctx and int(useful_ctx) > ctx)
-    ctx_final = int(useful_ctx) if useful_ctx else ctx
-    depth_final = final_depth(ctx_final) if useful_ctx else depth
+    deeper = bool(useful_ctx and int(useful_ctx) > ctx)
+    ctx_final = int(useful_ctx) if deeper else ctx
+    depth_final = final_depth(ctx_final) if deeper else depth
+    # Avec des couples, les finalistes sont TOUJOURS remesurés x couples, même à contexte
+    # utile court : quatre configurations complètes dans les mêmes conditions.
+    two_phase = deeper or bool(couples)
+
+    def _configs(placements):
+        """Configurations complètes, couple-major (A@c1, B@c1, A@c2, B@c2) : la base
+        (candidat 0 avec le couple ACTUEL) reste la première."""
+        if not couples:
+            return list(placements)
+        return [replace(c, ubatch=ub, batch=b) for ub, b in couples for c in placements]
 
     def _res(**kw):
         base = {
-            "baseline": candidates[0].key,
+            "baseline": _configs([candidates[0]])[0].key,
             "non_explores": non,
             "ctx_final": ctx_final,
             "depth_final": depth_final,
+            "couples": couples,
         }
         base.update(kw)
         return base
 
     if len(candidates) == 1:
         seul = candidates[0]
-        mes = _mesurer(make_probe, [seul], ctx_final, depth_final, 1, say, max_reps=1)
-        m = mes[seul.key]
-        if "echec" in m:
+        configs = _configs([seul])
+        if len(configs) == 1:
+            mes = _mesurer(
+                make_probe, configs, ctx_final, depth_final, 1, say, max_reps=1
+            )
+        else:
+            # Rien à comparer entre placements, mais le couple de batchs, lui, se mesure.
+            mes = _mesurer(
+                make_probe,
+                configs,
+                ctx_final,
+                depth_final,
+                reps,
+                say,
+                deadline=deadline,
+            )
+        if not any("tg_ts" in v for v in mes.values()):
+            m = next(iter(mes.values()))
             return _res(
                 placement=None,
                 tg_ts=None,
@@ -611,43 +679,80 @@ def probe_placement(
                 compare=False,
                 mecanisme=(
                     f"{seul.key} : seul candidat faisable, validation en ÉCHEC "
-                    f"({m['echec']})" + _non_explores_txt(non)
+                    f"({m.get('echec', 'débit illisible')})" + _non_explores_txt(non)
                 ),
             )
+        if len(configs) == 1:
+            m = mes[seul.key]
+            return _res(
+                placement=seul,
+                tg_ts=m["tg_ts"],
+                pp_ts=m["pp_ts"],
+                gain_pct=None,
+                mesures=mes,
+                preselection=mes,
+                finalistes=[seul.key],
+                compare=False,
+                mecanisme=(
+                    f"{seul.key} : seul candidat faisable — validé à ctx {ctx_final} "
+                    f"(génération {m['tg_ts']} t/s, prefill {m['pp_ts']} t/s), non comparé"
+                    + _non_explores_txt(non)
+                ),
+            )
+        best, mecanisme = pick_placement(
+            mes, configs, margin_pct, prefill=prefill, pp_floor_ratio=pp_floor_ratio
+        )
+        m = mes.get(best.key) or {}
         return _res(
-            placement=seul,
-            tg_ts=m["tg_ts"],
-            pp_ts=m["pp_ts"],
+            placement=best,
+            tg_ts=m.get("tg_ts"),
+            pp_ts=m.get("pp_ts"),
             gain_pct=None,
             mesures=mes,
             preselection=mes,
-            finalistes=[seul.key],
-            compare=False,
+            finalistes=[c.key for c in configs],
+            compare=sum(1 for v in mes.values() if "tg_ts" in v) >= 2,
             mecanisme=(
-                f"{seul.key} : seul candidat faisable — validé à ctx {ctx_final} "
-                f"(génération {m['tg_ts']} t/s, prefill {m['pp_ts']} t/s), non comparé"
+                f"{seul.label} : seul placement faisable, seuls les batchs comparés — "
+                + mecanisme
                 + _non_explores_txt(non)
             ),
         )
 
-    phase1 = _mesurer(make_probe, candidates, ctx, depth, reps, say, deadline=deadline)
+    # Présélection avec le couple ACTUEL (couples[0]) : un run par placement et par tour.
+    presel = (
+        [replace(c, ubatch=couples[0][0], batch=couples[0][1]) for c in candidates]
+        if couples
+        else list(candidates)
+    )
+    orig = {p.key: c for p, c in zip(presel, candidates)}
+    phase1 = _mesurer(make_probe, presel, ctx, depth, reps, say, deadline=deadline)
     if not any("tg_ts" in v for v in phase1.values()):
         return None
     notes = ""
+    configs = presel
     if two_phase:
         valid = {k: v for k, v in phase1.items() if "tg_ts" in v}
         best_tg = max(v["tg_ts"] for v in valid.values())
-        base_key = candidates[0].key
+        base_key = presel[0].key
         seuil = best_tg * (1 - PLACEMENT_FINALIST_PCT / 100)
         autres = sorted(
-            (c for c in candidates if c.key in valid and c.key != base_key),
+            (c for c in presel if c.key in valid and c.key != base_key),
             key=lambda c: valid[c.key]["tg_ts"],
             reverse=True,
         )
-        finalists = [c for c in candidates if c.key == base_key and c.key in valid]
+        finalists = [c for c in presel if c.key == base_key and c.key in valid]
         finalists += [c for c in autres if valid[c.key]["tg_ts"] >= seuil][
             : PLACEMENT_MAX_FINALISTS - len(finalists)
         ]
+        if len(finalists) < 2 and autres:
+            # Au moins DEUX placements en finale : le meilleur alternatif y va même s'il
+            # est loin derrière en présélection — avec des couples de batchs, le
+            # classement peut bouger (Ornith : experts-CPU n'avait jamais été mesuré
+            # en ub 512), et la trace doit le dire par une mesure, pas par une coupe.
+            finalists.append(autres[0])
+        # Configurations complètes : finalistes x couples (couple actuel d'abord).
+        configs = _configs([orig[c.key] for c in finalists])
         if time.monotonic() >= deadline:
             notes += (
                 f" ; budget temps ({time_budget_s:g} s) épuisé : finalistes non remesurés "
@@ -658,7 +763,7 @@ def probe_placement(
             # Finalistes mesurés ENSEMBLE (tours alternés, affinage du tandem incertain).
             mesures = _mesurer(
                 make_probe,
-                finalists,
+                configs,
                 ctx_final,
                 depth_final,
                 reps,
@@ -669,15 +774,16 @@ def probe_placement(
         if not any("tg_ts" in v for v in mesures.values()):
             # Rien de remesuré : décider sur la présélection, en le disant.
             mesures = phase1
+            configs = presel
             notes += " ; décision sur la présélection (aucun finaliste remesuré)"
             ctx_final, depth_final = ctx, depth
     else:
         mesures = phase1
         finalistes = [k for k, v in phase1.items() if "tg_ts" in v]
     best, mecanisme = pick_placement(
-        mesures, candidates, margin_pct, prefill=prefill, pp_floor_ratio=pp_floor_ratio
+        mesures, configs, margin_pct, prefill=prefill, pp_floor_ratio=pp_floor_ratio
     )
-    base = candidates[0]
+    base = configs[0]
     gain = None
     if best.key != base.key and "tg_ts" in mesures.get(base.key, {}):
         gain = round(

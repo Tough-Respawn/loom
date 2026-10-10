@@ -23,6 +23,7 @@ def _measure_placement(
     mt: dict | None = None,
     raw: dict | None = None,
     override_ngl: int | None = None,
+    slots: int = 1,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand rien n'est
@@ -41,7 +42,7 @@ def _measure_placement(
         profile,
         int(useful_ctx or place_mod.PLACEMENT_PROBE_CTX),
         gpu_tuning=bool(getattr(hw, "has_gpu", False)),
-        slots=1,
+        slots=max(1, int(slots or 1)),
     )
     plan = place_mod.plan_placements(
         moe=bool(meta.get("expert_count")),
@@ -65,6 +66,11 @@ def _measure_placement(
         profile=profile,
     )
     prefill_c, pp_floor = place_mod.constraints_from_config(raw or {})
+    # Finalistes x deux couples (ubatch, batch) : celui de l'exécutant (la base) et
+    # l'alternative du parc — la sonde ubatch séparée disparaît.
+    couples = place_mod.batch_couples(
+        (getattr(probe, "ubatch", None), getattr(probe, "batch", None))
+    )
     try:
         res = place_mod.probe_placement(
             lambda pl: _dc_replace(
@@ -76,19 +82,30 @@ def _measure_placement(
             non_explores=plan.non_explores,
             prefill=prefill_c,
             pp_floor_ratio=pp_floor,
+            batch_couples=couples,
         )
     except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
         res = None
     if not res or res.get("placement") is None or not res["mesures"]:
         return None, probe
     pl = res["placement"]
-    probe = _dc_replace(probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe)
+    extra = (
+        {"ubatch": pl.ubatch or probe.ubatch, "batch": pl.batch or probe.batch}
+        if hasattr(probe, "ubatch")
+        else {}
+    )
+    probe = _dc_replace(
+        probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe, **extra
+    )
     verdict = {
         "label": pl.label,
         "key": pl.key,
         "ngl": pl.ngl,
         "cpu_moe": pl.cpu_moe,
         "n_cpu_moe": pl.n_cpu_moe,
+        "ubatch": pl.ubatch,
+        "batch": pl.batch,
+        "couples": res.get("couples"),
         "tg_ts": res["tg_ts"],
         "pp_ts": res["pp_ts"],
         "gain_pct": res["gain_pct"],
@@ -224,31 +241,9 @@ def _run_calibration(S, spec, progress):
         ctx_checkpoints=mt.get("ctx_checkpoints"),
         profile=hw,
     )
-    # Placement MESURÉ avant isolation et calibration (même séquence que loom-setup),
-    # faisabilité estimée au contexte UTILE du modèle.
-    from loom.setup.placement import useful_context
-
-    ctx_utile = useful_context(
-        mt.get("context"), server_cfg.get("context"), meta.get("context_length")
-    )
-    progress("sonde de placement (où vivent les poids)…")
-    pl_verdict, probe = _measure_placement(
-        probe,
-        meta,
-        model_size_mb=int(spec.get("size_mb") or mt.get("size_mb") or 0),
-        hw=hw,
-        ram_total_mb=ram,
-        headroom_mb=headroom,
-        gpu_backend=gpu_backend,
-        progress=progress,
-        useful_ctx=ctx_utile,
-        mt=mt,
-        raw=raw,
-        override_ngl=over.get("n_gpu_layers"),
-    )
-    # Sonde d'isolation AVANT la calibration : si le modèle exige un 2e slot,
-    # la calibration doit mesurer avec le KV réellement doublé (même séquence
-    # que loom-setup step_bench — le conseilleur simule l'exécutant).
+    # Isolation D'ABORD (sur la configuration actuelle) : le placement se compare
+    # ensuite avec les slots FINAUX, le KV doublé compte dans la faisabilité et dans la
+    # mesure (même séquence que loom-setup step_bench — le conseilleur simule l'exécutant).
     progress("sonde d'isolation du cache (A -> pollution -> A)…")
     isolation = None
     iso_detail = ""
@@ -264,6 +259,29 @@ def _run_calibration(S, spec, progress):
             probe.n_parallel = 2
     except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans verdict
         pass
+    # Placement MESURÉ x couples de batchs, avant la calibration, faisabilité estimée au
+    # contexte UTILE du modèle avec les slots finaux.
+    from loom.setup.placement import useful_context
+
+    ctx_utile = useful_context(
+        mt.get("context"), server_cfg.get("context"), meta.get("context_length")
+    )
+    progress("sonde de placement (où vivent les poids, x batchs)…")
+    pl_verdict, probe = _measure_placement(
+        probe,
+        meta,
+        model_size_mb=int(spec.get("size_mb") or mt.get("size_mb") or 0),
+        hw=hw,
+        ram_total_mb=ram,
+        headroom_mb=headroom,
+        gpu_backend=gpu_backend,
+        progress=progress,
+        useful_ctx=ctx_utile,
+        mt=mt,
+        raw=raw,
+        override_ngl=over.get("n_gpu_layers"),
+        slots=int(getattr(probe, "n_parallel", 1) or 1),
+    )
     progress(f"topologie {topo}, budget {budget} Mo")
     calib = topo_mod.calibrate(
         probe, meta, topology=topo, budget_mb=budget, progress=progress
@@ -273,18 +291,32 @@ def _run_calibration(S, spec, progress):
     calib["isolation_first"] = iso_first
     calib["isolation_back"] = iso_back
     calib["isolation_avant"] = bool(mt.get("cache_isolation", False))
-    # Sonde d'ubatch sur la MÊME sonde serveur (flags exacts, n_parallel inclus) :
-    # un modèle installé par /add-model n'a jamais eu la sienne — c'est ici qu'il
-    # la rattrape, sans réinstaller.
-    try:
-        from dataclasses import replace as _dc_replace
+    if pl_verdict and pl_verdict.get("ubatch"):
+        # Les batchs viennent du 2x2 des finalistes (même contexte, même profondeur,
+        # mêmes slots que le placement) : la sonde ubatch séparée est obsolète.
+        calib["ubatch_probe"] = {
+            "ubatch": int(pl_verdict["ubatch"]),
+            "batch": int(pl_verdict.get("batch") or pl_verdict["ubatch"]),
+            "pp_ts": float(pl_verdict.get("pp_ts") or 0.0),
+            "gain_pct": None,
+            "mesures": {
+                k: v.get("pp_ts")
+                for k, v in (pl_verdict.get("mesures") or {}).items()
+                if "pp_ts" in v
+            },
+            "origine": "finalistes x batchs",
+        }
+    else:
+        # Repli : aucune comparaison de placement exploitable, sonde ubatch classique.
+        try:
+            from dataclasses import replace as _dc_replace
 
-        calib["ubatch_probe"] = bench_mod.probe_ubatch(
-            lambda ub, b: _dc_replace(probe, ubatch=ub, batch=b),
-            progress=progress,
-        )
-    except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
-        calib["ubatch_probe"] = None
+            calib["ubatch_probe"] = bench_mod.probe_ubatch(
+                lambda ub, b: _dc_replace(probe, ubatch=ub, batch=b),
+                progress=progress,
+            )
+        except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
+            calib["ubatch_probe"] = None
     calib["ubatch_avant"] = mt.get("ubatch")
     calib["batch_avant"] = mt.get("batch")
     # Sonde FINALE = placement élu + slots décidés + batchs mesurés : valider ce réglage

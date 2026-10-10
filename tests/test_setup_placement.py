@@ -344,9 +344,16 @@ def test_step_bench_mesure_le_placement_et_l_ecrit(monkeypatch, tmp_path):
             vram_is_discrete=False,
         ),
     )
+    # La sonde ubatch séparée a disparu : les batchs viennent du 2x2 des finalistes.
+    monkeypatch.setattr(
+        cli.bench_mod,
+        "probe_ubatch",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("probe_ubatch obsolète")),
+    )
     assert cli.run(con, deps) == 0
     mt = tomllib.loads((mdir / "model.toml").read_text(encoding="utf-8"))
     assert mt["cpu_moe"] is False and mt["n_gpu_layers"] == 999
+    assert mt["ubatch"] in (512, 2048) and mt["batch"] in (2048, 4096)
     local = tomllib.loads(
         (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
     )
