@@ -308,9 +308,12 @@ def test_rebench_apply_ecrit_le_build_et_garde_les_echantillons(env, monkeypatch
     _wait_verdict(env)
     # L'état d'application conserve les mesures détaillées (échantillons compris).
     # Le worker poste le verdict PUIS sauvegarde la session : attendre l'état persisté.
-    deadline = time.time() + 10.0
+    # Attendre l'état COMPLET (sous la charge de la suite, la sauvegarde peut suivre
+    # le verdict de plusieurs secondes), puis seulement asserter.
+    deadline = time.time() + 20.0
     sessions = ""
-    while time.time() < deadline and "b_apply" not in sessions:
+    attendus = ("b_apply", "echantillons", "b7000-abc1234")
+    while time.time() < deadline and not all(a in sessions for a in attendus):
         sessions = "".join(
             p.read_text(encoding="utf-8")
             for p in (env.tmp / "sessions").rglob("session.json")
