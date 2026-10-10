@@ -1324,6 +1324,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
                 ctx=pl_res["ctx_final"],
                 depth=pl_res["depth_final"],
                 progress=lambda m: con.progress(f"threads : {m}"),
+                prefill=prefill_c,
+                pp_floor_ratio=pp_floor,
             )
         except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
             th_res = None
@@ -1424,6 +1426,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             depth=place_mod.final_depth(ctx_utile),
             n_layers=meta.get("n_layers"),
             reference_tg=(pl_res or {}).get("tg_ts"),
+            prefill=prefill_c,
             progress=lambda m: con.progress(f"réglage final : {m}"),
         )
     except Exception as exc:  # noqa: BLE001 - validation best-effort, nommée

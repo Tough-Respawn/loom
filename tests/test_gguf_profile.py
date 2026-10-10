@@ -360,6 +360,45 @@ def test_profil_etat_recurrent_inconnu_sans_dimensions():
     assert prof.recurrent_bytes(slots=2, checkpoints=32) == 0
 
 
+def test_profil_purement_recurrent_kv_nul_pas_un_forfait():
+    """Revue P2 (2026-10-10) : un Mamba sans aucune couche d'attention recevait 18,3 Gio
+    de KV « de secours » à 65 536 / 2 slots. « Aucun KV » (couches connues, aucune
+    d'attention) n'est pas « KV inconnu »."""
+    w = {
+        "total": 1000,
+        "familles": {},
+        "par_couche": [10] * 48,
+        "experts_par_couche": [0] * 48,
+        "couches_attention": [],
+        "couches_recurrentes": list(range(48)),
+        "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+    }
+    prof = ModelProfile.from_meta(
+        _meta(
+            architecture="mamba",
+            n_layers=48,
+            recurrent=True,
+            head_count_kv=None,
+            key_length=None,
+            embedding_length=None,
+            weights=w,
+        )
+    )
+    assert prof.attention_layers == [] and prof.kv_bytes(65_536, "q8_0", 2) == 0
+    assert prof.provenance["kv"].startswith("déduit (aucune couche")
+    # Couches INCONNUES et dimensions absentes : le forfait de secours reste (borne haute).
+    flou = ModelProfile.from_meta(
+        _meta(
+            n_layers=4,
+            recurrent=True,
+            head_count_kv=None,
+            key_length=None,
+            embedding_length=None,
+        )
+    )
+    assert flou.kv_bytes(1000, "q8_0") == 150_000 * 1000
+
+
 def test_profil_sans_recurrence_etat_nul():
     prof = ModelProfile.from_meta(_meta(n_layers=8))
     assert (

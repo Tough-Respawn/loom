@@ -895,12 +895,15 @@ def probe_threads(
     margin_pct: float = PLACEMENT_MARGIN_PCT,
     progress=None,
     time_budget_s: float = PLACEMENT_TIME_BUDGET_S,
+    prefill: PrefillConstraint | None = None,
+    pp_floor_ratio: float | None = None,
 ) -> dict | None:
     """Sonde les threads sur la configuration ÉLUE (`make_probe(option)` renvoie une
     sonde de cette configuration avec `option.threads`), au même contexte et à la
     même profondeur que la finale, tours alternés, échantillons conservés ; la
-    génération décide, le prefill départage, l'actuel reste en cas d'indécision
-    (mêmes règles que pick_placement). Rien de mesurable -> None."""
+    génération décide, le prefill départage, l'actuel reste en cas d'indécision, et
+    les CONTRAINTES de prefill s'appliquent comme au placement (mêmes règles que
+    pick_placement). Rien de mesurable -> None."""
     say = progress or (lambda _m: None)
     if not options:
         return None
@@ -908,7 +911,9 @@ def probe_threads(
     mesures = _mesurer(make_probe, options, ctx, depth, reps, say, deadline=deadline)
     if not any("tg_ts" in v for v in mesures.values()):
         return None
-    best, mecanisme = pick_placement(mesures, options, margin_pct)
+    best, mecanisme = pick_placement(
+        mesures, options, margin_pct, prefill=prefill, pp_floor_ratio=pp_floor_ratio
+    )
     base = options[0]
     gain = None
     if best.key != base.key and "tg_ts" in mesures.get(base.key, {}):
@@ -940,6 +945,7 @@ def validate_final(
     reference_tg: float | None = None,
     margin_pct: float = PLACEMENT_MARGIN_PCT,
     progress=None,
+    prefill: PrefillConstraint | None = None,
 ) -> dict:
     """Valide le RÉGLAGE FINAL complet — la sonde `probe` porte le placement élu, les
     slots décidés et les batchs mesurés — au contexte CALIBRÉ `ctx` et à la profondeur
@@ -990,6 +996,20 @@ def validate_final(
         out["coherent"] = bool(
             ecart >= -max(margin_pct, float(m.get("tg_disp_pct") or 0))
         )
+    if prefill is not None:
+        # La contrainte explicite se VÉRIFIE sur le réglage final, pas seulement sur les
+        # candidats : un prefill qui ne la tient pas rend la configuration incohérente
+        # avec ce qui a été demandé.
+        secondes = prefill.seconds(float(m.get("pp_ts") or 0))
+        respectee = secondes <= prefill.max_seconds
+        out["prefill_contrainte"] = {
+            "new_tokens": prefill.new_tokens,
+            "max_seconds": prefill.max_seconds,
+            "secondes": round(secondes, 1) if secondes != math.inf else None,
+            "respectee": bool(respectee),
+        }
+        if not respectee:
+            out["coherent"] = False
     return out
 
 

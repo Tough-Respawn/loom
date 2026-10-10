@@ -148,6 +148,8 @@ def _measure_threads(
     depth: int,
     progress,
     n_layers: int | None = None,
+    prefill=None,
+    pp_floor_ratio: float | None = None,
 ):
     """Sonde de threads sur le placement ÉLU (option par modèle) : renvoie (verdict |
     None, sonde alignée). Tout GPU : {"non_explore": …} sans mesure. Sans comparaison
@@ -187,6 +189,8 @@ def _measure_threads(
             ctx=ctx,
             depth=depth,
             progress=progress,
+            prefill=prefill,
+            pp_floor_ratio=pp_floor_ratio,
         )
     except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
         res = None
@@ -401,6 +405,9 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     # les candidats du parc, au contexte et à la profondeur de la finale.
     import os
 
+    from loom.setup.placement import constraints_from_config
+
+    prefill_c, pp_floor = constraints_from_config(raw)
     trace["etape"] = "threads"
     progress("sonde de threads sur le placement élu…")
     th_verdict, probe = _measure_threads(
@@ -414,6 +421,8 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         ),
         progress=progress,
         n_layers=meta.get("n_layers"),
+        prefill=prefill_c,
+        pp_floor_ratio=pp_floor,
     )
     trace["threads"] = th_verdict
     trace["etape"] = "calibration"
@@ -483,6 +492,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
             depth=place_mod.final_depth(ctx_utile),
             n_layers=meta.get("n_layers"),
             reference_tg=(pl_verdict or {}).get("tg_ts"),
+            prefill=prefill_c,
             progress=progress,
         )
     except Exception as exc:  # noqa: BLE001 - validation best-effort, nommée

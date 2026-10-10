@@ -157,11 +157,18 @@ class ModelProfile:
             swa_layers = []
             prov["couches_swa"] = "déclaré (pas de fenêtre glissante)"
 
-        prov["kv"] = (
-            "déclaré/déduit (têtes KV x (K + V) x type de cache, couches d'attention)"
-            if kv_heads and key_length
-            else f"inconnu (repli {KV_FALLBACK_BYTES_PER_TOKEN // 1000} Ko/token)"
-        )
+        if not attention and not prov["couches_attention"].startswith("inconnu"):
+            # Couches connues et aucune d'attention (Mamba pur…) : AUCUN cache KV —
+            # ce n'est pas « KV inconnu », le forfait de secours ne s'applique pas.
+            prov["kv"] = "déduit (aucune couche d'attention : pas de cache KV)"
+        elif kv_heads and key_length:
+            prov["kv"] = (
+                "déclaré/déduit (têtes KV x (K + V) x type de cache, couches d'attention)"
+            )
+        else:
+            prov["kv"] = (
+                f"inconnu (repli {KV_FALLBACK_BYTES_PER_TOKEN // 1000} Ko/token)"
+            )
         prov["poids"] = (
             weights["provenance"]
             if weights
@@ -221,6 +228,10 @@ class ModelProfile:
         type `kv_type`. Couches récurrentes : aucun KV ; couches à fenêtre glissante :
         bornées à la fenêtre. Sans dimensions d'attention : repli conservateur."""
         slots = max(1, int(slots))
+        if not self.attention_layers and not str(
+            self.provenance.get("couches_attention", "inconnu")
+        ).startswith("inconnu"):
+            return 0  # aucune couche d'attention connue : pas de KV, pas de forfait
         if not (self.kv_heads and self.key_length):
             return int(KV_FALLBACK_BYTES_PER_TOKEN * ctx * slots)
         bpe = _BYTES_PER_ELEM.get(kv_type, 2.0)

@@ -109,6 +109,60 @@ def test_sonde_de_threads_option_en_echec_ecartee():
     assert r["threads"] == 16 and r["mesures"]["t4"]["echec"].startswith("RuntimeError")
 
 
+def test_sonde_de_threads_respecte_la_contrainte_de_prefill():
+    """Revue P3 (2026-10-10) : la sonde de threads ignorait les contraintes de prefill.
+    « 1 000 tokens en 10 s » : 50 t/s = 20 s -> écarté même s'il génère plus vite."""
+    from loom.setup.placement import PrefillConstraint
+
+    make = _usine({8: (10.0, 200.0), 4: (12.0, 50.0), 16: (10.5, 210.0)})
+    r = probe_threads(
+        make,
+        OPTS,
+        ctx=32_768,
+        depth=16_384,
+        reps=1,
+        prefill=PrefillConstraint(new_tokens=1_000, max_seconds=10.0),
+    )
+    assert r["threads"] != 4 and "contrainte prefill" in r["mecanisme"]
+
+
+def test_validation_finale_verifie_la_contrainte_de_prefill():
+    from loom.setup.placement import PrefillConstraint, validate_final
+
+    class _Sonde:
+        ngl, cpu_moe, n_cpu_moe, n_parallel, ubatch, batch = (
+            999,
+            False,
+            None,
+            2,
+            512,
+            2048,
+        )
+
+        def run(self, ctx, depth):
+            return ProbeResult(
+                ctx=ctx, mem_mb=1, tg_ts=11.0, pp_ts=50.0, prompt_n=depth
+            )
+
+    f = validate_final(
+        _Sonde(),
+        ctx=65_536,
+        depth=16_384,
+        n_layers=41,
+        prefill=PrefillConstraint(new_tokens=1_000, max_seconds=10.0),
+    )
+    assert f["prefill_contrainte"]["respectee"] is False
+    assert f["prefill_contrainte"]["secondes"] == 20.0 and f["coherent"] is False
+    ok = validate_final(
+        _Sonde(),
+        ctx=65_536,
+        depth=16_384,
+        n_layers=41,
+        prefill=PrefillConstraint(new_tokens=1_000, max_seconds=30.0),
+    )
+    assert ok["prefill_contrainte"]["respectee"] is True and ok["coherent"] is None
+
+
 def test_sonde_de_threads_muette_sans_mesure():
     def _boom(option):
         raise OSError("serveur KO")
