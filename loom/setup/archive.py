@@ -119,7 +119,7 @@ def archive_bench(
 
 def note_application(
     path: Path | str, applied: dict, *, now: datetime | None = None
-) -> None:
+) -> bool:
     """Complète une archive par la trace de ce qui a été APPLIQUÉ (date + réglages).
     Renvoie True si l'annotation est écrite, False sinon (archive absente, illisible,
     disque plein…) : n'empêche jamais l'application, mais l'appelant doit le DIRE —
