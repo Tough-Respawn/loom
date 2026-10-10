@@ -237,25 +237,51 @@ class ModelProfile:
 
     # ── estimations ─────────────────────────────────────────────────────────────
 
-    def kv_bytes(self, ctx: int, kv_type: str = "f16", slots: int = 1) -> int:
+    def kv_bytes(
+        self,
+        ctx: int,
+        kv_type: str = "f16",
+        slots: int = 1,
+        layers: set[int] | None = None,
+    ) -> int:
         """Octets de cache KV pour `ctx` tokens PAR SLOT, `slots` slots, cache de
         type `kv_type`. Couches récurrentes : aucun KV ; couches à fenêtre glissante :
-        bornées à la fenêtre. Sans dimensions d'attention : repli conservateur."""
+        bornées à la fenêtre. Sans dimensions d'attention : repli conservateur.
+        `layers` restreint le compte aux couches d'attention de cet ensemble (le KV vit
+        avec sa couche : src/llama-kv-cache.cpp:212-221)."""
         slots = max(1, int(slots))
         if not self.attention_layers and not str(
             self.provenance.get("couches_attention", "inconnu")
         ).startswith("inconnu"):
             return 0  # aucune couche d'attention connue : pas de KV, pas de forfait
         if not (self.kv_heads and self.key_length):
-            return int(KV_FALLBACK_BYTES_PER_TOKEN * ctx * slots)
+            forfait = KV_FALLBACK_BYTES_PER_TOKEN * ctx * slots
+            if layers is None:
+                return int(forfait)
+            att = set(self.attention_layers)
+            return int(forfait * len(att & set(layers)) / len(att)) if att else 0
         bpe = _BYTES_PER_ELEM.get(kv_type, 2.0)
         per_tok = self.kv_heads * (self.key_length + (self.value_length or 0)) * bpe
         swa = set(self.swa_layers)
         total = 0.0
         for i in self.attention_layers:
+            if layers is not None and i not in layers:
+                continue
             toks = min(ctx, self.swa_window) if (i in swa and self.swa_window) else ctx
             total += toks * per_tok
         return int(total * slots)
+
+    def recurrent_live_bytes(self, layers: set[int] | None = None) -> int:
+        """Octets de l'état récurrent VIVANT d'une séquence (alloué au chargement), sur
+        les couches récurrentes de `layers` (toutes sinon) : l'état vit avec sa couche
+        (src/llama-memory-recurrent.cpp:83-92). 0 sans récurrence ou si inconnu."""
+        total = int(self.recurrent_state_bytes or 0)
+        rec = set(self.recurrent_layers)
+        if not total or not rec:
+            return 0
+        if layers is None:
+            return total
+        return int(total * len(rec & set(layers)) / len(rec))
 
     def _block_count(self) -> int:
         """n_layer_all de llama.cpp : block_count du header (bloc nextn compris), sinon

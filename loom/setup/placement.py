@@ -719,6 +719,419 @@ def placement_candidates(**kw) -> list[Placement]:
     return plan_placements(**kw).candidates
 
 
+# ── précontrôle mémoire AVANT tout chargement (revue n°16, 2026-10-10) ───────────
+#
+# Deux étapes : (1) avant tout chargement, la faisabilité des démarrages des sondes
+# (llama-bench compris) ; (2) après l'isolation, le contrôle au contexte utile (plan
+# de l'étape « placement », inchangé). « Le contexte demandé ne tient pas » n'est pas
+# « impossible de démarrer » : un démarrage plus modeste est pris quand il tient ;
+# des métadonnées incomplètes restent incertaines (flux inchangé).
+
+#: Contexte plancher du précontrôle : celui de useful_context (jamais moins).
+PRECONTROLE_CTX = 4096
+#: Checkpoints que la sonde d'isolation peut créer : au plus 2 par prompt brut
+#: (tools/server/server-context.cpp:3986-4061) x 3 prompts (ServerProbe.probe_isolation).
+ISOLATION_CHECKPOINTS = 6
+#: Cellules de KV d'un test llama-bench : -p 128 / -n 16 arrondis à 256
+#: (src/llama-context.cpp:369), une séquence, cache f16 (défaut de l'outil).
+LLAMA_BENCH_CELLS = 256
+
+
+class DemarrageImpossible(RuntimeError):
+    """Le précontrôle conclut AVANT tout chargement qu'aucun démarrage ne tient.
+    `etabli` : impossibilité physique établie (allocations certaines > mémoire
+    physique) ; sinon hors budget même au contexte plancher. Distincte
+    d'AucunPlacementFaisable (contrôle au contexte utile, après l'isolation)."""
+
+    def __init__(self, raison: str, *, etabli: bool, details: dict | None = None):
+        super().__init__(raison)
+        self.etabli = bool(etabli)
+        self.details = details or {}
+
+
+def placement_brut(ngl, cpu_moe, n_cpu_moe, n_layers) -> Placement:
+    """Placement aux flags EXACTS d'un démarrage (-ngl, --cpu-moe, --n-cpu-moe).
+    Placement.from_flags fait passer --cpu-moe avant -ngl (experts_cpu en ngl 999) ;
+    ici -ngl reste celui qui sera lancé : « -ngl 0 --cpu-moe » ne met rien sur le
+    device."""
+    ngl = int(ngl or 0)
+    if ngl <= 0:
+        return Placement("cpu", 0)
+    if n_cpu_moe is not None:
+        return Placement("experts_partiel", ngl, n_cpu_moe=int(n_cpu_moe))
+    if cpu_moe:
+        return Placement("experts_cpu", ngl, cpu_moe=True)
+    return Placement.from_flags(ngl, False, None, n_layers)
+
+
+def _capacite(hw, ram_total_mb: int) -> tuple[dict, list[str]]:
+    """Capacité PHYSIQUE connue (VRAM lue par --list-devices, un seul GPU, RAM) et ce
+    qui la rend inconnue. 0 veut dire « inconnue », jamais « capacité nulle »."""
+    inconnues: list[str] = []
+    has_gpu = bool(getattr(hw, "has_gpu", False))
+    vram = int(getattr(hw, "vram_total_mb", 0) or 0) if has_gpu else 0
+    if has_gpu and vram <= 0:
+        inconnues.append("VRAM totale inconnue (aucun total lu par --list-devices)")
+    if has_gpu and int(getattr(hw, "gpu_count", 0) or 0) > 1:
+        inconnues.append(
+            f"plusieurs GPU listés ({hw.gpu_count}) : capacité non modélisée"
+        )
+    if int(ram_total_mb or 0) <= 0:
+        inconnues.append("RAM totale inconnue")
+    return {"vram_mb": vram, "ram_mb": int(ram_total_mb or 0)}, inconnues
+
+
+def _residence(hw) -> dict:
+    """Poids côté CPU RÉSIDENTS certains seulement quand Loom impose --load-mode none
+    au serveur : profil GPU hors mémoire unifiée, c.-à-d. GPU discret détecté
+    (server_args.no_mmap_args). Ailleurs, le mmap peut rester actif (src/llama-model
+    .cpp:1542-1551) : des pages de fichier, pas une allocation certaine."""
+    if getattr(hw, "has_gpu", False) and getattr(hw, "vram_is_discrete", False):
+        return {
+            "certaine": True,
+            "raison": "GPU discret : --load-mode none, poids côté CPU résidents",
+        }
+    if getattr(hw, "has_gpu", False):
+        return {
+            "certaine": False,
+            "raison": "mémoire unifiée présumée (classification heuristique) : mmap "
+            "possible, poids côté CPU non certains",
+        }
+    return {
+        "certaine": False,
+        "raison": "CPU seul : poids mappés depuis le fichier (pagination possible, pas "
+        "d'échec certain)",
+    }
+
+
+def precontrole(
+    profile,
+    meta: dict | None,
+    *,
+    model_size_mb: int,
+    hw,
+    gpu_backend: bool,
+    vram_total_mb: int,
+    ram_total_mb: int,
+    uma: bool,
+    headroom_mb: int,
+    base_slots: int,
+    ctx_checkpoints: int | None,
+    current: Placement | None,
+    mmproj_mb: int = 0,
+) -> dict:
+    """Verdict AVANT tout chargement sur les démarrages SERVEUR :
+
+    - `impossible` (établi) : métadonnées et capacités complètes, poids côté CPU
+      résidents (GPU discret), et la somme des allocations CERTAINES du démarrage
+      minimal — poids chargés, état récurrent x 1, mmproj ; KV compté 0 — dépasse
+      VRAM + RAM. Chaque octet résident est d'un seul côté : vrai pour TOUT placement ;
+    - `hors_budget` : métadonnées complètes et plan VIDE au contexte plancher (4096 par
+      slot, slots de base) avec la MÊME comptabilité que l'étape 2 (`vram_total_mb`,
+      `uma`, checkpoints, configuration actuelle de ce parcours) : par monotonie
+      (contexte >= 4096, slots >= base), l'étape 2 refuserait de toute façon ;
+    - `incertain` : métadonnées ou capacité incomplètes — flux inchangé ;
+    - `faisable` sinon.
+    """
+    meta = meta or {}
+    inconnues = inconnues_decisives(profile, meta)
+    capacite, inc_cap = _capacite(hw, ram_total_mb)
+    toutes = inconnues + inc_cap
+    complet = not toutes
+    residence = _residence(hw)
+    loaded = profile.loaded_bytes() if profile is not None else None
+    poids = int(loaded // _MIB) if loaded else 0
+    etat = int((profile.recurrent_live_bytes() if profile is not None else 0) // _MIB)
+    mmproj = int(mmproj_mb or 0)
+    borne = {
+        "poids_mb": poids,
+        "etat_mb": etat,
+        "mmproj_mb": mmproj,
+        "kv_mb": 0,
+        "total_mb": poids + etat + mmproj,
+    }
+    slots = max(1, int(base_slots or 1))
+    est = memory_estimate_mb(
+        profile,
+        PRECONTROLE_CTX,
+        gpu_tuning=bool(getattr(hw, "has_gpu", False)),
+        slots=slots,
+        checkpoints=ctx_checkpoints,
+    )
+    plan0 = plan_placements(
+        moe=bool(meta.get("expert_count")),
+        n_layers=meta.get("n_layers"),
+        model_size_mb=int(model_size_mb or 0),
+        kv_mb=est["device_mb"],
+        host_extra_mb=est["host_mb"],
+        gpu_backend=bool(gpu_backend),
+        vram_total_mb=int(vram_total_mb or 0),
+        ram_total_mb=int(ram_total_mb or 0),
+        uma=bool(uma),
+        headroom_mb=int(headroom_mb),
+        current=current,
+        profile=profile,
+    )
+    postes = {
+        "poids_mb": poids or int(model_size_mb or 0),
+        "kv_mb": est["kv_mb"],
+        "etat_vivant_mb": est["recurrent_live_mb"],
+        "checkpoints_mb": est["checkpoints_mb"],
+        "checkpoints_par_slot": est["checkpoints"],
+    }
+    res = {
+        "verdict": "faisable",
+        "etabli": False,
+        "complet": complet,
+        "inconnues": toutes,
+        "capacite": capacite,
+        "residence": residence,
+        "borne": borne,
+        "plan_plancher": {
+            "ctx": PRECONTROLE_CTX,
+            "slots": slots,
+            "candidats": [c.key for c in plan0.candidates],
+            "non_explores": plan0.non_explores,
+            "postes": postes,
+        },
+        "raison": "",
+    }
+    physique = capacite["vram_mb"] + capacite["ram_mb"]
+    s = "s" if slots > 1 else ""
+    if complet and residence["certaine"] and borne["total_mb"] > physique:
+        res.update(
+            verdict="impossible",
+            etabli=True,
+            raison=(
+                "démarrage impossible d'après l'estimation : allocations certaines au "
+                f"démarrage minimal = poids chargés {poids} Mo + état récurrent {etat} Mo"
+                f" + mmproj {mmproj} Mo = {borne['total_mb']} Mo > mémoire physique "
+                f"(VRAM {capacite['vram_mb']} + RAM {capacite['ram_mb']} = {physique} "
+                "Mo), pour tout placement (GPU discret : poids côté CPU résidents)"
+            ),
+        )
+    elif complet and not plan0.candidates:
+        refus = " ; ".join(f"{n['key']} : {n['raison']}" for n in plan0.non_explores)
+        conseil = ""
+        if postes["checkpoints_mb"] > postes["kv_mb"] + postes["etat_vivant_mb"]:
+            conseil = (
+                " — les checkpoints dominent : un ctx_checkpoints plus bas réduirait "
+                "ce poste"
+            )
+        res.update(
+            verdict="hors_budget",
+            raison=(
+                f"hors budget même au contexte plancher ({PRECONTROLE_CTX} par slot, "
+                f"{slots} slot{s}) : aucun placement ne tient d'après l'estimation — "
+                f"{refus} ; postes au plancher : poids {postes['poids_mb']} Mo, KV "
+                f"{postes['kv_mb']} Mo, état vivant {postes['etat_vivant_mb']} Mo, "
+                f"checkpoints {postes['checkpoints_mb']} Mo "
+                f"({postes['checkpoints_par_slot']} par slot){conseil}. Non établi "
+                f"physiquement ({residence['raison']})"
+            ),
+        )
+    elif not complet:
+        res.update(
+            verdict="incertain",
+            raison=(
+                f"précontrôle incertain : {', '.join(toutes)} — flux inchangé, le serveur "
+                "tranchera"
+            ),
+        )
+    return res
+
+
+def precontrole_texte(res: dict) -> str:
+    """Une ligne lisible du verdict du précontrôle (console, verdict /rebench)."""
+    if not res:
+        return "précontrôle : non fait"
+    if res.get("verdict") in ("impossible", "hors_budget", "incertain"):
+        return f"précontrôle : {res['raison']}"
+    plan = res.get("plan_plancher") or {}
+    slots = int(plan.get("slots") or 1)
+    s = "s" if slots > 1 else ""
+    return (
+        f"précontrôle : faisable — au plancher ({plan.get('ctx')} par slot, {slots} "
+        f"slot{s}) : {', '.join(plan.get('candidats') or [])}"
+    )
+
+
+def demarrage_isolation(
+    profile,
+    meta: dict | None,
+    *,
+    flags: dict,
+    complet: bool,
+    model_size_mb: int,
+    gpu_backend: bool,
+    vram_total_mb: int,
+    ram_total_mb: int,
+    uma: bool,
+    headroom_mb: int,
+    gpu_tuning: bool,
+) -> dict:
+    """Démarrage de la sonde d'isolation : TOUJOURS 1 slot, 4096 tokens (à 2 slots,
+    l'appel B part sur le slot libre et la pollution n'a jamais lieu). Les flags
+    prévus (bruts) s'ils tiennent — comptabilité de la sonde : ISOLATION_CHECKPOINTS —,
+    sinon, données complètes, le premier candidat du plan à 4096 x 1 ; mémoire
+    récurrente : verdict imposé, sonde non lancée. Données incomplètes : le démarrage
+    prévu, inchangé (le serveur tranchera)."""
+    meta = meta or {}
+    flags = {
+        "ngl": int(flags.get("ngl") or 0),
+        "cpu_moe": bool(flags.get("cpu_moe")),
+        "n_cpu_moe": flags.get("n_cpu_moe"),
+    }
+    base = {
+        "flags": flags,
+        "slots": 1,
+        "ctx": PRECONTROLE_CTX,
+        "lancer": True,
+        "modeste": False,
+    }
+    if not complet:
+        return {
+            **base,
+            "raison": "métadonnées incomplètes : démarrage prévu, 1 slot (le serveur "
+            "tranchera)",
+        }
+    n = meta.get("n_layers")
+    est = memory_estimate_mb(
+        profile,
+        PRECONTROLE_CTX,
+        gpu_tuning=gpu_tuning,
+        slots=1,
+        checkpoints=ISOLATION_CHECKPOINTS,
+    )
+    sans_gpu = not gpu_backend or int(vram_total_mb or 0) <= 0
+    budget = (
+        0
+        if sans_gpu
+        else device_budget_mb(int(vram_total_mb), int(ram_total_mb), uma, headroom_mb)
+    )
+    kw = dict(
+        profile=profile,
+        model_size_mb=int(model_size_mb or 0),
+        kv_mb=est["device_mb"],
+        budget=budget,
+        layers=int(n or 0),
+        host_extra_mb=est["host_mb"],
+        host_budget=host_budget_mb(ram_total_mb),
+        uma=bool(uma) and not sans_gpu,
+    )
+    # Sans device dans le build, llama.cpp n'offloade rien, quel que soit -ngl.
+    prevu = placement_brut(
+        0 if sans_gpu else flags["ngl"], flags["cpu_moe"], flags["n_cpu_moe"], n
+    )
+    ok, why = _fits(prevu, **kw)
+    if ok:
+        return {
+            **base,
+            "raison": f"démarrage prévu à {PRECONTROLE_CTX} x 1 slot : {why}",
+        }
+    if meta.get("recurrent"):
+        return {
+            **base,
+            "lancer": False,
+            "raison": "mémoire récurrente : verdict d'isolation imposé — le démarrage "
+            f"prévu ne tient pas à {PRECONTROLE_CTX} x 1 ({why}), sonde non lancée",
+        }
+    plan1 = plan_placements(
+        moe=bool(meta.get("expert_count")),
+        n_layers=n,
+        model_size_mb=int(model_size_mb or 0),
+        kv_mb=est["device_mb"],
+        host_extra_mb=est["host_mb"],
+        gpu_backend=bool(gpu_backend),
+        vram_total_mb=int(vram_total_mb or 0),
+        ram_total_mb=int(ram_total_mb or 0),
+        uma=bool(uma),
+        headroom_mb=int(headroom_mb),
+        current=None,
+        profile=profile,
+    )
+    if not plan1.candidates:
+        return {
+            **base,
+            "lancer": False,
+            "raison": f"le démarrage prévu ne tient pas ({why}) et aucun démarrage plus "
+            f"modeste ne tient à {PRECONTROLE_CTX} x 1 : sonde non lancée",
+        }
+    pl = plan1.candidates[0]
+    return {
+        **base,
+        "flags": {
+            "ngl": int(pl.ngl),
+            "cpu_moe": bool(pl.cpu_moe),
+            "n_cpu_moe": pl.n_cpu_moe,
+        },
+        "modeste": True,
+        "placement": pl.key,
+        "raison": f"le démarrage prévu ne tient pas à {PRECONTROLE_CTX} x 1 ({why}) : "
+        f"sonde sur {pl.describe()}",
+    }
+
+
+def filtre_llama_bench(
+    profile,
+    *,
+    ngl: list[int],
+    ncmoe: int,
+    complet: bool,
+    hw,
+    meme_binaire: bool = True,
+) -> dict:
+    """-ngl de llama-bench dont la borne DEVICE (poids offloadés selon la règle de
+    llama.cpp, KV f16 de LLAMA_BENCH_CELLS cellules et état récurrent d'une séquence
+    sur les couches offloadées) dépasse la VRAM connue : retirés (un seul -ngl qui
+    échoue fait échouer toute l'invocation). Liste vide : repli sur -ngl 0. Données
+    incomplètes, capacité inconnue ou llama-bench d'un autre binaire : inchangée."""
+    liste = [int(g) for g in ngl]
+    res = {"ngl": liste, "ncmoe": int(ncmoe or 0), "retires": [], "note": ""}
+    vram = int(getattr(hw, "vram_total_mb", 0) or 0)
+    if not complet:
+        res["note"] = "métadonnées incomplètes : liste inchangée"
+        return res
+    if not meme_binaire:
+        res["note"] = (
+            "llama-bench vient d'un autre binaire que la sonde : liste inchangée"
+        )
+        return res
+    if (
+        not getattr(hw, "has_gpu", False)
+        or vram <= 0
+        or int(getattr(hw, "gpu_count", 0) or 0) > 1
+    ):
+        res["note"] = "capacité VRAM inconnue ou non modélisée : liste inchangée"
+        return res
+    garde = []
+    for g in liste:
+        couches = profile.device_layers(ngl=g)
+        poids = profile.gpu_bytes(ngl=g, n_cpu_moe=int(ncmoe) if ncmoe else None) or 0
+        kv = profile.kv_bytes(LLAMA_BENCH_CELLS, "f16", 1, layers=couches)
+        etat = profile.recurrent_live_bytes(layers=couches)
+        dev_mb = int((poids + kv + etat) // _MIB)
+        if dev_mb > vram:
+            res["retires"].append(
+                {
+                    "ngl": g,
+                    "raison": f"impossible : {dev_mb} Mo certains sur le device > VRAM "
+                    f"{vram} Mo",
+                }
+            )
+        else:
+            garde.append(g)
+    if garde:
+        res["ngl"] = garde
+    else:
+        res.update(
+            ngl=[0],
+            ncmoe=0,
+            note="tous les -ngl candidats dépassent la VRAM : repli sur -ngl 0 (CPU)",
+        )
+    return res
+
+
 def _agreger(echantillons: list[dict]) -> dict:
     """Mesure d'un candidat depuis ses échantillons : moyennes, mémoire max, nombre,
     dispersion de la génération (étendue relative à la moyenne, en %) et les
