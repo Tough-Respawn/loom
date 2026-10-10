@@ -305,6 +305,92 @@ def test_profil_sans_catalogue_octets_gpu_inconnus():
     assert prof.provenance["poids"].startswith("inconnu")
 
 
+def test_champs_ssm_lus_dans_le_header(tmp_path):
+    p = _gguf(
+        tmp_path / "m.gguf",
+        {
+            "general.architecture": "qwen35",
+            "qwen35.block_count": 64,
+            "qwen35.ssm.conv_kernel": 4,
+            "qwen35.ssm.inner_size": 6144,
+            "qwen35.ssm.state_size": 128,
+            "qwen35.ssm.group_count": 16,
+        },
+    )
+    meta = read_gguf_meta(p)
+    assert meta["ssm_conv_kernel"] == 4 and meta["ssm_inner_size"] == 6144
+    assert meta["ssm_state_size"] == 128 and meta["ssm_group_count"] == 16
+
+
+def test_profil_etat_recurrent_bonsai_environ_150_mio_par_checkpoint():
+    """Bonsai 2 (qwen35, 64 couches dont 48 GDN) : chaque checkpoint pèse l'état
+    récurrent complet, observé ~150 Mio (2026-09-30). Formule llama.cpp : par couche
+    récurrente, conv (d_conv-1) x (d_inner + 2 x n_group x d_state) + état d_state x
+    d_inner, en f32."""
+    prof = ModelProfile.from_meta(
+        _meta(
+            architecture="qwen35",
+            n_layers=64,
+            recurrent=True,
+            full_attention_interval=4,
+            ssm_conv_kernel=4,
+            ssm_inner_size=6144,
+            ssm_state_size=128,
+            ssm_group_count=16,
+        )
+    )
+    assert len(prof.recurrent_layers) == 48
+    par_couche = (3 * (6144 + 2 * 16 * 128) + 128 * 6144) * 4
+    assert prof.recurrent_state_bytes == 48 * par_couche
+    assert 148 * 1024 * 1024 < prof.recurrent_state_bytes < 152 * 1024 * 1024
+    assert prof.provenance["etat_recurrent"].startswith("déduit")
+    # Par slot : l'état vivant + les checkpoints ; x slots.
+    assert (
+        prof.recurrent_bytes(slots=2, checkpoints=32)
+        == 2 * 33 * prof.recurrent_state_bytes
+    )
+
+
+def test_profil_etat_recurrent_inconnu_sans_dimensions():
+    prof = ModelProfile.from_meta(
+        _meta(n_layers=8, recurrent=True, full_attention_interval=4)
+    )
+    assert prof.recurrent_state_bytes is None
+    assert prof.provenance["etat_recurrent"].startswith("inconnu")
+    assert prof.recurrent_bytes(slots=2, checkpoints=32) == 0
+
+
+def test_profil_sans_recurrence_etat_nul():
+    prof = ModelProfile.from_meta(_meta(n_layers=8))
+    assert (
+        prof.recurrent_state_bytes == 0
+        and prof.recurrent_bytes(slots=2, checkpoints=8) == 0
+    )
+
+
+def test_estimation_memoire_par_slot_kv_plus_etat_recurrent():
+    from loom.setup.placement import memory_estimate_mb
+
+    prof = ModelProfile.from_meta(
+        _meta(
+            n_layers=8,
+            recurrent=True,
+            full_attention_interval=4,
+            ssm_conv_kernel=4,
+            ssm_inner_size=4096,
+            ssm_state_size=128,
+            ssm_group_count=16,
+        )
+    )
+    kv = prof.kv_bytes(8192, "q8_0", 2)
+    rec = prof.recurrent_bytes(slots=2, checkpoints=8)
+    est = memory_estimate_mb(prof, 8192, gpu_tuning=True, slots=2, checkpoints=8)
+    assert est["kv_mb"] == kv // (1024 * 1024)
+    assert est["recurrent_mb"] == rec // (1024 * 1024)
+    assert est["total_mb"] == est["kv_mb"] + est["recurrent_mb"]
+    assert est["checkpoints"] == 8
+
+
 def test_profil_provenance_declare_deduit_inconnu():
     prof = ModelProfile.from_meta(_meta(value_length=None, expert_count=128))
     assert prof.value_length == 256  # = key_length

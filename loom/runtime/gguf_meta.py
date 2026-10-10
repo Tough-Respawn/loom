@@ -233,6 +233,14 @@ def read_gguf_meta(path: str | Path) -> dict:
         "sliding_window": _int("attention.sliding_window"),
         "sliding_window_pattern": pattern,
         "full_attention_interval": _int("full_attention_interval"),
+        # Dimensions de l'ÉTAT RÉCURRENT (Mamba/GDN `ssm.*`, RWKV `wkv.head_size`, LFM2
+        # `shortconv.l_cache`) : chaque checkpoint du serveur pèse cet état complet.
+        "ssm_conv_kernel": _int("ssm.conv_kernel"),
+        "ssm_inner_size": _int("ssm.inner_size"),
+        "ssm_state_size": _int("ssm.state_size"),
+        "ssm_group_count": _int("ssm.group_count"),
+        "wkv_head_size": _int("wkv.head_size"),
+        "shortconv_l_cache": _int("shortconv.l_cache"),
         # Mémoire récurrente (Mamba/GDN `ssm.*`, RWKV `wkv.*`, LFM2 `shortconv.*`) :
         # les checkpoints n'existent qu'aux débuts de messages, un appel annexe sur
         # le slot de la conversation la fait recalculer.

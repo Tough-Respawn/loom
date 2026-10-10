@@ -219,6 +219,36 @@ def kv_estimate_mb(profile, ctx: int, *, gpu_tuning: bool, slots: int = 1) -> in
     return int(profile.kv_bytes(ctx, kv_type, slots) // _MIB)
 
 
+#: Checkpoints d'état récurrent par slot quand model.toml ne fixe pas `ctx_checkpoints`
+#: (valeur observée du serveur, cf. config.ModelConfig.ctx_checkpoints). Provisoire :
+#: documentée, remplacée par la valeur du model.toml quand elle existe.
+DEFAULT_CTX_CHECKPOINTS = 32
+
+
+def memory_estimate_mb(
+    profile,
+    ctx: int,
+    *,
+    gpu_tuning: bool,
+    slots: int = 1,
+    checkpoints: int | None = None,
+) -> dict:
+    """Mémoire PAR CONTEXTE que l'exécutant allouera au-delà des poids : cache KV au
+    contexte utile (type de cache de l'exécutant, `slots` slots) + état récurrent des
+    hybrides (état vivant + `checkpoints` instantanés par slot). Avant, seule la pente
+    mesurée voyait les checkpoints (Bonsai 2 : 32 x 150 Mio par slot)."""
+    cp = DEFAULT_CTX_CHECKPOINTS if checkpoints is None else int(checkpoints)
+    kv_mb = kv_estimate_mb(profile, ctx, gpu_tuning=gpu_tuning, slots=slots)
+    rec_mb = int(profile.recurrent_bytes(slots=slots, checkpoints=cp) // _MIB)
+    return {
+        "kv_mb": kv_mb,
+        "recurrent_mb": rec_mb,
+        "total_mb": kv_mb + rec_mb,
+        "checkpoints": cp,
+        "slots": max(1, int(slots)),
+    }
+
+
 def device_budget_mb(
     vram_total_mb: int, ram_total_mb: int, uma: bool, headroom_mb: int
 ) -> int:

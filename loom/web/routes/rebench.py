@@ -39,12 +39,19 @@ def _measure_placement(
     from loom.setup import placement as place_mod
 
     profile = ModelProfile.from_meta(meta, model_size_mb=int(model_size_mb or 0))
-    kv_mb = place_mod.kv_estimate_mb(
+    # Mémoire par contexte au-delà des poids : KV au contexte utile + état récurrent
+    # (état vivant + checkpoints par slot) — la faisabilité des hybrides ne dépend plus
+    # de la seule pente mesurée.
+    estimation = place_mod.memory_estimate_mb(
         profile,
         int(useful_ctx or place_mod.PLACEMENT_PROBE_CTX),
         gpu_tuning=bool(getattr(hw, "has_gpu", False)),
         slots=max(1, int(slots or 1)),
+        checkpoints=getattr(probe, "ctx_checkpoints", None),
     )
+    kv_mb = estimation["total_mb"]
+    if trace is not None:
+        trace["memoire_estimee"] = estimation
     plan = place_mod.plan_placements(
         moe=bool(meta.get("expert_count")),
         n_layers=meta.get("n_layers"),

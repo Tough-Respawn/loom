@@ -1204,9 +1204,24 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         model_toml.get("context"), server_cfg.get("context"), meta.get("context_length")
     )
     pl_slots = int(getattr(probe, "n_parallel", 1) or 1)
-    kv_mb = place_mod.kv_estimate_mb(
-        profile, ctx_utile, gpu_tuning=hw.has_gpu, slots=pl_slots
+    # Mémoire par contexte au-delà des poids : KV au contexte utile + état récurrent
+    # (état vivant + checkpoints par slot) — la faisabilité des hybrides ne dépend plus
+    # de la seule pente mesurée (Bonsai 2 : 32 x 149 Mio par slot).
+    estimation = place_mod.memory_estimate_mb(
+        profile,
+        ctx_utile,
+        gpu_tuning=hw.has_gpu,
+        slots=pl_slots,
+        checkpoints=model_toml.get("ctx_checkpoints"),
     )
+    kv_mb = estimation["total_mb"]
+    trace["memoire_estimee"] = estimation
+    if estimation["recurrent_mb"]:
+        con.say(
+            f"  mémoire estimée au contexte {ctx_utile} ({pl_slots} slot(s)) : KV "
+            f"{estimation['kv_mb']} Mio + état récurrent {estimation['recurrent_mb']} Mio "
+            f"({estimation['checkpoints']} checkpoints par slot)"
+        )
     # Candidats par faisabilité (profil GGUF), la configuration ACTUELLE en base ; ce
     # qu'on ne mesure pas est tracé « non exploré ». Contraintes de prefill optionnelles
     # ([placement] dans local.toml) : explicite (N tokens en T s) ou plancher de confort.
@@ -1489,7 +1504,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             # False = plancher de repli, aucun barreau de vitesse validé.
             "context_valide": bool(calib.get("valide", True)),
             "context_utile_estime": ctx_utile,
-            "kv_estime_mb": kv_mb,
+            "kv_estime_mb": estimation["kv_mb"],
+            "recurrent_estime_mb": estimation["recurrent_mb"],
+            "memoire_estimee_mb": estimation["total_mb"],
+            "checkpoints_estimes": estimation["checkpoints"],
         },
     }
     if cache_v and cache_v.get("reused") is not None:

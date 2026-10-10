@@ -35,6 +35,32 @@ KV_FALLBACK_BYTES_PER_TOKEN = 150_000
 _MIB = 1024 * 1024
 
 
+def _recurrent_state_bytes(meta: dict, n_recurrent: int) -> int | None:
+    """Octets f32 de l'état récurrent d'une séquence, formule de llama.cpp
+    (llama-hparams n_embd_r / n_embd_s) : RWKV `wkv.head_size` (2 décalages x n_embd +
+    n_embd x head_size), LFM2 `shortconv.l_cache` (n_embd x (l_cache - 1)), Mamba/GDN
+    `ssm.*` ((d_conv - 1) x (d_inner + 2 n_group d_state) + d_state x d_inner). None si
+    les dimensions manquent."""
+    if n_recurrent <= 0:
+        return 0
+    n_embd = int(meta.get("embedding_length") or 0)
+    wkv = int(meta.get("wkv_head_size") or 0)
+    shortconv = int(meta.get("shortconv_l_cache") or 0)
+    conv = int(meta.get("ssm_conv_kernel") or 0)
+    inner = int(meta.get("ssm_inner_size") or 0)
+    state = int(meta.get("ssm_state_size") or 0)
+    group = int(meta.get("ssm_group_count") or 1)
+    if wkv and n_embd:
+        par_couche = 2 * n_embd + n_embd * wkv
+    elif shortconv and n_embd:
+        par_couche = n_embd * (shortconv - 1)
+    elif conv and inner and state:
+        par_couche = (conv - 1) * (inner + 2 * group * state) + state * inner
+    else:
+        return None
+    return int(par_couche * 4 * n_recurrent)
+
+
 @dataclass
 class ModelProfile:
     architecture: str | None = None
@@ -54,6 +80,10 @@ class ModelProfile:
     recurrent: bool = False
     weights: dict | None = None  # résumé du catalogue (gguf_meta.read_gguf_meta)
     model_size_mb: int = 0
+    # Octets de l'ÉTAT RÉCURRENT complet d'UNE séquence (toutes les couches récurrentes,
+    # f32) : 0 sans récurrence, None si les dimensions manquent. Chaque checkpoint du
+    # serveur en pèse autant (Bonsai 2 : ~150 Mio observés le 2026-09-30).
+    recurrent_state_bytes: int | None = 0
     provenance: dict[str, str] = field(default_factory=dict)
 
     # ── construction ────────────────────────────────────────────────────────────
@@ -137,6 +167,19 @@ class ModelProfile:
             if weights
             else "inconnu (pas de catalogue de tenseurs)"
         )
+        rec_bytes = _recurrent_state_bytes(meta, len(recurrent_layers))
+        if not recurrent_layers:
+            rec_bytes = 0
+            prov["etat_recurrent"] = "déclaré (pas de couche récurrente)"
+        elif rec_bytes is None:
+            prov["etat_recurrent"] = (
+                "inconnu (dimensions ssm/wkv/shortconv absentes du header)"
+            )
+        else:
+            prov["etat_recurrent"] = (
+                "déduit (formule llama.cpp : conv (d_conv-1)x(d_inner + 2 n_group d_state)"
+                " + état d_state x d_inner, f32, par couche récurrente)"
+            )
         return cls(
             architecture=meta.get("architecture"),
             n_layers=n_layers,
@@ -155,7 +198,20 @@ class ModelProfile:
             recurrent=recurrent,
             weights=weights,
             model_size_mb=int(model_size_mb or 0),
+            recurrent_state_bytes=rec_bytes,
             provenance=prov,
+        )
+
+    def recurrent_bytes(self, *, slots: int = 1, checkpoints: int = 0) -> int:
+        """Octets de mémoire récurrente que le serveur allouera : par slot, l'état
+        vivant plus `checkpoints` instantanés complets ; x slots. 0 si inconnu (la pente
+        mesurée reste alors la seule source)."""
+        if not self.recurrent_state_bytes:
+            return 0
+        return int(
+            self.recurrent_state_bytes
+            * (1 + max(0, int(checkpoints)))
+            * max(1, int(slots))
         )
 
     # ── estimations ─────────────────────────────────────────────────────────────
@@ -220,6 +276,15 @@ class ModelProfile:
             f"{self.value_length or '?'}) — value_length {p.get('value_length')} ; "
             f"fenêtre {self.swa_window or 'aucune'} ({p.get('couches_swa')})"
         )
+        if self.recurrent_layers:
+            if self.recurrent_state_bytes:
+                out.append(
+                    f"état récurrent : {self.recurrent_state_bytes // _MIB} Mio par séquence "
+                    f"({len(self.recurrent_layers)} couches), autant par checkpoint "
+                    f"({p.get('etat_recurrent')})"
+                )
+            else:
+                out.append(f"état récurrent : {p.get('etat_recurrent')}")
         if self.weights:
             fam = self.weights.get("familles") or {}
             out.append(
