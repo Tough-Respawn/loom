@@ -753,17 +753,23 @@ class DemarrageImpossible(RuntimeError):
 
 
 class PlacementNonValide(RuntimeError):
-    """Aucun placement validé par la mesure, et le démarrage prévu — les flags de repli —
-    ne tient pas même à 4096 x 1 d'après l'estimation : y revenir lancerait un
-    chargement condamné. Calibration non lancée, rien d'appliqué."""
+    """Aucun placement validé par la mesure, et le repli — les flags actuels — ne tient
+    pas au premier chargement de la calibration d'après l'estimation (repli_calibration)
+    : y revenir lancerait un chargement condamné. Calibration non lancée, rien
+    d'appliqué."""
 
 
-def raison_repli_condamne(mecanisme: str | None) -> str:
-    """Raison de PlacementNonValide (loom-setup et /rebench disent la même chose)."""
+def raison_repli_condamne(mecanisme: str | None, repli: dict) -> str:
+    """Raison de PlacementNonValide (loom-setup et /rebench disent la même chose) : les
+    échecs des candidats (mécanisme de probe_placement) et pourquoi le repli ne tient
+    pas."""
     meca = mecanisme or "sonde de placement illisible"
+    slots = int(repli.get("slots") or 1)
+    s = "s" if slots > 1 else ""
     return (
-        f"aucun placement validé ({meca}) et le démarrage prévu ne tient pas à "
-        f"{PRECONTROLE_CTX} x 1 d'après l'estimation"
+        f"aucun placement validé ({meca}) et le repli sur la configuration actuelle ne "
+        f"tient pas au premier chargement de la calibration ({repli.get('ctx')} x "
+        f"{slots} slot{s}) d'après l'estimation — {repli.get('raison')}"
     )
 
 
@@ -1044,6 +1050,106 @@ def precontrole_texte(res: dict) -> str:
     return txt
 
 
+def _flags_bruts(flags: dict) -> dict:
+    return {
+        "ngl": int(flags.get("ngl") or 0),
+        "cpu_moe": bool(flags.get("cpu_moe")),
+        "n_cpu_moe": flags.get("n_cpu_moe"),
+    }
+
+
+def _flags_tiennent(
+    profile,
+    meta: dict,
+    *,
+    flags: dict,
+    kv_mb: int,
+    host_extra_mb: int,
+    model_size_mb: int,
+    gpu_backend: bool,
+    vram_total_mb: int,
+    ram_total_mb: int,
+    uma: bool,
+    headroom_mb: int,
+) -> tuple[bool, str]:
+    """(tient ?, trace) : un démarrage aux flags BRUTS (placement_brut), contre les deux
+    plafonds de _fits — `kv_mb` côté device, `host_extra_mb` côté hôte."""
+    n = meta.get("n_layers")
+    sans_gpu = not gpu_backend or int(vram_total_mb or 0) <= 0
+    budget = (
+        0
+        if sans_gpu
+        else device_budget_mb(int(vram_total_mb), int(ram_total_mb), uma, headroom_mb)
+    )
+    # Sans device dans le build, llama.cpp n'offloade rien, quel que soit -ngl.
+    brut = placement_brut(
+        0 if sans_gpu else flags["ngl"], flags["cpu_moe"], flags["n_cpu_moe"], n
+    )
+    return _fits(
+        brut,
+        profile=profile,
+        model_size_mb=int(model_size_mb or 0),
+        kv_mb=int(kv_mb),
+        budget=budget,
+        layers=int(n or 0),
+        host_extra_mb=int(host_extra_mb or 0),
+        host_budget=host_budget_mb(ram_total_mb),
+        uma=bool(uma) and not sans_gpu,
+    )
+
+
+def repli_calibration(
+    profile,
+    meta: dict | None,
+    *,
+    flags: dict,
+    complet: bool,
+    slots: int,
+    ctx: int,
+    ctx_checkpoints: int | None,
+    model_size_mb: int,
+    gpu_backend: bool,
+    vram_total_mb: int,
+    ram_total_mb: int,
+    uma: bool,
+    headroom_mb: int,
+    gpu_tuning: bool,
+) -> dict:
+    """Le REPLI de la calibration — les flags actuels, quand aucun placement n'est
+    validé — tient-il à son PREMIER chargement (topology.calibrate : `ctx` x `slots`
+    retenus, checkpoints du modèle) ? {tient: bool | None, ctx, slots, raison} ; None :
+    métadonnées incomplètes, rien n'est conclu (le serveur tranchera). La garde porte
+    sur ce que la calibration chargera vraiment : ni le plancher de la sonde
+    d'isolation (4096 x 1), ni le contexte utile (la calibration peut trouver plus
+    petit que lui)."""
+    meta = meta or {}
+    slots = max(1, int(slots or 1))
+    base = {"tient": None, "ctx": int(ctx), "slots": slots}
+    if not complet:
+        return {**base, "raison": "métadonnées incomplètes : rien n'est conclu"}
+    est = memory_estimate_mb(
+        profile,
+        int(ctx),
+        gpu_tuning=gpu_tuning,
+        slots=slots,
+        checkpoints=ctx_checkpoints,
+    )
+    ok, why = _flags_tiennent(
+        profile,
+        meta,
+        flags=_flags_bruts(flags),
+        kv_mb=est["device_mb"],
+        host_extra_mb=est["host_mb"],
+        model_size_mb=model_size_mb,
+        gpu_backend=gpu_backend,
+        vram_total_mb=vram_total_mb,
+        ram_total_mb=ram_total_mb,
+        uma=uma,
+        headroom_mb=headroom_mb,
+    )
+    return {**base, "tient": bool(ok), "raison": why}
+
+
 def demarrage_isolation(
     profile,
     meta: dict | None,
@@ -1066,13 +1172,10 @@ def demarrage_isolation(
     sinon, données complètes, le premier candidat du plan à 4096 x 1 ; mémoire
     récurrente : verdict imposé, sonde non lancée. Données incomplètes : le démarrage
     prévu, inchangé (le serveur tranchera). `prevu_tient` : le démarrage prévu tient-il
-    d'après l'estimation (None : inconnu) — False, la suite ne doit pas y revenir."""
+    d'après l'estimation (None : inconnu) — information de trace ; la garde du repli
+    de la calibration, elle, juge son premier chargement (repli_calibration)."""
     meta = meta or {}
-    flags = {
-        "ngl": int(flags.get("ngl") or 0),
-        "cpu_moe": bool(flags.get("cpu_moe")),
-        "n_cpu_moe": flags.get("n_cpu_moe"),
-    }
+    flags = _flags_bruts(flags)
     base = {
         "flags": flags,
         "slots": 1,
@@ -1099,27 +1202,19 @@ def demarrage_isolation(
         slots=1,
         checkpoints=cp,
     )
-    sans_gpu = not gpu_backend or int(vram_total_mb or 0) <= 0
-    budget = (
-        0
-        if sans_gpu
-        else device_budget_mb(int(vram_total_mb), int(ram_total_mb), uma, headroom_mb)
-    )
-    kw = dict(
-        profile=profile,
-        model_size_mb=int(model_size_mb or 0),
+    ok, why = _flags_tiennent(
+        profile,
+        meta,
+        flags=flags,
         kv_mb=est["device_mb"],
-        budget=budget,
-        layers=int(n or 0),
         host_extra_mb=est["host_mb"],
-        host_budget=host_budget_mb(ram_total_mb),
-        uma=bool(uma) and not sans_gpu,
+        model_size_mb=model_size_mb,
+        gpu_backend=gpu_backend,
+        vram_total_mb=vram_total_mb,
+        ram_total_mb=ram_total_mb,
+        uma=uma,
+        headroom_mb=headroom_mb,
     )
-    # Sans device dans le build, llama.cpp n'offloade rien, quel que soit -ngl.
-    prevu = placement_brut(
-        0 if sans_gpu else flags["ngl"], flags["cpu_moe"], flags["n_cpu_moe"], n
-    )
-    ok, why = _fits(prevu, **kw)
     if ok:
         return {
             **base,
@@ -1463,7 +1558,8 @@ def probe_placement(
       réglés (probe_threads, au contexte et à la profondeur de la finale, couple
       actuel) : la finale compare des configurations chacune à son réglage, et non un
       experts-CPU aux threads de la machine contre un tout-GPU qui s'en moque.
-      Rien de mesurable -> None (on n'écrit jamais une valeur inventée).
+      Rien de mesurable -> placement None, l'échec de chaque candidat nommé dans le
+      mécanisme (on n'écrit jamais une valeur inventée) ; aucun candidat -> None.
 
     Renvoie {placement (None si validation en échec ; porte ubatch/batch quand des
     couples ont été comparés, threads quand ils ont été réglés), baseline, tg_ts,
@@ -1630,7 +1726,23 @@ def probe_placement(
     orig = {p.key: c for p, c in zip(presel, candidates)}
     phase1 = _mesurer(make_probe, presel, ctx, depth, reps, say, deadline=deadline)
     if not any("tg_ts" in v for v in phase1.values()):
-        return None
+        # Rien de mesurable : aucun placement élu (jamais de valeur inventée), mais
+        # l'échec de CHAQUE candidat est nommé — la sortie « repli condamné » le cite.
+        echecs = " ; ".join(
+            f"{k} : {v.get('echec', 'débit illisible')}" for k, v in phase1.items()
+        )
+        return _res(
+            placement=None,
+            tg_ts=None,
+            pp_ts=None,
+            gain_pct=None,
+            mesures=phase1,
+            preselection=phase1,
+            finalistes=[],
+            compare=False,
+            mecanisme=f"toutes les mesures en échec — {echecs}"
+            + _non_explores_txt(non),
+        )
     notes = ""
     configs = presel
     if two_phase:

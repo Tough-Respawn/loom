@@ -43,25 +43,26 @@ def _measure_placement(
     physical: int | None = None,
     vram_total_mb: int | None = None,
     precontrole: dict | None = None,
-    prevu_tient: bool | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand la sonde n'obtient
     aucune mesure exploitable (exception, présélection sans débit, mesures vides) ou que
     la validation du seul candidat échoue : la calibration vaut alors avec les flags
-    actuels du modèle — sauf si le démarrage prévu ne tient pas (`prevu_tient` False) :
-    PlacementNonValide, pas de repli condamné. Lève AucunPlacementFaisable quand aucun
-    candidat (configuration actuelle et CPU seul compris) ne tient d'après
+    actuels du modèle — sauf si ce repli ne tient pas au premier chargement de la
+    calibration (repli_calibration, métadonnées complètes d'après `precontrole`) :
+    PlacementNonValide, avec les erreurs des candidats. Lève AucunPlacementFaisable
+    quand aucun candidat (configuration actuelle et CPU seul compris) ne tient d'après
     l'estimation : aucun placement comparé, calibration non lancée. La faisabilité
     s'estime au contexte UTILE (`useful_ctx`) avec le type de cache de l'exécutant,
-    via le profil GGUF ; la
-    configuration ACTUELLE (`mt`) est la ligne de base ; `raw` porte les contraintes
-    de prefill optionnelles ([placement]). Avec `logical` (cœurs), chaque finaliste à
-    calcul CPU est réglé en threads avant la finale (candidats du parc)."""
+    via le profil GGUF ; la configuration ACTUELLE (`mt`) est la ligne de base ; `raw`
+    porte les contraintes de prefill optionnelles ([placement]). Avec `logical`
+    (cœurs), chaque finaliste à calcul CPU est réglé en threads avant la finale
+    (candidats du parc)."""
     from dataclasses import replace as _dc_replace
 
     from loom.runtime.model_profile import ModelProfile
     from loom.setup import placement as place_mod
+    from loom.setup import topology as topo_mod
 
     th_options = None
     if logical and getattr(probe, "threads", None):
@@ -86,19 +87,20 @@ def _measure_placement(
     host_mb = estimation["host_mb"]
     if trace is not None:
         trace["memoire_estimee"] = estimation
+    # Même VRAM que la topologie et le -ngl de la sonde (repli nvidia-smi compris) :
+    # l'étape 1 (précontrôle) et l'étape 2 jugent la même machine.
+    vram = int(
+        vram_total_mb
+        if vram_total_mb is not None
+        else (getattr(hw, "vram_total_mb", 0) or 0)
+    )
     plan = place_mod.plan_placements(
         moe=bool(meta.get("expert_count")),
         n_layers=meta.get("n_layers"),
         model_size_mb=int(model_size_mb or 0),
         kv_mb=kv_mb,
         gpu_backend=bool(gpu_backend),
-        # Même VRAM que la topologie et le -ngl de la sonde (repli nvidia-smi compris) :
-        # l'étape 1 (précontrôle) et l'étape 2 jugent la même machine.
-        vram_total_mb=int(
-            vram_total_mb
-            if vram_total_mb is not None
-            else (getattr(hw, "vram_total_mb", 0) or 0)
-        ),
+        vram_total_mb=vram,
         ram_total_mb=int(ram_total_mb),
         uma=not getattr(hw, "vram_is_discrete", True),
         headroom_mb=headroom_mb,
@@ -168,16 +170,44 @@ def _measure_placement(
             batch_couples=couples,
             thread_options=th_options,
         )
-    except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
+    except Exception as exc:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
         res = None
+        err = f"sonde de placement en échec ({type(exc).__name__}: {exc})"
+    else:
+        err = None
     if not res or res.get("placement") is None or not res["mesures"]:
-        if prevu_tient is False:
-            # Les flags de repli (démarrage prévu) ne tiennent pas même à 4096 x 1 :
-            # y revenir lancerait un chargement condamné (revue adverse).
+        # Repli = les flags actuels de la sonde. Ne tient pas au PREMIER chargement de
+        # la calibration (8192 x slots retenus) : y revenir lancerait un chargement
+        # condamné (revue adverse) — PlacementNonValide, avec les erreurs des candidats.
+        repli = place_mod.repli_calibration(
+            profile,
+            meta,
+            flags={
+                "ngl": getattr(probe, "ngl", 0),
+                "cpu_moe": getattr(probe, "cpu_moe", False),
+                "n_cpu_moe": getattr(probe, "n_cpu_moe", None),
+            },
+            complet=bool((precontrole or {}).get("complet")),
+            slots=max(1, int(slots or 1)),
+            ctx=topo_mod.CALIBRATION_PENTE_CTX[0],
+            ctx_checkpoints=getattr(probe, "ctx_checkpoints", None),
+            model_size_mb=int(model_size_mb or 0),
+            gpu_backend=bool(gpu_backend),
+            vram_total_mb=vram,
+            ram_total_mb=int(ram_total_mb),
+            uma=not getattr(hw, "vram_is_discrete", True),
+            headroom_mb=headroom_mb,
+            gpu_tuning=bool(getattr(hw, "has_gpu", False)),
+        )
+        if trace is not None:
+            trace["repli_calibration"] = repli
+        if repli["tient"] is False:
             if trace is not None:
                 trace["placement"] = res
             raise place_mod.PlacementNonValide(
-                place_mod.raison_repli_condamne((res or {}).get("mecanisme"))
+                place_mod.raison_repli_condamne(
+                    (res or {}).get("mecanisme") or err, repli
+                )
             )
         return None, probe
     pl = res["placement"]
@@ -599,7 +629,6 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         physical=psutil.cpu_count(logical=False),
         vram_total_mb=vram,
         precontrole=pc,
-        prevu_tient=iso.get("prevu_tient"),
     )
     trace["placement"] = pl_verdict
     trace["placement_avant"] = {

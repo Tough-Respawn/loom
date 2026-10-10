@@ -676,6 +676,11 @@ def _point(r, base: dict) -> dict:
     return base
 
 
+#: Contextes des barreaux de PENTE de calibrate, chargés dans cet ordre quoi qu'il
+#: arrive : le premier chargement de la calibration est à CALIBRATION_PENTE_CTX[0].
+CALIBRATION_PENTE_CTX = (8192, 16384)
+
+
 def calibrate(
     probe,
     meta: dict,
@@ -699,7 +704,7 @@ def calibrate(
     # Chaque point garde ce que la sonde a rapporté (checkpoints effectifs du journal
     # serveur) : la pente se lit avec, l'archive le conserve (revue #14).
     rungs_detail: list[dict] = []
-    for ctx in (8192, 16384):
+    for ctx in CALIBRATION_PENTE_CTX:
         say(f"pente : chargement à ctx={ctx}…")
         r = probe.run(ctx, None)
         rungs.append((r.ctx, r.mem_mb))

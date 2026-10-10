@@ -190,11 +190,19 @@ def test_candidat_en_echec_ecarte_et_nomme():
     assert "gpu_total" in r["mecanisme"]
 
 
-def test_sonde_muette_si_rien_n_est_mesurable():
+def test_rien_de_mesurable_aucun_elu_et_chaque_echec_nomme():
+    """Rien de mesurable : aucun placement élu (jamais de valeur inventée), mais l'échec
+    de CHAQUE candidat est nommé. Revue adverse : renvoyer None faisait dire « sonde de
+    placement illisible » à la sortie « repli condamné », sans l'erreur du serveur."""
+
     def _boom(placement):
         raise OSError("serveur KO")
 
-    assert probe_placement(_boom, [CPU, GPU]) is None
+    r = probe_placement(_boom, [CPU, GPU])
+    assert r["placement"] is None and r["compare"] is False
+    assert r["mecanisme"].startswith("toutes les mesures en échec")
+    assert "experts_cpu : OSError: serveur KO" in r["mecanisme"]
+    assert "gpu_total : OSError: serveur KO" in r["mecanisme"]
 
 
 # ---- écriture dans model.toml ----------------------------------------------------------

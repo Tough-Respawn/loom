@@ -366,10 +366,81 @@ def test_run_calibration_demarrage_prevu_condamne_jamais_repris_en_repli(
     with pytest.raises(PlacementNonValide) as exc:
         rebench._run_calibration(None, spec, lambda m: None, trace_out=trace)
     assert "aucun placement validé" in str(exc.value)
-    assert "le démarrage prévu ne tient pas" in str(exc.value)
+    assert "premier chargement de la calibration" in str(exc.value)
+    assert "ErrorOutOfDeviceMemory" in str(exc.value)  # la vraie erreur des candidats
     lances = [e for e in journal if e[0] in ("run", "isolation", "verify_cache")]
     assert lances and not any(e[1] == 999 for e in lances)
     assert trace["etape"] == "placement"
+    assert trace["repli_calibration"]["tient"] is False
+
+
+def test_run_calibration_repli_refuse_au_premier_chargement_de_la_calibration(
+    monkeypatch, tmp_path
+):
+    """Le démarrage prévu tient à 4096 x 1 (la sonde d'isolation tourne dessus) mais
+    pas à 8192 ; les partiels échouent : PlacementNonValide, pas de calibration sur
+    -ngl 999 — la garde porte sur le premier chargement de la calibration."""
+    from loom.web.routes import rebench
+
+    journal: list = []
+
+    def _oom(ctx, depth):
+        raise RuntimeError("ErrorOutOfDeviceMemory")
+
+    spec = _environnement(
+        monkeypatch,
+        tmp_path,
+        meta=_meta_complete(par_mb=168, sortie_mb=280, emb_mb=280),
+        hw=GPU_8G,
+        ram_mb=32_000,
+        journal=journal,
+        run_impl=_oom,
+    )
+    with pytest.raises(PlacementNonValide) as exc:
+        rebench._run_calibration(None, spec, lambda m: None, trace_out={})
+    assert "(8192 x 1 slot)" in str(exc.value)
+    assert any(e[0] == "isolation" and e[1] == 999 for e in journal)
+    assert not any(e[0] == "run" and e[1] == 999 for e in journal)
+
+
+def test_measure_placement_dit_l_exception_de_la_sonde_de_placement():
+    """Une exception de probe_placement elle-même finissait en « sonde de placement
+    illisible » : son texte est porté par la sortie « repli condamné »."""
+    from loom.setup import placement as place_mod
+    from loom.web.routes.rebench import _measure_placement
+
+    @dataclass
+    class P:
+        ngl: int = 999
+        cpu_moe: bool = False
+        n_cpu_moe: object = None
+        ctx_checkpoints: object = None
+
+    meta = _meta_complete(par_mb=168, sortie_mb=280, emb_mb=280)
+
+    def _casse(*a, **k):
+        raise RuntimeError("sonde cassée en interne")
+
+    original = place_mod.probe_placement
+    place_mod.probe_placement = _casse
+    try:
+        with pytest.raises(PlacementNonValide) as exc:
+            _measure_placement(
+                P(),
+                meta,
+                model_size_mb=7280,
+                hw=GPU_8G,
+                ram_total_mb=32_000,
+                headroom_mb=640,
+                gpu_backend=True,
+                progress=lambda m: None,
+                useful_ctx=8192,
+                vram_total_mb=8192,
+                precontrole={"verdict": "faisable", "complet": True},
+            )
+    finally:
+        place_mod.probe_placement = original
+    assert "sonde cassée en interne" in str(exc.value)
 
 
 def test_run_calibration_refus_d_etape_2_trace_le_contexte_utile(monkeypatch, tmp_path):

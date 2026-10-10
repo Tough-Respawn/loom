@@ -1049,11 +1049,50 @@ def test_demarrage_prevu_qui_ne_tient_pas_jamais_repris_en_repli(monkeypatch, tm
     out = "\n".join(printed)
     assert "aucun placement validé" in out and "calibration non lancée" in out
     assert "flags actuels conservés" not in out and "NON écrits" in out
+    assert "ErrorOutOfDeviceMemory" in out  # la vraie erreur des candidats
     assert (mdir / "model.toml").read_text(encoding="utf-8") == avant
     archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
     arch = json.loads(archives[-1].read_text(encoding="utf-8"))
     assert arch["echec"]["etape"] == "placement"
-    assert "le démarrage prévu ne tient pas" in arch["echec"]["erreur"]
+    assert "premier chargement de la calibration" in arch["echec"]["erreur"]
+    assert arch["repli_calibration"]["tient"] is False
+
+
+def test_repli_refuse_au_premier_chargement_de_la_calibration(monkeypatch, tmp_path):
+    """Revue adverse : le démarrage prévu (tout GPU) tient à 4096 x 1 — la sonde
+    d'isolation tourne dessus — mais pas à 8192, le premier chargement de la
+    calibration ; les deux partiels échouent. La calibration relançait -ngl 999 à 8192,
+    ce que l'estimation venait de refuser. Sortie à l'étape placement, avec les VRAIES
+    erreurs des candidats (« sonde de placement illisible » les cachait)."""
+    journal: list = []
+
+    def run_impl(ctx, depth):
+        raise RuntimeError("ErrorOutOfDeviceMemory: vk::Device::allocateMemory")
+
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(run_impl, journal=journal),
+        ram_total_mb=32_000,
+        hw=_gpu(8192, 8000),
+        meta=_meta_complete(par_mb=168, sortie_mb=280, emb_mb=280),
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 7280\n'
+        "n_gpu_layers = 999\n",
+        encoding="utf-8",
+    )
+    assert run(con, deps) != 0
+    assert any(e[0] == "isolation" and e[1] == 999 for e in journal)  # tient à 4096
+    assert not any(e[0] == "run" and e[1] == 999 for e in journal)
+    out = "\n".join(printed)
+    assert "aucun placement validé (toutes les mesures en échec" in out
+    assert "vk::Device::allocateMemory" in out
+    assert "premier chargement de la calibration (8192 x 1 slot)" in out
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "placement"
+    assert "allocateMemory" in arch["echec"]["erreur"]
 
 
 def test_isolation_imposee_par_la_memoire_recurrente_sonde_non_lancee(

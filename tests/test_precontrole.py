@@ -551,6 +551,45 @@ def test_isolation_checkpoints_bornes_par_le_ctx_checkpoints_du_modele():
     assert d["prevu_tient"] is True and d["lancer"] is True
 
 
+def _repli(meta, hw, flags, *, ram, slots, complet=True, ctx_checkpoints=None):
+    from loom.setup.placement import repli_calibration
+
+    prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
+    return repli_calibration(
+        prof,
+        meta,
+        flags=flags,
+        complet=complet,
+        slots=slots,
+        ctx=8192,
+        ctx_checkpoints=ctx_checkpoints,
+        model_size_mb=_taille(meta),
+        gpu_backend=hw.has_gpu,
+        vram_total_mb=hw.vram_total_mb,
+        ram_total_mb=ram,
+        uma=hw.has_gpu and not hw.vram_is_discrete,
+        headroom_mb=640,
+        gpu_tuning=hw.has_gpu,
+    )
+
+
+def test_repli_de_la_calibration_juge_a_son_premier_chargement():
+    """Revue adverse : la garde du repli regardait 4096 x 1 (la sonde d'isolation),
+    alors que la calibration charge d'abord à 8192 x slots retenus. 40 x 168 Mo + 280 +
+    280 sur 8 Go : tout GPU tient à 4096 (7 340 Mo) mais pas à 8192 (7 680 pour 7 552)
+    — repli condamné. 40 x 130 Mo tient à 8192 (6 160) : même refusé par l'étape 2 à un
+    contexte utile plus grand, la calibration trouvera un contexte qui tient."""
+    lourd = _dense(n=40, par_mb=168, sortie_mb=280, emb_mb=280)
+    r = _repli(lourd, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1)
+    assert r["tient"] is False and r["ctx"] == 8192 and r["slots"] == 1
+    assert "7680 Mo device" in r["raison"]
+    assert _iso(lourd, NVIDIA_8G, PREVU_GPU, ram=32_000)["prevu_tient"] is True
+    leger = _dense(n=40, par_mb=130, sortie_mb=280, emb_mb=280)
+    assert _repli(leger, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1)["tient"] is True
+    inconnu = _repli(lourd, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1, complet=False)
+    assert inconnu["tient"] is None
+
+
 def test_flags_bruts_ngl_0_cpu_moe_rien_sur_le_device():
     """Critique de conception : Placement.from_flags fait passer --cpu-moe avant -ngl 0
     (experts_cpu en ngl 999). Les flags bruts « -ngl 0 --cpu-moe » ne mettent RIEN sur

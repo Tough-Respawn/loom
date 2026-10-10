@@ -1445,28 +1445,53 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             batch_couples=couples,
             thread_options=th_options,
         )
-    except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
+    except Exception as exc:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
         pl_res = None
+        pl_err = f"sonde de placement en échec ({type(exc).__name__}: {exc})"
+    else:
+        pl_err = None
     con.progress_end()
     trace["placement"] = pl_res
     valide = bool(pl_res and pl_res.get("placement") is not None and pl_res["mesures"])
-    if not valide and iso.get("prevu_tient") is False:
-        # Aucun placement validé, et le démarrage prévu — les flags de repli — ne tient
-        # pas même à 4096 x 1 d'après l'estimation : y revenir lancerait un chargement
-        # condamné (revue adverse). Sortie explicite, rien d'écrit.
-        raison = place_mod.raison_repli_condamne((pl_res or {}).get("mecanisme"))
-        con.say(
-            f"  [échec] {raison} — calibration non lancée, réglages NON écrits "
-            "(configuration inchangée)."
+    meca = (pl_res or {}).get("mecanisme") or pl_err
+    if not valide:
+        # Repli = les flags actuels de la sonde. Ne tient pas au PREMIER chargement de
+        # la calibration (8192 x slots retenus) d'après l'estimation : y revenir
+        # lancerait un chargement condamné (revue adverse). Sortie explicite, rien
+        # d'écrit, avec les erreurs des candidats.
+        repli = place_mod.repli_calibration(
+            profile,
+            meta,
+            flags={
+                "ngl": probe.ngl,
+                "cpu_moe": probe.cpu_moe,
+                "n_cpu_moe": probe.n_cpu_moe,
+            },
+            complet=pc["complet"],
+            slots=pl_slots,
+            ctx=topo_mod.CALIBRATION_PENTE_CTX[0],
+            ctx_checkpoints=model_toml.get("ctx_checkpoints"),
+            model_size_mb=model_size_mb,
+            gpu_backend=gpu_ok,
+            vram_total_mb=vram_total,
+            ram_total_mb=ram_total_mb,
+            uma=not hw.vram_is_discrete,
+            headroom_mb=headroom,
+            gpu_tuning=bool(hw.has_gpu),
         )
-        report.add("bench", "echec", raison)
-        _archive_setup(con, trace, echec={"etape": "placement", "erreur": raison})
-        return
+        trace["repli_calibration"] = repli
+        if repli["tient"] is False:
+            raison = place_mod.raison_repli_condamne(meca, repli)
+            con.say(
+                f"  [échec] {raison} — calibration non lancée, réglages NON écrits "
+                "(configuration inchangée)."
+            )
+            report.add("bench", "echec", raison)
+            _archive_setup(con, trace, echec={"etape": "placement", "erreur": raison})
+            return
     trace["etape"] = "calibration"
-    if pl_res and pl_res.get("placement") is None:
-        con.say(
-            f"  [attention] placement : {pl_res['mecanisme']} — flags actuels conservés."
-        )
+    if not valide and meca:
+        con.say(f"  [attention] placement : {meca} — flags actuels conservés.")
     if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
         # Élu (comparé, ou seul candidat validé) avec ses batchs et ses threads : la
         # suite (calibration, validation finale) mesure cette configuration-là.
