@@ -56,6 +56,17 @@ def test_detect_hardware_via_binaire_est_agnostique(monkeypatch):
     assert hw.backend == "Vulkan"
 
 
+def test_detect_hardware_compte_les_gpu_listes(monkeypatch):
+    """Lot L2 : llama.cpp offloade sur TOUS les GPU discrets listés ; Loom n'en lit
+    qu'un. Le nombre listé est gardé : une capacité n'est « connue » qu'avec un seul."""
+    monkeypatch.setattr(hardware, "_run_list_devices", lambda b: _VULKAN_OUT)
+    assert detect_hardware(server_bin="fake/llama-server").gpu_count == 1
+    monkeypatch.setattr(hardware, "_run_list_devices", lambda b: _CUDA_OUT)
+    assert detect_hardware(server_bin="fake/llama-server").gpu_count == 2
+    monkeypatch.setattr(hardware, "_run_list_devices", lambda b: "Available devices:\n")
+    assert detect_hardware(server_bin="fake/llama-server").gpu_count == 0
+
+
 def test_detect_hardware_binaire_sans_device_fait_foi(monkeypatch):
     # Build CPU-only sur machine à GPU : le binaire ne PEUT pas offloader ->
     # CPU-only, même si nvidia-smi existe (on ne doit pas le consulter).

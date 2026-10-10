@@ -108,6 +108,37 @@ def test_champs_architecture_supplementaires(tmp_path):
     assert meta["full_attention_interval"] == 4
 
 
+def test_cles_de_completude_exposees(tmp_path):
+    """Lot L2 (précontrôle) : les clés qui rendent l'estimation du KV ou du catalogue
+    incertaine sont exposées — GGUF en plusieurs parties, MLA, KV partagé, têtes SWA
+    dédiées, head_count_kv en tableau."""
+    p = _gguf(
+        tmp_path / "m.gguf",
+        {
+            "general.architecture": "deepseek2",
+            "deepseek2.block_count": 4,
+            "split.count": 3,
+            "deepseek2.attention.key_length_mla": 192,
+            "deepseek2.attention.kv_lora_rank": 512,
+            "deepseek2.attention.shared_kv_layers": 2,
+            "deepseek2.attention.key_length_swa": 128,
+            "deepseek2.attention.head_count_kv": [1, 2, 1, 2],
+        },
+    )
+    meta = read_gguf_meta(p)
+    assert meta["split_count"] == 3
+    assert meta["key_length_mla"] == 192 and meta["kv_lora_rank"] == 512
+    assert meta["shared_kv_layers"] == 2 and meta["key_length_swa"] == 128
+    assert meta["head_count_kv_array"] is True and meta["head_count_kv"] is None
+    simple = read_gguf_meta(
+        _gguf(
+            tmp_path / "s.gguf",
+            {"general.architecture": "llama", "llama.block_count": 2},
+        )
+    )
+    assert simple["split_count"] is None and simple["head_count_kv_array"] is False
+
+
 def test_catalogue_tenseurs_par_famille_et_par_couche(tmp_path):
     tensors = [
         ("token_embd.weight", 1024),

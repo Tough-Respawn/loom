@@ -177,6 +177,58 @@ def constraints_from_config(raw: dict) -> tuple[PrefillConstraint | None, float 
     return prefill, (float(floor) if floor else None)
 
 
+#: Architectures dont la formule de l'état récurrent est vérifiée contre un journal
+#: llama.cpp (Bonsai 2, qwen35 : 149,625 Mio calculés pour 149,626 observés). Hors de
+#: cette liste, la formule peut ne pas s'appliquer (KDA, attention linéaire MiniMax…).
+ETAT_RECURRENT_VALIDE = frozenset({"qwen35", "qwen35moe", "qwen3next"})
+
+
+def inconnues_decisives(profile, meta: dict | None) -> list[str]:
+    """Ce qui rend l'estimation mémoire INCERTAINE pour le précontrôle (revue n°16 :
+    « des métadonnées incomplètes doivent rester signalées comme incertaines ») — vide
+    = métadonnées complètes. Seules les données DÉCISIVES comptent : une clé
+    optionnelle absente (sliding_window, expert_count d'un dense) n'est pas un manque."""
+    meta = meta or {}
+    out: list[str] = []
+    w = getattr(profile, "weights", None)
+    if not w:
+        out.append("catalogue des tenseurs absent (poids inconnus)")
+    else:
+        parties = meta.get("split_count")
+        if parties and int(parties) > 1:
+            out.append(
+                f"GGUF en {parties} parties : catalogue partiel (première partie seule)"
+            )
+        n = meta.get("n_layers")
+        par = w.get("par_couche") or []
+        if n and len(par) != int(n):
+            out.append(f"catalogue incomplet ({len(par)} couches listées sur {n})")
+    prov = getattr(profile, "provenance", None) or {}
+    if str(prov.get("couches_attention", "inconnu")).startswith("inconnu"):
+        out.append("couches d'attention inconnues")
+    if str(prov.get("kv", "inconnu")).startswith("inconnu"):
+        out.append("dimensions du KV inconnues (forfait de secours)")
+    if str(prov.get("couches_swa", "")).startswith("inconnu"):
+        out.append("fenêtre glissante sans motif (couches SWA inconnues)")
+    if meta.get("key_length_mla") or meta.get("kv_lora_rank"):
+        out.append("attention MLA (cache K seul) : formule du KV inadaptée")
+    if meta.get("shared_kv_layers"):
+        out.append("KV partagé entre couches : formule du KV inadaptée")
+    if meta.get("key_length_swa") or meta.get("value_length_swa"):
+        out.append("têtes SWA dédiées : formule du KV inadaptée")
+    if meta.get("head_count_kv_array"):
+        out.append("head_count_kv par couche (tableau) : formule du KV inadaptée")
+    if getattr(profile, "recurrent_layers", None):
+        arch = getattr(profile, "architecture", None)
+        if arch not in ETAT_RECURRENT_VALIDE:
+            out.append(
+                f"état récurrent : architecture {arch or '?'} hors liste validée"
+            )
+        elif not profile.recurrent_state_bytes:
+            out.append("état récurrent inconnu (dimensions absentes)")
+    return out
+
+
 class AucunPlacementFaisable(RuntimeError):
     """Aucun placement (configuration actuelle et CPU seul compris) ne tient d'après
     l'estimation mémoire : aucun placement comparé, calibration non lancée, rien

@@ -217,6 +217,7 @@ def read_gguf_meta(path: str | Path) -> dict:
     pattern = kv.get(f"{arch}.attention.sliding_window_pattern") if arch else None
     if not isinstance(pattern, (int, list)):
         pattern = None
+    split_count = kv.get("split.count")
 
     return {
         "architecture": arch,
@@ -250,6 +251,19 @@ def read_gguf_meta(path: str | Path) -> dict:
         )
         if arch
         else False,
+        # Clés qui rendent l'estimation INCERTAINE (précontrôle, revue n°16) : un GGUF en
+        # plusieurs parties ne liste ici que les tenseurs de la première ; MLA (cache K
+        # seul), KV partagé entre couches, têtes SWA dédiées et head_count_kv par
+        # couche ne suivent pas la formule uniforme du KV.
+        "split_count": int(split_count) if isinstance(split_count, int) else None,
+        "key_length_mla": _int("attention.key_length_mla"),
+        "kv_lora_rank": _int("attention.kv_lora_rank"),
+        "shared_kv_layers": _int("attention.shared_kv_layers"),
+        "key_length_swa": _int("attention.key_length_swa"),
+        "value_length_swa": _int("attention.value_length_swa"),
+        "head_count_kv_array": bool(
+            arch and isinstance(kv.get(f"{arch}.attention.head_count_kv"), list)
+        ),
         "arrays": {k: v for k, v in kv.items() if isinstance(v, list)},
         "weights": _weights_summary(infos, data_start, file_size),
     }
