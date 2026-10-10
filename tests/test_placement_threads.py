@@ -126,6 +126,93 @@ def test_sonde_de_threads_respecte_la_contrainte_de_prefill():
     assert r["threads"] != 4 and "contrainte prefill" in r["mecanisme"]
 
 
+class _SondePlacement:
+    """Rejoue (tg, pp) par (placement de base, threads) ; journalise
+    (clé, threads, ctx, depth). `threads` = ceux de la machine (8) sauf réglage."""
+
+    def __init__(self, placement, table, journal):
+        self.placement, self.table, self.journal = placement, table, journal
+        self.threads = 8
+        self.ubatch, self.batch = 512, 2048
+
+    def run(self, ctx, depth):
+        base = self.placement.key.split("@")[0]
+        self.journal.append((base, self.threads, ctx, depth))
+        tg, pp = self.table.get((base, self.threads)) or self.table[base]
+        return ProbeResult(ctx=ctx, mem_mb=100, tg_ts=tg, pp_ts=pp)
+
+
+def _usine_placement(table):
+    journal = []
+
+    def make(placement):
+        return _SondePlacement(placement, table, journal)
+
+    make.journal = journal
+    return make
+
+
+def test_threads_des_finalistes_regles_avant_la_finale():
+    """Remarque de méthode (revue 2026-10-10) : un finaliste à calcul CPU se compare avec
+    SES threads, réglés avant la finale au contexte et à la profondeur de la finale.
+    Sans réglage, experts-CPU (10,0 à t8) perd contre tout-GPU (11,5) ; à t16 il fait
+    12,5 et gagne. Tout-GPU n'a rien à régler, et la trace le dit."""
+    from loom.setup.placement import probe_placement
+
+    GPU = Placement("gpu_total", 999)
+    CPU = Placement("experts_cpu", 999, cpu_moe=True, actuel=True)
+    table = {
+        "gpu_total": (11.5, 260.0),
+        ("experts_cpu", 8): (10.0, 200.0),
+        ("experts_cpu", 4): (9.0, 180.0),
+        ("experts_cpu", 16): (12.5, 215.0),
+    }
+    make = _usine_placement(table)
+    r = probe_placement(
+        make, [CPU, GPU], useful_ctx=32_768, reps=1, thread_options=OPTS
+    )
+    elu = r["placement"]
+    assert elu.label == "experts_cpu" and elu.threads == 16
+    # L'élu EST la base (même placement) : pas de gain de placement ; le gain des
+    # threads (+25 %) est celui du verdict de threads de ce finaliste.
+    assert r["tg_ts"] == 12.5 and r["gain_pct"] is None
+    assert "16 threads" in elu.describe()
+    th = r["threads_finalistes"]
+    assert th["experts_cpu"]["threads"] == 16 and th["experts_cpu"]["baseline"] == 8
+    assert th["experts_cpu"]["gain_pct"] == 25.0
+    assert th["experts_cpu"]["ctx"] == 32_768 and th["experts_cpu"]["depth"] == 16_384
+    assert "non exploré" in th["gpu_total"]["non_explore"]
+    assert "threads réglés avant la finale" in r["mecanisme"]
+    # Ordre : présélection (8 192, t8), balayage de threads d'experts-CPU au contexte de
+    # la finale, puis la finale où experts-CPU tourne à t16 et tout-GPU à t8.
+    j = make.journal
+    presel = [e for e in j if e[2] == 8_192]
+    assert presel == [("experts_cpu", 8, 8_192, 4_096), ("gpu_total", 8, 8_192, 4_096)]
+    profond = [e for e in j if e[2] == 32_768]
+    balayage = profond[:3]
+    assert [e[:2] for e in balayage] == [
+        ("experts_cpu", 8),
+        ("experts_cpu", 4),
+        ("experts_cpu", 16),
+    ]
+    finale = profond[3:]
+    assert ("experts_cpu", 16, 32_768, 16_384) in finale
+    assert ("gpu_total", 8, 32_768, 16_384) in finale
+    assert all(e[:2] != ("experts_cpu", 8) for e in finale)
+
+
+def test_threads_des_finalistes_sans_options_rien_ne_change():
+    from loom.setup.placement import probe_placement
+
+    GPU = Placement("gpu_total", 999)
+    CPU = Placement("experts_cpu", 999, cpu_moe=True, actuel=True)
+    make = _usine_placement({"gpu_total": (11.5, 260.0), "experts_cpu": (10.0, 200.0)})
+    r = probe_placement(make, [CPU, GPU], useful_ctx=32_768, reps=1)
+    assert r["placement"].label == "gpu_total" and r["placement"].threads is None
+    assert r["threads_finalistes"] == {}
+    assert all(e[1] == 8 for e in make.journal)
+
+
 def test_validation_finale_verifie_la_contrainte_de_prefill():
     from loom.setup.placement import PrefillConstraint, validate_final
 

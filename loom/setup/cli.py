@@ -1269,6 +1269,11 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "checkpoint_min_step": getattr(probe, "checkpoint_min_step", None),
         },
     )
+    # Threads candidats (l'actuel de la machine d'abord, puis le parc) : chaque
+    # finaliste à calcul CPU est réglé AVANT la finale (remarque de méthode, 2026-10-10).
+    th_options = place_mod.thread_options(
+        best["threads"], os.cpu_count() or 4, deps.cpu_physical()
+    )
     con.progress("sonde de placement (où vivent les poids, x batchs)…")
     try:
         pl_res = place_mod.probe_placement(
@@ -1282,6 +1287,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             prefill=prefill_c,
             pp_floor_ratio=pp_floor,
             batch_couples=couples,
+            thread_options=th_options,
         )
     except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
         pl_res = None
@@ -1293,8 +1299,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             f"  [attention] placement : {pl_res['mecanisme']} — flags actuels conservés."
         )
     if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
-        # Élu (comparé, ou seul candidat validé) avec ses batchs : la suite
-        # (calibration, validation finale) mesure cette configuration-là.
+        # Élu (comparé, ou seul candidat validé) avec ses batchs et ses threads : la
+        # suite (calibration, validation finale) mesure cette configuration-là.
         pl = pl_res["placement"]
         probe = _dc_replace(
             probe,
@@ -1303,13 +1309,17 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             n_cpu_moe=pl.n_cpu_moe,
             ubatch=pl.ubatch or getattr(probe, "ubatch", None),
             batch=pl.batch or getattr(probe, "batch", None),
+            threads=pl.threads or getattr(probe, "threads", best["threads"]),
         )
         con.say(f"  [ok] placement : {pl.describe()} — {pl_res['mecanisme']}")
-    # Threads sur le placement ÉLU (option par modèle, 2026-10-10) : un placement avec
-    # du calcul CPU se mesure avec les candidats du parc, au contexte et à la
-    # profondeur de la finale ; tout GPU : non exploré, et la trace le dit.
+    # Threads du placement ÉLU (option par modèle, 2026-10-10) : réglés avant la finale
+    # quand il y a eu finale (verdict repris) ; sinon un placement avec du calcul CPU se
+    # mesure maintenant, au contexte et à la profondeur de la finale ; tout GPU : non
+    # exploré, et la trace le dit.
     th_res = None
     pl_elu_th = (pl_res or {}).get("placement")
+    th_fin = (pl_res or {}).get("threads_finalistes") or {}
+    deja = th_fin.get(pl_elu_th.key.split("@")[0]) if pl_elu_th is not None else None
     if pl_elu_th is not None and not place_mod.needs_cpu_compute(pl_elu_th):
         th_res = {
             "non_explore": (
@@ -1318,10 +1328,14 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             )
         }
         con.say(f"  threads : {th_res['non_explore']}")
-    elif pl_elu_th is not None and pl_res.get("mesures"):
-        th_options = place_mod.thread_options(
-            best["threads"], os.cpu_count() or 4, deps.cpu_physical()
+    elif deja and deja.get("threads") is not None:
+        th_res = dict(deja)
+        th_res["placement"] = pl_elu_th.key.split("@")[0]
+        con.say(
+            f"  [ok] threads sur {th_res['placement']} (réglés avant la finale) : "
+            f"{th_res['threads']} — {th_res['mecanisme']}"
         )
+    elif pl_elu_th is not None and pl_res.get("mesures"):
         con.progress("sonde de threads sur le placement élu…")
         try:
             th_res = place_mod.probe_threads(

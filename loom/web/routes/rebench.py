@@ -1,5 +1,7 @@
 # loom/web/routes/rebench.py — sorti de models.py (comportement constant).
 from __future__ import annotations
+
+import os
 from pathlib import Path
 
 
@@ -25,6 +27,8 @@ def _measure_placement(
     override_ngl: int | None = None,
     slots: int = 1,
     trace: dict | None = None,
+    logical: int | None = None,
+    physical: int | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand rien n'est
@@ -32,11 +36,18 @@ def _measure_placement(
     avec les flags actuels du modèle. La faisabilité s'estime au contexte UTILE
     (`useful_ctx`) avec le type de cache de l'exécutant, via le profil GGUF ; la
     configuration ACTUELLE (`mt`) est la ligne de base ; `raw` porte les contraintes
-    de prefill optionnelles ([placement])."""
+    de prefill optionnelles ([placement]). Avec `logical` (cœurs), chaque finaliste à
+    calcul CPU est réglé en threads avant la finale (candidats du parc)."""
     from dataclasses import replace as _dc_replace
 
     from loom.runtime.model_profile import ModelProfile
     from loom.setup import placement as place_mod
+
+    th_options = None
+    if logical and getattr(probe, "threads", None):
+        th_options = place_mod.thread_options(
+            int(probe.threads), int(logical), physical
+        )
 
     profile = ModelProfile.from_meta(meta, model_size_mb=int(model_size_mb or 0))
     # Mémoire par contexte au-delà des poids : KV au contexte utile + état récurrent
@@ -103,6 +114,7 @@ def _measure_placement(
             prefill=prefill_c,
             pp_floor_ratio=pp_floor,
             batch_couples=couples,
+            thread_options=th_options,
         )
     except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
         res = None
@@ -114,6 +126,8 @@ def _measure_placement(
         if hasattr(probe, "ubatch")
         else {}
     )
+    if pl.threads and hasattr(probe, "threads"):
+        extra["threads"] = int(pl.threads)
     probe = _dc_replace(
         probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe, **extra
     )
@@ -125,6 +139,8 @@ def _measure_placement(
         "n_cpu_moe": pl.n_cpu_moe,
         "ubatch": pl.ubatch,
         "batch": pl.batch,
+        "threads": pl.threads,
+        "threads_finalistes": res.get("threads_finalistes") or {},
         "couples": res.get("couples"),
         "tg_ts": res["tg_ts"],
         "pp_ts": res["pp_ts"],
@@ -156,9 +172,10 @@ def _measure_threads(
     pp_floor_ratio: float | None = None,
 ):
     """Sonde de threads sur le placement ÉLU (option par modèle) : renvoie (verdict |
-    None, sonde alignée). Tout GPU : {"non_explore": …} sans mesure. Sans comparaison
-    de placement exploitable, la sonde porte la configuration actuelle : on la juge
-    par ses flags."""
+    None, sonde alignée). Tout GPU : {"non_explore": …} sans mesure. Élu déjà réglé
+    avant la finale (`threads_finalistes`) : ce verdict est repris, pas remesuré. Sans
+    comparaison de placement exploitable, la sonde porte la configuration actuelle :
+    on la juge par ses flags."""
     from dataclasses import replace as _dc_replace
 
     from loom.setup import placement as place_mod
@@ -168,6 +185,16 @@ def _measure_threads(
             0
         ]
         cpu = pl_verdict.get("label") != "gpu_total"
+        deja = (pl_verdict.get("threads_finalistes") or {}).get(pl_key)
+        if cpu and deja and deja.get("threads") is not None:
+            res = dict(deja)
+            res["placement"] = pl_key
+            res["mecanisme"] = f"réglés avant la finale — {res.get('mecanisme', '')}"
+            if hasattr(probe, "threads") and res["threads"] != getattr(
+                probe, "threads", None
+            ):
+                probe = _dc_replace(probe, threads=int(res["threads"]))
+            return res, probe
     else:
         pl_obj = place_mod.Placement.from_flags(
             int(getattr(probe, "ngl", 999) or 0),
@@ -398,6 +425,8 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         override_ngl=over.get("n_gpu_layers"),
         slots=int(getattr(probe, "n_parallel", 1) or 1),
         trace=trace,
+        logical=os.cpu_count() or 4,
+        physical=psutil.cpu_count(logical=False),
     )
     trace["placement"] = pl_verdict
     trace["placement_avant"] = {
@@ -405,10 +434,9 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         "n_cpu_moe": mt.get("n_cpu_moe"),
         "n_gpu_layers": mt.get("n_gpu_layers"),
     }
-    # Threads sur le placement ÉLU (option par modèle) : du calcul CPU se mesure avec
-    # les candidats du parc, au contexte et à la profondeur de la finale.
-    import os
-
+    # Threads sur le placement ÉLU (option par modèle) : réglés avant la finale quand il
+    # y a eu finale (verdict repris), sinon mesurés maintenant au contexte et à la
+    # profondeur de la finale.
     from loom.setup.placement import constraints_from_config
 
     prefill_c, pp_floor = constraints_from_config(raw)

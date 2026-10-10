@@ -80,6 +80,11 @@ class Placement:
     # batchs) ; None = les batchs de la sonde telle que fabriquée.
     ubatch: int | None = None
     batch: int | None = None
+    # Threads de la configuration COMPLÈTE : réglés sur ce placement AVANT la finale
+    # quand il a du calcul CPU (remarque de méthode, 2026-10-10) ; None = ceux de la
+    # sonde telle que fabriquée (machine). Pas dans la clé : un finaliste n'a qu'une
+    # valeur en finale, et la clé reste celle que les écrivains du model.toml lisent.
+    threads: int | None = None
 
     @property
     def key(self) -> str:
@@ -137,6 +142,8 @@ class Placement:
             )
         if self.ubatch:
             txt += f" — ub {self.ubatch}/b {self.batch}"
+        if self.threads:
+            txt += f" — {self.threads} threads"
         return txt + (" — configuration actuelle" if self.actuel else "")
 
 
@@ -629,6 +636,23 @@ def _incertains(mesures: dict[str, dict]) -> list[str]:
     return [best] + flous if flous else []
 
 
+def _configure(sonde, c, *, threads: int | None = None):
+    """Configuration COMPLÈTE : le couple (ubatch, batch) et les threads du candidat
+    remplacent ceux de la sonde fabriquée — sur une COPIE, une sonde par configuration.
+    Rien de posé quand le candidat ne fixe rien (la sonde reste celle de la machine)."""
+    th = threads if threads is not None else getattr(c, "threads", None)
+    ub = getattr(c, "ubatch", None)
+    if ub is None and th is None:
+        return sonde
+    sonde = copy.copy(sonde)
+    if ub is not None:
+        sonde.ubatch = ub
+        sonde.batch = getattr(c, "batch", None)
+    if th is not None:
+        sonde.threads = int(th)
+    return sonde
+
+
 def _mesurer(
     make_probe,
     cands,
@@ -652,14 +676,7 @@ def _mesurer(
     out: dict[str, dict] = {}
     for c in cands:
         try:
-            sonde = make_probe(c)
-            if c.ubatch is not None:
-                # Configuration COMPLÈTE : le couple (ubatch, batch) du candidat remplace
-                # celui de la sonde fabriquée — sur une COPIE, une sonde par configuration.
-                sonde = copy.copy(sonde)
-                sonde.ubatch = c.ubatch
-                sonde.batch = c.batch
-            sondes[c.key] = sonde
+            sondes[c.key] = _configure(make_probe(c), c)
             samples[c.key] = []
         except Exception as exc:  # noqa: BLE001 - un candidat qui casse n'est PAS fatal
             out[c.key] = {"echec": f"{type(exc).__name__}: {exc}"}
@@ -725,6 +742,7 @@ def probe_placement(
     pp_floor_ratio: float | None = None,
     time_budget_s: float = PLACEMENT_TIME_BUDGET_S,
     batch_couples: list[tuple[int, int]] | None = None,
+    thread_options: list[ThreadsOption] | None = None,
 ) -> dict | None:
     """Sonde les candidats avec le VRAI serveur (`make_probe(placement)` renvoie une
     sonde exposant `.run(ctx, depth) -> ProbeResult`, cf. topology.ServerProbe).
@@ -738,12 +756,17 @@ def probe_placement(
       COMPLÈTES au même contexte, à la même profondeur, aux mêmes slots, en tours
       alternés ; la décision (`pick_placement`) porte sur cette dernière mesure, la
       base étant la configuration actuelle EXACTE (placement + couple de l'exécutant).
+      Avec `thread_options`, chaque finaliste à calcul CPU voit d'abord SES threads
+      réglés (probe_threads, au contexte et à la profondeur de la finale, couple
+      actuel) : la finale compare des configurations chacune à son réglage, et non un
+      experts-CPU aux threads de la machine contre un tout-GPU qui s'en moque.
       Rien de mesurable -> None (on n'écrit jamais une valeur inventée).
 
     Renvoie {placement (None si validation en échec ; porte ubatch/batch quand des
-    couples ont été comparés), baseline, tg_ts, pp_ts, gain_pct, mesures (phase
-    décisive, par clé), preselection, finalistes, ctx_final, depth_final, couples,
-    non_explores, compare, mecanisme}."""
+    couples ont été comparés, threads quand ils ont été réglés), baseline, tg_ts,
+    pp_ts, gain_pct, mesures (phase décisive, par clé), preselection, finalistes,
+    threads_finalistes (par finaliste : verdict de probe_threads, ou non_explore),
+    ctx_final, depth_final, couples, non_explores, compare, mecanisme}."""
     say = progress or (lambda _m: None)
     non = list(non_explores or [])
     couples = [(int(c[0]), int(c[1])) for c in (batch_couples or [])]
@@ -757,6 +780,7 @@ def probe_placement(
     # Avec des couples, les finalistes sont TOUJOURS remesurés x couples, même à contexte
     # utile court : quatre configurations complètes dans les mêmes conditions.
     two_phase = deeper or bool(couples)
+    th_fin: dict[str, dict] = {}
 
     def _configs(placements):
         """Configurations complètes, couple-major (A@c1, B@c1, A@c2, B@c2) : la base
@@ -770,6 +794,47 @@ def probe_placement(
             for c in placements
         ]
 
+    def _tune_threads(pl: Placement) -> Placement:
+        """Threads de CE finaliste, réglés avant la finale (couple actuel, contexte et
+        profondeur de la finale). Tout GPU : non exploré, dit. Illisible : conservés."""
+        if not thread_options:
+            return pl
+        if not needs_cpu_compute(pl):
+            th_fin[pl.key] = {
+                "non_explore": f"non exploré : {pl.key} sans calcul CPU attendu",
+                "placement": pl.key,
+            }
+            return pl
+        if time.monotonic() >= deadline:
+            th_fin[pl.key] = {
+                "non_explore": f"non exploré : budget temps épuisé avant {pl.key}",
+                "placement": pl.key,
+            }
+            return pl
+        base_cfg = _configs([pl])[0]  # avec le couple ACTUEL quand il y en a
+        say(f"threads de {pl.key} avant la finale (à ctx {ctx_final})…")
+        th = probe_threads(
+            lambda o: _configure(make_probe(base_cfg), base_cfg, threads=o.threads),
+            thread_options,
+            ctx=ctx_final,
+            depth=depth_final,
+            reps=reps,
+            margin_pct=margin_pct,
+            progress=say,
+            prefill=prefill,
+            pp_floor_ratio=pp_floor_ratio,
+        )
+        if not th:
+            th_fin[pl.key] = {
+                "non_explore": f"sonde de threads illisible sur {pl.key} : threads "
+                "actuels conservés",
+                "placement": pl.key,
+            }
+            return pl
+        th["placement"] = pl.key
+        th_fin[pl.key] = th
+        return replace(pl, threads=int(th["threads"]))
+
     def _res(**kw):
         base = {
             "baseline": _configs([candidates[0]])[0].key,
@@ -777,6 +842,7 @@ def probe_placement(
             "ctx_final": ctx_final,
             "depth_final": depth_final,
             "couples": couples,
+            "threads_finalistes": th_fin,
         }
         base.update(kw)
         return base
@@ -884,8 +950,17 @@ def probe_placement(
             # classement peut bouger (Ornith : experts-CPU n'avait jamais été mesuré
             # en ub 512), et la trace doit le dire par une mesure, pas par une coupe.
             finalists.append(autres[0])
+        # Threads de chaque finaliste à calcul CPU, réglés AVANT la finale.
+        regles = [_tune_threads(orig[c.key]) for c in finalists]
+        if th_fin:
+            notes += " ; threads réglés avant la finale : " + ", ".join(
+                f"{k} -> t{v['threads']}"
+                if "threads" in v
+                else f"{k} : {v['non_explore']}"
+                for k, v in th_fin.items()
+            )
         # Configurations complètes : finalistes x couples (couple actuel d'abord).
-        configs = _configs([orig[c.key] for c in finalists])
+        configs = _configs(regles)
         if time.monotonic() >= deadline:
             notes += (
                 f" ; budget temps ({time_budget_s:g} s) épuisé : finalistes non remesurés "

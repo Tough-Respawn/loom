@@ -740,6 +740,79 @@ def test_measure_placement_rebench_renvoie_un_verdict_serialisable_et_la_sonde_e
     json.dumps(verdict)  # l'état b_apply est persisté en JSON
 
 
+def test_measure_placement_rebench_regle_les_threads_des_finalistes():
+    """Remarque de méthode (2026-10-10) : /rebench règle les threads de chaque finaliste
+    à calcul CPU avant la finale ; l'élu porte ses threads, la sonde est alignée, et la
+    sonde de threads post-élection REPREND ce verdict au lieu de remesurer."""
+    import json
+    from dataclasses import dataclass as _dc
+
+    from loom.runtime.hardware import HardwareProfile
+    from loom.web.routes.rebench import _measure_placement, _measure_threads
+
+    journal: list = []
+
+    @_dc
+    class FakeProbe:
+        ngl: int = 999
+        cpu_moe: bool = True
+        n_cpu_moe: object = None
+        threads: int = 8
+        ubatch: int = 512
+        batch: int = 2048
+
+        def run(self, ctx, depth):
+            journal.append((self.cpu_moe, self.threads, ctx))
+            if self.cpu_moe:
+                tg = {8: 10.0, 4: 9.0, 16: 12.5}[self.threads]
+            else:
+                tg = 11.5
+            return ProbeResult(ctx=ctx, mem_mb=100, tg_ts=tg, pp_ts=200.0)
+
+    hw = HardwareProfile(
+        True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, vram_is_discrete=False
+    )
+    meta = {"n_layers": 40, "expert_count": 128, "head_count_kv": 4, "key_length": 256}
+    verdict, probe = _measure_placement(
+        FakeProbe(),
+        meta,
+        model_size_mb=35_193,
+        hw=hw,
+        ram_total_mb=64_000,
+        headroom_mb=640,
+        gpu_backend=True,
+        progress=lambda m: None,
+        useful_ctx=32_768,
+        mt={"cpu_moe": True},
+        logical=16,
+        physical=8,
+    )
+    # À t8 experts-CPU (10,0) perdait contre tout-GPU (11,5) ; réglé à t16 il fait 12,5.
+    assert verdict["label"] == "experts_cpu" and verdict["threads"] == 16
+    assert verdict["threads_finalistes"]["experts_cpu"]["threads"] == 16
+    assert "non exploré" in verdict["threads_finalistes"]["gpu_total"]["non_explore"]
+    assert probe.threads == 16 and probe.cpu_moe is True
+    json.dumps(verdict)
+    # Le balayage de threads (t8, t4, t16, deux tours alternés) a précédé la finale, au
+    # contexte de la finale ; en finale, experts-CPU tourne à t16.
+    profond = [j for j in journal if j[2] == 32_768 and j[0]]
+    assert [j[1] for j in profond[:6]] == [8, 4, 16, 8, 4, 16]
+    assert len(profond) > 6 and all(j[1] == 16 for j in profond[6:])
+    n_avant = len(journal)
+    th, probe2 = _measure_threads(
+        probe,
+        verdict,
+        logical=16,
+        physical=8,
+        ctx=32_768,
+        depth=16_384,
+        progress=lambda m: None,
+    )
+    assert th["threads"] == 16 and "réglés avant la finale" in th["mecanisme"]
+    assert th["placement"] == "experts_cpu" and probe2.threads == 16
+    assert len(journal) == n_avant  # repris, pas remesuré
+
+
 def test_measure_placement_rebench_sans_comparaison_renvoie_none():
     from dataclasses import dataclass as _dc
 
