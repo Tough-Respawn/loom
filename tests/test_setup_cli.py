@@ -862,21 +862,7 @@ def test_precontrole_metadonnees_incompletes_llama_bench_non_filtre(
     assert appels and appels[0]["ngl"] == [0, 99]
 
 
-def test_precontrole_moe_llama_bench_repli_sur_ngl_0_dit(monkeypatch, tmp_path):
-    """MoE : llama-bench ne mesure que -ngl 999 -ncmoe n (la configuration du runtime).
-    Ses denses (7 500 Mo) dépassent le budget device de 6 Go : repli sur -ngl 0, -ncmoe
-    0, et la console le dit (jamais une note vide)."""
-    appels: list = []
-
-    def run_impl(ctx, depth):
-        from loom.setup.topology import ProbeResult
-
-        r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
-        if depth:
-            r.tg_ts, r.pp_ts = 5.0, 20.0
-        return r
-
-    n, dense, experts = 8, 900, 4000
+def _meta_moe(n=8, dense=900, experts=4000):
     meta = _meta_complete(n=n)
     meta.update(
         expert_count=64,
@@ -887,12 +873,29 @@ def test_precontrole_moe_llama_bench_repli_sur_ngl_0_dit(monkeypatch, tmp_path):
             experts_par_couche=[experts * _MIB] * n,
         ),
     )
+    return meta
+
+
+def _mesure_ok(ctx, depth):
+    from loom.setup.topology import ProbeResult
+
+    r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+    if depth:
+        r.tg_ts, r.pp_ts = 5.0, 20.0
+    return r
+
+
+def test_precontrole_moe_llama_bench_repli_sur_ngl_0_dit(monkeypatch, tmp_path):
+    """MoE : llama-bench ne mesure que -ngl 999 -ncmoe n (la configuration du runtime).
+    Ses denses (7 500 Mo) dépassent le budget device de 6 Go : repli sur -ngl 0, -ncmoe
+    0, et la console le dit (jamais une note vide)."""
+    appels: list = []
     con, printed, deps, _mdir = _harnais_bench(
         monkeypatch,
         tmp_path,
-        _fake_probe_cls(run_impl),
+        _fake_probe_cls(_mesure_ok),
         hw=_gpu(6144),
-        meta=meta,
+        meta=_meta_moe(),
         run_bench=_bench_espion(appels),
     )
     run(con, deps)
@@ -900,6 +903,28 @@ def test_precontrole_moe_llama_bench_repli_sur_ngl_0_dit(monkeypatch, tmp_path):
     assert appels and appels[0]["ngl"] == [0] and appels[0]["ncmoe"] == 0
     assert "-ngl 999 retiré" in out and "repli sur -ngl 0" in out
     assert "llama-bench : ." not in out
+
+
+def test_precontrole_vram_de_repli_filtre_llama_bench_et_le_dit(monkeypatch, tmp_path):
+    """Revue adverse de L7 : VRAM lue par nvidia-smi seulement (profil de repli de
+    detect_hardware, total 0). Le précontrôle et la sonde jugeaient cette VRAM,
+    llama-bench non : il recevait -ngl 999 -ncmoe 8, refusé par le même parcours. Et la
+    console doit dire que la capacité physique n'est pas établie."""
+    appels: list = []
+    repli = HardwareProfile(True, "RTX 8G", 7900, 16, vram_is_discrete=True)
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        hw=repli,
+        meta=_meta_moe(),
+        run_bench=_bench_espion(appels),
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert appels and appels[0]["ngl"] == [0] and appels[0]["ncmoe"] == 0
+    assert "[attention] précontrôle : faisable" in out
+    assert "capacité physique non établie" in out
 
 
 def test_precontrole_compte_le_mmproj_du_model_toml(monkeypatch, tmp_path):

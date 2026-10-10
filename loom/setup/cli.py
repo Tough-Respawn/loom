@@ -1127,7 +1127,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             con, trace, echec={"etape": "précontrôle", "erreur": pc["raison"]}
         )
         return
-    con.say(f"  [{'attention' if pc['verdict'] == 'incertain' else 'ok'}] {pc_texte}")
+    douteux = pc["verdict"] == "incertain" or pc.get("capacite_connue") is False
+    con.say(f"  [{'attention' if douteux else 'ok'}] {pc_texte}")
     # llama-bench : un seul -ngl qui échoue fait échouer toute l'invocation — ceux dont
     # la borne device dépasse le budget device du précontrôle (même VRAM, même marge)
     # sont retirés (données complètes).
@@ -1149,7 +1150,9 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             f"  [attention] llama-bench : -ngl {retire['ngl']} retiré — "
             f"{retire['raison']}."
         )
-    if filtre["note"] and (filtre["retires"] or filtre["ngl"] != ngl):
+    # Note dite dès que llama-bench chargerait quelque chose sur le GPU (liste filtrée,
+    # ou laissée telle quelle faute de capacité ou de métadonnées) — jamais vide.
+    if filtre["note"] and any(int(g) != 0 for g in ngl):
         con.say(f"  [attention] llama-bench : {filtre['note']}.")
     ngl, ncmoe = filtre["ngl"], filtre["ncmoe"]
     combos = len(threads) * len(ngl)

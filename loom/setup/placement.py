@@ -1034,10 +1034,14 @@ def precontrole_texte(res: dict) -> str:
     plan = res.get("plan_plancher") or {}
     slots = int(plan.get("slots") or 1)
     s = "s" if slots > 1 else ""
-    return (
+    txt = (
         f"précontrôle : faisable — au plancher ({plan.get('ctx')} par slot, {slots} "
         f"slot{s}) : {', '.join(plan.get('candidats') or [])}"
     )
+    if res.get("capacite_connue") is False:
+        # Le plan repose sur une capacité que Loom ne connaît pas : dit, jamais tu.
+        txt += f" — capacité physique non établie ({', '.join(res.get('inconnues') or [])})"
+    return txt
 
 
 def demarrage_isolation(
@@ -1181,12 +1185,13 @@ def filtre_llama_bench(
     """-ngl de llama-bench dont la borne DEVICE (poids offloadés selon la règle de
     llama.cpp, KV f16 de LLAMA_BENCH_CELLS cellules et état récurrent d'une séquence
     sur les couches offloadées) dépasse le budget device — le MÊME que le précontrôle
-    et l'étape 2 (device_budget_mb, marge comprise) : retirés (un seul -ngl qui échoue
-    fait échouer toute l'invocation). Liste vide : repli sur -ngl 0. Données
-    incomplètes, capacité inconnue ou llama-bench d'un autre binaire : inchangée."""
+    et l'étape 2 (device_budget_mb sur la VRAM de l'appelant, repli nvidia-smi compris,
+    marge comprise) : retirés (un seul -ngl qui échoue fait échouer toute
+    l'invocation). Liste vide : repli sur -ngl 0. Données incomplètes, aucune VRAM
+    connue, plusieurs GPU ou llama-bench d'un autre binaire : inchangée."""
     liste = [int(g) for g in ngl]
     res = {"ngl": liste, "ncmoe": int(ncmoe or 0), "retires": [], "note": ""}
-    vram = int(getattr(hw, "vram_total_mb", 0) or 0)
+    vram = int(vram_total_mb or 0) or int(getattr(hw, "vram_total_mb", 0) or 0)
     if not complet:
         res["note"] = "métadonnées incomplètes : liste inchangée"
         return res
@@ -1202,8 +1207,7 @@ def filtre_llama_bench(
     ):
         res["note"] = "capacité VRAM inconnue ou non modélisée : liste inchangée"
         return res
-    vram_plan = int(vram_total_mb or 0) or vram
-    budget = device_budget_mb(vram_plan, int(ram_total_mb or 0), uma, int(headroom_mb))
+    budget = device_budget_mb(vram, int(ram_total_mb or 0), uma, int(headroom_mb))
     garde = []
     for g in liste:
         couches = profile.device_layers(ngl=g)
@@ -1216,7 +1220,7 @@ def filtre_llama_bench(
                 {
                     "ngl": g,
                     "raison": f"dépasse le budget device : {dev_mb} Mo sur le device > "
-                    f"{budget} Mo (VRAM {vram_plan} Mo, marge {int(headroom_mb)} Mo)",
+                    f"{budget} Mo (VRAM {vram} Mo, marge {int(headroom_mb)} Mo)",
                 }
             )
         else:

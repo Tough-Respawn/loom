@@ -563,7 +563,7 @@ def test_flags_bruts_ngl_0_cpu_moe_rien_sur_le_device():
 # ── filtre des -ngl de llama-bench (lot L3) ──────────────────────────────────────
 
 
-def _bench(meta, hw, ngl, ncmoe=0, *, complet=True, meme_binaire=True):
+def _bench(meta, hw, ngl, ncmoe=0, *, complet=True, meme_binaire=True, vram=None):
     prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
     return filtre_llama_bench(
         prof,
@@ -571,7 +571,7 @@ def _bench(meta, hw, ngl, ncmoe=0, *, complet=True, meme_binaire=True):
         ncmoe=ncmoe,
         complet=complet,
         hw=hw,
-        vram_total_mb=hw.vram_total_mb,
+        vram_total_mb=hw.vram_total_mb if vram is None else vram,
         ram_total_mb=64_000,
         uma=hw.has_gpu and not hw.vram_is_discrete,
         headroom_mb=640,
@@ -594,6 +594,32 @@ def test_llama_bench_juge_contre_le_meme_budget_que_le_precontrole():
     moe = _moe(n=48, dense_mb=155, experts_mb=400)
     f = _bench(moe, NVIDIA_8G, [999], ncmoe=48)
     assert f["ngl"] == [0] and f["ncmoe"] == 0 and "repli" in f["note"]
+
+
+def test_llama_bench_filtre_aussi_sur_la_vram_de_repli():
+    """Revue adverse de L7 : VRAM lue par nvidia-smi seulement (profil de repli, total
+    0) — le filtre sautait encore, et llama-bench chargeait -ngl 999 -ncmoe 48 (7 788 Mo
+    pour un budget de 7 552), le placement que le précontrôle et la sonde, sur la MÊME
+    VRAM, refusaient. Sans aucune VRAM connue : liste inchangée, et dit."""
+    repli = HardwareProfile(True, "RTX 8G", 7900, 16, vram_is_discrete=True)
+    moe = _moe(n=48, dense_mb=155, experts_mb=400)
+    f = _bench(moe, repli, [999], ncmoe=48, vram=8192)
+    assert f["ngl"] == [0] and f["ncmoe"] == 0 and "repli" in f["note"]
+    f = _bench(moe, repli, [999], ncmoe=48, vram=0)
+    assert f["ngl"] == [999] and "inconnue" in f["note"]
+
+
+def test_texte_faisable_dit_une_capacite_non_etablie():
+    """Revue adverse de L7 : depuis que la capacité inconnue ne rend plus « incertain »,
+    la console affichait « [ok] faisable » sans dire que le plan repose sur une
+    capacité que Loom ne connaît pas."""
+    vram_inconnue = HardwareProfile(
+        True, "RTX", 6000, 16, vram_is_discrete=True, gpu_count=0
+    )
+    t = precontrole_texte(_pc(_dense(), vram_inconnue, ram=64_000, vram=24_576))
+    assert t.startswith("précontrôle : faisable")
+    assert "capacité physique non établie" in t and "VRAM" in t
+    assert "capacité" not in precontrole_texte(_pc(_dense(), NVIDIA_24G, ram=64_000))
 
 
 def test_llama_bench_moe_n_cpu_moe_pris_en_compte():
