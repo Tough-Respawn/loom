@@ -79,6 +79,7 @@ def _wait_verdict(env, timeout=10.0):
                 or "mesures disponibles" in txt
                 or "échouée" in txt
                 or "aucun placement faisable" in txt
+                or "aucun placement validé" in txt
                 or "démarrage impossible" in txt
                 or "hors budget" in txt
             ):
@@ -445,6 +446,90 @@ def test_rebench_demarrage_impossible_verdict_explicite_et_archive(env, monkeypa
     arch = json.loads(archives[-1].read_text(encoding="utf-8"))
     assert arch["echec"]["etape"] == "précontrôle"
     assert "démarrage impossible" in arch["echec"]["erreur"]
+
+
+def test_rebench_repli_condamne_verdict_explicite_et_archive(env, monkeypatch):
+    """Revue adverse : aucun placement validé et le démarrage prévu ne tient pas → pas
+    « Recalibration échouée » (un plantage), un verdict dédié ; rien à appliquer,
+    archive à l'étape placement."""
+    from loom.setup.placement import PlacementNonValide
+
+    raison = (
+        "aucun placement validé (aucun candidat n'a démarré) et le démarrage prévu ne "
+        "tient pas à 4096 x 1 d'après l'estimation"
+    )
+    _launch(
+        env,
+        monkeypatch,
+        error=PlacementNonValide(raison),
+        before_error={"etape": "placement"},
+    )
+    txt = _wait_verdict(env)
+    assert "aucun placement validé" in txt and "échouée" not in txt
+    assert "Calibration non lancée, configuration inchangée." in txt
+    assert "b_apply" not in _sessions_text(env, timeout=1.0)
+    archives = list((env.tmp / "var" / "bench" / "loc-test").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "placement"
+    assert "démarrage prévu ne tient pas" in arch["echec"]["erreur"]
+
+
+def test_rebench_verdict_dit_le_precontrole_et_un_demarrage_modeste(env, monkeypatch):
+    """Lignes du worker jamais exercées (revue adverse) : le verdict du précontrôle en
+    tête, et la sonde d'isolation mesurée sur un démarrage plus modeste."""
+    calib = dict(
+        CALIB,
+        context=4096,
+        isolation=False,
+        isolation_first=600,
+        isolation_back=4,
+        isolation_detail="retour 4/600 tokens retraités",
+        isolation_avant=False,
+        isolation_demarrage={
+            "lancer": True,
+            "modeste": True,
+            "raison": "le démarrage prévu ne tient pas à 4096 x 1 : sonde sur offload "
+            "partiel (ngl 23, estimé)",
+        },
+        precontrole={
+            "verdict": "faisable",
+            "plan_plancher": {
+                "ctx": 4096,
+                "slots": 1,
+                "candidats": ["gpu_partiel_ngl23"],
+            },
+        },
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "précontrôle : faisable — au plancher (4096 par slot, 1 slot)" in txt
+    assert "mesurée sur un démarrage plus modeste" in txt and "ngl 23" in txt
+
+
+def test_rebench_verdict_dit_une_sonde_non_lancee_et_un_precontrole_incertain(
+    env, monkeypatch
+):
+    calib = dict(
+        CALIB,
+        context=4096,
+        isolation=True,
+        isolation_detail="non mesurée — mémoire récurrente",
+        isolation_avant=True,
+        isolation_demarrage={
+            "lancer": False,
+            "modeste": False,
+            "raison": "mémoire récurrente : verdict d'isolation imposé, sonde non lancée",
+        },
+        precontrole={
+            "verdict": "incertain",
+            "raison": "précontrôle incertain : GGUF en 2 parties — flux inchangé",
+        },
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "sonde d'isolation : non lancée — mémoire récurrente" in txt
+    assert "précontrôle incertain : GGUF en 2 parties" in txt
+    assert "précontrôle : précontrôle" not in txt
 
 
 def test_rebench_aucun_placement_faisable_verdict_explicite_et_archive(

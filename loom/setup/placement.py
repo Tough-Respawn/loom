@@ -752,6 +752,21 @@ class DemarrageImpossible(RuntimeError):
         self.details = details or {}
 
 
+class PlacementNonValide(RuntimeError):
+    """Aucun placement validé par la mesure, et le démarrage prévu — les flags de repli —
+    ne tient pas même à 4096 x 1 d'après l'estimation : y revenir lancerait un
+    chargement condamné. Calibration non lancée, rien d'appliqué."""
+
+
+def raison_repli_condamne(mecanisme: str | None) -> str:
+    """Raison de PlacementNonValide (loom-setup et /rebench disent la même chose)."""
+    meca = mecanisme or "sonde de placement illisible"
+    return (
+        f"aucun placement validé ({meca}) et le démarrage prévu ne tient pas à "
+        f"{PRECONTROLE_CTX} x 1 d'après l'estimation"
+    )
+
+
 def placement_brut(ngl, cpu_moe, n_cpu_moe, n_layers) -> Placement:
     """Placement aux flags EXACTS d'un démarrage (-ngl, --cpu-moe, --n-cpu-moe).
     Placement.from_flags fait passer --cpu-moe avant -ngl (experts_cpu en ngl 999) ;

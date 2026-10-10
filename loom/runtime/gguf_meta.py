@@ -40,6 +40,12 @@ _DEFAULT_ALIGNMENT = 32
 _RECURRENT_PREFIXES = ("ssm_", "time_mix", "shortconv")
 
 
+class TypeGGUFInconnu(ValueError):
+    """Type de valeur que ce lecteur ne connaît pas : le fichier peut être plus récent
+    que lui, pas invalide — à distinguer d'un en-tête rejeté (pas un GGUF, version < 2,
+    tronqué) que llama-server refuserait aussi."""
+
+
 def _read_string(f) -> str:
     (n,) = struct.unpack("<Q", f.read(8))
     return f.read(n).decode("utf-8", errors="replace")
@@ -61,7 +67,7 @@ def _read_value(f, vtype: int, keep_arrays: bool = False):
         return vals if keep else None
     fmt = _SCALAR.get(vtype)
     if fmt is None:
-        raise ValueError(f"type GGUF inconnu : {vtype}")
+        raise TypeGGUFInconnu(f"type GGUF inconnu : {vtype}")
     (v,) = struct.unpack("<" + fmt, f.read(struct.calcsize(fmt)))
     return v
 

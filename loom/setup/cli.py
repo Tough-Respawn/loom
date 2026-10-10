@@ -1451,11 +1451,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         # Aucun placement validé, et le démarrage prévu — les flags de repli — ne tient
         # pas même à 4096 x 1 d'après l'estimation : y revenir lancerait un chargement
         # condamné (revue adverse). Sortie explicite, rien d'écrit.
-        meca = (pl_res or {}).get("mecanisme") or "sonde de placement illisible"
-        raison = (
-            f"aucun placement validé ({meca}) et le démarrage prévu ne tient pas à "
-            f"{place_mod.PRECONTROLE_CTX} x 1 d'après l'estimation"
-        )
+        raison = place_mod.raison_repli_condamne((pl_res or {}).get("mecanisme"))
         con.say(
             f"  [échec] {raison} — calibration non lancée, réglages NON écrits "
             "(configuration inchangée)."

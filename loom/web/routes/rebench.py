@@ -43,15 +43,18 @@ def _measure_placement(
     physical: int | None = None,
     vram_total_mb: int | None = None,
     precontrole: dict | None = None,
+    prevu_tient: bool | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand la sonde n'obtient
     aucune mesure exploitable (exception, présélection sans débit, mesures vides) ou que
     la validation du seul candidat échoue : la calibration vaut alors avec les flags
-    actuels du modèle. Lève AucunPlacementFaisable quand aucun candidat (configuration
-    actuelle et CPU seul compris) ne tient d'après l'estimation : aucun placement
-    comparé, calibration non lancée. La faisabilité s'estime au contexte UTILE
-    (`useful_ctx`) avec le type de cache de l'exécutant, via le profil GGUF ; la
+    actuels du modèle — sauf si le démarrage prévu ne tient pas (`prevu_tient` False) :
+    PlacementNonValide, pas de repli condamné. Lève AucunPlacementFaisable quand aucun
+    candidat (configuration actuelle et CPU seul compris) ne tient d'après
+    l'estimation : aucun placement comparé, calibration non lancée. La faisabilité
+    s'estime au contexte UTILE (`useful_ctx`) avec le type de cache de l'exécutant,
+    via le profil GGUF ; la
     configuration ACTUELLE (`mt`) est la ligne de base ; `raw` porte les contraintes
     de prefill optionnelles ([placement]). Avec `logical` (cœurs), chaque finaliste à
     calcul CPU est réglé en threads avant la finale (candidats du parc)."""
@@ -168,6 +171,14 @@ def _measure_placement(
     except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
         res = None
     if not res or res.get("placement") is None or not res["mesures"]:
+        if prevu_tient is False:
+            # Les flags de repli (démarrage prévu) ne tiennent pas même à 4096 x 1 :
+            # y revenir lancerait un chargement condamné (revue adverse).
+            if trace is not None:
+                trace["placement"] = res
+            raise place_mod.PlacementNonValide(
+                place_mod.raison_repli_condamne((res or {}).get("mecanisme"))
+            )
         return None, probe
     pl = res["placement"]
     extra = (
@@ -357,13 +368,6 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     gguf = mdir / mt["filename"]
     if not gguf.is_file():
         raise RuntimeError(f"GGUF introuvable ({gguf})")
-    try:
-        meta = read_gguf_meta(gguf)
-    except ValueError:
-        # Comme loom-setup : un GGUF illisible n'est pas un plantage, ses métadonnées
-        # sont inconnues — le précontrôle le dira « incertain » (revue n°16).
-        meta = {}
-    is_moe = bool(meta.get("expert_count"))
     # Le profil matériel de l'EXÉCUTANT (`--list-devices`, Vulkan compris) fixe la
     # topologie, les flags machine de la sonde et le mode de mesure mémoire ;
     # nvidia-smi n'est qu'un repli de VRAM.
@@ -374,6 +378,25 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     probe_bin = topo_mod.model_server_bin(mt, str(server_bin))
     hw = detect_hardware(probe_bin)
     trace.update(etape="préparation", gguf=str(gguf), server_bin=probe_bin, materiel=hw)
+    from loom.runtime.gguf_meta import TypeGGUFInconnu
+    from loom.setup.placement import DemarrageImpossible
+
+    try:
+        meta = read_gguf_meta(gguf)
+    except TypeGGUFInconnu:
+        # Fichier plus récent que le lecteur, pas invalide : métadonnées inconnues, le
+        # précontrôle le dira « incertain » et le serveur tranchera (revue n°16).
+        meta = {}
+    except ValueError as exc:
+        # En-tête rejeté (pas un GGUF, version < 2, tronqué) : llama-server le
+        # refuserait aussi — rien ne démarre, aucun processus lancé (revue adverse).
+        trace["etape"] = "précontrôle"
+        raise DemarrageImpossible(
+            f"GGUF illisible : {exc}",
+            etabli=True,
+            details={"verdict": "impossible", "gguf": str(gguf)},
+        ) from exc
+    is_moe = bool(meta.get("expert_count"))
     # Le binaire fait foi (`--list-devices`) : un build statique n'a aucune DLL à côté.
     gpu_backend = bench_mod.gpu_backend_available(hw, probe_bin)
     over = raw.get("override") or {}
@@ -458,7 +481,6 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     # Isolation D'ABORD (sur la configuration actuelle) : le placement se compare
     # ensuite avec les slots FINAUX, le KV doublé compte dans la faisabilité et dans la
     # mesure (même séquence que loom-setup step_bench — le conseilleur simule l'exécutant).
-    progress("sonde d'isolation du cache (A -> pollution -> A)…")
     trace["etape"] = "isolation"
     trace["flags"] = {
         "threads": threads,
@@ -494,9 +516,12 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         uma=not getattr(hw, "vram_is_discrete", True),
         headroom_mb=headroom,
         gpu_tuning=bool(hw.has_gpu),
+        ctx_checkpoints=mt.get("ctx_checkpoints"),
     )
     slots_mesure = 0
     if not iso["lancer"]:
+        # Le statut ne promet pas une sonde qui ne tourne pas (revue adverse).
+        progress(f"sonde d'isolation non lancée : {iso['raison']}")
         if meta.get("recurrent"):
             # Verdict imposé par la mémoire récurrente : pas de chargement condamné.
             isolation = True
@@ -517,6 +542,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
             n_cpu_moe=iso["flags"]["n_cpu_moe"],
         )
         slots_mesure = 1
+        progress("sonde d'isolation du cache (A -> pollution -> A)…")
         try:
             first, back = sonde_iso.probe_isolation()
             iso_first, iso_back = int(first), int(back)
@@ -549,8 +575,9 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         mt.get("context"), server_cfg.get("context"), meta.get("context_length")
     )
     # Posé AVANT le contrôle d'étape 2 : une archive de refus dit quel contexte ne tenait
-    # pas (il n'était écrit qu'en fin de parcours).
+    # pas (il n'était écrit qu'en fin de parcours), et à quelle étape.
     trace["contexte_utile"] = ctx_utile
+    trace["etape"] = "placement"
     # _measure_placement annonce l'estimation mémoire, puis la sonde de placement
     # seulement APRÈS le contrôle de faisabilité (revue #15).
     pl_verdict, probe = _measure_placement(
@@ -572,6 +599,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         physical=psutil.cpu_count(logical=False),
         vram_total_mb=vram,
         precontrole=pc,
+        prevu_tient=iso.get("prevu_tient"),
     )
     trace["placement"] = pl_verdict
     trace["placement_avant"] = {
@@ -763,6 +791,7 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     from loom.setup.placement import (
         AucunPlacementFaisable,
         DemarrageImpossible,
+        PlacementNonValide,
         precontrole_texte,
     )
 
@@ -1056,6 +1085,13 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
             f"⛔ « {mid} » : {exc}. Aucun placement comparé, calibration non lancée, "
             "configuration inchangée."
         )
+        wiz = None
+        erreur = str(exc)
+        trace["etape"] = "placement"
+    except PlacementNonValide as exc:
+        # Des placements ont été mesurés, aucun validé, et le repli (démarrage prévu) ne
+        # tient pas : un résultat, pas un plantage — rien n'est calibré ni appliqué.
+        msg = f"⛔ « {mid} » : {exc}. Calibration non lancée, configuration inchangée."
         wiz = None
         erreur = str(exc)
         trace["etape"] = "placement"
