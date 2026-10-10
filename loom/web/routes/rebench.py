@@ -5,6 +5,18 @@ import os
 from pathlib import Path
 
 
+def _mmproj_mb(path) -> int:
+    """Poids du projecteur multimodal (catalogue de son GGUF), en Mo : allocation hôte
+    CERTAINE au démarrage (--no-mmproj-offload). 0 si illisible ou absent."""
+    from loom.runtime.gguf_meta import read_gguf_meta
+
+    try:
+        w = read_gguf_meta(path).get("weights") or {}
+    except (ValueError, OSError):
+        return 0
+    return int(w.get("total", 0) or 0) // (1024 * 1024)
+
+
 # ---- /rebench : recalibration topologique d'un LOCAL TEXTE (loom.setup réutilisé) ----
 
 # Un seul rebench à la fois : la mesure sature CPU/GPU et exige la VRAM libre.
@@ -29,6 +41,7 @@ def _measure_placement(
     trace: dict | None = None,
     logical: int | None = None,
     physical: int | None = None,
+    vram_total_mb: int | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand la sonde n'obtient
@@ -75,7 +88,13 @@ def _measure_placement(
         model_size_mb=int(model_size_mb or 0),
         kv_mb=kv_mb,
         gpu_backend=bool(gpu_backend),
-        vram_total_mb=int(getattr(hw, "vram_total_mb", 0) or 0),
+        # Même VRAM que la topologie et le -ngl de la sonde (repli nvidia-smi compris) :
+        # l'étape 1 (précontrôle) et l'étape 2 jugent la même machine.
+        vram_total_mb=int(
+            vram_total_mb
+            if vram_total_mb is not None
+            else (getattr(hw, "vram_total_mb", 0) or 0)
+        ),
         ram_total_mb=int(ram_total_mb),
         uma=not getattr(hw, "vram_is_discrete", True),
         headroom_mb=headroom_mb,
@@ -326,7 +345,12 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     gguf = mdir / mt["filename"]
     if not gguf.is_file():
         raise RuntimeError(f"GGUF introuvable ({gguf})")
-    meta = read_gguf_meta(gguf)
+    try:
+        meta = read_gguf_meta(gguf)
+    except ValueError:
+        # Comme loom-setup : un GGUF illisible n'est pas un plantage, ses métadonnées
+        # sont inconnues — le précontrôle le dira « incertain » (revue n°16).
+        meta = {}
     is_moe = bool(meta.get("expert_count"))
     # Le profil matériel de l'EXÉCUTANT (`--list-devices`, Vulkan compris) fixe la
     # topologie, les flags machine de la sonde et le mode de mesure mémoire ;
@@ -359,6 +383,43 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     uma = bool(hw.has_gpu and not hw.vram_is_discrete)
     budget = topo_mod.memory_budget_mb(topo, vram, ram, headroom, uma=uma)
     mmproj = mt.get("mmproj_filename")
+    # PRÉCONTRÔLE (revue n°16, étape 1) AVANT toute sonde : les démarrages tiennent-ils
+    # au plancher ? Même comptabilité que le contrôle d'étape 2 (_measure_placement) ;
+    # métadonnées incomplètes : « incertain », flux inchangé.
+    from loom.runtime.model_profile import ModelProfile
+    from loom.setup import placement as place_mod
+
+    trace["etape"] = "précontrôle"
+    progress("précontrôle mémoire du démarrage (avant tout chargement)…")
+    profile = ModelProfile.from_meta(meta, model_size_mb=size_mb)
+    pc = place_mod.precontrole(
+        profile,
+        meta,
+        model_size_mb=size_mb,
+        hw=hw,
+        gpu_backend=gpu_backend,
+        vram_total_mb=vram,
+        ram_total_mb=ram,
+        uma=not getattr(hw, "vram_is_discrete", True),
+        headroom_mb=headroom,
+        base_slots=topo_mod.probe_slots(server_cfg, False),
+        ctx_checkpoints=mt.get("ctx_checkpoints"),
+        current=place_mod.current_placement(
+            mt,
+            n_layers=meta.get("n_layers"),
+            size_mb=size_mb,
+            profile=hw,
+            override_ngl=over.get("n_gpu_layers"),
+            headroom=headroom,
+        ),
+        mmproj_mb=_mmproj_mb(mdir / mmproj) if mmproj else 0,
+    )
+    trace["precontrole"] = pc
+    trace["profil"] = profile.describe()
+    if pc["verdict"] in ("impossible", "hors_budget"):
+        raise place_mod.DemarrageImpossible(
+            pc["raison"], etabli=pc["etabli"], details=pc
+        )
     probe = topo_mod.ServerProbe(
         server_bin=probe_bin,
         model_path=str(gguf),
@@ -399,24 +460,72 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     isolation = None
     iso_detail = ""
     iso_first, iso_back = 0, 0
-    try:
-        first, back = probe.probe_isolation()
-        iso_first, iso_back = int(first), int(back)
-        isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
-        iso_detail = f"retour {back}/{first} tokens retraités"
+    # La sonde tourne sur une COPIE à 1 slot (A -> B -> A : à 2 slots, B partirait sur
+    # le slot libre et la pollution n'aurait jamais lieu), avec le démarrage prévu s'il
+    # tient à 4096 x 1, sinon un démarrage plus modeste ; le verdict pose les slots de la
+    # sonde PRINCIPALE (revue n°16, même séquence que loom-setup).
+    from dataclasses import replace as _dc_replace
+
+    iso = place_mod.demarrage_isolation(
+        profile,
+        meta,
+        flags={
+            "ngl": probe.ngl,
+            "cpu_moe": probe.cpu_moe,
+            "n_cpu_moe": probe.n_cpu_moe,
+        },
+        complet=pc["complet"],
+        model_size_mb=size_mb,
+        gpu_backend=gpu_backend,
+        vram_total_mb=vram,
+        ram_total_mb=ram,
+        uma=not getattr(hw, "vram_is_discrete", True),
+        headroom_mb=headroom,
+        gpu_tuning=bool(hw.has_gpu),
+    )
+    slots_mesure = 0
+    if not iso["lancer"]:
         if meta.get("recurrent"):
-            iso_detail += ", mémoire récurrente"
-        # Nouveau verdict : il remplace l'isolation actuelle (dans les deux sens).
-        probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
-    except Exception as exc:  # noqa: BLE001 - sonde best-effort : l'isolation actuelle reste
-        iso_detail = f"sonde illisible ({exc}) — isolation actuelle conservée"
+            # Verdict imposé par la mémoire récurrente : pas de chargement condamné.
+            isolation = True
+            probe.n_parallel = topo_mod.probe_slots(server_cfg, True)
+            iso_detail = f"non mesurée — {iso['raison']}"
+        else:
+            iso_detail = (
+                f"sonde non lancée ({iso['raison']}) — isolation actuelle conservée"
+            )
+    else:
+        if iso["modeste"]:
+            progress(f"sonde d'isolation : {iso['raison']}")
+        sonde_iso = _dc_replace(
+            probe,
+            n_parallel=1,
+            ngl=iso["flags"]["ngl"],
+            cpu_moe=iso["flags"]["cpu_moe"],
+            n_cpu_moe=iso["flags"]["n_cpu_moe"],
+        )
+        slots_mesure = 1
+        try:
+            first, back = sonde_iso.probe_isolation()
+            iso_first, iso_back = int(first), int(back)
+            isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
+            iso_detail = f"retour {back}/{first} tokens retraités"
+            if meta.get("recurrent"):
+                iso_detail += ", mémoire récurrente"
+            # Nouveau verdict : il remplace l'isolation actuelle (dans les deux sens).
+            probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
+        except Exception as exc:  # noqa: BLE001 - sonde best-effort : l'isolation actuelle reste
+            iso_detail = f"sonde illisible ({exc}) — isolation actuelle conservée"
     trace["isolation"] = {
         "necessaire": isolation,
         "first": iso_first,
         "back": iso_back,
         "detail": iso_detail,
         "avant": bool(mt.get("cache_isolation", False)),
-        "slots_mesure": probe.n_parallel,
+        # Slots de la MESURE (copie à 1 slot) et slots RETENUS pour la suite.
+        "slots_mesure": slots_mesure,
+        "slots_retenus": probe.n_parallel,
+        "demarrage": iso,
     }
     trace["flags"]["slots"] = probe.n_parallel
     # Placement MESURÉ x couples de batchs, avant la calibration, faisabilité estimée au
@@ -446,6 +555,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         trace=trace,
         logical=os.cpu_count() or 4,
         physical=psutil.cpu_count(logical=False),
+        vram_total_mb=vram,
     )
     trace["placement"] = pl_verdict
     trace["placement_avant"] = {
@@ -488,6 +598,8 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     calib["isolation_first"] = iso_first
     calib["isolation_back"] = iso_back
     calib["isolation_avant"] = bool(mt.get("cache_isolation", False))
+    calib["isolation_demarrage"] = iso
+    calib["precontrole"] = pc
     if pl_verdict and pl_verdict.get("ubatch"):
         # Les batchs viennent du 2x2 des finalistes (même contexte, même profondeur,
         # mêmes slots que le placement) : la sonde ubatch séparée est obsolète.
@@ -632,7 +744,11 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     une application a du sens. `job.done` posé EN DERNIER (le stream lit final)."""
     from loom.setup import bench as bench_mod
     from loom.setup import topology as topo_mod
-    from loom.setup.placement import AucunPlacementFaisable
+    from loom.setup.placement import (
+        AucunPlacementFaisable,
+        DemarrageImpossible,
+        precontrole_texte,
+    )
 
     spec = next((m for m in S.local_model_specs if m.get("id") == mid), None)
     calib = None
@@ -669,6 +785,18 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 f"sonde d'isolation : cache survit à la pollution "
                 f"({calib['isolation_detail']}) -> 1 slot suffit."
             )
+        # Démarrage de la sonde (revue n°16) : non lancée (verdict imposé ou rien ne
+        # tenait) ou lancée sur un démarrage plus modeste — dit, jamais tu.
+        iso_dem = calib.get("isolation_demarrage") or {}
+        if iso_dem and not iso_dem.get("lancer", True):
+            iso_line = f"sonde d'isolation : non lancée — {iso_dem.get('raison')}."
+        elif iso_dem.get("modeste"):
+            iso_line += (
+                f" (mesurée sur un démarrage plus modeste : {iso_dem['raison']})"
+            )
+        # Verdict du précontrôle en tête des lignes (faisable ou incertain ici).
+        if calib.get("precontrole"):
+            iso_line = f"{precontrole_texte(calib['precontrole'])}\n{iso_line}"
         ub = calib.get("ubatch_probe")
         ub_change = bool(ub) and (
             calib.get("ubatch_avant") != ub["ubatch"]
@@ -890,6 +1018,19 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                         else ""
                     ),
                 }
+    except DemarrageImpossible as exc:
+        # Précontrôle (revue n°16) : rien ne démarre d'après l'estimation, conclu AVANT
+        # tout chargement. Pas une sous-classe d'AucunPlacementFaisable : ni « Aucun
+        # placement comparé », ni étape « placement ». La route a arrêté le serveur du
+        # modèle avant le job (annoncé à la confirmation) : c'est dit.
+        msg = (
+            f"⛔ « {mid} » : {exc}. Aucun processus modèle lancé, configuration "
+            "inchangée. Le serveur du modèle, arrêté au lancement de la recalibration, "
+            "redémarrera à la prochaine requête."
+        )
+        wiz = None
+        erreur = str(exc)
+        trace["etape"] = "précontrôle"
     except AucunPlacementFaisable as exc:
         # Pas un plantage : un résultat de l'estimation, dit tel quel (revue #14).
         # Formulation exacte (revue #15) : la sonde d'isolation a déjà chargé le modèle,

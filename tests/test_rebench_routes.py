@@ -79,6 +79,8 @@ def _wait_verdict(env, timeout=10.0):
                 or "mesures disponibles" in txt
                 or "échouée" in txt
                 or "aucun placement faisable" in txt
+                or "démarrage impossible" in txt
+                or "hors budget" in txt
             ):
                 return txt
         time.sleep(0.1)
@@ -413,6 +415,36 @@ def test_rebench_verdict_dit_checkpoints_non_mesures(env, monkeypatch):
     _launch(env, monkeypatch, calib=calib)
     txt = _wait_verdict(env)
     assert "checkpoints : non mesuré" in txt
+
+
+def test_rebench_demarrage_impossible_verdict_explicite_et_archive(env, monkeypatch):
+    """Revue n°16 : le précontrôle conclut avant tout chargement → verdict dédié (pas
+    « Recalibration échouée », pas la sortie de l'étape 2), rien à appliquer, archive
+    « précontrôle ». Le serveur du modèle a été arrêté au lancement : c'est dit."""
+    from loom.setup.placement import DemarrageImpossible
+
+    raison = (
+        "démarrage impossible d'après l'estimation : allocations certaines au démarrage "
+        "minimal = poids chargés 12600 Mo + état récurrent 0 Mo + mmproj 0 Mo = 12600 Mo "
+        "> mémoire physique (VRAM 6144 + RAM 4000 = 10144 Mo), pour tout placement"
+    )
+    _launch(
+        env,
+        monkeypatch,
+        error=DemarrageImpossible(
+            raison, etabli=True, details={"verdict": "impossible"}
+        ),
+        before_error={"etape": "précontrôle"},
+    )
+    txt = _wait_verdict(env)
+    assert "démarrage impossible" in txt and "Aucun processus modèle lancé" in txt
+    assert "configuration inchangée" in txt and "redémarrera" in txt
+    assert "Aucun placement comparé" not in txt and "échouée" not in txt
+    assert "b_apply" not in _sessions_text(env, timeout=1.0)
+    archives = list((env.tmp / "var" / "bench" / "loc-test").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "précontrôle"
+    assert "démarrage impossible" in arch["echec"]["erreur"]
 
 
 def test_rebench_aucun_placement_faisable_verdict_explicite_et_archive(
