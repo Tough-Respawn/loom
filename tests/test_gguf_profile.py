@@ -287,15 +287,75 @@ def test_profil_octets_gpu_par_placement():
         "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
     }
     prof = ModelProfile.from_meta(_meta(n_layers=2, expert_count=8, weights=w))
-    # Les embeddings d'entrée restent sur CPU ; la sortie suit seulement l'offload total.
+    # Règle de llama.cpp (src/llama-model.cpp:1619-1644) : i_gpu_start =
+    # max(n_layer + 1 - ngl, 0), la couche de SORTIE (indice n_layer) passe EN PREMIER,
+    # la couche 0 en dernier ; les embeddings d'entrée restent toujours sur CPU.
     assert prof.gpu_bytes(ngl=999) == 4300 + 1100 + 800
-    assert prof.gpu_bytes(ngl=2) == 4300 + 1100
-    # -ngl k : les k DERNIÈRES couches (llama.cpp : i_gpu_start = n_layer - ngl).
-    assert prof.gpu_bytes(ngl=1) == 1100
+    assert prof.gpu_bytes(ngl=3) == 4300 + 1100 + 800  # n + 1 : tout
+    assert prof.gpu_bytes(ngl=2) == 1100 + 800  # ngl = n : la couche 0 reste sur CPU
+    assert prof.gpu_bytes(ngl=1) == 800  # la sortie seule
     assert prof.gpu_bytes(ngl=0) == 0
     assert prof.gpu_bytes(ngl=999, cpu_moe=True) == 300 + 1100 + 800
     assert prof.gpu_bytes(ngl=999, n_cpu_moe=1) == 300 + 1100 + 800
     assert prof.gpu_bytes(ngl=999, n_cpu_moe=0) == 4300 + 1100 + 800
+    # Côté hôte : tout ce qui n'est pas sur le device (embeddings + couche 0 à ngl 2).
+    assert prof.host_bytes(ngl=2) == 1000 + 4300
+    assert prof.host_bytes(ngl=999) == 1000
+    assert prof.host_bytes(ngl=0) == w["total"]
+
+
+def test_profil_bloc_nextn_non_charge_mais_compte_dans_la_regle():
+    """Revue de conception (2026-10-10) : sans MTP, llama.cpp crée le bloc nextn en
+    TENSOR_SKIP (src/llama-model.cpp:3833-3851) : ses octets ne sont jamais alloués,
+    mais son indice compte dans n_layer_all pour -ngl. Ornith 1.5 : « -ngl 2 » = la
+    sortie seule (le bloc 40 est le premier offloadé après elle)."""
+    w = {
+        "total": 1000 + 300 + 300 + 900 + 500,
+        "familles": {"embeddings": 1000, "output": 500},
+        "par_couche": [300, 300, 900],
+        "experts_par_couche": [0, 0, 800],
+        "couches_attention": [0, 1],
+        "couches_recurrentes": [],
+        "couches_nextn": [2],
+        "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+    }
+    prof = ModelProfile.from_meta(_meta(n_layers=3, weights=w))
+    assert prof.loaded_bytes() == w["total"] - 900
+    assert prof.gpu_bytes(ngl=999) == 300 + 300 + 500
+    assert prof.gpu_bytes(ngl=2) == 500  # sortie + bloc nextn (non chargé)
+    assert prof.gpu_bytes(ngl=3) == 300 + 500
+    assert prof.host_bytes(ngl=999) == 1000
+    assert prof.host_bytes(ngl=0) == w["total"] - 900
+
+
+def test_profil_sortie_liee_dupliquee_sur_le_device():
+    """Sans output.weight, llama.cpp duplique token_embd comme sortie (TENSOR_DUPLICATED)
+    sur le device de la sortie : une vraie allocation device dès ngl >= 1."""
+    w = {
+        "total": 1000 + 400 + 400,
+        "familles": {"embeddings": 1000, "output": 0},
+        "par_couche": [400, 400],
+        "experts_par_couche": [0, 0],
+        "couches_attention": [0, 1],
+        "couches_recurrentes": [],
+        "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+    }
+    prof = ModelProfile.from_meta(_meta(n_layers=2, weights=w))
+    assert prof.gpu_bytes(ngl=999) == 800 + 1000
+    assert prof.gpu_bytes(ngl=1) == 1000
+    assert prof.gpu_bytes(ngl=0) == 0
+    # L'hôte garde token_embd (la copie device s'ajoute, elle ne le remplace pas).
+    assert prof.host_bytes(ngl=999) == 1000
+
+
+def test_profil_couches_sur_le_device_selon_ngl():
+    prof = ModelProfile.from_meta(_meta(n_layers=4, full_attention_interval=2))
+    assert prof.device_layers(ngl=999) == {0, 1, 2, 3}
+    assert prof.device_layers(ngl=4) == {1, 2, 3}
+    assert prof.device_layers(ngl=1) == set()
+    assert prof.device_layers(ngl=0) == set()
+    # Aucun device dans le build : rien n'est offloadé, quel que soit -ngl.
+    assert prof.device_layers(ngl=999, has_device=False) == set()
 
 
 def test_profil_sans_catalogue_octets_gpu_inconnus():

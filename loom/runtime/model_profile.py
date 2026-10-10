@@ -257,30 +257,106 @@ class ModelProfile:
             total += toks * per_tok
         return int(total * slots)
 
-    def gpu_bytes(
-        self, *, ngl: int = 999, cpu_moe: bool = False, n_cpu_moe: int | None = None
-    ) -> int | None:
-        """Octets de poids que ce placement met sur le device, d'après le catalogue
-        (None sans catalogue). llama.cpp : les `ngl` DERNIÈRES couches vont sur GPU
-        (i_gpu_start = n_layer - ngl), la sortie seulement si ngl > n_layer, les
-        embeddings d'entrée restent sur CPU. --cpu-moe retire tous les experts ;
-        --n-cpu-moe N retire ceux des N premières couches."""
+    def _block_count(self) -> int:
+        """n_layer_all de llama.cpp : block_count du header (bloc nextn compris), sinon
+        le nombre de couches du catalogue."""
+        if self.n_layers:
+            return int(self.n_layers)
+        return len((self.weights or {}).get("par_couche") or [])
+
+    def device_layers(self, *, ngl: int, has_device: bool = True) -> set[int]:
+        """Couches RÉPÉTÉES que llama.cpp place sur le device pour `-ngl ngl`
+        (src/llama-model.cpp:1619-1644) : i_gpu_start = max(n_layer + 1 - ngl, 0), la
+        couche de SORTIE (indice n_layer) passant EN PREMIER — elle est sur le device dès
+        ngl >= 1 — et la couche 0 en dernier. Sans device dans le build : aucune."""
+        n = self._block_count()
+        k = int(ngl)
+        if not has_device or k <= 0 or n <= 0:
+            return set()
+        return set(range(max(n + 1 - k, 0), n))
+
+    def _nextn(self) -> set[int]:
+        """Blocs nextn (MTP) : créés en TENSOR_SKIP sans décodage MTP (Loom n'en passe
+        pas) — jamais alloués (src/llama-model.cpp:3833-3851)."""
+        return set((self.weights or {}).get("couches_nextn") or [])
+
+    def loaded_bytes(self) -> int | None:
+        """Octets de poids RÉELLEMENT chargés : le catalogue sans les blocs nextn.
+        None sans catalogue."""
         if not self.weights:
             return None
-        layers = list(self.weights.get("par_couche") or [])
+        par = list(self.weights.get("par_couche") or [])
+        skip = sum(par[i] for i in self._nextn() if i < len(par))
+        return int(int(self.weights.get("total", 0)) - skip)
+
+    def _placement_bytes(
+        self,
+        *,
+        ngl: int,
+        cpu_moe: bool,
+        n_cpu_moe: int | None,
+        has_device: bool,
+    ) -> tuple[int, int, int] | None:
+        """(device, dont copie de sortie liée, hôte) en octets pour ces flags BRUTS."""
+        if not self.weights:
+            return None
+        par = list(self.weights.get("par_couche") or [])
         experts = list(self.weights.get("experts_par_couche") or [])
-        experts += [0] * (len(layers) - len(experts))
-        n = len(layers)
-        k = max(0, min(int(ngl), n))
-        start = n - k
-        total = sum(layers[start:])
-        if cpu_moe:
-            total -= sum(experts[start:])
-        elif n_cpu_moe is not None:
-            total -= sum(experts[i] for i in range(start, n) if i < int(n_cpu_moe))
-        if ngl > n:
-            total += int((self.weights.get("familles") or {}).get("output", 0))
-        return int(total)
+        experts += [0] * (len(par) - len(experts))
+        fam = self.weights.get("familles") or {}
+        nextn = self._nextn()
+        dev = 0
+        for i in self.device_layers(ngl=ngl, has_device=has_device):
+            if i >= len(par) or i in nextn:
+                continue
+            w = par[i]
+            if cpu_moe or (n_cpu_moe is not None and i < int(n_cpu_moe)):
+                w -= experts[i]  # --cpu-moe / --n-cpu-moe : experts gardés sur CPU
+            dev += w
+        dup = 0
+        if has_device and int(ngl) >= 1:
+            out = int(fam.get("output", 0) or 0)
+            if out:
+                dev += out
+            else:
+                # Sortie liée : token_embd dupliqué sur le device de la sortie.
+                dup = int(fam.get("embeddings", 0) or 0)
+                dev += dup
+        host = int(self.loaded_bytes() or 0) - (dev - dup)
+        return int(dev), int(dup), int(max(0, host))
+
+    def gpu_bytes(
+        self,
+        *,
+        ngl: int = 999,
+        cpu_moe: bool = False,
+        n_cpu_moe: int | None = None,
+        has_device: bool = True,
+    ) -> int | None:
+        """Octets de poids que ces flags mettent sur le device, d'après le catalogue
+        (None sans catalogue) : couches de device_layers (blocs nextn non chargés
+        exclus), sortie dès ngl >= 1 (token_embd dupliqué si elle est liée), embeddings
+        d'entrée toujours sur CPU. --cpu-moe retire tous les experts ; --n-cpu-moe N
+        ceux des N premières couches."""
+        b = self._placement_bytes(
+            ngl=ngl, cpu_moe=cpu_moe, n_cpu_moe=n_cpu_moe, has_device=has_device
+        )
+        return None if b is None else b[0]
+
+    def host_bytes(
+        self,
+        *,
+        ngl: int = 999,
+        cpu_moe: bool = False,
+        n_cpu_moe: int | None = None,
+        has_device: bool = True,
+    ) -> int | None:
+        """Octets de poids restés côté hôte pour ces flags : tout ce qui est chargé et
+        n'est pas sur le device (token_embd compris). None sans catalogue."""
+        b = self._placement_bytes(
+            ngl=ngl, cpu_moe=cpu_moe, n_cpu_moe=n_cpu_moe, has_device=has_device
+        )
+        return None if b is None else b[2]
 
     def describe(self) -> list[str]:
         """Lignes lisibles, chacune avec sa provenance."""

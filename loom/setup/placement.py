@@ -119,11 +119,12 @@ class Placement:
         if ngl <= 0:
             return cls("cpu", 0, **kw)
         if ngl >= 999 or (n_layers and ngl > int(n_layers)):
-            # Au-delà du nombre de couches (99 sur 41, 999…), llama.cpp offloade aussi la
-            # couche de sortie : c'est le total.
+            # Au-delà du nombre de couches (99 sur 41, 999…), llama.cpp offloade toutes
+            # les couches et la sortie : c'est le total.
             return cls("gpu_total", 999, **kw)
         # Réglage EXACT conservé jusqu'à la frontière : -ngl n_layers n'est pas le total
-        # pour llama.cpp (la couche de sortie reste sur CPU, « 42/43 »).
+        # pour llama.cpp — la sortie passe EN PREMIER sur le device et c'est la couche 0
+        # qui reste sur CPU (« 42/43 », src/llama-model.cpp:1619-1644).
         return cls("gpu_partiel", ngl, **kw)
 
     def describe(self) -> str:
@@ -371,24 +372,31 @@ def _split_mb(
     """(device Mo, hôte Mo, source) de ce que le placement alloue de chaque côté : poids
     offloadés + KV et état vivant des couches offloadées sur le device ; poids restés
     sur CPU + KV de ces couches + `host_extra_mb` (checkpoints) sur l'hôte. Catalogue
-    des tenseurs quand il existe, sinon proportion de la taille du fichier."""
+    des tenseurs quand il existe (règle des couches de llama.cpp, cf.
+    ModelProfile.device_layers), sinon proportion de la taille du fichier."""
     frac = 1.0  # part des couches (donc du KV / état vivant) sur le device
     if pl.label == "cpu":
         frac = 0.0
     elif pl.label == "gpu_partiel" and layers:
         frac = min(1.0, pl.ngl / layers)
+    flags = dict(ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe)
+    b = profile.gpu_bytes(**flags) if profile is not None else None
+    if b is not None:
+        # KV et état vivant vivent avec LEUR couche (src/llama-kv-cache.cpp:212-221,
+        # src/llama-memory-recurrent.cpp:83-92) : prorata des couches à mémoire de
+        # contexte réellement offloadées, pas ngl/n.
+        porteuses = set(profile.attention_layers) | set(profile.recurrent_layers)
+        dev_layers = profile.device_layers(ngl=pl.ngl)
+        if porteuses:
+            frac = len(dev_layers & porteuses) / len(porteuses)
+        elif layers:
+            frac = min(1.0, len(dev_layers) / layers)
+        kv_dev = int(kv_mb * frac)
+        dev_w = b // _MIB
+        host_w = int(profile.host_bytes(**flags) or 0) // _MIB
+        return dev_w + kv_dev, host_w + (kv_mb - kv_dev) + host_extra_mb, "catalogue"
     kv_dev = int(kv_mb * frac)
     kv_host = kv_mb - kv_dev
-    b = (
-        profile.gpu_bytes(ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe)
-        if profile is not None
-        else None
-    )
-    if b is not None:
-        dev_w = b // _MIB
-        total_w = int((profile.weights or {}).get("total", 0)) // _MIB
-        host_w = max(0, total_w - dev_w)
-        return dev_w + kv_dev, host_w + kv_host + host_extra_mb, "catalogue"
     if pl.cpu_moe:
         # Experts en RAM : les denses seuls sur le device, poids inconnus sans catalogue
         # (supposés tenir) ; côté hôte on majore par le fichier entier.

@@ -51,8 +51,8 @@ def test_placement_depuis_le_model_toml():
         "gpu_partiel_ngl36"
     )
     assert placement_from_config({"n_gpu_layers": 999}, n_layers=42).key == "gpu_total"
-    # Frontière : -ngl 42 sur 42 couches n'est PAS 999 pour llama.cpp (la couche de sortie
-    # reste sur CPU, « 42/43 »). Le réglage exact est conservé tel quel.
+    # Frontière : -ngl 42 sur 42 couches n'est PAS 999 pour llama.cpp (la sortie passe en
+    # premier, la couche 0 reste sur CPU, « 42/43 »). Le réglage exact est conservé.
     assert (
         placement_from_config({"n_gpu_layers": 42}, n_layers=42).key
         == "gpu_partiel_ngl42"
@@ -337,6 +337,37 @@ def test_plan_experts_cpu_infaisable_quand_la_ram_manque():
     assert keys == ["experts_partiel_n2"]
     non = {n["key"]: n["raison"] for n in plan.non_explores}
     assert "experts_cpu" in non and "RAM" in non["experts_cpu"]
+
+
+def test_ventilation_partielle_suit_la_regle_des_couches_de_llama_cpp():
+    """Lot L1 (2026-10-10) : un offload partiel dense met sur le device la SORTIE puis
+    les couches à partir de n + 1 - ngl (src/llama-model.cpp:1619-1644). Avant : les ngl
+    dernières couches sans la sortie, et le KV au prorata ngl/n."""
+    from loom.setup.placement import _split_mb
+
+    mib = 1024 * 1024
+    w = {
+        "total": (500 + 4 * 1000 + 500) * mib,
+        "familles": {"embeddings": 500 * mib, "output": 500 * mib},
+        "par_couche": [1000 * mib] * 4,
+        "experts_par_couche": [0] * 4,
+        "couches_attention": [0, 1, 2, 3],
+        "couches_recurrentes": [],
+        "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+    }
+    prof = ModelProfile.from_meta({"n_layers": 4, "weights": w})
+    dev, host, src = _split_mb(
+        Placement("gpu_partiel", 2),
+        profile=prof,
+        model_size_mb=6000,
+        kv_mb=400,
+        host_extra_mb=50,
+        layers=4,
+    )
+    # ngl 2 sur 4 couches : la sortie + la couche 3 ; KV de 1 couche d'attention sur 4.
+    assert src == "catalogue"
+    assert dev == 500 + 1000 + 100
+    assert host == 500 + 3 * 1000 + 300 + 50
 
 
 def test_plan_utilise_le_profil_pour_la_faisabilite():
