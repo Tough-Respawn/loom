@@ -1207,6 +1207,7 @@ def validate_final(
     margin_pct: float = PLACEMENT_MARGIN_PCT,
     progress=None,
     prefill: PrefillConstraint | None = None,
+    prefill_insatisfiable: bool = False,
 ) -> dict:
     """Valide le RÉGLAGE FINAL complet — la sonde `probe` porte le placement élu, les
     slots décidés et les batchs mesurés — au contexte CALIBRÉ `ctx` et à la profondeur
@@ -1260,18 +1261,80 @@ def validate_final(
         )
     if prefill is not None:
         # La contrainte explicite se VÉRIFIE sur le réglage final, pas seulement sur les
-        # candidats : un prefill qui ne la tient pas rend la configuration incohérente
-        # avec ce qui a été demandé.
+        # candidats. Résultat DISTINCT de la cohérence de génération (revue #14 : un
+        # `coherent=False` sans `ecart_pct` cassait l'affichage, et une génération
+        # identique passait pour « ne reproduit pas (+0 %) »). Violée alors qu'un
+        # candidat la tenait : BLOQUANT (rien n'est appliqué). Insatisfiable sur cette
+        # machine (aucun candidat ne la tenait) : avertissement, comme au placement.
         secondes = prefill.seconds(float(m.get("pp_ts") or 0))
         respectee = secondes <= prefill.max_seconds
-        out["prefill_contrainte"] = {
+        pc = {
             "new_tokens": prefill.new_tokens,
             "max_seconds": prefill.max_seconds,
             "secondes": round(secondes, 1) if secondes != math.inf else None,
             "respectee": bool(respectee),
         }
-        if not respectee:
-            out["coherent"] = False
+        if not respectee and prefill_insatisfiable:
+            pc["insatisfiable"] = True
+        out["prefill_contrainte"] = pc
+        if not respectee and not prefill_insatisfiable:
+            out["bloquant"] = "contrainte prefill non respectée : " + _prefill_txt(pc)
+    return out
+
+
+def _prefill_txt(pc: dict) -> str:
+    """« 2000 tokens en 13.3 s > 10 s » (ou « prefill illisible »)."""
+    lim = f"{float(pc['max_seconds']):g} s"
+    if pc.get("secondes") is None:
+        return f"{pc['new_tokens']} tokens, prefill illisible (limite {lim})"
+    signe = "≤" if pc.get("respectee") else ">"
+    return f"{pc['new_tokens']} tokens en {pc['secondes']} s {signe} {lim}"
+
+
+def prefill_satisfiable(
+    mesures: dict, prefill: PrefillConstraint | None
+) -> bool | None:
+    """La contrainte explicite était-elle TENUE par au moins un candidat mesuré ?
+    None sans contrainte ou sans mesure exploitable."""
+    if prefill is None:
+        return None
+    pps = [
+        float(v.get("pp_ts") or 0)
+        for v in (mesures or {}).values()
+        if isinstance(v, dict) and v.get("pp_ts")
+    ]
+    if not pps:
+        return None
+    return any(prefill.seconds(pp) <= prefill.max_seconds for pp in pps)
+
+
+def final_checks_text(fin: dict) -> str:
+    """Suffixe lisible des contrôles du réglage final, chacun pour ce qu'il est : la
+    cohérence de GÉNÉRATION (seulement si une référence existe) et la contrainte de
+    PREFILL (durée mesurée face à la limite)."""
+    fin = fin or {}
+    out = ""
+    if fin.get("coherent") is True and fin.get("ecart_pct") is not None:
+        out += (
+            " ; génération cohérente avec la mesure de placement "
+            f"({fin['ecart_pct']:+.1f} %)"
+        )
+    elif fin.get("coherent") is False and fin.get("ecart_pct") is not None:
+        out += (
+            " ; génération : ne reproduit pas la mesure de placement "
+            f"({fin['ecart_pct']:+.1f} %) — à appliquer avec prudence"
+        )
+    pc = fin.get("prefill_contrainte")
+    if pc:
+        if pc.get("respectee"):
+            out += f" ; contrainte prefill respectée ({_prefill_txt(pc)})"
+        elif pc.get("insatisfiable"):
+            out += (
+                f" ; contrainte prefill NON respectée ({_prefill_txt(pc)}), "
+                "insatisfiable sur cette machine : aucun candidat ne la tenait"
+            )
+        else:
+            out += f" ; contrainte prefill NON respectée ({_prefill_txt(pc)})"
     return out
 
 

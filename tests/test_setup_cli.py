@@ -672,6 +672,49 @@ def test_etape_bench_aucun_placement_faisable_n_ecrit_rien_et_archive(
     assert "aucun placement faisable" in arch["echec"]["erreur"]
 
 
+def test_etape_bench_reglage_final_hors_contrainte_prefill_n_ecrit_rien(
+    monkeypatch, tmp_path
+):
+    """Revue #14 P2 : la contrainte de prefill, tenue pendant la comparaison, est
+    violée par le réglage final (2 000 tokens en 20 s > 10 s). Ce n'est pas une
+    divergence de génération : réglages NON écrits, durée face à la limite dite,
+    échec archivé à l'étape « réglage final »."""
+    from loom.setup.placement import final_depth, useful_context
+    from loom.setup.topology import ProbeResult
+
+    depth_finale = final_depth(useful_context(None, None, None))
+    etat = {"calibration": False}
+
+    def run_impl(ctx, depth):
+        if depth is None:
+            etat["calibration"] = True  # barreaux de pente : la calibration a commencé
+        r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+        if depth:
+            final = etat["calibration"] and depth == depth_finale
+            r.tg_ts, r.pp_ts = 5.0, (100.0 if final else 500.0)
+        return r
+
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch, tmp_path, _fake_probe_cls(run_impl)
+    )
+    local_path = tmp_path / "config" / "local.toml"
+    local_path.write_text(
+        local_path.read_text(encoding="utf-8")
+        + "\n[placement]\nprefill_new_tokens = 2000\nprefill_max_s = 10\n",
+        encoding="utf-8",
+    )
+    avant = (mdir / "model.toml").read_text(encoding="utf-8")
+    assert run(con, deps) != 0
+    out = "\n".join(printed)
+    assert "contrainte prefill NON respectée" in out and "20.0 s > 10 s" in out
+    assert "NON écrits" in out and "KeyError" not in out
+    assert (mdir / "model.toml").read_text(encoding="utf-8") == avant
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "réglage final"
+    assert "contrainte prefill" in arch["echec"]["erreur"]
+
+
 def test_etape_bench_dit_quand_l_annotation_de_l_archive_echoue(monkeypatch, tmp_path):
     from loom.setup import archive as _archive
     from loom.setup.topology import ProbeResult

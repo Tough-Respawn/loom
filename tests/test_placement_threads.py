@@ -17,6 +17,7 @@ import tomllib
 
 from loom.setup.placement import (
     Placement,
+    PrefillConstraint,
     needs_cpu_compute,
     probe_threads,
     thread_options,
@@ -231,15 +232,23 @@ def test_validation_finale_verifie_la_contrainte_de_prefill():
                 ctx=ctx, mem_mb=1, tg_ts=11.0, pp_ts=50.0, prompt_n=depth
             )
 
-    f = validate_final(
-        _Sonde(),
-        ctx=65_536,
-        depth=16_384,
-        n_layers=41,
-        prefill=PrefillConstraint(new_tokens=1_000, max_seconds=10.0),
-    )
+    contrainte = PrefillConstraint(new_tokens=1_000, max_seconds=10.0)
+    kw = dict(ctx=65_536, depth=16_384, n_layers=41, prefill=contrainte)
+    # Revue #14 P2 : la contrainte de prefill et la cohérence de GÉNÉRATION sont deux
+    # résultats distincts. Sans référence : `coherent` reste None (pas de KeyError
+    # 'ecart_pct' plus loin), la violation est BLOQUANTE et chiffrée.
+    f = validate_final(_Sonde(), **kw)
     assert f["prefill_contrainte"]["respectee"] is False
-    assert f["prefill_contrainte"]["secondes"] == 20.0 and f["coherent"] is False
+    assert f["prefill_contrainte"]["secondes"] == 20.0 and f["coherent"] is None
+    assert "ecart_pct" not in f
+    assert "20.0 s > 10 s" in f["bloquant"] and "1000 tokens" in f["bloquant"]
+    # Référence identique : génération COHÉRENTE (+0 %), prefill violé quand même.
+    g = validate_final(_Sonde(), reference_tg=11.0, **kw)
+    assert g["coherent"] is True and g["ecart_pct"] == 0.0 and g["bloquant"]
+    # Contrainte insatisfiable sur cette machine (aucun candidat ne la tenait) :
+    # avertissement, pas blocage — la génération a décidé seule, comme au placement.
+    h = validate_final(_Sonde(), prefill_insatisfiable=True, **kw)
+    assert "bloquant" not in h and h["prefill_contrainte"]["insatisfiable"] is True
     ok = validate_final(
         _Sonde(),
         ctx=65_536,
@@ -248,6 +257,47 @@ def test_validation_finale_verifie_la_contrainte_de_prefill():
         prefill=PrefillConstraint(new_tokens=1_000, max_seconds=30.0),
     )
     assert ok["prefill_contrainte"]["respectee"] is True and ok["coherent"] is None
+    assert "bloquant" not in ok
+
+
+def test_textes_du_reglage_final_distinguent_generation_et_prefill():
+    from loom.setup.placement import final_checks_text
+
+    viol = {
+        "new_tokens": 1000,
+        "max_seconds": 10.0,
+        "secondes": 20.0,
+        "respectee": False,
+    }
+    # Sans référence de génération : aucune mention d'écart, la contrainte est dite.
+    t = final_checks_text({"coherent": None, "prefill_contrainte": viol})
+    assert "écart" not in t and "reproduit" not in t
+    assert "contrainte prefill NON respectée" in t and "20.0 s > 10 s" in t
+    # Référence identique : génération cohérente ET prefill violé, les deux dits.
+    t = final_checks_text(
+        {"coherent": True, "ecart_pct": 0.0, "prefill_contrainte": viol}
+    )
+    assert "cohérente" in t and "+0.0 %" in t and "NON respectée" in t
+    assert "ne reproduit pas" not in t
+    t = final_checks_text(
+        {"coherent": None, "prefill_contrainte": dict(viol, insatisfiable=True)}
+    )
+    assert "insatisfiable" in t
+    t = final_checks_text({"coherent": False, "ecart_pct": -24.4})
+    assert "ne reproduit pas" in t and "-24.4 %" in t
+    assert final_checks_text({"coherent": None}) == ""
+
+
+def test_prefill_satisfiable_d_apres_les_mesures():
+    from loom.setup.placement import prefill_satisfiable
+
+    c = PrefillConstraint(new_tokens=1_000, max_seconds=10.0)
+    assert prefill_satisfiable({"a": {"pp_ts": 50.0}, "b": {"pp_ts": 150.0}}, c)
+    assert prefill_satisfiable({"a": {"pp_ts": 50.0}, "b": {"echec": "x"}}, c) is False
+    assert (
+        prefill_satisfiable({}, c) is None
+        and prefill_satisfiable({"a": {}}, None) is None
+    )
 
 
 def test_sonde_de_threads_muette_sans_mesure():

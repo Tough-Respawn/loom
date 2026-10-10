@@ -323,6 +323,60 @@ _FINAL = {
 }
 
 
+_VIOL = {
+    "new_tokens": 2000,
+    "max_seconds": 10.0,
+    "secondes": 13.3,
+    "respectee": False,
+}
+
+
+def test_rebench_prefill_final_viole_sans_reference_pas_de_keyerror(env, monkeypatch):
+    """Revue #14 P2, reproduction 1 : sans référence de génération, l'affichage
+    supposait un `ecart_pct` -> KeyError, verdict « échouée »."""
+    fin = {k: v for k, v in _FINAL.items() if k not in ("reference_tg", "ecart_pct")}
+    fin.update(
+        coherent=None,
+        prefill_contrainte=_VIOL,
+        bloquant="contrainte prefill non respectée : 2000 tokens en 13.3 s > 10 s",
+    )
+    _launch(env, monkeypatch, calib=dict(CALIB, context=8192, final=fin))
+    txt = _wait_verdict(env)
+    assert "échouée" not in txt and "KeyError" not in txt
+    assert "contrainte prefill NON respectée" in txt and "13.3 s > 10 s" in txt
+    assert "non applicable" in txt
+    assert "b_apply" not in _sessions_text(env, timeout=1.0)
+
+
+def test_rebench_prefill_final_viole_reference_identique_non_applicable(
+    env, monkeypatch
+):
+    """Reproduction 2 : référence identique -> « ne reproduit pas… (+0,0 %) », config
+    applicable, sans la contrainte violée. Désormais : génération cohérente, prefill
+    NON respecté chiffré, rien à appliquer."""
+    fin = dict(
+        _FINAL,
+        tg_ts=11.9,
+        ecart_pct=0.0,
+        coherent=True,
+        prefill_contrainte=_VIOL,
+        bloquant="contrainte prefill non respectée : 2000 tokens en 13.3 s > 10 s",
+    )
+    _launch(env, monkeypatch, calib=dict(CALIB, context=8192, final=fin))
+    txt = _wait_verdict(env)
+    assert "ne reproduit pas" not in txt and "cohérente" in txt
+    assert "NON respectée" in txt and "13.3 s > 10 s" in txt and "non applicable" in txt
+    assert "b_apply" not in _sessions_text(env, timeout=1.0)
+
+
+def test_rebench_prefill_insatisfiable_applicable_avec_avertissement(env, monkeypatch):
+    fin = dict(_FINAL, prefill_contrainte=dict(_VIOL, insatisfiable=True))
+    _launch(env, monkeypatch, calib=dict(CALIB, context=8192, final=fin))
+    txt = _wait_verdict(env)
+    assert "insatisfiable" in txt and "Tape « oui »" in txt
+    assert "b_apply" in _sessions_text(env, needles=("b_apply",))
+
+
 def test_rebench_verdict_porte_la_validation_du_reglage_final(env, monkeypatch):
     calib = dict(CALIB, context=8192, final=_FINAL)
     _launch(env, monkeypatch, calib=calib)

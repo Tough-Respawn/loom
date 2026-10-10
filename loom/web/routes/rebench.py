@@ -534,6 +534,11 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
             n_layers=meta.get("n_layers"),
             reference_tg=(pl_verdict or {}).get("tg_ts"),
             prefill=prefill_c,
+            # Insatisfiable = aucun candidat comparé ne la tenait : avertir, pas bloquer.
+            prefill_insatisfiable=place_mod.prefill_satisfiable(
+                (pl_verdict or {}).get("mesures") or {}, prefill_c
+            )
+            is False,
             progress=progress,
         )
     except Exception as exc:  # noqa: BLE001 - validation best-effort, nommée
@@ -720,22 +725,14 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 f" ({fin['echec']})." if fin and fin.get("echec") else "."
             )
         else:
-            if fin.get("coherent") is True:
-                coh = f" ; cohérent avec la mesure de placement ({fin['ecart_pct']:+.1f} %)"
-            elif fin.get("coherent") is False:
-                coh = (
-                    f" ; ne reproduit pas la mesure de placement ({fin['ecart_pct']:+.1f} %)"
-                    " — à appliquer avec prudence"
-                )
-            else:
-                coh = ""
-            from loom.setup.placement import checkpoints_text
+            from loom.setup.placement import checkpoints_text, final_checks_text
 
+            # Génération et contrainte de prefill dites SÉPARÉMENT (revue #14).
             final_line = (
                 f"réglage final {fin['placement']} (ctx {fin['ctx']}, {fin['slots']} slots, "
                 f"ub {fin['ubatch']}/b {fin['batch']}) : génération {fin['tg_ts']} t/s, "
-                f"prefill {fin['pp_ts']} t/s à profondeur {fin['depth']}{coh}"
-                f"{checkpoints_text(fin)}."
+                f"prefill {fin['pp_ts']} t/s à profondeur {fin['depth']}"
+                f"{final_checks_text(fin)}{checkpoints_text(fin)}."
             )
         # Un plancher n'est pas une mesure : le verdict le dit.
         valide = bool(calib.get("valide", True))
@@ -764,8 +761,17 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 manques.append("cache NON réutilisé")
             if not fin or "echec" in fin:
                 manques.append("réglage final non validé")
-            elif fin.get("coherent") is False:
-                manques.append("réglage final incohérent avec la mesure de placement")
+            else:
+                if fin.get("coherent") is False:
+                    manques.append(
+                        "génération du réglage final incohérente avec la mesure de "
+                        "placement"
+                    )
+                pc_fin = fin.get("prefill_contrainte") or {}
+                if pc_fin and not pc_fin.get("respectee"):
+                    manques.append(
+                        "contrainte prefill non respectée par le réglage final"
+                    )
             if not manques:
                 msg = (
                     f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
@@ -825,6 +831,13 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 msg = entete + (
                     "⛔ non applicable : la configuration finale complète n'a pas "
                     "fonctionné — réglages actuels conservés."
+                )
+                wiz = None
+            elif fin and fin.get("bloquant"):
+                # La contrainte EXPLICITE de prefill, tenue par un candidat, n'est pas
+                # tenue par le réglage final : ce qui a été demandé n'est pas livré.
+                msg = entete + (
+                    f"⛔ non applicable : {fin['bloquant']} — réglages actuels conservés."
                 )
                 wiz = None
             else:

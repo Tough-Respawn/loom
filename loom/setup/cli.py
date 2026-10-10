@@ -1457,11 +1457,30 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             n_layers=meta.get("n_layers"),
             reference_tg=(pl_res or {}).get("tg_ts"),
             prefill=prefill_c,
+            # Insatisfiable = aucun candidat comparé ne la tenait : avertir, pas bloquer.
+            prefill_insatisfiable=place_mod.prefill_satisfiable(
+                (pl_res or {}).get("mesures") or {}, prefill_c
+            )
+            is False,
             progress=lambda m: con.progress(f"réglage final : {m}"),
         )
     except Exception as exc:  # noqa: BLE001 - validation best-effort, nommée
         final = {"echec": f"{type(exc).__name__}: {exc}", "ctx": context}
     con.progress_end()
+    if final.get("bloquant"):
+        # Contrainte EXPLICITE de prefill tenue par un candidat mais pas par le réglage
+        # final : ce qui a été demandé n'est pas livré — rien n'est écrit (revue #14).
+        con.say(
+            f"  [échec] réglage final {final.get('placement')} : génération "
+            f"{final.get('tg_ts')} t/s{place_mod.final_checks_text(final)} — réglages "
+            "NON écrits, configuration actuelle conservée."
+        )
+        report.add("bench", "echec", f"réglage final : {final['bloquant']}")
+        trace["final"] = final
+        _archive_setup(
+            con, trace, echec={"etape": "réglage final", "erreur": final["bloquant"]}
+        )
+        return
     if "echec" in final:
         # Une baisse de vitesse avertit ; un échec de FONCTIONNEMENT empêche : rien
         # n'est écrit, la configuration actuelle reste en place.
@@ -1477,23 +1496,20 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         )
         return
     else:
-        if final.get("coherent") is None:
-            coh = ""
-        elif final["coherent"]:
-            coh = (
-                f" — cohérent avec la mesure de placement ({final['ecart_pct']:+.1f} %)"
-            )
-        else:
-            coh = (
-                f" — ne reproduit pas la mesure de placement ({final['ecart_pct']:+.1f} %),"
-                " à appliquer avec prudence"
-            )
-        marque = "attention" if final.get("coherent") is False else "ok"
+        # Génération et contrainte de prefill dites SÉPARÉMENT (revue #14).
+        pc_fin = final.get("prefill_contrainte") or {}
+        marque = (
+            "attention"
+            if final.get("coherent") is False
+            or (pc_fin and not pc_fin.get("respectee"))
+            else "ok"
+        )
         con.say(
             f"  [{marque}] réglage final {final['placement']} (ctx {final['ctx']}, "
             f"{final['slots']} slot(s), ub {final['ubatch']}/b {final['batch']}) : "
             f"génération {final['tg_ts']} t/s, prefill {final['pp_ts']} t/s à profondeur "
-            f"{final['depth']}{coh}{place_mod.checkpoints_text(final)}"
+            f"{final['depth']}{place_mod.final_checks_text(final)}"
+            f"{place_mod.checkpoints_text(final)}"
         )
     cache_v = None
     con.progress("vérification du cache avec la configuration finale…")
@@ -1567,6 +1583,11 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         for k in ("ubatch", "batch", "ecart_pct", "coherent"):
             if final.get(k) is not None:
                 values["bench"][f"final_{k}"] = final[k]
+        # Contrainte de prefill : résultat DISTINCT de la cohérence de génération.
+        if final.get("prefill_contrainte"):
+            values["bench"]["final_prefill_contrainte"] = _sans_none(
+                final["prefill_contrainte"]
+            )
         # Checkpoints EFFECTIFS du réglage final (journal serveur), à côté du plafond
         # estimé (`checkpoints_estimes`) : 32 est un maximum, pas le nombre créé.
         for k in ("checkpoints_effectifs", "checkpoints_detail"):
