@@ -355,9 +355,12 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
         has_gpu_backend=lambda sb: True,
         cpu_physical=lambda: 10,
-        gpu_vram_total_mb=lambda: 6_144,
+        # Une VRAM suffisante doit faire élire l'offload total. La VRAM TOTALE doit
+        # être celle du « GPU 20Go » : depuis la revue #14, la configuration actuelle
+        # passe elle aussi l'estimation, et 6 144 Mo ne portaient pas 5,6 Go + KV.
+        gpu_vram_total_mb=lambda: 20_480,
+        ram_total_mb=lambda: 64_000,
         make_probe=_FakeProbe,
-        # Une VRAM suffisante doit faire élire l'offload total.
         detect_hardware=lambda server_bin=None: HardwareProfile(
             True, "GPU 20Go", 20_000, 16, vram_is_discrete=True
         ),
@@ -526,9 +529,12 @@ def test_etape_bench_reglage_final_en_echec_n_ecrit_rien(monkeypatch, tmp_path):
     assert arch["materiel"]["gpu_name"] == "GPU 20Go" and "application" not in arch
 
 
-def _harnais_bench(monkeypatch, tmp_path, fake_probe_cls, assume_yes=True):
+def _harnais_bench(
+    monkeypatch, tmp_path, fake_probe_cls, assume_yes=True, ram_total_mb=64_000
+):
     """Harnais commun des scénarios de bench : binaire, model.toml minimal, GGUF factice,
-    lignes llama-bench, deps. Renvoie (con, printed, deps, mdir)."""
+    lignes llama-bench, deps. Renvoie (con, printed, deps, mdir). La RAM totale est
+    FIXÉE (la faisabilité hôte en dépend : pas la RAM de la machine de test)."""
     _patch_paths(monkeypatch, tmp_path)
     exe = tmp_path / "rt" / "llama-server.exe"
     exe.parent.mkdir()
@@ -556,6 +562,7 @@ def _harnais_bench(monkeypatch, tmp_path, fake_probe_cls, assume_yes=True):
         has_gpu_backend=lambda sb: True,
         cpu_physical=lambda: 10,
         gpu_vram_total_mb=lambda: 6_144,
+        ram_total_mb=lambda: ram_total_mb,
         make_probe=fake_probe_cls,
         detect_hardware=lambda server_bin=None: HardwareProfile(
             True, "GPU 20Go", 20_000, 16, vram_is_discrete=True
@@ -630,6 +637,39 @@ def test_etape_bench_erreur_d_entree_sortie_en_calibration_est_archivee(
     assert arch["echec"]["etape"] == "calibration"
     assert "accès refusé" in arch["echec"]["erreur"]
     assert arch["placement"]  # les mesures déjà faites sont conservées
+
+
+def test_etape_bench_aucun_placement_faisable_n_ecrit_rien_et_archive(
+    monkeypatch, tmp_path
+):
+    """Revue #14 P1 : rien ne tient d'après l'estimation (4 Go de RAM pour un modèle de
+    5,6 Go) -> pas de mesure de placement ni de calibration, réglages NON écrits,
+    échec archivé à l'étape placement. Avant : CPU seul proposé sans vérification."""
+    from loom.setup.topology import ProbeResult
+
+    lancés: list = []
+
+    def run_impl(ctx, depth):
+        lancés.append((ctx, depth))
+        r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+        if depth:
+            r.tg_ts, r.pp_ts = 5.0, 20.0
+        return r
+
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch, tmp_path, _fake_probe_cls(run_impl), ram_total_mb=4_000
+    )
+    avant = (mdir / "model.toml").read_text(encoding="utf-8")
+    assert run(con, deps) != 0
+    out = "\n".join(printed)
+    assert "aucun placement faisable" in out and "NON écrits" in out
+    assert lancés == []  # ni placement, ni calibration
+    assert (mdir / "model.toml").read_text(encoding="utf-8") == avant
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    assert len(archives) == 1
+    arch = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "placement"
+    assert "aucun placement faisable" in arch["echec"]["erreur"]
 
 
 def test_etape_bench_dit_quand_l_annotation_de_l_archive_echoue(monkeypatch, tmp_path):

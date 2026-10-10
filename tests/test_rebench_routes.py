@@ -78,6 +78,7 @@ def _wait_verdict(env, timeout=10.0):
                 or "déjà au top" in txt
                 or "mesures disponibles" in txt
                 or "échouée" in txt
+                or "aucun placement faisable" in txt
             ):
                 return txt
         time.sleep(0.1)
@@ -358,6 +359,35 @@ def test_rebench_verdict_dit_checkpoints_non_mesures(env, monkeypatch):
     _launch(env, monkeypatch, calib=calib)
     txt = _wait_verdict(env)
     assert "checkpoints : non mesuré" in txt
+
+
+def test_rebench_aucun_placement_faisable_verdict_explicite_et_archive(
+    env, monkeypatch
+):
+    """Revue #14 P1 : rien ne tient d'après l'estimation -> verdict dédié, rien à
+    appliquer, archive en échec à l'étape placement."""
+    from loom.setup import archive as _archive
+    from loom.setup.placement import AucunPlacementFaisable
+
+    monkeypatch.setattr(_archive, "BENCH_DIR", env.tmp / "var" / "bench")
+    raison = (
+        "aucun placement faisable d'après l'estimation mémoire — cpu : non exploré : "
+        "ne tient pas — proportion : ~50000 Mo hôte pour 12928 Mo de RAM"
+    )
+    _launch(
+        env,
+        monkeypatch,
+        error=AucunPlacementFaisable(raison),
+        before_error={"etape": "placement"},
+    )
+    txt = _wait_verdict(env)
+    assert "aucun placement faisable" in txt and "50000" in txt
+    assert "Recalibration" not in txt or "échouée" not in txt  # pas un plantage
+    assert "b_apply" not in _sessions_text(env, timeout=1.0)
+    archives = list((env.tmp / "var" / "bench" / "loc-test").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["echec"]["etape"] == "placement"
+    assert "aucun placement faisable" in arch["echec"]["erreur"]
 
 
 def test_rebench_verdict_previent_quand_le_reglage_final_ne_reproduit_pas(

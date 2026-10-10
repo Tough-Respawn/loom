@@ -150,6 +150,51 @@ def test_plan_sans_gpu_cpu_seul_rien_de_non_explore():
     assert _keys(plan) == ["cpu"] and plan.non_explores == []
 
 
+def test_plan_repli_cpu_verifie_la_ram_comme_les_autres():
+    """Revue #14 P1 (2026-10-10) : quand tout est refusé, CPU seul était ajouté sans
+    vérification — 50 000 Mio côté hôte pour 12 928 disponibles, proposé quand même."""
+    plan = _plan(model_size_mb=48_000, vram_total_mb=8_000, ram_total_mb=16_000)
+    assert plan.candidates == [] and plan.aucun_faisable is True
+    non = {n["key"]: n["raison"] for n in plan.non_explores}
+    assert "cpu" in non and "50000" in non["cpu"] and "12928" in non["cpu"]
+    assert plan.raison.startswith("aucun placement faisable")
+    assert "cpu" in plan.raison
+
+
+def test_plan_sans_gpu_verifie_aussi_la_ram():
+    """Le chemin « sans GPU » court-circuitait la vérification."""
+    ok = _plan(gpu_backend=False)  # 8 000 + 2 000 dans 60 928
+    assert _keys(ok) == ["cpu"] and ok.aucun_faisable is False and ok.raison == ""
+    assert "RAM" in ok.candidates[0].faisabilite
+    ko = _plan(gpu_backend=False, ram_total_mb=8_000)  # 10 000 > 4 928
+    assert ko.candidates == [] and ko.aucun_faisable is True
+    assert "cpu" in {n["key"] for n in ko.non_explores}
+
+
+def test_plan_configuration_actuelle_infaisable_non_mesuree_et_dite():
+    """La configuration actuelle passe la même vérification : infaisable d'après
+    l'estimation, elle n'est pas mesurée (ni base) et la trace le dit."""
+    plan = _plan(
+        moe=True,
+        model_size_mb=35_193,
+        vram_total_mb=16_000,
+        current=Placement("gpu_total", 999, actuel=True),
+    )
+    assert "gpu_total" not in _keys(plan) and plan.candidates
+    assert not any(c.actuel for c in plan.candidates)
+    raisons = [n["raison"] for n in plan.non_explores if n["key"] == "gpu_total"]
+    assert len(raisons) == 1 and "configuration actuelle" in raisons[0]
+    assert "ne tient pas" in raisons[0]
+    # Faisable, elle reste la base comme avant.
+    plan = _plan(
+        moe=True,
+        model_size_mb=35_193,
+        vram_total_mb=16_000,
+        current=Placement("experts_cpu", 999, cpu_moe=True, actuel=True),
+    )
+    assert plan.candidates[0].key == "experts_cpu" and plan.candidates[0].actuel
+
+
 def test_plan_l_actuel_devient_la_base():
     # Ornith après le 2026-10-09 : cpu_moe = false (tout GPU) dans model.toml.
     plan = _plan(

@@ -1269,6 +1269,16 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "checkpoint_min_step": getattr(probe, "checkpoint_min_step", None),
         },
     )
+    if plan.aucun_faisable:
+        # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation, CPU seul
+        # et configuration actuelle compris — ni mesure, ni calibration, ni écriture.
+        con.say(
+            f"  [échec] {plan.raison} — réglages NON écrits, configuration actuelle "
+            "conservée."
+        )
+        report.add("bench", "echec", plan.raison)
+        _archive_setup(con, trace, echec={"etape": "placement", "erreur": plan.raison})
+        return
     # Threads candidats (l'actuel de la machine d'abord, puis le parc) : chaque
     # finaliste à calcul CPU est réglé AVANT la finale (remarque de méthode, 2026-10-10).
     th_options = place_mod.thread_options(

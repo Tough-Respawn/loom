@@ -826,6 +826,43 @@ def test_measure_placement_rebench_regle_les_threads_des_finalistes():
     assert len(journal) == n_avant  # repris, pas remesuré
 
 
+def test_measure_placement_rebench_aucun_placement_faisable_leve():
+    """Revue #14 P1 : « aucun placement faisable » est un résultat EXPLICITE, pas un
+    None qui laisserait la calibration tourner avec les flags actuels."""
+    from dataclasses import dataclass as _dc
+
+    import pytest
+
+    from loom.runtime.hardware import HardwareProfile
+    from loom.setup.placement import AucunPlacementFaisable
+    from loom.web.routes.rebench import _measure_placement
+
+    @_dc
+    class FakeProbe:
+        ngl: int = 999
+        cpu_moe: bool = False
+        n_cpu_moe: object = None
+
+        def run(self, ctx, depth):
+            raise AssertionError("rien ne doit être mesuré")
+
+    hw = HardwareProfile(
+        True, "GPU 8 Go", 7_000, 16, vram_total_mb=8_000, vram_is_discrete=True
+    )
+    with pytest.raises(AucunPlacementFaisable) as exc:
+        _measure_placement(
+            FakeProbe(),
+            {"n_layers": 40, "head_count_kv": 8, "key_length": 128},
+            model_size_mb=48_000,
+            hw=hw,
+            ram_total_mb=16_000,
+            headroom_mb=640,
+            gpu_backend=True,
+            progress=lambda m: None,
+        )
+    assert "aucun placement faisable" in str(exc.value) and "cpu" in str(exc.value)
+
+
 def test_measure_placement_rebench_sans_comparaison_renvoie_none():
     from dataclasses import dataclass as _dc
 

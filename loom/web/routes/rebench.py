@@ -87,6 +87,15 @@ def _measure_placement(
         profile=profile,
         host_extra_mb=host_mb,
     )
+    if plan.aucun_faisable:
+        # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation, CPU seul
+        # et configuration actuelle compris — on ne mesure ni n'applique rien.
+        if trace is not None:
+            trace["plan"] = plan
+            trace["profil"] = profile.describe()
+            trace["kv_estime_mb"] = kv_mb
+            trace["hote_estime_mb"] = host_mb
+        raise place_mod.AucunPlacementFaisable(plan.raison)
     prefill_c, pp_floor = place_mod.constraints_from_config(raw or {})
     # Finalistes x deux couples (ubatch, batch) : celui de l'exécutant (la base) et
     # l'alternative du parc — la sonde ubatch séparée disparaît.
@@ -606,6 +615,7 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     une application a du sens. `job.done` posé EN DERNIER (le stream lit final)."""
     from loom.setup import bench as bench_mod
     from loom.setup import topology as topo_mod
+    from loom.setup.placement import AucunPlacementFaisable
 
     spec = next((m for m in S.local_model_specs if m.get("id") == mid), None)
     calib = None
@@ -855,6 +865,15 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                         else ""
                     ),
                 }
+    except AucunPlacementFaisable as exc:
+        # Pas un plantage : un résultat de l'estimation, dit tel quel (revue #14).
+        msg = (
+            f"⛔ « {mid} » : {exc}. Rien n'a été mesuré ni appliqué — configuration "
+            "actuelle conservée."
+        )
+        wiz = None
+        erreur = str(exc)
+        trace["etape"] = "placement"
     except Exception as exc:  # noqa: BLE001 - erreurs opérationnelles comprises (OSError…)
         # Une FileNotFoundError ou PermissionError pendant la calibration laissait le job
         # sans fin et sans archive : tout échec devient un verdict d'échec archivé.

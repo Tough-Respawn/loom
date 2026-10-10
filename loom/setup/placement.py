@@ -175,10 +175,30 @@ def constraints_from_config(raw: dict) -> tuple[PrefillConstraint | None, float 
     return prefill, (float(floor) if floor else None)
 
 
+class AucunPlacementFaisable(RuntimeError):
+    """Aucun placement (configuration actuelle et CPU seul compris) ne tient d'après
+    l'estimation mémoire : rien n'est mesuré ni appliqué, l'appelant le dit."""
+
+
 @dataclass
 class PlacementPlan:
     candidates: list[Placement]
     non_explores: list[dict] = field(default_factory=list)  # [{key, raison}]
+
+    @property
+    def aucun_faisable(self) -> bool:
+        """Résultat EXPLICITE : aucun candidat ne passe l'estimation (device et hôte)."""
+        return not self.candidates
+
+    @property
+    def raison(self) -> str:
+        """Pourquoi rien n'est faisable (chaque refus chiffré) ; "" sinon."""
+        if self.candidates:
+            return ""
+        refus = [f"{n['key']} : {n['raison']}" for n in self.non_explores]
+        return "aucun placement faisable d'après l'estimation mémoire" + (
+            " — " + " ; ".join(refus) if refus else ""
+        )
 
 
 def useful_context(
@@ -402,6 +422,13 @@ def _fits(
         layers=layers,
     )
     approx = "~" if src.startswith("proportion") else ""
+    if pl.label == "cpu" and host_budget is not None:
+        # CPU seul : tout est côté hôte (poids, KV, checkpoints), rien sur le device.
+        ok = host <= host_budget
+        return ok, (
+            f"{src} : {approx}{host} Mo hôte (poids + KV + checkpoints "
+            f"{host_extra_mb} Mo) pour {host_budget} Mo de RAM"
+        )
     if host_budget is None:
         return (
             dev <= budget,
@@ -497,12 +524,16 @@ def plan_placements(
       CPU ; CPU seul non exploré tant qu'un candidat GPU existe.
     `kv_mb` est la mémoire par contexte côté DEVICE au contexte utile (KV + état
     récurrent vivant), `host_extra_mb` celle côté HÔTE (checkpoints), `profile` le
-    profil GGUF. Chaque candidat est vérifié des deux côtés (cf. _fits)."""
+    profil GGUF. Chaque candidat est vérifié des deux côtés (cf. _fits) — CPU seul et
+    la configuration actuelle compris. Rien ne tient : plan VIDE (`aucun_faisable`,
+    `raison`), à traiter explicitement par l'appelant."""
     non: list[dict] = []
-    if not gpu_backend or vram_total_mb <= 0:
-        cands = [Placement("cpu", 0, faisabilite="sans GPU exploitable")]
-        return _with_current(cands, current, non)
-    budget = device_budget_mb(vram_total_mb, ram_total_mb, uma, headroom_mb)
+    sans_gpu = not gpu_backend or vram_total_mb <= 0
+    budget = (
+        0
+        if sans_gpu
+        else device_budget_mb(vram_total_mb, ram_total_mb, uma, headroom_mb)
+    )
     layers = int(n_layers or 0)
     kw = dict(
         profile=profile,
@@ -512,17 +543,25 @@ def plan_placements(
         layers=layers,
         host_extra_mb=int(host_extra_mb or 0),
         host_budget=host_budget_mb(ram_total_mb),
-        uma=uma,
+        uma=uma and not sans_gpu,
     )
     cands: list[Placement] = []
 
-    def _add_if_fits(pl: Placement) -> bool:
-        ok, why = _fits(pl, **kw)
+    def _check(pl: Placement):
+        return _fits(pl, **kw)
+
+    def _add_if_fits(pl: Placement, prefixe: str = "") -> bool:
+        ok, why = _check(pl)
         if ok:
-            cands.append(replace(pl, faisabilite=why))
+            cands.append(replace(pl, faisabilite=prefixe + why))
         else:
             non.append({"key": pl.key, "raison": f"non exploré : ne tient pas — {why}"})
         return ok
+
+    if sans_gpu:
+        # Sans GPU, CPU seul est le SEUL candidat — vérifié en RAM comme les autres.
+        _add_if_fits(Placement("cpu", 0), prefixe="sans GPU exploitable — ")
+        return _with_current(cands, current, non, _check)
 
     if moe:
         _add_if_fits(Placement("experts_cpu", 999, cpu_moe=True))
@@ -556,13 +595,11 @@ def plan_placements(
                 if k_prudent > 0:
                     _add_if_fits(Placement("gpu_partiel", k_prudent, estime=True))
     if not cands:
-        cands.append(
-            Placement(
-                "cpu",
-                0,
-                faisabilite="rien ne tient d'après l'estimation (device et hôte) : CPU "
-                "seul en dernier recours",
-            )
+        # Rien ne tient sur le device : CPU seul, VÉRIFIÉ en RAM comme les autres (il
+        # était ajouté sans contrôle — revue #14). Refusé lui aussi : plan vide.
+        _add_if_fits(
+            Placement("cpu", 0),
+            prefixe="rien ne tient sur le device, CPU seul — ",
         )
     if any(c.label != "cpu" for c in cands):
         non.append(
@@ -572,17 +609,36 @@ def plan_placements(
                 "démontré dominé, hors budget de mesure",
             }
         )
-    return _with_current(cands, current, non)
+    return _with_current(cands, current, non, _check)
 
 
-def _with_current(cands: list[Placement], current: Placement | None, non: list[dict]):
+def _with_current(
+    cands: list[Placement], current: Placement | None, non: list[dict], check=None
+):
     """La configuration actuelle devient la ligne de base (candidat 0), ajoutée si elle
-    n'est pas parmi les candidats générés ; elle sort des non-explorés."""
+    n'est pas parmi les candidats générés ; elle sort des non-explorés. Elle passe la
+    MÊME vérification (`check(pl) -> (tient, trace)`) : infaisable d'après
+    l'estimation, elle n'est ni mesurée ni base, et la trace le dit."""
     if current is None:
         return PlacementPlan(cands, non)
     idx = next((i for i, c in enumerate(cands) if c.key == current.key), None)
     if idx is None:
-        base = replace(current, actuel=True, faisabilite="configuration actuelle")
+        ok, why = check(current) if check is not None else (True, "")
+        if not ok:
+            non = [n for n in non if n["key"] != current.key]
+            non.append(
+                {
+                    "key": current.key,
+                    "raison": "configuration actuelle non mesurée : ne tient pas "
+                    f"d'après l'estimation — {why}",
+                }
+            )
+            return PlacementPlan(cands, non)
+        base = replace(
+            current,
+            actuel=True,
+            faisabilite="configuration actuelle" + (f" — {why}" if why else ""),
+        )
         cands = [base] + cands
     else:
         base = replace(cands[idx], actuel=True)
