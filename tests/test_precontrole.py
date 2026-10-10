@@ -481,7 +481,7 @@ def test_texte_de_l_etape_2_distingue_contexte_demande_et_demarrage():
 # ── démarrage de la sonde d'isolation (lot L3) ───────────────────────────────────
 
 
-def _iso(meta, hw, flags, *, ram, complet=True):
+def _iso(meta, hw, flags, *, ram, complet=True, ctx_checkpoints=None):
     prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
     return demarrage_isolation(
         prof,
@@ -495,6 +495,7 @@ def _iso(meta, hw, flags, *, ram, complet=True):
         uma=hw.has_gpu and not hw.vram_is_discrete,
         headroom_mb=640,
         gpu_tuning=hw.has_gpu,
+        ctx_checkpoints=ctx_checkpoints,
     )
 
 
@@ -537,6 +538,17 @@ def test_isolation_non_lancee_si_rien_ne_tient_a_4096():
     d = _iso(_dense(), NVIDIA_6G, PREVU_GPU, ram=4000)
     assert d["lancer"] is False and d["prevu_tient"] is False
     assert "aucun démarrage plus modeste" in d["raison"]
+
+
+def test_isolation_checkpoints_bornes_par_le_ctx_checkpoints_du_modele():
+    """La sonde crée au plus 6 checkpoints, jamais plus que le `ctx_checkpoints` passé au
+    serveur (il évince au-delà). Hybride sur 8 Go + 4 000 Mo : 6 x 150 Mo de checkpoints
+    ne tiennent pas côté hôte (928 Mo), 0 si — compter 6 refusait à tort un démarrage
+    qui tient, et `prevu_tient` décide désormais d'une sortie."""
+    meta = _hybride()
+    assert _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000)["prevu_tient"] is False
+    d = _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000, ctx_checkpoints=0)
+    assert d["prevu_tient"] is True and d["lancer"] is True
 
 
 def test_flags_bruts_ngl_0_cpu_moe_rien_sur_le_device():

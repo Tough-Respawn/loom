@@ -1149,7 +1149,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             f"  [attention] llama-bench : -ngl {retire['ngl']} retiré — "
             f"{retire['raison']}."
         )
-    if filtre["ngl"] == [0] and ngl != [0]:
+    if filtre["note"] and (filtre["retires"] or filtre["ngl"] != ngl):
         con.say(f"  [attention] llama-bench : {filtre['note']}.")
     ngl, ncmoe = filtre["ngl"], filtre["ncmoe"]
     combos = len(threads) * len(ngl)
@@ -1261,6 +1261,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         uma=not hw.vram_is_discrete,
         headroom_mb=headroom,
         gpu_tuning=bool(hw.has_gpu),
+        ctx_checkpoints=model_toml.get("ctx_checkpoints"),
     )
     isolation: bool | None = None
     iso_detail = ""
@@ -1445,6 +1446,23 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         pl_res = None
     con.progress_end()
     trace["placement"] = pl_res
+    valide = bool(pl_res and pl_res.get("placement") is not None and pl_res["mesures"])
+    if not valide and iso.get("prevu_tient") is False:
+        # Aucun placement validé, et le démarrage prévu — les flags de repli — ne tient
+        # pas même à 4096 x 1 d'après l'estimation : y revenir lancerait un chargement
+        # condamné (revue adverse). Sortie explicite, rien d'écrit.
+        meca = (pl_res or {}).get("mecanisme") or "sonde de placement illisible"
+        raison = (
+            f"aucun placement validé ({meca}) et le démarrage prévu ne tient pas à "
+            f"{place_mod.PRECONTROLE_CTX} x 1 d'après l'estimation"
+        )
+        con.say(
+            f"  [échec] {raison} — calibration non lancée, réglages NON écrits "
+            "(configuration inchangée)."
+        )
+        report.add("bench", "echec", raison)
+        _archive_setup(con, trace, echec={"etape": "placement", "erreur": raison})
+        return
     trace["etape"] = "calibration"
     if pl_res and pl_res.get("placement") is None:
         con.say(

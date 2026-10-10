@@ -1038,10 +1038,12 @@ def demarrage_isolation(
     uma: bool,
     headroom_mb: int,
     gpu_tuning: bool,
+    ctx_checkpoints: int | None = None,
 ) -> dict:
     """Démarrage de la sonde d'isolation : TOUJOURS 1 slot, 4096 tokens (à 2 slots,
     l'appel B part sur le slot libre et la pollution n'a jamais lieu). Les flags
-    prévus (bruts) s'ils tiennent — comptabilité de la sonde : ISOLATION_CHECKPOINTS —,
+    prévus (bruts) s'ils tiennent — comptabilité de la sonde : ISOLATION_CHECKPOINTS,
+    jamais plus que le `ctx_checkpoints` passé au serveur (il évince au-delà) —,
     sinon, données complètes, le premier candidat du plan à 4096 x 1 ; mémoire
     récurrente : verdict imposé, sonde non lancée. Données incomplètes : le démarrage
     prévu, inchangé (le serveur tranchera). `prevu_tient` : le démarrage prévu tient-il
@@ -1068,12 +1070,15 @@ def demarrage_isolation(
         }
     base["prevu_tient"] = False
     n = meta.get("n_layers")
+    cp = ISOLATION_CHECKPOINTS
+    if ctx_checkpoints is not None:
+        cp = min(cp, max(0, int(ctx_checkpoints)))
     est = memory_estimate_mb(
         profile,
         PRECONTROLE_CTX,
         gpu_tuning=gpu_tuning,
         slots=1,
-        checkpoints=ISOLATION_CHECKPOINTS,
+        checkpoints=cp,
     )
     sans_gpu = not gpu_backend or int(vram_total_mb or 0) <= 0
     budget = (
