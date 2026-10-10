@@ -96,14 +96,15 @@ def test_classement_incertain_repete_jusqu_au_plafond():
     make = _usine(
         {
             "experts_cpu": [(10.0, 200.0), (10.6, 200.0), (10.2, 200.0), (10.4, 200.0)],
-            "gpu_total": [(10.5, 260.0), (10.1, 260.0), (10.3, 260.0), (10.3, 260.0)],
+            "gpu_total": [(10.5, 205.0), (10.1, 205.0), (10.3, 205.0), (10.3, 205.0)],
         }
     )
     r = probe_placement(make, [CPU, GPU], reps=2)
     assert make.journal.count("experts_cpu") == PLACEMENT_MAX_REPS
     assert make.journal.count("gpu_total") == PLACEMENT_MAX_REPS
     assert r["mesures"]["gpu_total"]["n"] == PLACEMENT_MAX_REPS
-    # Indécis : la base est conservée et le mécanisme le dit.
+    # Indécis sur les DEUX axes (prefill équivalent) : la base est conservée, le
+    # mécanisme le dit.
     assert r["placement"] is CPU and "indécis" in r["mecanisme"]
 
 
@@ -126,7 +127,7 @@ def test_seul_le_tandem_incertain_est_remesure():
     make = _usine(
         {
             "experts_cpu": [(10.0, 200.0), (10.6, 200.0), (10.2, 200.0), (10.4, 200.0)],
-            "gpu_total": [(10.5, 260.0), (10.1, 260.0), (10.3, 260.0), (10.3, 260.0)],
+            "gpu_total": [(10.5, 205.0), (10.1, 205.0), (10.3, 205.0), (10.3, 205.0)],
             "experts_partiel_n10": [(6.0, 100.0)],
         }
     )
@@ -142,9 +143,56 @@ def _m(tg, pp, disp):
     return {"tg_ts": tg, "pp_ts": pp, "tg_disp_pct": disp}
 
 
-def test_gain_sous_la_dispersion_est_indecis_base_conservee():
+def test_generation_equivalente_le_prefill_departage_meme_contre_la_base():
+    """Ornith, 3e /rebench (2026-10-10) : gpu_total@ub2048 (base) 11,2 t/s / 124 t/s de
+    prefill ; gpu_total@ub512 11,3 / 212. Génération équivalente, prefill +71 % : garder
+    l'actuel vaut pour l'INCERTITUDE, pas quand un axe est net sans perte sur l'autre."""
+    from loom.setup.placement import PLACEMENT_PP_TIEBREAK_PCT
+
+    base = Placement("gpu_total", 999, ubatch=2048, batch=4096, actuel=True)
+    alt = Placement("gpu_total", 999, ubatch=512, batch=2048)
     best, mecanisme = pick_placement(
-        {"experts_cpu": _m(12.0, 200.0, 12.0), "gpu_total": _m(13.0, 260.0, 10.0)},
+        {
+            "gpu_total@ub2048": _m(11.2, 124.0, 1.8),
+            "gpu_total@ub512": _m(11.3, 212.1, 0.0),
+        },
+        [base, alt],
+    )
+    assert best is alt
+    assert "équivalente" in mecanisme and "prefill" in mecanisme and "+71" in mecanisme
+    assert PLACEMENT_PP_TIEBREAK_PCT == 10.0
+
+
+def test_generation_equivalente_prefill_equivalent_garde_la_base():
+    base = Placement("gpu_total", 999, ubatch=2048, batch=4096, actuel=True)
+    alt = Placement("gpu_total", 999, ubatch=512, batch=2048)
+    best, mecanisme = pick_placement(
+        {
+            "gpu_total@ub2048": _m(11.2, 124.0, 1.8),
+            "gpu_total@ub512": _m(11.3, 130.0, 0.0),
+        },
+        [base, alt],
+    )
+    assert best is base and "conservé" in mecanisme
+
+
+def test_generation_equivalente_prefill_pire_garde_la_base():
+    base = Placement("gpu_total", 999, ubatch=2048, batch=4096, actuel=True)
+    alt = Placement("gpu_total", 999, ubatch=512, batch=2048)
+    best, _ = pick_placement(
+        {
+            "gpu_total@ub2048": _m(11.2, 124.0, 1.8),
+            "gpu_total@ub512": _m(11.3, 90.0, 0.0),
+        },
+        [base, alt],
+    )
+    assert best is base
+
+
+def test_gain_sous_la_dispersion_est_indecis_base_conservee():
+    # Prefill équivalent (205 contre 200) : seule la génération compte, et elle est indécise.
+    best, mecanisme = pick_placement(
+        {"experts_cpu": _m(12.0, 200.0, 12.0), "gpu_total": _m(13.0, 205.0, 10.0)},
         [CPU, GPU],
     )
     # +8 % dépasse la marge de 5 %, mais pas la dispersion mesurée (12 %).

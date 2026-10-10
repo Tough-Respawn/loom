@@ -118,11 +118,11 @@ def test_finalistes_compares_x_couples_au_meme_contexte_et_slots():
     ]
     assert all(j[2] == final_depth(32_768) for j in profond)
     assert set(r["mesures"]) == {j[0] for j in profond}
-    # Génération équivalente entre gpu_total@2048 et @512 (-0,8 %) : la base (actuelle)
-    # reste ; le prefill 205 contre 119 est une information, pas la décision.
-    assert r["placement"].key == "gpu_total@ub2048"
-    assert (r["placement"].ubatch, r["placement"].batch) == (2048, 4096)
-    assert "indécis" in r["mecanisme"] or "conservé" in r["mecanisme"]
+    # Génération équivalente entre gpu_total@2048 et @512 (-0,8 %) : le prefill
+    # départage (205 contre 119, +72 %) — l'élu porte ses batchs.
+    assert r["placement"].key == "gpu_total@ub512"
+    assert (r["placement"].ubatch, r["placement"].batch) == (512, 2048)
+    assert "prefill" in r["mecanisme"]
 
 
 def test_un_autre_couple_peut_gagner_et_porte_ses_batchs():

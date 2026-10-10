@@ -84,6 +84,27 @@ def _wait_verdict(env, timeout=10.0):
     raise AssertionError("verdict jamais posté")
 
 
+def _sessions_text(env, needles=(), timeout=20.0) -> str:
+    """Contenu concaténé des session.json, lu avec TOLÉRANCE : le worker remplace le
+    fichier atomiquement (os.replace) et Windows refuse alors la lecture un instant
+    (PermissionError). Attend jusqu'à `timeout` que toutes les `needles` soient là."""
+    deadline = time.time() + timeout
+    txt = ""
+    while True:
+        try:
+            txt = "".join(
+                p.read_text(encoding="utf-8")
+                for p in (env.tmp / "sessions").rglob("session.json")
+            )
+        except OSError:
+            txt = ""
+        if all(n in txt for n in needles) and txt:
+            return txt
+        if time.time() >= deadline:
+            return txt
+        time.sleep(0.05)
+
+
 def _launch(env, monkeypatch, calib=CALIB, error=None):
     from loom.web import routes
 
@@ -153,10 +174,7 @@ def test_rebench_rien_a_changer_sans_comparaison_ne_dit_pas_deja_au_top(
     assert "déjà au top" not in txt
     assert "mesures disponibles" in txt and "placement" in txt
     # PAS d'état wizard b_apply persisté : rien à « appliquer »
-    sessions = "".join(
-        p.read_text(encoding="utf-8")
-        for p in (env.tmp / "sessions").rglob("session.json")
-    )
+    sessions = _sessions_text(env, timeout=1.0)
     assert "b_apply" not in sessions
     assert "context = 4096" in (env.mdir / "model.toml").read_text(encoding="utf-8")
 
@@ -327,10 +345,7 @@ def test_rebench_reglage_final_en_echec_n_est_pas_applicable(env, monkeypatch):
     # propose plus d'appliquer)
     assert "Tape « oui » pour appliquer" not in txt
     # …mais rien à appliquer : pas d'état b_apply, et « oui » ne touche à rien.
-    sessions = "".join(
-        p.read_text(encoding="utf-8")
-        for p in (env.tmp / "sessions").rglob("session.json")
-    )
+    sessions = _sessions_text(env, timeout=1.0)
     assert "b_apply" not in sessions
     env.web.post("/chat", data={"message": "oui"})
     assert "context = 4096" in (env.mdir / "model.toml").read_text(encoding="utf-8")
@@ -417,15 +432,7 @@ def test_rebench_apply_ecrit_le_build_et_garde_les_echantillons(env, monkeypatch
     # Le worker poste le verdict PUIS sauvegarde la session : attendre l'état persisté.
     # Attendre l'état COMPLET (sous la charge de la suite, la sauvegarde peut suivre
     # le verdict de plusieurs secondes), puis seulement asserter.
-    deadline = time.time() + 20.0
-    sessions = ""
-    attendus = ("b_apply", "echantillons", "b7000-abc1234")
-    while time.time() < deadline and not all(a in sessions for a in attendus):
-        sessions = "".join(
-            p.read_text(encoding="utf-8")
-            for p in (env.tmp / "sessions").rglob("session.json")
-        )
-        time.sleep(0.05)
+    sessions = _sessions_text(env, needles=("b_apply", "echantillons", "b7000-abc1234"))
     assert "echantillons" in sessions and "b7000-abc1234" in sessions
     r = env.web.post("/chat", data={"message": "oui"})
     assert "Application" in _sse_texts(r.data)

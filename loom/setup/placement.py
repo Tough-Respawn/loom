@@ -33,6 +33,11 @@ from loom.runtime.hardware import recommend_gpu_layers
 
 #: Gain minimal de génération (en %) pour quitter le placement de base.
 PLACEMENT_MARGIN_PCT = 5.0
+#: À génération ÉQUIVALENTE (écart dans la marge ou la dispersion), gain de prefill
+#: minimal (en %) pour que le prefill départage, même contre la base. Garder l'actuel
+#: vaut pour l'incertitude, pas quand un axe est net sans perte sur l'autre (Ornith,
+#: 3e /rebench du 2026-10-10 : même génération, prefill 212 contre 124 t/s).
+PLACEMENT_PP_TIEBREAK_PCT = 10.0
 #: Contexte et prompt de la PRÉSÉLECTION : prefill long (le levier n'existe pas à 128
 #: tokens) et génération mesurée à la profondeur de ce prompt.
 PLACEMENT_PROBE_CTX = 8192
@@ -635,7 +640,12 @@ def probe_placement(
         (candidat 0 avec le couple ACTUEL) reste la première."""
         if not couples:
             return list(placements)
-        return [replace(c, ubatch=ub, batch=b) for ub, b in couples for c in placements]
+        # « configuration actuelle » ne vaut que pour le couple ACTUEL (couples[0]).
+        return [
+            replace(c, ubatch=ub, batch=b, actuel=c.actuel and (ub, b) == couples[0])
+            for ub, b in couples
+            for c in placements
+        ]
 
     def _res(**kw):
         base = {
@@ -954,6 +964,30 @@ def pick_placement(
     if not gagnants:
         if len(valid) == 1:
             return base, f"{base.key} : seul candidat mesuré{suffixe}"
+        # Génération ÉQUIVALENTE à la base (écart dans la marge ou la dispersion) : le
+        # prefill départage, même contre la base, s'il est NETTEMENT meilleur.
+        pp_base = float(valid[base.key].get("pp_ts") or 0)
+        equivalents_base = {
+            k: v
+            for k, v in valid.items()
+            if k != base.key
+            and abs((v["tg_ts"] / base_tg - 1) * 100)
+            <= max(margin_pct, disp_base, float(v.get("tg_disp_pct") or 0))
+        }
+        if equivalents_base and pp_base > 0:
+            k_pp = max(
+                equivalents_base, key=lambda k: float(valid[k].get("pp_ts") or 0)
+            )
+            pp_k = float(valid[k_pp].get("pp_ts") or 0)
+            if pp_k > pp_base * (1 + PLACEMENT_PP_TIEBREAK_PCT / 100):
+                ecart_tg = (valid[k_pp]["tg_ts"] / base_tg - 1) * 100
+                gain_pp = (pp_k / pp_base - 1) * 100
+                return by_key[k_pp], (
+                    f"{k_pp} adopté : génération équivalente à {base.key} "
+                    f"({valid[k_pp]['tg_ts']} contre {base_tg}, {ecart_tg:+.0f} %), "
+                    f"départagé au prefill : {pp_k} t/s contre {pp_base} ({gain_pp:+.0f} %, "
+                    f"au-dessus de {PLACEMENT_PP_TIEBREAK_PCT:g} %){suffixe}"
+                )
         meilleur = max(
             (k for k in valid if k != base.key), key=lambda k: valid[k]["tg_ts"]
         )

@@ -104,10 +104,10 @@ def test_pick_adopte_l_alternative_au_dela_de_la_marge():
 
 
 def test_pick_garde_la_base_sous_la_marge():
-    # +3 % de tg : dans le bruit (marge 5 %), la base, plus simple, est conservée et
-    # le mécanisme le dit.
+    # +3 % de tg : dans le bruit (marge 5 %), prefill équivalent : la base, plus simple,
+    # est conservée et le mécanisme le dit.
     best, mecanisme = pick_placement(
-        _mes(experts_cpu=(12.0, 200.0), gpu_total=(12.36, 240.0)), [CPU, GPU]
+        _mes(experts_cpu=(12.0, 200.0), gpu_total=(12.36, 208.0)), [CPU, GPU]
     )
     assert best is CPU
     assert f"{PLACEMENT_MARGIN_PCT:g}" in mecanisme and "conservé" in mecanisme
