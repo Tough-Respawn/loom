@@ -42,6 +42,7 @@ def _measure_placement(
     logical: int | None = None,
     physical: int | None = None,
     vram_total_mb: int | None = None,
+    precontrole_verdict: str | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand la sonde n'obtient
@@ -111,16 +112,27 @@ def _measure_placement(
         host_extra_mb=host_mb,
     )
     if plan.aucun_faisable:
-        # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation, CPU seul
-        # et configuration actuelle compris — aucun placement comparé, calibration non
-        # lancée, rien d'appliqué. La sonde d'isolation a déjà tourné dans
-        # _run_calibration (revue #15) : son verdict n'est conservé que dans l'archive.
+        # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation au contexte
+        # utile, CPU seul et configuration actuelle compris — aucun placement comparé,
+        # calibration non lancée, rien d'appliqué. Le précontrôle a laissé passer le
+        # démarrage au plancher ; la sonde d'isolation a pu tourner dans _run_calibration
+        # (revue #15) : son verdict n'est conservé que dans l'archive.
         if trace is not None:
             trace["plan"] = plan
             trace["profil"] = profile.describe()
             trace["kv_estime_mb"] = kv_mb
             trace["hote_estime_mb"] = host_mb
-        raise place_mod.AucunPlacementFaisable(plan.raison)
+        # Étape 2 (revue n°16) : c'est le contexte DEMANDÉ qui ne tient pas — dit avec
+        # le contexte, les slots retenus, les postes, et le verdict du précontrôle.
+        raise place_mod.AucunPlacementFaisable(
+            place_mod.texte_etape2(
+                plan,
+                ctx=int(useful_ctx or place_mod.PLACEMENT_PROBE_CTX),
+                slots=max(1, int(slots or 1)),
+                estimation=estimation,
+                precontrole=precontrole_verdict,
+            )
+        )
     # Annoncée seulement maintenant : avant le contrôle, le dernier statut diffusé
     # promettait une sonde qui ne tourne pas quand rien ne tient (revue #15).
     progress("sonde de placement (où vivent les poids, x batchs)…")
@@ -536,6 +548,9 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     ctx_utile = useful_context(
         mt.get("context"), server_cfg.get("context"), meta.get("context_length")
     )
+    # Posé AVANT le contrôle d'étape 2 : une archive de refus dit quel contexte ne tenait
+    # pas (il n'était écrit qu'en fin de parcours).
+    trace["contexte_utile"] = ctx_utile
     # _measure_placement annonce l'estimation mémoire, puis la sonde de placement
     # seulement APRÈS le contrôle de faisabilité (revue #15).
     pl_verdict, probe = _measure_placement(
@@ -556,6 +571,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         logical=os.cpu_count() or 4,
         physical=psutil.cpu_count(logical=False),
         vram_total_mb=vram,
+        precontrole_verdict=pc["verdict"],
     )
     trace["placement"] = pl_verdict
     trace["placement_avant"] = {
@@ -1033,8 +1049,9 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
         trace["etape"] = "précontrôle"
     except AucunPlacementFaisable as exc:
         # Pas un plantage : un résultat de l'estimation, dit tel quel (revue #14).
-        # Formulation exacte (revue #15) : la sonde d'isolation a déjà chargé le modèle,
-        # le contrôle mémoire intervient à l'étape placement.
+        # Formulation exacte (revue #15) : ce contrôle-là intervient à l'étape placement,
+        # après la sonde d'isolation (si elle a tourné) ; le précontrôle, lui, conclut
+        # avant tout chargement (branche DemarrageImpossible ci-dessus).
         msg = (
             f"⛔ « {mid} » : {exc}. Aucun placement comparé, calibration non lancée, "
             "configuration inchangée."

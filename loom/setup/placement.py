@@ -230,10 +230,11 @@ def inconnues_decisives(profile, meta: dict | None) -> list[str]:
 
 
 class AucunPlacementFaisable(RuntimeError):
-    """Aucun placement (configuration actuelle et CPU seul compris) ne tient d'après
-    l'estimation mémoire : aucun placement comparé, calibration non lancée, rien
-    d'appliqué — l'appelant le dit. Le contrôle intervient à l'étape placement : la
-    sonde d'isolation (et, dans loom-setup, llama-bench) a déjà chargé le modèle."""
+    """ÉTAPE 2 : aucun placement (configuration actuelle et CPU seul compris) ne tient au
+    contexte UTILE d'après l'estimation : aucun placement comparé, calibration non
+    lancée, rien d'appliqué — l'appelant le dit. Le précontrôle (DemarrageImpossible)
+    a laissé passer le démarrage au plancher : c'est le contexte DEMANDÉ qui ne tient
+    pas ; llama-bench (loom-setup) et la sonde d'isolation ont pu charger le modèle."""
 
 
 @dataclass
@@ -939,6 +940,35 @@ def precontrole(
             ),
         )
     return res
+
+
+def texte_etape2(
+    plan: PlacementPlan,
+    *,
+    ctx: int,
+    slots: int,
+    estimation: dict,
+    precontrole: str | None = None,
+) -> str:
+    """Raison du refus de l'ÉTAPE 2 (contrôle au contexte utile, après l'isolation) :
+    c'est le contexte DEMANDÉ qui ne tient pas, pas le démarrage (revue n°16) — le
+    contexte, les slots retenus, les postes chiffrés et, quand il a eu lieu, le
+    verdict du précontrôle (le démarrage au plancher, lui, passait)."""
+    s = "s" if int(slots) > 1 else ""
+    est = estimation or {}
+    txt = (
+        f"le contexte utile {int(ctx)} ({int(slots)} slot{s}) ne tient avec aucun "
+        f"placement — {plan.raison} ; postes à ce contexte : KV {est.get('kv_mb', 0)} "
+        f"Mo, état vivant {est.get('recurrent_live_mb', 0)} Mo, checkpoints "
+        f"{est.get('checkpoints_mb', 0)} Mo"
+    )
+    if precontrole:
+        txt += (
+            f" ; le démarrage au plancher ({PRECONTROLE_CTX} par slot) passait "
+            f"(précontrôle : {precontrole}) : un context ou un ctx_checkpoints plus bas "
+            "dans model.toml réduirait ces postes"
+        )
+    return txt
 
 
 def precontrole_texte(res: dict) -> str:

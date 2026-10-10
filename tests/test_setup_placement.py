@@ -865,6 +865,9 @@ def test_measure_placement_rebench_aucun_placement_faisable_leve():
             progress=statuts.append,
         )
     assert "aucun placement faisable" in str(exc.value) and "cpu" in str(exc.value)
+    # Le contexte DEMANDÉ ne tient pas (étape 2) : dit comme tel, avec ses postes.
+    assert "le contexte utile" in str(exc.value)
+    assert "ne tient avec aucun placement" in str(exc.value)
     # Revue #15 (relevé) : le dernier statut diffusé annonçait une sonde de placement
     # qui ne tourne jamais. Seule l'estimation est annoncée avant le contrôle.
     assert not any("sonde de placement" in s for s in statuts)

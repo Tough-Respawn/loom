@@ -1397,17 +1397,24 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         },
     )
     if plan.aucun_faisable:
-        # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation, CPU seul
-        # et configuration actuelle compris — aucun placement comparé, calibration non
-        # lancée, réglages non écrits. Le contrôle arrive à l'étape placement, APRÈS
-        # llama-bench et la sonde d'isolation, qui ont déjà chargé le modèle (revue
-        # #15) ; seule l'archive d'échec est écrite.
-        con.say(
-            f"  [échec] {plan.raison} — aucun placement comparé, calibration non "
-            "lancée, réglages NON écrits (configuration inchangée)."
+        # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation au
+        # contexte UTILE, CPU seul et configuration actuelle compris — aucun placement
+        # comparé, calibration non lancée, réglages non écrits. Étape 2 (revue n°16) :
+        # le précontrôle a laissé passer le démarrage au plancher, c'est le contexte
+        # DEMANDÉ qui ne tient pas ; seule l'archive d'échec est écrite.
+        raison = place_mod.texte_etape2(
+            plan,
+            ctx=ctx_utile,
+            slots=pl_slots,
+            estimation=estimation,
+            precontrole=pc["verdict"],
         )
-        report.add("bench", "echec", plan.raison)
-        _archive_setup(con, trace, echec={"etape": "placement", "erreur": plan.raison})
+        con.say(
+            f"  [échec] {raison} — aucun placement comparé, calibration non lancée, "
+            "réglages NON écrits (configuration inchangée)."
+        )
+        report.add("bench", "echec", raison)
+        _archive_setup(con, trace, echec={"etape": "placement", "erreur": raison})
         return
     # Threads candidats (l'actuel de la machine d'abord, puis le parc) : chaque
     # finaliste à calcul CPU est réglé AVANT la finale (remarque de méthode, 2026-10-10).

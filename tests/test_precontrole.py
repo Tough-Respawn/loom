@@ -349,6 +349,33 @@ def test_exception_de_demarrage_impossible_porte_son_verdict():
     assert not isinstance(exc, AucunPlacementFaisable)
 
 
+def test_texte_de_l_etape_2_distingue_contexte_demande_et_demarrage():
+    """Revue n°16 : « le contexte demandé ne tient pas » n'est pas « impossible de
+    démarrer ». Le message d'étape 2 nomme le contexte, les slots, les postes et
+    rappelle que le démarrage au plancher tenait (précontrôle)."""
+    from loom.setup.placement import (
+        PlacementPlan,
+        memory_estimate_mb,
+        texte_etape2,
+    )
+
+    meta = _dense(n=30, par_mb=290)
+    prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
+    est = memory_estimate_mb(prof, 32768, gpu_tuning=True, slots=2)
+    plan = PlacementPlan(
+        [], [{"key": "cpu", "raison": "non exploré : ne tient pas — x"}]
+    )
+    t = texte_etape2(plan, ctx=32768, slots=2, estimation=est, precontrole="faisable")
+    assert t.startswith(
+        "le contexte utile 32768 (2 slots) ne tient avec aucun placement"
+    )
+    assert "aucun placement faisable" in t  # raison du plan conservée
+    assert f"KV {est['kv_mb']} Mo" in t and "postes à ce contexte" in t
+    assert "démarrage au plancher" in t and "faisable" in t
+    sans = texte_etape2(plan, ctx=8192, slots=1, estimation=est, precontrole=None)
+    assert "(1 slot)" in sans and "démarrage au plancher" not in sans
+
+
 # ── démarrage de la sonde d'isolation (lot L3) ───────────────────────────────────
 
 

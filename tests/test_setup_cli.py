@@ -949,6 +949,10 @@ def test_etape_bench_aucun_placement_faisable_n_ecrit_rien_et_archive(
     assert "aucun placement faisable" in out and "NON écrits" in out
     # Revue #15 : formulation exacte — le contrôle arrive à l'étape placement.
     assert "aucun placement comparé, calibration non lancée" in out
+    # Revue n°16 : à l'étape 2, c'est le contexte DEMANDÉ qui ne tient pas — pas
+    # « impossible de démarrer » : le message nomme le contexte, les slots et les postes.
+    assert "le contexte utile" in out and "ne tient avec aucun placement" in out
+    assert "postes à ce contexte" in out
     assert lancés == []  # ni comparaison de placement, ni calibration
     assert (mdir / "model.toml").read_text(encoding="utf-8") == avant
     archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
