@@ -179,10 +179,6 @@ def placement_from_config(mt: dict, *, n_layers: int | None) -> Placement | None
         return Placement("experts_cpu", 999, cpu_moe=True, actuel=True)
     ngl = mt.get("n_gpu_layers")
     if ngl is None:
-        if "cpu_moe" in mt:
-            # `cpu_moe = false` ÉCRIT (MoE dont les experts restent sur GPU) : l'exécutant
-            # résout -ngl à 999 dès que la VRAM libre le permet -> tout GPU est l'actuel.
-            return Placement("gpu_total", 999, actuel=True)
         return None
     ngl = int(ngl)
     if ngl <= 0:
@@ -190,6 +186,46 @@ def placement_from_config(mt: dict, *, n_layers: int | None) -> Placement | None
     if n_layers and 0 < ngl < int(n_layers):
         return Placement("gpu_partiel", ngl, actuel=True)
     return Placement("gpu_total", 999, actuel=True)
+
+
+def current_placement(
+    mt: dict,
+    *,
+    n_layers: int | None,
+    size_mb: int,
+    profile,
+    override_ngl: int | None = None,
+    headroom: int = 1024,
+) -> Placement | None:
+    """La configuration ACTUELLE telle que l'EXÉCUTANT la résout (actuel=True) : réglages
+    explicites du model.toml d'abord, sinon le MÊME résolveur que serve.py / swap.py
+    (runtime.ngl.resolve_ngl : override machine, puis VRAM libre). Un `cpu_moe = false`
+    écrit ne vaut pas 999 : sur un GPU de 8 Go le runtime tourne en 8 couches, c'est 8
+    qui doit être la référence. Sans profil matériel : seuls les explicites comptent."""
+    explicit = placement_from_config(mt, n_layers=n_layers)
+    if explicit is not None or profile is None:
+        return explicit
+    from loom.config import ModelConfig
+    from loom.runtime.ngl import resolve_ngl
+
+    mt = mt or {}
+    layers = int(n_layers or mt.get("n_layers") or 0)
+    model = ModelConfig(
+        repo=str(mt.get("repo") or ""),
+        filename=str(mt.get("filename") or ""),
+        n_layers=layers,
+        size_mb=int(size_mb or mt.get("size_mb") or 0),
+        n_gpu_layers=mt.get("n_gpu_layers"),
+        cpu_moe=bool(mt.get("cpu_moe")),
+        n_cpu_moe=mt.get("n_cpu_moe"),
+    )
+    ngl = int(resolve_ngl(model, profile, override_ngl, headroom))
+    why = "configuration actuelle (résolue comme l'exécutant)"
+    if ngl <= 0:
+        return Placement("cpu", 0, actuel=True, faisabilite=why)
+    if layers and ngl < layers:
+        return Placement("gpu_partiel", ngl, actuel=True, faisabilite=why)
+    return Placement("gpu_total", 999, actuel=True, faisabilite=why)
 
 
 def _fits(

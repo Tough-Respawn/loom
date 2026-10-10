@@ -1041,12 +1041,34 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     model_toml = _read_model_toml(gguf_path)
     is_moe = bool(meta.get("expert_count"))
     mmproj_name = model_toml.get("mmproj_filename")
+    from loom.setup import placement as place_mod
+
+    # Configuration ACTUELLE résolue comme l'exécutant (resolve_ngl) : réglages du
+    # model.toml, sinon l'override machine — celui que ce bench va écrire pour un
+    # dense —, sinon la VRAM libre. C'est la référence (ligne de base) du placement
+    # ET le point de départ de la sonde.
+    override_ngl = (
+        best["ngl"]
+        if (len(ngl) > 1 and not moe)
+        else (raw_cfg.get("override") or {}).get("n_gpu_layers")
+    )
+    cur_pl = place_mod.current_placement(
+        model_toml,
+        n_layers=meta.get("n_layers"),
+        size_mb=model_size_mb,
+        profile=hw,
+        override_ngl=override_ngl,
+        headroom=headroom,
+    )
     probe = deps.make_probe(
         server_bin=str(server_bin),
         model_path=str(gguf_path),
         threads=best["threads"],
-        # Un MoE sur petit GPU garde l'attention en VRAM et les experts en RAM.
-        ngl=99 if (is_moe and topo != topo_mod.TOPO_RAM) else best["ngl"],
+        ngl=(
+            cur_pl.ngl
+            if (cur_pl is not None and topo != topo_mod.TOPO_RAM)
+            else (0 if topo == topo_mod.TOPO_RAM else best["ngl"])
+        ),
         topology=topo,
         mmproj_path=str(gguf_path.parent / mmproj_name) if mmproj_name else None,
         cpu_moe=bool(model_toml.get("cpu_moe", is_moe)),
@@ -1094,9 +1116,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         ram_total_mb=ram_total_mb,
         uma=not hw.vram_is_discrete,
         headroom_mb=headroom,
-        current=place_mod.placement_from_config(
-            model_toml, n_layers=meta.get("n_layers")
-        ),
+        current=cur_pl,
         profile=profile,
     )
     prefill_c, pp_floor = place_mod.constraints_from_config(raw_cfg)

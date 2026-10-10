@@ -402,9 +402,38 @@ def test_rebench_reglages_de_sonde_depuis_le_profil_amd():
         hw=_UMA,
         gpu_backend=True,
         vram_fallback_mb=0,  # nvidia-smi absent
+        size_mb=35_193,
     )
     assert topo_ == TOPO_MOE_HYBRIDE and vram == 48_789
-    assert threads == 8 and ngl == 99
+    # ngl par le résolveur du runtime (resolve_ngl) : 36 Go dans 46 Go libres -> 999.
+    assert threads == 8 and ngl == 999
+
+
+def test_rebench_reglages_de_sonde_petit_gpu_resout_un_partiel():
+    """Le même model.toml (cpu_moe = false) sur un GPU de 8 Go : l'exécutant résout 8
+    couches ; la sonde doit partir de là, pas de 99."""
+    from loom.web.routes.rebench import _probe_settings
+
+    petite = HardwareProfile(
+        True,
+        "GPU 8 Go",
+        8_000,
+        16,
+        vram_total_mb=8_192,
+        backend="CUDA",
+        vram_is_discrete=True,
+    )
+    _topo, _vram, _threads, ngl = _probe_settings(
+        {"expert_count": 128, "n_layers": 41},
+        mt={"cpu_moe": False},
+        over={},
+        hw=petite,
+        gpu_backend=True,
+        vram_fallback_mb=8_192,
+        size_mb=36_050,
+        headroom=640,
+    )
+    assert ngl == 8
 
 
 def test_rebench_reglages_de_sonde_honorent_override_et_borne_modele():
@@ -417,6 +446,7 @@ def test_rebench_reglages_de_sonde_honorent_override_et_borne_modele():
         hw=_DGPU,
         gpu_backend=True,
         vram_fallback_mb=6_144,
+        size_mb=8_000,
     )
     assert topo_ == TOPO_GPU_DENSE and threads == 6 and ngl == 36
 
@@ -425,6 +455,12 @@ def test_rebench_sans_gpu_tout_en_ram():
     from loom.web.routes.rebench import _probe_settings
 
     topo_, vram, threads, ngl = _probe_settings(
-        {"n_layers": 42}, mt={}, over={}, hw=_CPU, gpu_backend=False, vram_fallback_mb=0
+        {"n_layers": 42},
+        mt={},
+        over={},
+        hw=_CPU,
+        gpu_backend=False,
+        vram_fallback_mb=0,
+        size_mb=8_000,
     )
     assert topo_ == TOPO_RAM and vram == 0 and threads == 16 and ngl == 0

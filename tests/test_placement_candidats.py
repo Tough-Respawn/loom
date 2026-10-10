@@ -52,11 +52,62 @@ def test_placement_depuis_le_model_toml():
     )
     assert placement_from_config({"n_gpu_layers": 999}, n_layers=42).key == "gpu_total"
     assert placement_from_config({"n_gpu_layers": 42}, n_layers=42).key == "gpu_total"
-    # `cpu_moe = false` ÉCRIT (Ornith après le 2026-10-09) : l'exécutant met tout sur GPU
-    # (resolve_ngl -> 999 dès que la VRAM libre le permet) — c'est la config actuelle.
-    actuel = placement_from_config({"cpu_moe": False}, n_layers=42)
-    assert actuel.key == "gpu_total" and actuel.actuel is True
+    # Sans réglage EXPLICITE, le fichier seul ne dit pas où tourne le modèle : c'est le
+    # résolveur du runtime qui le sait (current_placement), pas une règle sur cpu_moe.
+    assert placement_from_config({"cpu_moe": False}, n_layers=42) is None
     assert placement_from_config({}, n_layers=42) is None
+
+
+def test_configuration_actuelle_resolue_comme_l_executant():
+    """Revue 2026-10-10 : `cpu_moe = false` ne vaut pas `ngl 999`. Le runtime tient compte
+    de l'override machine et de la VRAM libre (resolve_ngl) : la référence du bench doit
+    être construite par le MÊME résolveur, sinon elle annonce 999 quand l'exécutant
+    tourne en 8, 0 ou 20."""
+    from loom.runtime.hardware import HardwareProfile
+    from loom.setup.placement import current_placement
+
+    large = HardwareProfile(
+        True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
+    )
+    petite = HardwareProfile(
+        True,
+        "GPU 8 Go",
+        8_000,
+        16,
+        vram_total_mb=8_192,
+        backend="CUDA",
+        vram_is_discrete=True,
+    )
+    cpu = HardwareProfile(False, None, 0, 16)
+    kw = dict(n_layers=41, size_mb=36_050, headroom=640)
+    # MoE 36 Go, cpu_moe = false écrit : la VRAM libre décide, comme l'exécutant.
+    actuel = current_placement({"cpu_moe": False}, profile=large, **kw)
+    assert actuel.key == "gpu_total" and actuel.actuel is True
+    # Même fichier, petit GPU : recommend_gpu_layers(8000, 36050, 41, 640) -> 8 couches.
+    assert (
+        current_placement({"cpu_moe": False}, profile=petite, **kw).key
+        == "gpu_partiel_ngl8"
+    )
+    # L'override machine ([override] n_gpu_layers) prime sur la recommandation.
+    assert (
+        current_placement({}, profile=large, override_ngl=20, **kw).key
+        == "gpu_partiel_ngl20"
+    )
+    assert current_placement({}, profile=cpu, **kw).key == "cpu"
+    # Les réglages explicites du model.toml restent prioritaires.
+    assert (
+        current_placement({"cpu_moe": True}, profile=large, **kw).key == "experts_cpu"
+    )
+    assert (
+        current_placement({"n_cpu_moe": 25}, profile=large, **kw).key
+        == "experts_partiel_n25"
+    )
+    assert (
+        current_placement({"n_gpu_layers": 36}, profile=petite, **kw).key
+        == "gpu_partiel_ngl36"
+    )
+    # Sans profil matériel, impossible de résoudre : seuls les explicites comptent.
+    assert current_placement({"cpu_moe": False}, profile=None, **kw) is None
     assert placement_from_config({"cpu_moe": True}, n_layers=40).actuel is True
 
 

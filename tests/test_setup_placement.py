@@ -493,6 +493,7 @@ def test_measure_placement_rebench_renvoie_un_verdict_serialisable_et_la_sonde_e
         headroom_mb=640,
         gpu_backend=True,
         progress=lambda m: None,
+        mt={"cpu_moe": True},  # configuration actuelle = experts sur CPU (la base)
     )
     assert verdict["label"] == "gpu_total" and verdict["gain_pct"] == 19.0
     assert verdict["cpu_moe"] is False and verdict["n_cpu_moe"] is None

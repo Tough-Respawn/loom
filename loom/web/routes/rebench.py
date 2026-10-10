@@ -22,6 +22,7 @@ def _measure_placement(
     useful_ctx: int | None = None,
     mt: dict | None = None,
     raw: dict | None = None,
+    override_ngl: int | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand rien n'est
@@ -52,8 +53,14 @@ def _measure_placement(
         ram_total_mb=int(ram_total_mb),
         uma=not getattr(hw, "vram_is_discrete", True),
         headroom_mb=headroom_mb,
-        current=place_mod.placement_from_config(
-            mt or {}, n_layers=meta.get("n_layers")
+        # Référence = configuration ACTUELLE résolue comme l'exécutant (resolve_ngl).
+        current=place_mod.current_placement(
+            mt or {},
+            n_layers=meta.get("n_layers"),
+            size_mb=int(model_size_mb or 0),
+            profile=hw,
+            override_ngl=override_ngl,
+            headroom=headroom_mb,
         ),
         profile=profile,
     )
@@ -108,29 +115,41 @@ def _placement_implied_ngl(pl: dict):
 
 
 def _probe_settings(
-    meta: dict, mt: dict, over: dict, hw, *, gpu_backend: bool, vram_fallback_mb: int
+    meta: dict,
+    mt: dict,
+    over: dict,
+    hw,
+    *,
+    gpu_backend: bool,
+    vram_fallback_mb: int,
+    size_mb: int = 0,
+    headroom: int = 1024,
 ) -> tuple[str, int, int, int]:
     """(topologie, VRAM totale, threads, ngl) de la sonde, avec la dérivation de
     l'EXÉCUTANT. La VRAM vient du profil `--list-devices` (Vulkan compris) et
     nvidia-smi n'est qu'un repli : sans ça la 860M passait en topologie « ram » et
     la sonde mesurait sans profil GPU. Threads = effective.launch_flags (override
-    machine, sinon cœurs physiques en GPU, tous en CPU). ngl : la borne PAR MODÈLE
-    (model.toml n_gpu_layers) PRIME — c'est elle qui évite le spill (gemma4 à
-    36/42) —, sinon doctrine MoE (99, experts en RAM), sinon l'override machine."""
+    machine, sinon cœurs physiques en GPU, tous en CPU). ngl = la configuration
+    ACTUELLE résolue par le même résolveur que serve.py / swap.py
+    (placement.current_placement -> resolve_ngl : model.toml, override, VRAM libre)."""
     from loom.runtime.effective import launch_flags
     from loom.setup import topology as topo_mod
+    from loom.setup.placement import current_placement
 
     vram = int(getattr(hw, "vram_total_mb", 0) or vram_fallback_mb or 0)
     topo = topo_mod.discover_topology(meta, bool(gpu_backend), vram)
     threads = launch_flags(hw, over.get("threads")).threads
-    gpu = topo != topo_mod.TOPO_RAM
-    if mt.get("n_gpu_layers") is not None:
-        ngl = int(mt["n_gpu_layers"])
-    elif meta.get("expert_count") and gpu:
-        ngl = 99
-    else:
-        ngl = int(over.get("n_gpu_layers", 99 if gpu else 0))
-    return topo, vram, threads, ngl
+    if topo == topo_mod.TOPO_RAM:
+        return topo, vram, threads, 0
+    cur = current_placement(
+        mt,
+        n_layers=meta.get("n_layers"),
+        size_mb=size_mb,
+        profile=hw,
+        override_ngl=over.get("n_gpu_layers"),
+        headroom=headroom,
+    )
+    return topo, vram, threads, int(cur.ngl if cur is not None else 999)
 
 
 def _run_calibration(S, spec, progress):
@@ -168,6 +187,9 @@ def _run_calibration(S, spec, progress):
     # Le binaire fait foi (`--list-devices`) : un build statique n'a aucune DLL à côté.
     gpu_backend = bench_mod.gpu_backend_available(hw, server_bin)
     over = raw.get("override") or {}
+    server_cfg = raw.get("server") or {}
+    headroom = int(server_cfg.get("gpu_kv_headroom_mb", 640) or 640)
+    size_mb = int(spec.get("size_mb") or mt.get("size_mb") or 0)
     topo, vram, threads, ngl = _probe_settings(
         meta,
         mt,
@@ -175,9 +197,9 @@ def _run_calibration(S, spec, progress):
         hw,
         gpu_backend=gpu_backend,
         vram_fallback_mb=topo_mod.gpu_vram_total_mb(),
+        size_mb=size_mb,
+        headroom=headroom,
     )
-    server_cfg = raw.get("server") or {}
-    headroom = int(server_cfg.get("gpu_kv_headroom_mb", 640) or 640)
     ram = int(psutil.virtual_memory().total // (1024 * 1024))
     # Mémoire unifiée : le device est la RAM, comptée une fois (= ce que la sonde mesure).
     uma = bool(hw.has_gpu and not hw.vram_is_discrete)
@@ -222,6 +244,7 @@ def _run_calibration(S, spec, progress):
         useful_ctx=ctx_utile,
         mt=mt,
         raw=raw,
+        override_ngl=over.get("n_gpu_layers"),
     )
     # Sonde d'isolation AVANT la calibration : si le modèle exige un 2e slot,
     # la calibration doit mesurer avec le KV réellement doublé (même séquence
