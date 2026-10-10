@@ -829,6 +829,15 @@ def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> No
     atomic_write_text(p, "\n".join(lines) + "\n")
 
 
+def _sans_none(obj):
+    """Copie récursive sans valeurs None : TOML n'a pas de null, tomlkit refuse."""
+    if isinstance(obj, dict):
+        return {k: _sans_none(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_sans_none(v) for v in obj if v is not None]
+    return obj
+
+
 def _set_model_placement(gguf_path: Path, placement, detail: str) -> None:
     """Écrit le placement MESURÉ des poids (loom.setup.placement) dans le model.toml :
     `cpu_moe`, `n_cpu_moe` et `n_gpu_layers` posés ou RETIRÉS selon le candidat élu
@@ -1041,7 +1050,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         n_cpu_moe=model_toml.get("n_cpu_moe"),
         # Checkpoints des hybrides : mesurer la mémoire que l'exécutant prendra.
         checkpoint_min_step=(
-            model_toml.get("checkpoint_min_step") or server_cfg.get("checkpoint_min_step")
+            model_toml.get("checkpoint_min_step")
+            or server_cfg.get("checkpoint_min_step")
         ),
         ctx_checkpoints=model_toml.get("ctx_checkpoints"),
         # Flags machine et mode de mesure mémoire dérivés du profil de l'exécutant.
@@ -1078,7 +1088,9 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         ram_total_mb=ram_total_mb,
         uma=not hw.vram_is_discrete,
         headroom_mb=headroom,
-        current=place_mod.placement_from_config(model_toml, n_layers=meta.get("n_layers")),
+        current=place_mod.placement_from_config(
+            model_toml, n_layers=meta.get("n_layers")
+        ),
         profile=profile,
     )
     prefill_c, pp_floor = place_mod.constraints_from_config(raw_cfg)
@@ -1099,7 +1111,9 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         pl_res = None
     con.progress_end()
     if pl_res and pl_res.get("placement") is None:
-        con.say(f"  [attention] placement : {pl_res['mecanisme']} — flags actuels conservés.")
+        con.say(
+            f"  [attention] placement : {pl_res['mecanisme']} — flags actuels conservés."
+        )
     if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
         # Élu (comparé, ou seul candidat validé) : la suite (isolation, calibration,
         # ubatch) mesure cette configuration-là.
@@ -1211,15 +1225,14 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         if pl_res["gain_pct"] is not None:
             values["bench"]["placement_gain_pct"] = pl_res["gain_pct"]
         if pl_res["mesures"]:
-            values["bench"]["placement_mesures"] = {
-                k: {kk: vv for kk, vv in v.items()}
-                for k, v in pl_res["mesures"].items()
-            }
-        if pl_res.get("preselection") and pl_res["preselection"] is not pl_res["mesures"]:
-            values["bench"]["placement_preselection"] = {
-                k: {kk: vv for kk, vv in v.items()}
-                for k, v in pl_res["preselection"].items()
-            }
+            values["bench"]["placement_mesures"] = _sans_none(pl_res["mesures"])
+        if (
+            pl_res.get("preselection")
+            and pl_res["preselection"] is not pl_res["mesures"]
+        ):
+            values["bench"]["placement_preselection"] = _sans_none(
+                pl_res["preselection"]
+            )
     # Repli MACHINE : un modèle ajouté plus tard n'est jamais benché et tombait sur les
     # constantes aveugles de llama-server. On n'écrit QUE ce qui a été mesuré.
     if ub_res:

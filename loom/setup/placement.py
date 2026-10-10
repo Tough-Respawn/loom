@@ -38,6 +38,9 @@ PLACEMENT_PROBE_CTX = 8192
 PLACEMENT_PROBE_PROMPT = 4096
 #: Répétitions par candidat (moyenne) : une seule mesure n'a pas d'écart-type.
 PLACEMENT_REPS = 2
+#: Plafond de répétitions quand le classement reste incertain (écart entre deux
+#: candidats dans leur dispersion mesurée) : on affine le tandem, pas tout le monde.
+PLACEMENT_MAX_REPS = 4
 #: Finalistes : à moins de ce % du meilleur tg en présélection (la base y est toujours).
 PLACEMENT_FINALIST_PCT = 15.0
 PLACEMENT_MAX_FINALISTS = 3
@@ -371,35 +374,113 @@ def placement_candidates(**kw) -> list[Placement]:
     return plan_placements(**kw).candidates
 
 
-def _mesurer(make_probe, cands, ctx, depth, reps, say) -> dict[str, dict]:
-    """Une sonde par candidat, `reps` runs à (ctx, depth). Un candidat qui casse est
-    écarté et nommé (jamais fatal)."""
+def _agreger(echantillons: list[dict]) -> dict:
+    """Mesure d'un candidat depuis ses échantillons : moyennes, mémoire max, nombre,
+    dispersion de la génération (étendue relative à la moyenne, en %) et les
+    échantillons eux-mêmes — un débit sans son bruit ni sa quantité ne se compare pas."""
+    tgs = [e["tg_ts"] for e in echantillons if e.get("tg_ts")]
+    pps = [e["pp_ts"] for e in echantillons if e.get("pp_ts")]
+    if not tgs:
+        return {"echec": "débit illisible"}
+    mean = sum(tgs) / len(tgs)
+    return {
+        "tg_ts": round(mean, 2),
+        "pp_ts": round(sum(pps) / len(pps), 2) if pps else 0.0,
+        "mem_mb": max(int(e.get("mem_mb") or 0) for e in echantillons),
+        "n": len(tgs),
+        "tg_disp_pct": round((max(tgs) - min(tgs)) / mean * 100, 1)
+        if mean > 0
+        else 0.0,
+        "echantillons": list(echantillons),
+    }
+
+
+def _incertains(mesures: dict[str, dict]) -> list[str]:
+    """Clés dont le classement contre le meilleur reste INCERTAIN : écart de moyennes
+    inférieur ou égal à la plus grande des deux dispersions. Vide = classement net."""
+    valid = {k: v for k, v in mesures.items() if "tg_ts" in v}
+    if len(valid) < 2:
+        return []
+    ordre = sorted(valid, key=lambda k: valid[k]["tg_ts"], reverse=True)
+    best = ordre[0]
+    tg_b = valid[best]["tg_ts"]
+    d_b = float(valid[best].get("tg_disp_pct") or 0)
+    flous = []
+    for k in ordre[1:]:
+        tg_k = valid[k]["tg_ts"]
+        ecart = (tg_b / tg_k - 1) * 100 if tg_k else math.inf
+        if ecart <= max(d_b, float(valid[k].get("tg_disp_pct") or 0)):
+            flous.append(k)
+    return [best] + flous if flous else []
+
+
+def _mesurer(
+    make_probe,
+    cands,
+    ctx,
+    depth,
+    reps,
+    say,
+    *,
+    deadline: float | None = None,
+    max_reps: int | None = None,
+) -> dict[str, dict]:
+    """Une sonde par candidat, `reps` TOURS à (ctx, depth) : les candidats ALTERNENT
+    à chaque tour (A B A B, pas A A B B) pour que dérive thermique et caches ne
+    favorisent pas le dernier mesuré. Puis, tant que le classement reste incertain
+    (`_incertains`) et que le plafond `max_reps` et le `deadline` le permettent, un
+    tour de plus pour les seuls candidats indécis. Un candidat qui casse est écarté
+    et nommé (jamais fatal)."""
+    plafond = max(reps, int(max_reps or PLACEMENT_MAX_REPS))
+    sondes: dict[str, object] = {}
+    samples: dict[str, list[dict]] = {}
     out: dict[str, dict] = {}
     for c in cands:
-        say(f"placement {c.key} ({c.describe()}) : {reps} mesure(s) à ctx {ctx}…")
-        tgs: list[float] = []
-        pps: list[float] = []
-        mems: list[int] = []
         try:
-            sonde = make_probe(c)
-            for _ in range(reps):
-                r = sonde.run(ctx, depth)
-                if r.tg_ts:
-                    tgs.append(float(r.tg_ts))
-                if r.pp_ts:
-                    pps.append(float(r.pp_ts))
-                mems.append(int(r.mem_mb or 0))
+            sondes[c.key] = make_probe(c)
+            samples[c.key] = []
         except Exception as exc:  # noqa: BLE001 - un candidat qui casse n'est PAS fatal
             out[c.key] = {"echec": f"{type(exc).__name__}: {exc}"}
-            continue
-        if not tgs:
-            out[c.key] = {"echec": "débit illisible"}
-            continue
-        out[c.key] = {
-            "tg_ts": round(sum(tgs) / len(tgs), 2),
-            "pp_ts": round(sum(pps) / len(pps), 2) if pps else 0.0,
-            "mem_mb": max(mems) if mems else 0,
-        }
+    by_key = {c.key: c for c in cands}
+
+    def _tour(keys, numero):
+        for k in keys:
+            c = by_key[k]
+            say(f"placement {k} ({c.describe()}) : mesure {numero} à ctx {ctx}…")
+            try:
+                r = sondes[k].run(ctx, depth)
+            except Exception as exc:  # noqa: BLE001 - écarté et nommé, jamais fatal
+                out[k] = {"echec": f"{type(exc).__name__}: {exc}"}
+                sondes.pop(k, None)
+                continue
+            # Pas de None dans un échantillon : il finit dans local.toml (sans null).
+            ech = {
+                "tg_ts": float(r.tg_ts or 0) or None,
+                "pp_ts": float(r.pp_ts or 0) or None,
+                "mem_mb": int(r.mem_mb or 0),
+                "prompt_n": getattr(r, "prompt_n", None),
+                "predicted_n": getattr(r, "predicted_n", None),
+            }
+            samples[k].append({kk: vv for kk, vv in ech.items() if vv is not None})
+
+    tours = 0
+    for _ in range(reps):
+        tours += 1
+        _tour([k for k in sondes], tours)
+    for k in list(sondes):
+        out[k] = _agreger(samples[k])
+    # Affinage : un tour de plus pour le tandem incertain, dans le plafond et le budget.
+    while tours < plafond:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        flous = [k for k in _incertains(out) if k in sondes]
+        if len(flous) < 2:
+            break
+        tours += 1
+        _tour(flous, tours)
+        for k in flous:
+            if k in sondes:
+                out[k] = _agreger(samples[k])
     return out
 
 
@@ -440,6 +521,7 @@ def probe_placement(
     if not candidates:
         return None
     t0 = time.monotonic()
+    deadline = t0 + float(time_budget_s)
     two_phase = bool(useful_ctx and int(useful_ctx) > ctx)
     ctx_final = int(useful_ctx) if useful_ctx else ctx
     depth_final = final_depth(ctx_final) if useful_ctx else depth
@@ -456,7 +538,7 @@ def probe_placement(
 
     if len(candidates) == 1:
         seul = candidates[0]
-        mes = _mesurer(make_probe, [seul], ctx_final, depth_final, 1, say)
+        mes = _mesurer(make_probe, [seul], ctx_final, depth_final, 1, say, max_reps=1)
         m = mes[seul.key]
         if "echec" in m:
             return _res(
@@ -489,7 +571,7 @@ def probe_placement(
             ),
         )
 
-    phase1 = _mesurer(make_probe, candidates, ctx, depth, reps, say)
+    phase1 = _mesurer(make_probe, candidates, ctx, depth, reps, say, deadline=deadline)
     if not any("tg_ts" in v for v in phase1.values()):
         return None
     notes = ""
@@ -507,15 +589,23 @@ def probe_placement(
         finalists += [c for c in autres if valid[c.key]["tg_ts"] >= seuil][
             : PLACEMENT_MAX_FINALISTS - len(finalists)
         ]
-        mesures: dict[str, dict] = {}
-        for c in finalists:
-            if time.monotonic() - t0 >= time_budget_s:
-                notes += (
-                    f" ; budget temps ({time_budget_s:g} s) épuisé : {c.key} non remesuré "
-                    "au contexte utile"
-                )
-                continue
-            mesures.update(_mesurer(make_probe, [c], ctx_final, depth_final, reps, say))
+        if time.monotonic() >= deadline:
+            notes += (
+                f" ; budget temps ({time_budget_s:g} s) épuisé : finalistes non remesurés "
+                "au contexte utile"
+            )
+            mesures: dict[str, dict] = {}
+        else:
+            # Finalistes mesurés ENSEMBLE (tours alternés, affinage du tandem incertain).
+            mesures = _mesurer(
+                make_probe,
+                finalists,
+                ctx_final,
+                depth_final,
+                reps,
+                say,
+                deadline=deadline,
+            )
         finalistes = [c.key for c in finalists]
         if not any("tg_ts" in v for v in mesures.values()):
             # Rien de remesuré : décider sur la présélection, en le disant.
@@ -621,8 +711,18 @@ def pick_placement(
             key
         ], f"{key} retenu (base {base.key} non mesurée ou écartée){suffixe}"
     base_tg = valid[base.key]["tg_ts"]
+    disp_base = float(valid[base.key].get("tg_disp_pct") or 0)
     seuil = base_tg * (1 + margin_pct / 100)
     gagnants = {k: v for k, v in valid.items() if k != base.key and v["tg_ts"] > seuil}
+    # La marge est une POLITIQUE de changement, pas une mesure du bruit : un gain qui
+    # tient dans la dispersion mesurée des deux candidats est indécis, pas un gain.
+    indecis: dict[str, tuple[float, float]] = {}
+    for k, v in list(gagnants.items()):
+        gain_k = (v["tg_ts"] / base_tg - 1) * 100
+        disp = max(disp_base, float(v.get("tg_disp_pct") or 0))
+        if gain_k <= disp:
+            indecis[k] = (gain_k, disp)
+            del gagnants[k]
     if not gagnants:
         if len(valid) == 1:
             return base, f"{base.key} : seul candidat mesuré{suffixe}"
@@ -630,10 +730,22 @@ def pick_placement(
             (k for k in valid if k != base.key), key=lambda k: valid[k]["tg_ts"]
         )
         ecart = (valid[meilleur]["tg_ts"] / base_tg - 1) * 100
+        disp = max(disp_base, float(valid[meilleur].get("tg_disp_pct") or 0))
+        if meilleur in indecis or abs(ecart) <= disp:
+            return base, (
+                f"{base.key} conservé — indécis : {meilleur} à {ecart:+.0f} % de tg "
+                f"({valid[meilleur]['tg_ts']} contre {base_tg}), écart dans la dispersion "
+                f"mesurée ({disp:.0f} %){suffixe}"
+            )
         return base, (
             f"{base.key} conservé : {meilleur} mesuré à {ecart:+.0f} % de tg "
             f"({valid[meilleur]['tg_ts']} contre {base_tg}), sous la marge de "
             f"{margin_pct:g} %{suffixe}"
+        )
+    if indecis:
+        suffixe += " ; " + " ; ".join(
+            f"{k} : {g:+.0f} % mais dispersion mesurée {d:.0f} % — indécis"
+            for k, (g, d) in indecis.items()
         )
     best_tg = max(v["tg_ts"] for v in gagnants.values())
     # Alternatives équivalentes entre elles (sous la marge) : le prefill tranche.

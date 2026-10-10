@@ -170,11 +170,13 @@ def test_chaque_candidat_est_sonde_reps_fois_au_point_de_fonctionnement():
     r = probe_placement(make, [CPU, GPU])
     assert r["placement"] is GPU
     assert r["gain_pct"] == 19.0
-    assert r["mesures"]["gpu_total"] == {"tg_ts": 14.4, "pp_ts": 262.0, "mem_mb": 1234}
+    m = r["mesures"]["gpu_total"]
+    assert (m["tg_ts"], m["pp_ts"], m["mem_mb"]) == (14.4, 262.0, 1234)
+    # L'ordre ALTERNE d'une répétition à l'autre (lot 4) : A B A B, pas A A B B.
     attendu = [
         (c.label, PLACEMENT_PROBE_CTX, PLACEMENT_PROBE_PROMPT)
-        for c in (CPU, GPU)
         for _ in range(PLACEMENT_REPS)
+        for c in (CPU, GPU)
     ]
     assert make.journal == attendu
 

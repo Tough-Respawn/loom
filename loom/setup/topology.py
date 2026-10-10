@@ -104,6 +104,10 @@ class ProbeResult:
     mem_mb: int  # selon ServerProbe.memory_mode : device, delta de RAM (UMA) ou RSS
     tg_ts: float | None = None  # décode t/s à ~85 % de profondeur (si sondé)
     pp_ts: float | None = None
+    # Tokens RÉELLEMENT traités par la mesure (timings du serveur) : un débit sans
+    # sa quantité ne se compare pas.
+    prompt_n: int | None = None
+    predicted_n: int | None = None
 
 
 @dataclass
@@ -297,6 +301,8 @@ class ServerProbe:
                 t = resp.get("timings") or {}
                 res.tg_ts = round(t.get("predicted_per_second") or 0.0, 1)
                 res.pp_ts = round(t.get("prompt_per_second") or 0.0, 1)
+                res.prompt_n = int(t.get("prompt_n") or 0) or None
+                res.predicted_n = int(t.get("predicted_n") or 0) or None
             return res
         finally:
             self._kill(proc)
