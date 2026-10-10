@@ -252,12 +252,90 @@ def test_rebench_placement_identique_ne_change_rien(env, monkeypatch):
             "slots": 2,
             "reused": True,
         },
+        final=dict(
+            _FINAL,
+            placement="experts_cpu",
+            reference_tg=12.1,
+            tg_ts=12.0,
+            ecart_pct=-0.8,
+        ),
     )
     _launch(env, monkeypatch, calib=calib)
     txt = _wait_verdict(env)
-    # Preuves complètes (contexte validé, placement comparé, cache vérifié) : « déjà au top ».
+    # Preuves complètes (contexte validé, placement comparé, réglage final validé, cache
+    # vérifié) : « déjà au top ».
     assert "déjà au top" in txt and "sous la marge" in txt
     assert "cache réutilisé" in txt and "4/600" in txt
+
+
+_FINAL = {
+    "tg_ts": 11.7,
+    "pp_ts": 280.0,
+    "n": 2,
+    "tg_disp_pct": 1.0,
+    "ctx": 65536,
+    "depth": 16384,
+    "slots": 2,
+    "ubatch": 512,
+    "batch": 2048,
+    "placement": "gpu_total",
+    "reference_tg": 11.9,
+    "ecart_pct": -1.7,
+    "coherent": True,
+}
+
+
+def test_rebench_verdict_porte_la_validation_du_reglage_final(env, monkeypatch):
+    calib = dict(CALIB, context=8192, final=_FINAL)
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "réglage final" in txt and "11.7" in txt and "280" in txt
+    assert "ctx 65536" in txt and "2 slots" in txt and "ub 512" in txt
+    assert "ne reproduit pas" not in txt
+
+
+def test_rebench_verdict_previent_quand_le_reglage_final_ne_reproduit_pas(
+    env, monkeypatch
+):
+    calib = dict(
+        CALIB,
+        context=8192,
+        final=dict(_FINAL, tg_ts=9.0, ecart_pct=-24.4, coherent=False),
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "ne reproduit pas" in txt and "-24" in txt
+
+
+def test_rebench_deja_au_top_exige_un_reglage_final_valide(env, monkeypatch):
+    # Preuves complètes sauf la validation finale : le verdict dit ce qui manque.
+    calib = dict(
+        CALIB,
+        context=4096,
+        placement={
+            "label": "experts_cpu",
+            "ngl": 999,
+            "cpu_moe": True,
+            "n_cpu_moe": None,
+            "tg_ts": 12.1,
+            "pp_ts": 217.0,
+            "gain_pct": None,
+            "compare": True,
+            "mecanisme": "experts_cpu conservé : gpu_total à +3 % de tg, sous la marge de 5 %",
+        },
+        placement_avant={"cpu_moe": True, "n_cpu_moe": None, "n_gpu_layers": None},
+        cache_verifie={
+            "first": 600,
+            "back": 4,
+            "annex_slot": 1,
+            "slots": 2,
+            "reused": True,
+        },
+        final={"echec": "RuntimeError: health timeout", "ctx": 4096, "depth": 2048},
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "déjà au top" not in txt and "réglage final" in txt
 
 
 def test_rebench_verdict_dit_quand_le_cache_n_est_pas_reutilise(env, monkeypatch):

@@ -287,17 +287,38 @@ def _run_calibration(S, spec, progress):
         calib["ubatch_probe"] = None
     calib["ubatch_avant"] = mt.get("ubatch")
     calib["batch_avant"] = mt.get("batch")
-    # Vérifier le cache avec la configuration FINALE (placement élu, slots décidés,
-    # batchs mesurés) : la séquence réelle de Loom doit réutiliser le cache.
-    try:
-        from dataclasses import replace as _dc_replace
+    # Sonde FINALE = placement élu + slots décidés + batchs mesurés : valider ce réglage
+    # complet au contexte CALIBRÉ, à la profondeur de la comparaison, puis vérifier le
+    # cache avec ce contexte alloué. Le verdict n'assemble plus des mesures prises avec
+    # des paramètres différents.
+    from dataclasses import replace as _dc_replace
 
-        ub = calib.get("ubatch_probe")
-        probe_final = (
-            _dc_replace(probe, ubatch=ub["ubatch"], batch=ub["batch"]) if ub else probe
+    from loom.setup import placement as place_mod
+
+    ub = calib.get("ubatch_probe")
+    probe_final = probe
+    if ub:
+        try:
+            probe_final = _dc_replace(probe, ubatch=ub["ubatch"], batch=ub["batch"])
+        except Exception:  # noqa: BLE001 - sonde non clonable : on garde l'originale
+            probe_final = probe
+    try:
+        calib["final"] = place_mod.validate_final(
+            probe_final,
+            ctx=int(calib["context"]),
+            depth=place_mod.final_depth(ctx_utile),
+            n_layers=meta.get("n_layers"),
+            reference_tg=(pl_verdict or {}).get("tg_ts"),
+            progress=progress,
         )
+    except Exception as exc:  # noqa: BLE001 - validation best-effort, nommée
+        calib["final"] = {
+            "echec": f"{type(exc).__name__}: {exc}",
+            "ctx": calib["context"],
+        }
+    try:
         progress("vérification du cache avec la configuration finale…")
-        calib["cache_verifie"] = probe_final.verify_cache()
+        calib["cache_verifie"] = probe_final.verify_cache(ctx=int(calib["context"]))
     except Exception:  # noqa: BLE001 - vérification best-effort : le verdict le dira
         calib["cache_verifie"] = None
     # Le moteur avec lequel tout a été mesuré, pour le commentaire du model.toml.
@@ -395,6 +416,27 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 "vérification du cache (configuration finale) : cache NON réutilisé "
                 f"({topo_mod.cache_check_text(cv)})."
             )
+        # Validation du RÉGLAGE FINAL complet au contexte calibré.
+        fin = calib.get("final")
+        if not fin or "echec" in fin:
+            final_line = "réglage final : non validé" + (
+                f" ({fin['echec']})." if fin and fin.get("echec") else "."
+            )
+        else:
+            if fin.get("coherent") is True:
+                coh = f" ; cohérent avec la mesure de placement ({fin['ecart_pct']:+.1f} %)"
+            elif fin.get("coherent") is False:
+                coh = (
+                    f" ; ne reproduit pas la mesure de placement ({fin['ecart_pct']:+.1f} %)"
+                    " — à appliquer avec prudence"
+                )
+            else:
+                coh = ""
+            final_line = (
+                f"réglage final {fin['placement']} (ctx {fin['ctx']}, {fin['slots']} slots, "
+                f"ub {fin['ubatch']}/b {fin['batch']}) : génération {fin['tg_ts']} t/s, "
+                f"prefill {fin['pp_ts']} t/s à profondeur {fin['depth']}{coh}."
+            )
         # Un plancher n'est pas une mesure : le verdict le dit.
         valide = bool(calib.get("valide", True))
         vitesse_txt = (
@@ -414,17 +456,22 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 manques.append("cache non vérifié")
             elif not cv["reused"]:
                 manques.append("cache NON réutilisé")
+            if not fin or "echec" in fin:
+                manques.append("réglage final non validé")
+            elif fin.get("coherent") is False:
+                manques.append("réglage final incohérent avec la mesure de placement")
             if not manques:
                 msg = (
                     f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
                     f"mesuré {new} ({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n"
-                    f"{pl_line}\n{cache_line}\nRien à changer."
+                    f"{pl_line}\n{final_line}\n{cache_line}\nRien à changer."
                 )
             else:
                 msg = (
                     f"« {mid} » : rien à changer d'après les mesures disponibles — "
                     f"{', '.join(manques)}. Contexte actuel {current} = mesuré {new} "
-                    f"({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n{pl_line}\n{cache_line}"
+                    f"({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n{pl_line}\n"
+                    f"{final_line}\n{cache_line}"
                 )
             wiz = None
         else:
@@ -455,7 +502,7 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 f"Verdict pour « {mid} » : " + " · ".join(changes) + "\n"
                 f"(pente {calib['slope_kb_tok']} Ko/token, {vitesse_txt})\n"
                 f"mécanisme : {calib['mecanisme']}\n{iso_line}\n{ub_line}\n{pl_line}\n"
-                f"{cache_line}\n"
+                f"{final_line}\n{cache_line}\n"
                 "Tape « oui » pour appliquer — toute autre réponse laisse tout "
                 "en l'état."
             )
@@ -481,6 +528,8 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 "placement": (
                     dict(pl, build=calib.get("build")) if pl_change else None
                 ),
+                # Validation du réglage final : conservée avec le verdict.
+                "final": calib.get("final"),
             }
     except (RuntimeError, ValueError) as exc:
         msg = f"❌ Recalibration de « {mid} » échouée : {exc} — config inchangée."

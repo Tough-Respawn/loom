@@ -50,6 +50,8 @@ PLACEMENT_FINAL_DEPTH_RATIO = 0.5
 PLACEMENT_FINAL_DEPTH_MAX = 16384
 #: Budget temps de la sonde de placement (s) : au-delà, on décide sur l'acquis.
 PLACEMENT_TIME_BUDGET_S = 900
+#: Répétitions de la validation du réglage FINAL complet au contexte calibré.
+PLACEMENT_FINAL_REPS = 2
 #: Marge RAM laissée à l'OS quand le « device » est la RAM (mémoire unifiée).
 _OS_RAM_BUDGET_MB = 3072
 _MIB = 1024 * 1024
@@ -77,6 +79,28 @@ class Placement:
         if self.label == "gpu_partiel":
             return f"gpu_partiel_ngl{self.ngl}"
         return self.label
+
+    @classmethod
+    def from_flags(
+        cls,
+        ngl: int,
+        cpu_moe: bool,
+        n_cpu_moe: int | None,
+        n_layers: int | None = None,
+        **kw,
+    ) -> Placement:
+        """Le placement que décrivent des flags llama-server (ceux d'une sonde, d'un
+        model.toml résolu…)."""
+        if n_cpu_moe is not None:
+            return cls("experts_partiel", 999, n_cpu_moe=int(n_cpu_moe), **kw)
+        if cpu_moe:
+            return cls("experts_cpu", 999, cpu_moe=True, **kw)
+        ngl = int(ngl)
+        if ngl <= 0:
+            return cls("cpu", 0, **kw)
+        if n_layers and 0 < ngl < int(n_layers):
+            return cls("gpu_partiel", ngl, **kw)
+        return cls("gpu_total", 999, **kw)
 
     def describe(self) -> str:
         if self.label == "cpu":
@@ -678,6 +702,69 @@ def probe_placement(
         compare=sum(1 for v in mesures.values() if "tg_ts" in v) >= 2,
         mecanisme=mecanisme + notes + _non_explores_txt(non),
     )
+
+
+def validate_final(
+    probe,
+    *,
+    ctx: int,
+    depth: int,
+    n_layers: int | None = None,
+    reps: int = PLACEMENT_FINAL_REPS,
+    reference_tg: float | None = None,
+    margin_pct: float = PLACEMENT_MARGIN_PCT,
+    progress=None,
+) -> dict:
+    """Valide le RÉGLAGE FINAL complet — la sonde `probe` porte le placement élu, les
+    slots décidés et les batchs mesurés — au contexte CALIBRÉ `ctx` et à la profondeur
+    de la comparaison, `reps` fois (warmup à chaque démarrage). Le verdict n'assemble
+    ainsi plus des mesures prises avec des paramètres différents.
+
+    `reference_tg` = la génération qui a fait élire le placement : `coherent` dit si la
+    configuration complète la reproduit (pas plus bas que la marge ou la dispersion) ;
+    None sans référence. Un échec est nommé, jamais fatal."""
+    say = progress or (lambda _m: None)
+    pl = Placement.from_flags(
+        int(getattr(probe, "ngl", 999) or 0),
+        bool(getattr(probe, "cpu_moe", False)),
+        getattr(probe, "n_cpu_moe", None),
+        n_layers,
+    )
+    base = {
+        "ctx": int(ctx),
+        "depth": int(depth),
+        "slots": int(getattr(probe, "n_parallel", 1) or 1),
+        "ubatch": getattr(probe, "ubatch", None),
+        "batch": getattr(probe, "batch", None),
+        "placement": pl.key,
+    }
+    echantillons: list[dict] = []
+    for i in range(max(1, int(reps))):
+        say(f"réglage final {pl.key} : mesure {i + 1} à ctx {ctx}, profondeur {depth}…")
+        try:
+            r = probe.run(ctx, depth)
+        except Exception as exc:  # noqa: BLE001 - nommé, jamais fatal
+            return {**base, "echec": f"{type(exc).__name__}: {exc}"}
+        ech = {
+            "tg_ts": float(r.tg_ts or 0) or None,
+            "pp_ts": float(r.pp_ts or 0) or None,
+            "mem_mb": int(r.mem_mb or 0),
+            "prompt_n": getattr(r, "prompt_n", None),
+            "predicted_n": getattr(r, "predicted_n", None),
+        }
+        echantillons.append({k: v for k, v in ech.items() if v is not None})
+    m = _agreger(echantillons)
+    if "echec" in m:
+        return {**base, **m}
+    out = {**base, **m, "coherent": None}
+    if reference_tg:
+        ecart = (m["tg_ts"] / float(reference_tg) - 1) * 100
+        out["reference_tg"] = float(reference_tg)
+        out["ecart_pct"] = round(ecart, 1)
+        out["coherent"] = bool(
+            ecart >= -max(margin_pct, float(m.get("tg_disp_pct") or 0))
+        )
+    return out
 
 
 def pick_placement(

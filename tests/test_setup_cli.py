@@ -387,9 +387,16 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
     assert local["bench"]["placement_slots"] == 1
     assert local["bench"]["placement_flags"]["threads"] == 10
     assert local["bench"]["placement_flags"]["gpu_tuning"] is True
+    # Validation du RÉGLAGE FINAL complet au contexte calibré (même fausse sonde : 5 t/s).
+    assert local["bench"]["final_ctx"] == 32_768 and local["bench"]["final_slots"] == 1
+    assert (
+        local["bench"]["final_tg_ts"] == 5.0
+        and local["bench"]["final_coherent"] is True
+    )
     out = "\n".join(printed)
     assert "cache survit à la pollution" in out
     assert "cache réutilisé" in out
+    assert "réglage final" in out
     assert "3.4 t/s" in out.replace(",", ".") or "3,4 t/s" in out
 
     def no_bench(*a, **k):

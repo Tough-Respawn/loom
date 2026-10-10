@@ -1215,15 +1215,53 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     # batchs mesurés) : conversation sur le slot 0, appel annexe routé comme Loom le
     # fera, retour — le cache doit être réutilisé. C'est la preuve qui justifie de
     # traiter le gros prefill comme un coût amorti.
+    # Sonde FINALE = placement élu + slots décidés + batchs mesurés. D'abord valider ce
+    # réglage complet au contexte CALIBRÉ, à la profondeur de la comparaison : le
+    # verdict n'assemble plus des mesures prises avec des paramètres différents.
+    probe_final = (
+        _dc_replace(probe, ubatch=ub_res["ubatch"], batch=ub_res["batch"])
+        if ub_res
+        else probe
+    )
+    con.progress("validation du réglage final au contexte calibré…")
+    try:
+        final = place_mod.validate_final(
+            probe_final,
+            ctx=context,
+            depth=place_mod.final_depth(ctx_utile),
+            n_layers=meta.get("n_layers"),
+            reference_tg=(pl_res or {}).get("tg_ts"),
+            progress=lambda m: con.progress(f"réglage final : {m}"),
+        )
+    except Exception as exc:  # noqa: BLE001 - validation best-effort, nommée
+        final = {"echec": f"{type(exc).__name__}: {exc}", "ctx": context}
+    con.progress_end()
+    if "echec" in final:
+        con.say(f"  [attention] réglage final non validé : {final['echec']}")
+    else:
+        if final.get("coherent") is None:
+            coh = ""
+        elif final["coherent"]:
+            coh = (
+                f" — cohérent avec la mesure de placement ({final['ecart_pct']:+.1f} %)"
+            )
+        else:
+            coh = (
+                f" — ne reproduit pas la mesure de placement ({final['ecart_pct']:+.1f} %),"
+                " à appliquer avec prudence"
+            )
+        marque = "attention" if final.get("coherent") is False else "ok"
+        con.say(
+            f"  [{marque}] réglage final {final['placement']} (ctx {final['ctx']}, "
+            f"{final['slots']} slot(s), ub {final['ubatch']}/b {final['batch']}) : "
+            f"génération {final['tg_ts']} t/s, prefill {final['pp_ts']} t/s à profondeur "
+            f"{final['depth']}{coh}"
+        )
     cache_v = None
     con.progress("vérification du cache avec la configuration finale…")
     try:
-        probe_final = (
-            _dc_replace(probe, ubatch=ub_res["ubatch"], batch=ub_res["batch"])
-            if ub_res
-            else probe
-        )
-        cache_v = probe_final.verify_cache()
+        # Avec le contexte réellement alloué, pas un 4 096 de confort.
+        cache_v = probe_final.verify_cache(ctx=context)
     except Exception as exc:  # noqa: BLE001 - vérification best-effort, jamais fatale
         con.progress_end()
         con.say(f"  [attention] vérification du cache impossible ({exc}).")
@@ -1266,6 +1304,20 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     if cache_v and cache_v.get("reused") is not None:
         values["bench"]["cache_verifie"] = bool(cache_v["reused"])
         values["bench"]["cache_verifie_detail"] = topo_mod.cache_check_text(cache_v)
+    if "echec" in final:
+        values["bench"]["final_echec"] = final["echec"]
+    else:
+        values["bench"]["final_placement"] = final["placement"]
+        values["bench"]["final_ctx"] = final["ctx"]
+        values["bench"]["final_depth"] = final["depth"]
+        values["bench"]["final_slots"] = final["slots"]
+        values["bench"]["final_tg_ts"] = final["tg_ts"]
+        values["bench"]["final_pp_ts"] = final["pp_ts"]
+        values["bench"]["final_tg_disp_pct"] = final["tg_disp_pct"]
+        values["bench"]["final_echantillons"] = _sans_none(final["echantillons"])
+        for k in ("ubatch", "batch", "ecart_pct", "coherent"):
+            if final.get(k) is not None:
+                values["bench"][f"final_{k}"] = final[k]
     if pl_res:
         pl_elu = pl_res.get("placement")
         values["bench"]["placement"] = pl_elu.key if pl_elu else "aucun (échec)"
