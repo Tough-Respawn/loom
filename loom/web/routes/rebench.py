@@ -165,7 +165,8 @@ def _run_calibration(S, spec, progress):
     from loom.runtime.hardware import detect_hardware
 
     hw = detect_hardware(str(server_bin))
-    gpu_backend = bool(bench_mod.has_gpu_backend(server_bin) and hw.has_gpu)
+    # Le binaire fait foi (`--list-devices`) : un build statique n'a aucune DLL à côté.
+    gpu_backend = bench_mod.gpu_backend_available(hw, server_bin)
     over = raw.get("override") or {}
     topo, vram, threads, ngl = _probe_settings(
         meta,
@@ -191,6 +192,9 @@ def _run_calibration(S, spec, progress):
         mmproj_path=str(mdir / mmproj) if mmproj else None,
         cpu_moe=bool(mt.get("cpu_moe", is_moe)),
         n_cpu_moe=mt.get("n_cpu_moe"),
+        # Batchs de l'exécutant : modèle, sinon repli machine [server] ubatch/batch.
+        ubatch=topo_mod.probe_batches(mt, server_cfg)[0],
+        batch=topo_mod.probe_batches(mt, server_cfg)[1],
         # Checkpoints des hybrides : mesurer la mémoire que l'exécutant prendra.
         checkpoint_min_step=(
             mt.get("checkpoint_min_step") or server_cfg.get("checkpoint_min_step")

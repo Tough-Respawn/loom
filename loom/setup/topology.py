@@ -373,6 +373,18 @@ class ServerProbe:
             time.sleep(4)
 
 
+def probe_batches(mt: dict, server_cfg: dict) -> tuple[int | None, int | None]:
+    """(ubatch, batch) que l'EXÉCUTANT appliquera à ce modèle : model.toml, sinon le
+    repli machine [server] ubatch/batch, sinon rien (défauts llama-server). La sonde
+    doit démarrer avec les mêmes : vu le 2026-10-10, elle tournait en -ub 512 quand
+    l'exécutant servait en 2048."""
+    mt = mt or {}
+    server_cfg = server_cfg or {}
+    ub = mt.get("ubatch") or server_cfg.get("ubatch")
+    b = mt.get("batch") or server_cfg.get("batch")
+    return (int(ub) if ub else None, int(b) if b else None)
+
+
 def cache_reused(prompt_first: int, prompt_back: int) -> bool | None:
     """Verdict de la vérification finale : True si le retour a retraité moins de la
     moitié du prompt (cache réutilisé), False sinon, None si la mesure est illisible.

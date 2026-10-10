@@ -979,10 +979,15 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         meta = {}
 
     threads = bench_mod.thread_candidates(os.cpu_count() or 4, deps.cpu_physical())
+    # GPU exploitable : le profil `--list-devices` du binaire fait foi (un build statique
+    # n'a aucune DLL à côté de l'exe), cf. bench.gpu_backend_available.
+    gpu_ok = bench_mod.gpu_backend_available(
+        hw, server_bin, has_dll=deps.has_gpu_backend
+    )
     # Pour un MoE, mesurer l'offload réel avec experts en RAM plutôt qu'un impossible tout-GPU.
     moe = bool(meta.get("expert_count"))
     ngl, ncmoe = bench_mod.ngl_candidates(
-        deps.has_gpu_backend(server_bin) and hw.has_gpu,
+        gpu_ok,
         hw.vram_free_mb,
         model_size_mb,
         meta.get("n_layers"),
@@ -1023,9 +1028,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     # nvidia-smi n'est qu'un repli — sinon une AMD passe en topologie « ram » et la
     # sonde mesure sans profil GPU (vécu 2026-10-09).
     vram_total = int(hw.vram_total_mb or deps.gpu_vram_total_mb() or 0)
-    topo = topo_mod.discover_topology(
-        meta, deps.has_gpu_backend(server_bin), vram_total
-    )
+    topo = topo_mod.discover_topology(meta, gpu_ok, vram_total)
     server_cfg = raw_cfg.get("server") or {}
     headroom = int(server_cfg.get("gpu_kv_headroom_mb", 640) or 640)
     # Utiliser la RAM totale rend la recommandation reproductible. Mémoire unifiée :
@@ -1048,6 +1051,9 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         mmproj_path=str(gguf_path.parent / mmproj_name) if mmproj_name else None,
         cpu_moe=bool(model_toml.get("cpu_moe", is_moe)),
         n_cpu_moe=model_toml.get("n_cpu_moe"),
+        # Batchs de l'exécutant : modèle, sinon repli machine [server] ubatch/batch.
+        ubatch=topo_mod.probe_batches(model_toml, server_cfg)[0],
+        batch=topo_mod.probe_batches(model_toml, server_cfg)[1],
         # Checkpoints des hybrides : mesurer la mémoire que l'exécutant prendra.
         checkpoint_min_step=(
             model_toml.get("checkpoint_min_step")
@@ -1083,7 +1089,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         n_layers=meta.get("n_layers"),
         model_size_mb=model_size_mb,
         kv_mb=kv_mb,
-        gpu_backend=bool(deps.has_gpu_backend(server_bin) and hw.has_gpu),
+        gpu_backend=gpu_ok,
         vram_total_mb=vram_total,
         ram_total_mb=ram_total_mb,
         uma=not hw.vram_is_discrete,

@@ -359,6 +359,108 @@ def test_step_bench_mesure_le_placement_et_l_ecrit(monkeypatch, tmp_path):
     assert sondes[0].profile is not None and sondes[0].profile.vram_total_mb == 48_789
 
 
+def test_step_bench_build_statique_sans_dll_garde_le_gpu(monkeypatch, tmp_path):
+    """Le cas réel du 2026-10-10 : build maison Vulkan sans ggml-vulkan.dll. Le profil
+    `--list-devices` (backend Vulkan) fait foi : candidats GPU, topologie GPU, et la
+    sonde reçoit les batchs machine ([server] ubatch/batch) comme l'exécutant."""
+    import tomllib
+    from dataclasses import dataclass as _dc
+
+    from loom.runtime.hardware import HardwareProfile
+    from loom.setup import cli
+    from tests.test_setup_cli import _console, _deps, _patch_paths
+
+    _patch_paths(monkeypatch, tmp_path)
+    exe = tmp_path / "rt" / "llama-server.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"")
+    (tmp_path / "config" / "local.toml").write_text(
+        f'[server]\nbin = "{str(exe).replace(chr(92), "/")}"\nubatch = 2048\nbatch = 4096\n',
+        encoding="utf-8",
+    )
+    mdir = tmp_path / "models" / "local" / "text" / "ornith"
+    mdir.mkdir(parents=True)
+    (mdir / "model.toml").write_text(
+        'repo = "o/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 35193\ncpu_moe = false\n',
+        encoding="utf-8",
+    )
+    (mdir / "m.gguf").write_bytes(b"x")
+    monkeypatch.setattr(
+        cli,
+        "read_gguf_meta",
+        lambda p: {
+            "n_layers": 40,
+            "expert_count": 128,
+            "head_count_kv": 2,
+            "key_length": 256,
+        },
+    )
+    rows = [
+        {"threads": 8, "ngl": 999, "kind": "tg", "ts": 14.0},
+        {"threads": 8, "ngl": 999, "kind": "pp", "ts": 250.0},
+    ]
+    sondes: list = []
+
+    @_dc
+    class FakeProbe:
+        server_bin: str
+        model_path: str
+        threads: int
+        ngl: int
+        topology: str
+        mmproj_path: object = None
+        cpu_moe: bool = False
+        n_cpu_moe: object = None
+        n_parallel: int = 1
+        ubatch: object = None
+        batch: object = None
+        checkpoint_min_step: object = None
+        ctx_checkpoints: object = None
+        profile: object = None
+
+        def __post_init__(self):
+            sondes.append(self)
+
+        def probe_isolation(self, ctx=4096):
+            return 600, 4
+
+        def run(self, ctx, depth):
+            r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+            if depth:
+                r.tg_ts, r.pp_ts = (12.1, 217.0) if self.cpu_moe else (14.4, 262.0)
+            return r
+
+    captured: dict = {}
+
+    def fake_bench(b, m, threads, ngl, n_cpu_moe=0, progress=None):
+        captured["ngl"] = list(ngl)
+        return rows
+
+    con, printed = _console(assume_yes=True)
+    deps = _deps(
+        tmp_path,
+        run_bench=fake_bench,
+        find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
+        has_gpu_backend=lambda sb: False,  # AUCUNE DLL : build statique
+        cpu_physical=lambda: 8,
+        gpu_vram_total_mb=lambda: 0,
+        ram_total_mb=lambda: 64_000,
+        make_probe=FakeProbe,
+        detect_hardware=lambda server_bin=None: HardwareProfile(
+            True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
+        ),
+    )
+    assert cli.run(con, deps) == 0
+    assert captured["ngl"] == [999]  # llama-bench mesure la config GPU, pas ngl 0
+    assert sondes and sondes[0].topology == "moe_hybride"
+    assert (sondes[0].ubatch, sondes[0].batch) == (2048, 4096)
+    local = tomllib.loads(
+        (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
+    )
+    assert local["bench"]["context_mode"] == "moe_hybride"
+    assert local["bench"]["placement"] in ("gpu_total", "experts_cpu")
+
+
 # ---- câblage /rebench : helper de mesure ------------------------------------------------
 
 

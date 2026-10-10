@@ -219,6 +219,47 @@ def test_sonde_passe_les_checkpoints_comme_l_executant():
     assert obtenu[obtenu.index("--ctx-checkpoints") + 1] == "8"
 
 
+def test_sonde_prend_les_batchs_machine_comme_l_executant():
+    """Vu sur la vraie ligne de commande (2026-10-10) : la sonde tournait en -ub 512 /
+    -b 2048 alors que l'exécutant prend ubatch = 2048 / batch = 4096 du [server] machine
+    quand model.toml ne dit rien. Même précédence : modèle, sinon machine."""
+    from loom.setup.topology import probe_batches
+
+    assert probe_batches({}, {"ubatch": 2048, "batch": 4096}) == (2048, 4096)
+    assert probe_batches({"ubatch": 1024}, {"ubatch": 2048, "batch": 4096}) == (
+        1024,
+        4096,
+    )
+    assert probe_batches({}, {}) == (None, None)
+    attendu = shlex.split(
+        _model_cmd(
+            _MODEL,
+            _UMA,
+            "llama-server",
+            "/models",
+            8192,
+            n_parallel=1,
+            override_threads=8,
+            default_ubatch=2048,
+            default_batch=4096,
+        )
+    )
+    ub, b = probe_batches({}, {"ubatch": 2048, "batch": 4096})
+    probe = ServerProbe(
+        server_bin="llama-server",
+        model_path="/models/m.gguf",
+        threads=8,
+        ngl=999,
+        topology=TOPO_MOE_HYBRIDE,
+        profile=_UMA,
+        ubatch=ub,
+        batch=b,
+    )
+    obtenu = _args_sonde(probe, 8192)
+    assert _flags_mesures(obtenu) == _flags_mesures(attendu)
+    assert obtenu[obtenu.index("-ub") + 1] == "2048"
+
+
 def test_sonde_cpu_seul_sans_profil_gpu():
     probe = ServerProbe(
         server_bin="llama-server",
