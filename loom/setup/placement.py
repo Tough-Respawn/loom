@@ -773,6 +773,31 @@ def raison_repli_condamne(mecanisme: str | None, repli: dict) -> str:
     )
 
 
+def lire_mmproj(path) -> dict:
+    """Le projecteur multimodal que la sonde passera (--mmproj) : {mb, bloquant}.
+    Absent ou en-tête rejeté : llama-server échoue au chargement, après le modèle
+    principal (load_model renvoie false quand mtmd_init_from_file échoue,
+    tools/server/server-context.cpp:1295-1299) — bloquant, impossibilité établie. Type
+    de valeur inconnu du lecteur : taille inconnue (mb None), le précontrôle sera
+    incertain. Sinon les Mo de son catalogue : une allocation hôte certaine
+    (--no-mmproj-offload)."""
+    from pathlib import Path
+
+    from loom.runtime.gguf_meta import TypeGGUFInconnu, read_gguf_meta
+
+    p = Path(path)
+    echec = "llama-server échouerait au chargement (--mmproj)"
+    if not p.is_file():
+        return {"mb": 0, "bloquant": f"mmproj absent ({p.name}) : {echec}"}
+    try:
+        w = read_gguf_meta(p).get("weights") or {}
+    except TypeGGUFInconnu:
+        return {"mb": None, "bloquant": None}
+    except (ValueError, OSError) as exc:
+        return {"mb": 0, "bloquant": f"mmproj illisible ({p.name} : {exc}) : {echec}"}
+    return {"mb": int(w.get("total", 0) or 0) // _MIB, "bloquant": None}
+
+
 def placement_brut(ngl, cpu_moe, n_cpu_moe, n_layers) -> Placement:
     """Placement aux flags EXACTS d'un démarrage (-ngl, --cpu-moe, --n-cpu-moe).
     Placement.from_flags fait passer --cpu-moe avant -ngl (experts_cpu en ngl 999) ;
@@ -842,7 +867,7 @@ def precontrole(
     base_slots: int,
     ctx_checkpoints: int | None,
     current: Placement | None,
-    mmproj_mb: int = 0,
+    mmproj_mb: int | None = 0,
 ) -> dict:
     """Verdict AVANT tout chargement sur les démarrages SERVEUR :
 
@@ -862,6 +887,8 @@ def precontrole(
     """
     meta = meta or {}
     inconnues = inconnues_decisives(profile, meta)
+    if mmproj_mb is None:
+        inconnues.append("mmproj : taille inconnue (type GGUF inconnu du lecteur)")
     capacite, inc_cap = _capacite(hw, ram_total_mb)
     toutes = inconnues + inc_cap
     complet = not inconnues  # MÉTADONNÉES complètes

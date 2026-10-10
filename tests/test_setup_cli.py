@@ -9,6 +9,15 @@ from loom.setup.cli import Console, Deps, run
 from loom.setup.llama_release import AssetPlan
 
 
+def _gguf_sans_catalogue(path):
+    """GGUF VALIDE sans catalogue de tenseurs : métadonnées incomplètes, le précontrôle
+    dit « incertain » et le flux continue. (Un en-tête rejeté, lui, arrête tout avant
+    le moindre processus : llama-server le refuserait aussi.)"""
+    from tests.test_gguf_profile import _gguf
+
+    return _gguf(path, {"general.architecture": "llama"})
+
+
 def _console(answers=None, assume_yes=False):
     answers = list(answers or [])
     printed = []
@@ -296,7 +305,7 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 1\nsize_mb = 5600\n',
         encoding="utf-8",
     )
-    (mdir / "m.gguf").write_bytes(b"pas-un-vrai-gguf")  # meta illisible -> repli
+    _gguf_sans_catalogue(mdir / "m.gguf")  # métadonnées incomplètes -> repli
 
     rows = [
         {"threads": 10, "ngl": 99, "kind": "tg", "ts": 3.4},
@@ -447,7 +456,7 @@ def test_etape_bench_reglage_final_en_echec_n_ecrit_rien(monkeypatch, tmp_path):
         'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 1\nsize_mb = 5600\n',
         encoding="utf-8",
     )
-    (mdir / "m.gguf").write_bytes(b"pas-un-vrai-gguf")
+    _gguf_sans_catalogue(mdir / "m.gguf")
     rows = [
         {"threads": 10, "ngl": 99, "kind": "tg", "ts": 3.4},
         {"threads": 10, "ngl": 99, "kind": "pp", "ts": 25.0},
@@ -559,7 +568,7 @@ def _harnais_bench(
         'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 1\nsize_mb = 5600\n',
         encoding="utf-8",
     )
-    (mdir / "m.gguf").write_bytes(b"pas-un-vrai-gguf")
+    _gguf_sans_catalogue(mdir / "m.gguf")
     rows = [
         {"threads": 10, "ngl": 99, "kind": "tg", "ts": 3.4},
         {"threads": 10, "ngl": 99, "kind": "pp", "ts": 25.0},
@@ -772,8 +781,8 @@ def test_precontrole_hors_budget_au_plancher_aucun_processus_modele(
 
 
 def test_precontrole_metadonnees_incompletes_flux_inchange(monkeypatch, tmp_path):
-    """Contre-test : même machine, GGUF illisible (meta {}) → « incertain », llama-bench
-    et la sonde tournent comme avant ; l'étape 2 tranche."""
+    """Contre-test : même machine, GGUF valide sans catalogue de tenseurs → « incertain »,
+    llama-bench et la sonde tournent comme avant ; l'étape 2 tranche."""
     journal: list = []
     appels: list = []
 
@@ -925,6 +934,63 @@ def test_precontrole_vram_de_repli_filtre_llama_bench_et_le_dit(monkeypatch, tmp
     assert appels and appels[0]["ngl"] == [0] and appels[0]["ncmoe"] == 0
     assert "[attention] précontrôle : faisable" in out
     assert "capacité physique non établie" in out
+
+
+def test_precontrole_gguf_a_l_en_tete_rejete_aucun_processus(monkeypatch, tmp_path):
+    """Revue adverse : comme /rebench, un en-tête rejeté (ici une page HTML de 404
+    enregistrée sous le nom du GGUF) est une impossibilité établie — llama-server le
+    refuserait aussi. Ni llama-bench, ni sonde ; verdict et archive « précontrôle »."""
+    journal: list = []
+    appels: list = []
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_rien_ne_doit_tourner, journal=journal),
+        assume_yes=False,
+        run_bench=_bench_espion(appels),
+    )
+    (mdir / "m.gguf").write_bytes(b"<html>404</html>")
+    avant = (mdir / "model.toml").read_text(encoding="utf-8")
+    assert run(con, deps) != 0
+    out = "\n".join(printed)
+    assert appels == [] and journal == []
+    assert "GGUF illisible" in out and "aucun processus modèle lancé" in out
+    assert "Lancer le bench maintenant" not in out
+    assert (mdir / "model.toml").read_text(encoding="utf-8") == avant
+    arch = json.loads(
+        next((tmp_path / "var" / "bench" / "m1").glob("*.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert arch["echec"]["etape"] == "précontrôle"
+    assert arch["precontrole"]["verdict"] == "impossible"
+    assert arch["precontrole"]["etabli"] is True
+
+
+def test_precontrole_mmproj_absent_aucun_processus(monkeypatch, tmp_path):
+    """Un mmproj annoncé par le model.toml mais absent (téléchargement interrompu : il
+    est récupéré en dernier) comptait pour 0 Mo — or la sonde passe --mmproj et
+    llama-server échoue au chargement, après le modèle principal. Bloquant."""
+    journal: list = []
+    appels: list = []
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_rien_ne_doit_tourner, journal=journal),
+        assume_yes=False,
+        hw=_gpu(24_576),
+        meta=_meta_complete(),
+        run_bench=_bench_espion(appels),
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 12600\n'
+        'mmproj_filename = "mmproj.gguf"\n',
+        encoding="utf-8",
+    )
+    assert run(con, deps) != 0
+    out = "\n".join(printed)
+    assert appels == [] and journal == []
+    assert "mmproj absent" in out and "aucun processus modèle lancé" in out
 
 
 def test_precontrole_compte_le_mmproj_du_model_toml(monkeypatch, tmp_path):
@@ -1218,8 +1284,8 @@ def test_etape_bench_aucun_placement_faisable_n_ecrit_rien_et_archive(
     # « impossible de démarrer » : le message nomme le contexte, les slots et les postes.
     assert "le contexte utile" in out and "ne tient avec aucun placement" in out
     assert "postes à ce contexte" in out
-    # GGUF illisible : précontrôle « incertain » — il n'a rien établi au plancher, le
-    # message ne prétend pas que le démarrage « passait » (revue adverse).
+    # GGUF sans catalogue : précontrôle « incertain » — il n'a rien établi au plancher,
+    # le message ne prétend pas que le démarrage « passait » (revue adverse).
     assert "passait" not in out and "plancher non établie" in out
     assert lancés == []  # ni comparaison de placement, ni calibration
     assert (mdir / "model.toml").read_text(encoding="utf-8") == avant
@@ -1317,7 +1383,7 @@ def test_etape_bench_part_de_l_isolation_actuelle_si_la_sonde_echoue(
         "cache_isolation = true\n",
         encoding="utf-8",
     )
-    (mdir / "m.gguf").write_bytes(b"pas-un-vrai-gguf")
+    _gguf_sans_catalogue(mdir / "m.gguf")
     rows = [
         {"threads": 10, "ngl": 99, "kind": "tg", "ts": 3.4},
         {"threads": 10, "ngl": 99, "kind": "pp", "ts": 25.0},

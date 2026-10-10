@@ -211,6 +211,33 @@ def test_run_calibration_gguf_illisible_impossibilite_etablie_aucune_sonde(
     assert trace["gguf"].endswith("m.gguf") and trace["materiel"] is GPU_6G
 
 
+def test_run_calibration_mmproj_absent_aucune_sonde(monkeypatch, tmp_path):
+    """mmproj annoncé mais absent : la sonde passerait --mmproj et llama-server
+    échouerait au chargement — impossibilité établie, aucune sonde (il comptait 0 Mo)."""
+    from loom.web.routes import rebench
+
+    journal: list = []
+    trace: dict = {}
+    spec = _environnement(
+        monkeypatch,
+        tmp_path,
+        meta=_meta_complete(),
+        hw=GPU_24G,
+        ram_mb=64_000,
+        journal=journal,
+        toml_extra='mmproj_filename = "mmproj.gguf"\n',
+    )
+
+    def _stop(*a, **k):
+        raise _Stop()
+
+    monkeypatch.setattr(rebench, "_measure_placement", _stop)
+    with pytest.raises(DemarrageImpossible) as exc:
+        rebench._run_calibration(None, spec, lambda m: None, trace_out=trace)
+    assert exc.value.etabli is True and "mmproj absent" in str(exc.value)
+    assert journal == [] and trace["precontrole"]["verdict"] == "impossible"
+
+
 def test_run_calibration_metadonnees_inconnues_incertain_isolation_a_un_slot(
     monkeypatch, tmp_path
 ):

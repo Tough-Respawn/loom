@@ -375,6 +375,40 @@ def test_mmproj_decisif_pour_l_etabli():
     assert res["borne"]["total_mb"] == 11_100
 
 
+def test_mmproj_absent_ou_rejete_bloquant_type_inconnu_incertain(tmp_path):
+    """Le mmproj que la sonde passera (--mmproj) : absent ou en-tête rejeté, llama-server
+    échoue au chargement (load_model renvoie false quand mtmd_init_from_file échoue) —
+    bloquant ; type de valeur inconnu du lecteur : taille inconnue, pas un échec."""
+    from loom.setup.placement import lire_mmproj
+    from tests.test_gguf_profile import _gguf
+
+    absent = lire_mmproj(tmp_path / "mmproj.gguf")
+    assert absent["bloquant"] and "absent" in absent["bloquant"]
+    (tmp_path / "html.gguf").write_bytes(b"<html>404</html>")
+    rejete = lire_mmproj(tmp_path / "html.gguf")
+    assert rejete["bloquant"] and "pas un fichier GGUF" in rejete["bloquant"]
+    bon = _gguf(
+        tmp_path / "bon.gguf",
+        {"general.architecture": "clip"},
+        [("v.blk.0.attn_k.weight", 2 * MIB)],
+    )
+    assert lire_mmproj(bon) == {"mb": 2, "bloquant": None}
+    import struct
+
+    inconnu = tmp_path / "inconnu.gguf"
+    blob = b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", 0, 1)
+    blob += struct.pack("<Q", 3) + b"cle" + struct.pack("<I", 99)  # type 99 inconnu
+    inconnu.write_bytes(blob)
+    assert lire_mmproj(inconnu) == {"mb": None, "bloquant": None}
+
+
+def test_mmproj_de_taille_inconnue_rend_incertain():
+    res = _pc(_dense(), NVIDIA_24G, ram=64_000, mmproj_mb=None)
+    assert res["verdict"] == "incertain" and any(
+        "mmproj" in i for i in res["inconnues"]
+    )
+
+
 def test_faisable_sur_une_machine_qui_porte_le_modele():
     res = _pc(_dense(), NVIDIA_24G, ram=64_000)
     assert res["verdict"] == "faisable" and res["etabli"] is False

@@ -5,18 +5,6 @@ import os
 from pathlib import Path
 
 
-def _mmproj_mb(path) -> int:
-    """Poids du projecteur multimodal (catalogue de son GGUF), en Mo : allocation hôte
-    CERTAINE au démarrage (--no-mmproj-offload). 0 si illisible ou absent."""
-    from loom.runtime.gguf_meta import read_gguf_meta
-
-    try:
-        w = read_gguf_meta(path).get("weights") or {}
-    except (ValueError, OSError):
-        return 0
-    return int(w.get("total", 0) or 0) // (1024 * 1024)
-
-
 # ---- /rebench : recalibration topologique d'un LOCAL TEXTE (loom.setup réutilisé) ----
 
 # Un seul rebench à la fois : la mesure sature CPU/GPU et exige la VRAM libre.
@@ -420,11 +408,15 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     except ValueError as exc:
         # En-tête rejeté (pas un GGUF, version < 2, tronqué) : llama-server le
         # refuserait aussi — rien ne démarre, aucun processus lancé (revue adverse).
+        raison = f"GGUF illisible ({exc}) : llama-server le refuserait aussi"
         trace["etape"] = "précontrôle"
+        trace["precontrole"] = {
+            "verdict": "impossible",
+            "etabli": True,
+            "raison": raison,
+        }
         raise DemarrageImpossible(
-            f"GGUF illisible : {exc}",
-            etabli=True,
-            details={"verdict": "impossible", "gguf": str(gguf)},
+            raison, etabli=True, details={"verdict": "impossible", "gguf": str(gguf)}
         ) from exc
     is_moe = bool(meta.get("expert_count"))
     # Le binaire fait foi (`--list-devices`) : un build statique n'a aucune DLL à côté.
@@ -456,6 +448,18 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
 
     trace["etape"] = "précontrôle"
     progress("précontrôle mémoire du démarrage (avant tout chargement)…")
+    # mmproj absent ou rejeté : la sonde passerait --mmproj et llama-server échouerait
+    # au chargement — impossibilité établie, aucune sonde.
+    mm = place_mod.lire_mmproj(mdir / mmproj) if mmproj else {"mb": 0, "bloquant": None}
+    if mm["bloquant"]:
+        trace["precontrole"] = {
+            "verdict": "impossible",
+            "etabli": True,
+            "raison": mm["bloquant"],
+        }
+        raise place_mod.DemarrageImpossible(
+            mm["bloquant"], etabli=True, details={"verdict": "impossible"}
+        )
     profile = ModelProfile.from_meta(meta, model_size_mb=size_mb)
     pc = place_mod.precontrole(
         profile,
@@ -477,7 +481,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
             override_ngl=over.get("n_gpu_layers"),
             headroom=headroom,
         ),
-        mmproj_mb=_mmproj_mb(mdir / mmproj) if mmproj else 0,
+        mmproj_mb=mm["mb"],
     )
     trace["precontrole"] = pc
     trace["profil"] = profile.describe()

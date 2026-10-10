@@ -29,7 +29,7 @@ from loom.runtime.model_install import (
     start_download,
     write_model_toml,
 )
-from loom.runtime.gguf_meta import read_gguf_meta
+from loom.runtime.gguf_meta import TypeGGUFInconnu, read_gguf_meta
 from loom.runtime.hf_catalog import HfCatalogError
 from loom.runtime.platform_info import detect as detect_platform
 from loom.runtime.term import colorize, supports_color
@@ -875,16 +875,6 @@ def _archive_setup(
         con.say(f"  [attention] archive du bench non écrite ({exc}).")
 
 
-def _mmproj_mb(path) -> int:
-    """Poids du projecteur multimodal (catalogue de son GGUF), en Mo : une allocation
-    hôte CERTAINE au démarrage (--no-mmproj-offload). 0 si illisible ou absent."""
-    try:
-        w = read_gguf_meta(path).get("weights") or {}
-    except (ValueError, OSError):
-        return 0
-    return int(w.get("total", 0) or 0) // (1024 * 1024)
-
-
 def _sans_none(obj):
     """Copie récursive sans valeurs None : TOML n'a pas de null, tomlkit refuse."""
     if isinstance(obj, dict):
@@ -1035,10 +1025,18 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     model_toml = _read_model_toml(gguf_path)
     probe_bin = topo_mod.model_server_bin(model_toml, str(server_bin))
     hw = deps.detect_hardware(probe_bin)
+    illisible = None
     try:
         meta = read_gguf_meta(gguf_path)
-    except ValueError:
+    except TypeGGUFInconnu:
+        # Fichier plus récent que le lecteur, pas invalide : métadonnées inconnues, le
+        # précontrôle le dira « incertain » et le serveur tranchera.
         meta = {}
+    except ValueError as exc:
+        # En-tête rejeté (pas un GGUF, version < 2, tronqué) : llama-server le
+        # refuserait aussi — arrêt au précontrôle, avant tout processus.
+        meta = {}
+        illisible = f"GGUF illisible ({exc}) : llama-server le refuserait aussi"
 
     threads = bench_mod.thread_candidates(os.cpu_count() or 4, deps.cpu_physical())
     # GPU exploitable : le profil `--list-devices` du binaire fait foi (un build statique
@@ -1089,6 +1087,28 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         "llama_bench": None,
         "profil": profile.describe(),
     }
+    # Fichiers que llama-server refuserait (GGUF à l'en-tête rejeté, mmproj absent ou
+    # rejeté) : impossibilité établie, arrêt avant tout processus — comme /rebench.
+    mm = (
+        place_mod.lire_mmproj(gguf_path.parent / mmproj_name)
+        if mmproj_name
+        else {"mb": 0, "bloquant": None}
+    )
+    bloquant = illisible or mm["bloquant"]
+    if bloquant:
+        trace["precontrole"] = {
+            "verdict": "impossible",
+            "etabli": True,
+            "complet": False,
+            "raison": bloquant,
+        }
+        con.say(
+            f"  [échec] précontrôle : {bloquant} — aucun processus modèle lancé, "
+            "configuration inchangée."
+        )
+        report.add("bench", "echec", bloquant)
+        _archive_setup(con, trace, echec={"etape": "précontrôle", "erreur": bloquant})
+        return
     # PRÉCONTRÔLE (revue n°16, étape 1) : les démarrages serveur tiennent-ils, au
     # plancher, AVANT llama-bench et la sonde d'isolation ? Même comptabilité que le
     # contrôle d'étape 2 (mêmes VRAM, RAM, UMA, checkpoints) ; métadonnées incomplètes :
@@ -1113,7 +1133,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             override_ngl=(raw_cfg.get("override") or {}).get("n_gpu_layers"),
             headroom=headroom,
         ),
-        mmproj_mb=(_mmproj_mb(gguf_path.parent / mmproj_name) if mmproj_name else 0),
+        mmproj_mb=mm["mb"],
     )
     trace["precontrole"] = pc
     pc_texte = place_mod.precontrole_texte(pc)
