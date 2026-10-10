@@ -59,6 +59,26 @@ class Placement:
         return f"denses sur GPU, experts de {self.n_cpu_moe} couches sur CPU (estimé)"
 
 
+def useful_context(
+    model_ctx: int | None, global_ctx: int | None, model_limit: int | None
+) -> int:
+    """Contexte UTILE : celui que l'exécutant servira — le `context` du modèle, sinon
+    le [server] context de la machine, sinon le contexte de sonde ; borné par la
+    limite déclarée du modèle, jamais sous 4 096. Les estimations de faisabilité et
+    les comparaisons se font à ce contexte, pas à une constante."""
+    ctx = int(model_ctx or global_ctx or PLACEMENT_PROBE_CTX)
+    if model_limit:
+        ctx = min(ctx, int(model_limit))
+    return max(4096, ctx)
+
+
+def kv_estimate_mb(profile, ctx: int, *, gpu_tuning: bool, slots: int = 1) -> int:
+    """Mio de cache KV au contexte `ctx` avec le type de cache de l'EXÉCUTANT (q8_0
+    sous profil GPU, f16 sinon) et `slots` slots — cf. ModelProfile.kv_bytes."""
+    kv_type = "q8_0" if gpu_tuning else "f16"
+    return int(profile.kv_bytes(ctx, kv_type, slots) // (1024 * 1024))
+
+
 def device_budget_mb(
     vram_total_mb: int, ram_total_mb: int, uma: bool, headroom_mb: int
 ) -> int:

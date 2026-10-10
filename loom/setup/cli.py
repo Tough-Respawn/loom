@@ -1010,10 +1010,15 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     topo = topo_mod.discover_topology(
         meta, deps.has_gpu_backend(server_bin), vram_total
     )
-    headroom = int((raw_cfg.get("server") or {}).get("gpu_kv_headroom_mb", 640) or 640)
-    # Utiliser la RAM totale rend la recommandation reproductible.
+    server_cfg = raw_cfg.get("server") or {}
+    headroom = int(server_cfg.get("gpu_kv_headroom_mb", 640) or 640)
+    # Utiliser la RAM totale rend la recommandation reproductible. Mémoire unifiée :
+    # le device est la RAM, comptée une fois (même quantité que la sonde mesure).
     ram_total_mb = int(deps.ram_total_mb())
-    budget = topo_mod.memory_budget_mb(topo, vram_total, ram_total_mb, headroom)
+    uma = bool(hw.has_gpu and not hw.vram_is_discrete)
+    budget = topo_mod.memory_budget_mb(
+        topo, vram_total, ram_total_mb, headroom, uma=uma
+    )
     model_toml = _read_model_toml(gguf_path)
     is_moe = bool(meta.get("expert_count"))
     mmproj_name = model_toml.get("mmproj_filename")
@@ -1027,18 +1032,32 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         mmproj_path=str(gguf_path.parent / mmproj_name) if mmproj_name else None,
         cpu_moe=bool(model_toml.get("cpu_moe", is_moe)),
         n_cpu_moe=model_toml.get("n_cpu_moe"),
+        # Checkpoints des hybrides : mesurer la mémoire que l'exécutant prendra.
+        checkpoint_min_step=(
+            model_toml.get("checkpoint_min_step") or server_cfg.get("checkpoint_min_step")
+        ),
+        ctx_checkpoints=model_toml.get("ctx_checkpoints"),
         # Flags machine et mode de mesure mémoire dérivés du profil de l'exécutant.
         profile=hw,
     )
     # Placement MESURÉ des poids (où vivent denses et experts) AVANT isolation et
     # calibration : elles mesurent ainsi la configuration qui servira vraiment.
-    # Mémoire unifiée = le device est la RAM. Cf. loom/setup/placement.py (Ornith,
-    # 2026-10-09).
+    # Cf. loom/setup/placement.py (Ornith, 2026-10-09).
     from dataclasses import replace as _dc_replace
 
+    from loom.runtime.model_profile import ModelProfile
     from loom.setup import placement as place_mod
 
-    kv_mb = bench_mod.kv_bytes_per_token(meta) * 65536 // (1024 * 1024)
+    # Profil GGUF : couches à cache KV, poids par famille — chaque donnée avec sa
+    # provenance. Le KV est estimé au contexte UTILE avec le type de cache de
+    # l'exécutant (q8_0 sous profil GPU), pas en f16 pour 65 536 tokens.
+    profile = ModelProfile.from_meta(meta, model_size_mb=model_size_mb)
+    for ligne in profile.describe():
+        con.say(f"  profil : {ligne}")
+    ctx_utile = place_mod.useful_context(
+        model_toml.get("context"), server_cfg.get("context"), meta.get("context_length")
+    )
+    kv_mb = place_mod.kv_estimate_mb(profile, ctx_utile, gpu_tuning=hw.has_gpu, slots=1)
     candidats = place_mod.placement_candidates(
         moe=is_moe,
         n_layers=meta.get("n_layers"),
@@ -1149,6 +1168,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "context_mecanisme": calib["mecanisme"],
             "context_pente_kb_tok": calib["slope_kb_tok"],
             "context_valide_jusqua": calib["valide_jusqua"],
+            # False = plancher de repli, aucun barreau de vitesse validé.
+            "context_valide": bool(calib.get("valide", True)),
+            "context_utile_estime": ctx_utile,
+            "kv_estime_mb": kv_mb,
         },
     }
     if pl_res:
@@ -1213,10 +1236,16 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         f"  Mesuré : génération {best['tg_ts']:.1f} t/s · prefill "
         f"{best['pp_ts']:.1f} t/s (threads={best['threads']}{gpu_txt})"
     )
-    con.say(
-        f"  [ok] context={context} ({topo}, pente {calib['slope_kb_tok']} Ko/token "
-        f"mesurée, vitesse validée jusqu'à {calib['valide_jusqua']} tokens)"
-    )
+    if calib.get("valide", True):
+        con.say(
+            f"  [ok] context={context} ({topo}, pente {calib['slope_kb_tok']} Ko/token "
+            f"mesurée, vitesse validée jusqu'à {calib['valide_jusqua']} tokens)"
+        )
+    else:
+        con.say(
+            f"  [attention] context={context} : repli NON validé — aucun barreau de "
+            f"vitesse n'a pu être mesuré ({topo}, pente {calib['slope_kb_tok']} Ko/token)."
+        )
     if pl_res and pl_res["tg_ts"] is not None:
         gain_pl = (
             f", {pl_res['gain_pct']:+.0f} % de génération vs {pl_res['baseline']}"

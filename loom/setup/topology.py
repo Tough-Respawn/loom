@@ -125,6 +125,10 @@ class ServerProbe:
     # Batchs de prefill sondés par probe_ubatch (None = défauts llama-server).
     ubatch: int | None = None
     batch: int | None = None
+    # Checkpoints des hybrides : chacun pèse l'état récurrent complet, la mémoire
+    # mesurée doit être celle de l'exécutant (model.toml / [server] défaut machine).
+    checkpoint_min_step: int | None = None
+    ctx_checkpoints: int | None = None
     # Profil matériel de l'exécutant (`--list-devices`) : les flags machine (profil
     # GPU, mémoire unifiée) en sont dérivés par effective.launch_flags, comme dans
     # serve.py et swap.py. Sans profil (tests, anciens appelants) la topologie décide.
@@ -254,6 +258,8 @@ class ServerProbe:
             n_cpu_moe=self.n_cpu_moe,
             ubatch=self.ubatch,
             batch=self.batch,
+            checkpoint_min_step=self.checkpoint_min_step,
+            ctx_checkpoints=self.ctx_checkpoints,
         )
         if self.memory_mode == "ram_delta":
             # Référence prise juste avant le lancement : le delta à /health est la
@@ -420,8 +426,15 @@ def calibrate(
             mecanisme = f"limite du modèle ou capacité atteinte — vitesse validée jusqu'à {valide}"
 
     context = max(_FLOOR_CTX, valide or min(cap, _FLOOR_CTX))
+    if not valide:
+        # Un plancher n'est pas une mesure : le dire, pour que personne ne lise
+        # « 4096 » comme un contexte validé en vitesse.
+        mecanisme += (
+            f" — contexte {context} = repli NON validé (aucun barreau de vitesse validé)"
+        )
     return {
         "context": int(context),
+        "valide": bool(valide),
         "mode": topology,
         "mecanisme": mecanisme,
         "slope_kb_tok": round(slope_bytes / 1024, 1),
@@ -451,10 +464,20 @@ def gpu_vram_total_mb() -> int:
 
 
 def memory_budget_mb(
-    topology: str, vram_total_mb: int, ram_total_mb: int, headroom_mb: int
+    topology: str,
+    vram_total_mb: int,
+    ram_total_mb: int,
+    headroom_mb: int,
+    uma: bool = False,
 ) -> int:
     """Budget mémoire DÉTERMINISTE pour poids-GPU + KV selon la topologie :
-    totaux moins marges fixes, jamais la mémoire disponible du moment (P3)."""
+    totaux moins marges fixes, jamais la mémoire disponible du moment (P3).
+    Mémoire unifiée (`uma`) : le device EST la RAM — on la compte une fois, bornée
+    par ce que le pilote annonce ET par la RAM moins la marge OS. C'est la même
+    quantité que la sonde mesure alors (ServerProbe.memory_mode « ram_delta »)."""
     if topology == TOPO_RAM:
         return max(0, ram_total_mb - _OS_RAM_BUDGET_MB)
+    if uma:
+        device = min(vram_total_mb, ram_total_mb - _OS_RAM_BUDGET_MB)
+        return max(0, device - headroom_mb)
     return max(0, vram_total_mb - headroom_mb)

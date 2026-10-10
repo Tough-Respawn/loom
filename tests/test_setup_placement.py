@@ -298,6 +298,8 @@ def test_step_bench_mesure_le_placement_et_l_ecrit(monkeypatch, tmp_path):
         n_parallel: int = 1
         ubatch: object = None
         batch: object = None
+        checkpoint_min_step: object = None
+        ctx_checkpoints: object = None
         profile: object = None
 
         def __post_init__(self):

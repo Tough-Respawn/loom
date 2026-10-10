@@ -186,6 +186,39 @@ def test_sonde_gpu_discret_garde_no_mmap_comme_l_executant():
     assert "--no-mmap" in obtenu or "--load-mode" in obtenu
 
 
+def test_sonde_passe_les_checkpoints_comme_l_executant():
+    """Un hybride (Bonsai 2) démarre avec --checkpoint-min-step / --ctx-checkpoints :
+    chaque checkpoint pèse l'état récurrent complet (150 Mio), la mémoire mesurée par
+    la sonde doit être celle de l'exécutant."""
+    hybride = replace(_MODEL, checkpoint_min_step=2048, ctx_checkpoints=8)
+    attendu = shlex.split(
+        _model_cmd(
+            hybride,
+            _UMA,
+            "llama-server",
+            "/models",
+            8192,
+            n_parallel=2,
+            override_threads=8,
+        )
+    )
+    probe = ServerProbe(
+        server_bin="llama-server",
+        model_path="/models/m.gguf",
+        threads=8,
+        ngl=999,
+        topology=TOPO_MOE_HYBRIDE,
+        profile=_UMA,
+        n_parallel=2,
+        checkpoint_min_step=2048,
+        ctx_checkpoints=8,
+    )
+    obtenu = _args_sonde(probe, 8192)
+    assert _flags_mesures(obtenu) == _flags_mesures(attendu)
+    assert obtenu[obtenu.index("--checkpoint-min-step") + 1] == "2048"
+    assert obtenu[obtenu.index("--ctx-checkpoints") + 1] == "8"
+
+
 def test_sonde_cpu_seul_sans_profil_gpu():
     probe = ServerProbe(
         server_bin="llama-server",

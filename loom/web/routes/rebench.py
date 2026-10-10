@@ -19,17 +19,25 @@ def _measure_placement(
     headroom_mb: int,
     gpu_backend: bool,
     progress,
+    useful_ctx: int | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand il n'y a rien à
     comparer (un seul candidat faisable) ou rien de mesurable : la calibration vaut
-    alors avec les flags actuels du modèle."""
+    alors avec les flags actuels du modèle. La faisabilité s'estime au contexte UTILE
+    (`useful_ctx`) avec le type de cache de l'exécutant, via le profil GGUF."""
     from dataclasses import replace as _dc_replace
 
-    from loom.setup import bench as bench_mod
+    from loom.runtime.model_profile import ModelProfile
     from loom.setup import placement as place_mod
 
-    kv_mb = bench_mod.kv_bytes_per_token(meta) * 65536 // (1024 * 1024)
+    profile = ModelProfile.from_meta(meta, model_size_mb=int(model_size_mb or 0))
+    kv_mb = place_mod.kv_estimate_mb(
+        profile,
+        int(useful_ctx or place_mod.PLACEMENT_PROBE_CTX),
+        gpu_tuning=bool(getattr(hw, "has_gpu", False)),
+        slots=1,
+    )
     cands = place_mod.placement_candidates(
         moe=bool(meta.get("expert_count")),
         n_layers=meta.get("n_layers"),
@@ -143,9 +151,12 @@ def _run_calibration(S, spec, progress):
         gpu_backend=gpu_backend,
         vram_fallback_mb=topo_mod.gpu_vram_total_mb(),
     )
-    headroom = int((raw.get("server") or {}).get("gpu_kv_headroom_mb", 640) or 640)
+    server_cfg = raw.get("server") or {}
+    headroom = int(server_cfg.get("gpu_kv_headroom_mb", 640) or 640)
     ram = int(psutil.virtual_memory().total // (1024 * 1024))
-    budget = topo_mod.memory_budget_mb(topo, vram, ram, headroom)
+    # Mémoire unifiée : le device est la RAM, comptée une fois (= ce que la sonde mesure).
+    uma = bool(hw.has_gpu and not hw.vram_is_discrete)
+    budget = topo_mod.memory_budget_mb(topo, vram, ram, headroom, uma=uma)
     mmproj = mt.get("mmproj_filename")
     probe = topo_mod.ServerProbe(
         server_bin=str(server_bin),
@@ -156,10 +167,20 @@ def _run_calibration(S, spec, progress):
         mmproj_path=str(mdir / mmproj) if mmproj else None,
         cpu_moe=bool(mt.get("cpu_moe", is_moe)),
         n_cpu_moe=mt.get("n_cpu_moe"),
+        # Checkpoints des hybrides : mesurer la mémoire que l'exécutant prendra.
+        checkpoint_min_step=(
+            mt.get("checkpoint_min_step") or server_cfg.get("checkpoint_min_step")
+        ),
+        ctx_checkpoints=mt.get("ctx_checkpoints"),
         profile=hw,
     )
-    # Placement MESURÉ avant isolation et calibration (même séquence que loom-setup) :
-    # le device est la RAM en mémoire unifiée.
+    # Placement MESURÉ avant isolation et calibration (même séquence que loom-setup),
+    # faisabilité estimée au contexte UTILE du modèle.
+    from loom.setup.placement import useful_context
+
+    ctx_utile = useful_context(
+        mt.get("context"), server_cfg.get("context"), meta.get("context_length")
+    )
     progress("sonde de placement (où vivent les poids)…")
     pl_verdict, probe = _measure_placement(
         probe,
@@ -170,6 +191,7 @@ def _run_calibration(S, spec, progress):
         headroom_mb=headroom,
         gpu_backend=gpu_backend,
         progress=progress,
+        useful_ctx=ctx_utile,
     )
     # Sonde d'isolation AVANT la calibration : si le modèle exige un 2e slot,
     # la calibration doit mesurer avec le KV réellement doublé (même séquence
@@ -208,6 +230,7 @@ def _run_calibration(S, spec, progress):
         calib["ubatch_probe"] = None
     calib["ubatch_avant"] = mt.get("ubatch")
     calib["batch_avant"] = mt.get("batch")
+    calib["ctx_utile"] = ctx_utile
     calib["placement"] = pl_verdict
     calib["placement_avant"] = {
         "cpu_moe": bool(mt.get("cpu_moe", is_moe)),
@@ -273,12 +296,25 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
             pl_line = "sonde de placement : non comparée (un seul candidat faisable, ou illisible)."
         else:
             pl_line = f"sonde de placement : {pl['mecanisme']}."
+        # Un plancher n'est pas une mesure : le verdict le dit.
+        valide = bool(calib.get("valide", True))
+        vitesse_txt = (
+            f"vitesse validée jusqu'à {calib['valide_jusqua']} tokens"
+            if valide
+            else f"contexte {new} = repli NON validé, aucun barreau de vitesse mesuré"
+        )
         if new == current and not iso_change and not ub_change and not pl_change:
             msg = (
                 f"✅ « {mid} » est déjà au top : contexte actuel {current} = "
                 f"mesuré {new} ({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n"
                 f"{pl_line}\nRien à changer."
             )
+            if not valide:
+                msg = (
+                    f"« {mid} » : contexte actuel {current} = repli {new} NON validé "
+                    f"({calib['mecanisme']}).\n{iso_line}\n{ub_line}\n{pl_line}\n"
+                    "Rien à changer, mais rien n'a été prouvé en vitesse."
+                )
             wiz = None
         else:
             changes = []
@@ -306,8 +342,7 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
                 changes.append(f"placement → {pl['label']}{gain}")
             msg = (
                 f"Verdict pour « {mid} » : " + " · ".join(changes) + "\n"
-                f"(pente {calib['slope_kb_tok']} Ko/token, vitesse validée "
-                f"jusqu'à {calib['valide_jusqua']} tokens)\n"
+                f"(pente {calib['slope_kb_tok']} Ko/token, {vitesse_txt})\n"
                 f"mécanisme : {calib['mecanisme']}\n{iso_line}\n{ub_line}\n{pl_line}\n"
                 "Tape « oui » pour appliquer — toute autre réponse laisse tout "
                 "en l'état."
