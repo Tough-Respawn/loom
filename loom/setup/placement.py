@@ -233,20 +233,36 @@ def memory_estimate_mb(
     slots: int = 1,
     checkpoints: int | None = None,
 ) -> dict:
-    """Mémoire PAR CONTEXTE que l'exécutant allouera au-delà des poids : cache KV au
-    contexte utile (type de cache de l'exécutant, `slots` slots) + état récurrent des
-    hybrides (état vivant + `checkpoints` instantanés par slot). Avant, seule la pente
-    mesurée voyait les checkpoints (Bonsai 2 : 32 x 150 Mio par slot)."""
+    """Mémoire PAR CONTEXTE que l'exécutant allouera au-delà des poids, VENTILÉE par
+    emplacement : côté device, le cache KV au contexte utile (type de cache de
+    l'exécutant, `slots` slots) et l'état récurrent VIVANT des hybrides (il suit le KV) ;
+    côté hôte, les `checkpoints` instantanés par slot — le serveur les garde dans des
+    tableaux RAM, jamais sur le device. Les imputer à la VRAM faisait perdre à un modèle
+    de 16 Gio son candidat tout-GPU sur 24 Gio (revue 2026-10-10). Avant, seule la
+    pente mesurée voyait les checkpoints (Bonsai 2 : 32 x 150 Mio par slot)."""
     cp = DEFAULT_CTX_CHECKPOINTS if checkpoints is None else int(checkpoints)
     kv_mb = kv_estimate_mb(profile, ctx, gpu_tuning=gpu_tuning, slots=slots)
     rec_mb = int(profile.recurrent_bytes(slots=slots, checkpoints=cp) // _MIB)
+    live_mb = int(profile.recurrent_bytes(slots=slots, checkpoints=0) // _MIB)
+    cp_mb = rec_mb - live_mb
     return {
         "kv_mb": kv_mb,
         "recurrent_mb": rec_mb,
+        "recurrent_live_mb": live_mb,
+        "checkpoints_mb": cp_mb,
+        "device_mb": kv_mb + live_mb,
+        "host_mb": cp_mb,
         "total_mb": kv_mb + rec_mb,
         "checkpoints": cp,
         "slots": max(1, int(slots)),
     }
+
+
+def host_budget_mb(ram_total_mb: int) -> int:
+    """RAM disponible pour ce que le serveur garde côté hôte (poids CPU, KV des couches
+    CPU, checkpoints) : la RAM moins la marge OS. En mémoire unifiée c'est aussi le
+    plafond de la SOMME device + hôte, comptée une fois."""
+    return max(0, int(ram_total_mb) - _OS_RAM_BUDGET_MB)
 
 
 def device_budget_mb(
@@ -313,36 +329,97 @@ def current_placement(
     return Placement.from_flags(ngl, False, None, layers, actuel=True, faisabilite=why)
 
 
-def _fits(
-    pl: Placement, *, profile, model_size_mb: int, kv_mb: int, budget: int, layers: int
-):
-    """(tient ?, trace) : octets device du placement + KV contre le budget. Catalogue des
-    tenseurs quand il existe, sinon proportion de la taille du fichier."""
+def _split_mb(
+    pl: Placement,
+    *,
+    profile,
+    model_size_mb: int,
+    kv_mb: int,
+    host_extra_mb: int,
+    layers,
+) -> tuple[int, int, str]:
+    """(device Mo, hôte Mo, source) de ce que le placement alloue de chaque côté : poids
+    offloadés + KV et état vivant des couches offloadées sur le device ; poids restés
+    sur CPU + KV de ces couches + `host_extra_mb` (checkpoints) sur l'hôte. Catalogue
+    des tenseurs quand il existe, sinon proportion de la taille du fichier."""
+    frac = 1.0  # part des couches (donc du KV / état vivant) sur le device
+    if pl.label == "cpu":
+        frac = 0.0
+    elif pl.label == "gpu_partiel" and layers:
+        frac = min(1.0, pl.ngl / layers)
+    kv_dev = int(kv_mb * frac)
+    kv_host = kv_mb - kv_dev
     b = (
         profile.gpu_bytes(ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe)
         if profile is not None
         else None
     )
     if b is not None:
-        need = b // _MIB + kv_mb
-        return (
-            need <= budget,
-            f"catalogue : {need} Mo (poids device + KV) pour {budget} Mo",
-        )
+        dev_w = b // _MIB
+        total_w = int((profile.weights or {}).get("total", 0)) // _MIB
+        host_w = max(0, total_w - dev_w)
+        return dev_w + kv_dev, host_w + kv_host + host_extra_mb, "catalogue"
     if pl.cpu_moe:
-        # Experts en RAM : les denses seuls — leur poids est inconnu sans catalogue.
-        return True, "proportion : supposé faisable (denses seuls sur le device)"
-    part = 1.0
+        # Experts en RAM : les denses seuls sur le device, poids inconnus sans catalogue
+        # (supposés tenir) ; côté hôte on majore par le fichier entier.
+        return kv_dev, model_size_mb + kv_host + host_extra_mb, "proportion (majorant)"
+    part = frac
     if pl.n_cpu_moe is not None and layers:
         part = 1.0 - pl.n_cpu_moe / layers  # part d'experts gardée (approximation)
-    elif pl.label == "gpu_partiel" and layers:
-        part = min(1.0, pl.ngl / layers)
-    need = int(model_size_mb * part) + kv_mb
-    return need <= budget, f"proportion : ~{need} Mo pour {budget} Mo"
+    dev_w = int(model_size_mb * part)
+    return dev_w + kv_dev, model_size_mb - dev_w + kv_host + host_extra_mb, "proportion"
 
 
-def _partial_experts(*, profile, layers, model_size_mb, kv_mb, budget) -> int | None:
-    """Plus petit N tel que « experts des N premières couches sur CPU » tient."""
+def _fits(
+    pl: Placement,
+    *,
+    profile,
+    model_size_mb: int,
+    kv_mb: int,
+    budget: int,
+    layers: int,
+    host_extra_mb: int = 0,
+    host_budget: int | None = None,
+    uma: bool = False,
+):
+    """(tient ?, trace) : le placement contre DEUX plafonds. Device (`budget`) : poids
+    offloadés + KV/état vivant. Hôte (`host_budget`, RAM moins la marge OS) : poids CPU
+    + KV des couches CPU + checkpoints. Mémoire unifiée : le device reste borné par son
+    plafond (heap), et la SOMME device + hôte par la RAM, comptée une seule fois."""
+    dev, host, src = _split_mb(
+        pl,
+        profile=profile,
+        model_size_mb=model_size_mb,
+        kv_mb=kv_mb,
+        host_extra_mb=host_extra_mb,
+        layers=layers,
+    )
+    approx = "~" if src.startswith("proportion") else ""
+    if host_budget is None:
+        return (
+            dev <= budget,
+            f"{src} : {approx}{dev} Mo (poids device + KV) pour {budget} Mo",
+        )
+    if uma:
+        ok = dev <= budget and dev + host <= host_budget
+        return ok, (
+            f"{src} : {approx}{dev} Mo device (poids + KV) pour {budget} Mo ; "
+            f"{approx}{dev + host} Mo au total (mémoire unifiée, hôte {host} Mo dont "
+            f"checkpoints {host_extra_mb} Mo, comptée une fois) pour {host_budget} Mo de RAM"
+        )
+    ok = dev <= budget and host <= host_budget
+    return ok, (
+        f"{src} : {approx}{dev} Mo device (poids + KV) pour {budget} Mo ; "
+        f"{approx}{host} Mo hôte (poids CPU + checkpoints {host_extra_mb} Mo) pour "
+        f"{host_budget} Mo de RAM"
+    )
+
+
+def _partial_experts(
+    *, profile, layers, model_size_mb, kv_mb, budget, **fit_kw
+) -> int | None:
+    """Plus petit N tel que « experts des N premières couches sur CPU » tient (des deux
+    côtés : device ET hôte)."""
     if layers <= 1:
         return None
     if profile is not None and profile.weights:
@@ -354,6 +431,7 @@ def _partial_experts(*, profile, layers, model_size_mb, kv_mb, budget) -> int | 
                 kv_mb=kv_mb,
                 budget=budget,
                 layers=layers,
+                **fit_kw,
             )
             if ok:
                 return n
@@ -365,8 +443,8 @@ def _partial_experts(*, profile, layers, model_size_mb, kv_mb, budget) -> int | 
     return int(min(layers - 1, max(1, n)))
 
 
-def _partial_dense(*, profile, layers, model_size_mb, kv_mb, budget) -> int:
-    """Plus grand -ngl qui tient (0 = rien)."""
+def _partial_dense(*, profile, layers, model_size_mb, kv_mb, budget, **fit_kw) -> int:
+    """Plus grand -ngl qui tient (0 = rien), des deux côtés : device ET hôte."""
     if not layers:
         return 0
     if profile is not None and profile.weights:
@@ -378,6 +456,7 @@ def _partial_dense(*, profile, layers, model_size_mb, kv_mb, budget) -> int:
                 kv_mb=kv_mb,
                 budget=budget,
                 layers=layers,
+                **fit_kw,
             )
             if ok:
                 return k
@@ -399,16 +478,19 @@ def plan_placements(
     headroom_mb: int,
     current: Placement | None = None,
     profile=None,
+    host_extra_mb: int = 0,
 ) -> PlacementPlan:
     """Candidats faisables (le plus sûr en premier, ou la configuration ACTUELLE) et
     liste de ce qu'on choisit de NE PAS mesurer, avec sa raison.
 
     - sans GPU : CPU seul ;
-    - MoE : experts sur CPU (tient si les denses tiennent), puis tout GPU si poids + KV
+    - MoE : experts sur CPU (s'ils tiennent en RAM), puis tout GPU si poids + KV
       tiennent, sinon DEUX partiels estimés (serré, prudent) ; CPU seul non exploré ;
     - dense : tout GPU si ça tient, sinon deux offloads partiels (serré, prudent), sinon
       CPU ; CPU seul non exploré tant qu'un candidat GPU existe.
-    `kv_mb` est le KV au contexte UTILE (kv_estimate_mb), `profile` le profil GGUF."""
+    `kv_mb` est la mémoire par contexte côté DEVICE au contexte utile (KV + état
+    récurrent vivant), `host_extra_mb` celle côté HÔTE (checkpoints), `profile` le
+    profil GGUF. Chaque candidat est vérifié des deux côtés (cf. _fits)."""
     non: list[dict] = []
     if not gpu_backend or vram_total_mb <= 0:
         cands = [Placement("cpu", 0, faisabilite="sans GPU exploitable")]
@@ -421,16 +503,23 @@ def plan_placements(
         kv_mb=kv_mb,
         budget=budget,
         layers=layers,
+        host_extra_mb=int(host_extra_mb or 0),
+        host_budget=host_budget_mb(ram_total_mb),
+        uma=uma,
     )
     cands: list[Placement] = []
-    if moe:
-        base = Placement("experts_cpu", 999, cpu_moe=True)
-        _ok, why = _fits(base, **kw)
-        cands.append(replace(base, faisabilite=why))
-        total = Placement("gpu_total", 999)
-        ok, why = _fits(total, **kw)
+
+    def _add_if_fits(pl: Placement) -> bool:
+        ok, why = _fits(pl, **kw)
         if ok:
-            cands.append(replace(total, faisabilite=why))
+            cands.append(replace(pl, faisabilite=why))
+        else:
+            non.append({"key": pl.key, "raison": f"non exploré : ne tient pas — {why}"})
+        return ok
+
+    if moe:
+        _add_if_fits(Placement("experts_cpu", 999, cpu_moe=True))
+        if _add_if_fits(Placement("gpu_total", 999)):
             non.append(
                 {
                     "key": "experts_partiel",
@@ -441,32 +530,33 @@ def plan_placements(
         else:
             n = _partial_experts(**kw)
             if n is not None:
-                serre = Placement("experts_partiel", 999, n_cpu_moe=n, estime=True)
-                cands.append(replace(serre, faisabilite=_fits(serre, **kw)[1]))
+                _add_if_fits(
+                    Placement("experts_partiel", 999, n_cpu_moe=n, estime=True)
+                )
                 n_prudent = min(layers - 1, n + max(1, math.ceil(layers * 0.15)))
                 if n_prudent > n:
-                    prudent = Placement(
-                        "experts_partiel", 999, n_cpu_moe=n_prudent, estime=True
+                    _add_if_fits(
+                        Placement(
+                            "experts_partiel", 999, n_cpu_moe=n_prudent, estime=True
+                        )
                     )
-                    cands.append(replace(prudent, faisabilite=_fits(prudent, **kw)[1]))
     else:
-        total = Placement("gpu_total", 999)
-        ok, why = _fits(total, **kw)
-        if ok:
-            cands.append(replace(total, faisabilite=why))
-        else:
+        if not _add_if_fits(Placement("gpu_total", 999)):
             k = _partial_dense(**kw)
             if k > 0:
-                serre = Placement("gpu_partiel", k, estime=True)
-                cands.append(replace(serre, faisabilite=_fits(serre, **kw)[1]))
+                _add_if_fits(Placement("gpu_partiel", k, estime=True))
                 k_prudent = k - max(1, math.ceil(layers * 0.1))
                 if k_prudent > 0:
-                    prudent = Placement("gpu_partiel", k_prudent, estime=True)
-                    cands.append(replace(prudent, faisabilite=_fits(prudent, **kw)[1]))
-            else:
-                cands.append(
-                    Placement("cpu", 0, faisabilite="rien ne tient sur le device")
-                )
+                    _add_if_fits(Placement("gpu_partiel", k_prudent, estime=True))
+    if not cands:
+        cands.append(
+            Placement(
+                "cpu",
+                0,
+                faisabilite="rien ne tient d'après l'estimation (device et hôte) : CPU "
+                "seul en dernier recours",
+            )
+        )
     if any(c.label != "cpu" for c in cands):
         non.append(
             {

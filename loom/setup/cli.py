@@ -1214,13 +1214,17 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         slots=pl_slots,
         checkpoints=model_toml.get("ctx_checkpoints"),
     )
-    kv_mb = estimation["total_mb"]
+    # Ventilée : KV + état vivant côté DEVICE, checkpoints côté HÔTE (tableaux RAM du
+    # serveur) — les imputer à la VRAM faisait perdre des candidats tout-GPU.
+    kv_mb = estimation["device_mb"]
+    host_mb = estimation["host_mb"]
     trace["memoire_estimee"] = estimation
     if estimation["recurrent_mb"]:
         con.say(
-            f"  mémoire estimée au contexte {ctx_utile} ({pl_slots} slot(s)) : KV "
-            f"{estimation['kv_mb']} Mio + état récurrent {estimation['recurrent_mb']} Mio "
-            f"({estimation['checkpoints']} checkpoints par slot)"
+            f"  mémoire estimée au contexte {ctx_utile} ({pl_slots} slot(s)) : device "
+            f"{kv_mb} Mio (KV {estimation['kv_mb']} + état vivant "
+            f"{estimation['recurrent_live_mb']}), hôte {host_mb} Mio "
+            f"({estimation['checkpoints']} checkpoints par slot, en RAM)"
         )
     # Candidats par faisabilité (profil GGUF), la configuration ACTUELLE en base ; ce
     # qu'on ne mesure pas est tracé « non exploré ». Contraintes de prefill optionnelles
@@ -1237,6 +1241,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         headroom_mb=headroom,
         current=cur_pl,
         profile=profile,
+        host_extra_mb=host_mb,
     )
     prefill_c, pp_floor = place_mod.constraints_from_config(raw_cfg)
     # Les finalistes sont comparés x deux couples (ubatch, batch) : celui de
@@ -1249,6 +1254,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         profil=profile.describe(),
         contexte_utile=ctx_utile,
         kv_estime_mb=kv_mb,
+        hote_estime_mb=host_mb,
         plan=plan,
         couples=couples,
         contrainte_prefill=prefill_c,

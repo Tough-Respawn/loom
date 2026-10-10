@@ -176,12 +176,23 @@ def test_plan_moe_qui_tient_nomme_les_non_explores():
 
 
 def test_plan_dense_trop_gros_deux_partiels_serre_et_prudent():
-    plan = _plan(model_size_mb=80_000, vram_total_mb=24_000)
+    # 80 Go dense, 24 Go de VRAM : il faut assez de RAM pour les couches restées sur CPU.
+    plan = _plan(model_size_mb=80_000, vram_total_mb=24_000, ram_total_mb=96_000)
     keys = _keys(plan)
     assert len(keys) == 2 and all(k.startswith("gpu_partiel_ngl") for k in keys)
     serre, prudent = plan.candidates
     assert 0 < prudent.ngl < serre.ngl < 40 and serre.estime and prudent.estime
     assert any(n["key"] == "cpu" for n in plan.non_explores)
+
+
+def test_plan_dense_le_partiel_prudent_tient_aussi_en_ram():
+    """Revue P1 : le côté hôte est vérifié lui aussi. 80 Go dense, 24 Go de VRAM, 64 Go de
+    RAM : le serré (ngl 11) laisse ~59,5 Go en RAM (tient dans 60,9), le prudent (ngl 7)
+    en laisserait ~67,7 Go — infaisable, dit tel quel plutôt que proposé."""
+    plan = _plan(model_size_mb=80_000, vram_total_mb=24_000, ram_total_mb=64_000)
+    assert _keys(plan) == ["gpu_partiel_ngl11"]
+    non = {n["key"]: n["raison"] for n in plan.non_explores}
+    assert "gpu_partiel_ngl7" in non and "RAM" in non["gpu_partiel_ngl7"]
 
 
 def test_plan_moe_trop_gros_deux_partiels():
@@ -209,6 +220,77 @@ def _profil_moe(n_layers, attention, experts, output=0):
     return ModelProfile.from_meta(
         {"n_layers": n_layers, "expert_count": 8, "weights": w}
     )
+
+
+def test_plan_les_checkpoints_ram_ne_sont_pas_imputes_a_la_vram():
+    """Revue P1 (2026-10-10) : 16 Gio de poids sur un GPU de 24 Gio perdaient leur
+    candidat tout-GPU parce que ~9,35 Gio de checkpoints RAM étaient comptés en VRAM."""
+    plan = plan_placements(
+        moe=False,
+        n_layers=40,
+        model_size_mb=16 * 1024,
+        kv_mb=500,  # côté device : KV + état vivant
+        host_extra_mb=9_575,  # côté hôte : checkpoints
+        gpu_backend=True,
+        vram_total_mb=24 * 1024,
+        ram_total_mb=64_000,
+        uma=False,
+        headroom_mb=640,
+    )
+    assert _keys(plan) == ["gpu_total"]
+    assert (
+        "RAM" in plan.candidates[0].faisabilite
+        or "hôte" in plan.candidates[0].faisabilite
+    )
+
+
+def test_plan_en_uma_la_memoire_est_comptee_une_seule_fois():
+    """Mémoire unifiée : le plafond device (heap Vulkan, 48 789 - 640 = 48 149) borne
+    le device SEUL ; la RAM physique (64 000 - 3 072 = 60 928) borne la somme device +
+    hôte, comptée une fois. Les checkpoints RAM ne sont pas imputés au plafond device."""
+    kw = dict(
+        moe=True,
+        n_layers=40,
+        model_size_mb=35_193,
+        kv_mb=1_000,
+        gpu_backend=True,
+        vram_total_mb=48_789,
+        ram_total_mb=64_000,
+        uma=True,
+        headroom_mb=640,
+    )
+    # Device 36 193 <= 48 149 ; somme 49 193 <= 60 928 : tout-GPU tient. (Avant : les
+    # 13 000 Mo de checkpoints comptés en device -> 49 193 > 48 149, candidat perdu.)
+    assert "gpu_total" in _keys(plan_placements(**kw, host_extra_mb=13_000))
+    # Somme 61 193 > 60 928 : ne tient plus, bien que le device seul (36 193) tienne.
+    assert "gpu_total" not in _keys(plan_placements(**kw, host_extra_mb=25_000))
+
+
+def test_plan_experts_cpu_infaisable_quand_la_ram_manque():
+    """GPU discret, experts en RAM : poids CPU + checkpoints contre la RAM moins la marge
+    OS. 34 Gio d'experts + 9 Gio de checkpoints ne tiennent pas dans 32 Go."""
+    mib = 1024 * 1024
+    prof = _profil_moe(4, attention=500 * mib, experts=8_500 * mib)
+    plan = plan_placements(
+        moe=True,
+        n_layers=4,
+        model_size_mb=36_000,
+        kv_mb=500,
+        host_extra_mb=9_000,
+        gpu_backend=True,
+        vram_total_mb=24_000,
+        ram_total_mb=32_000,
+        uma=False,
+        headroom_mb=640,
+        profile=prof,
+    )
+    keys = _keys(plan)
+    assert "experts_cpu" not in keys and "gpu_total" not in keys
+    # Le partiel retenu tient des DEUX côtés : device 36 000 - n x 8 500 + 500 <= 23 360
+    # (n >= 2) et hôte n x 8 500 + 9 000 <= 28 928 (n <= 2) -> n = 2, pas de prudent n = 3.
+    assert keys == ["experts_partiel_n2"]
+    non = {n["key"]: n["raison"] for n in plan.non_explores}
+    assert "experts_cpu" in non and "RAM" in non["experts_cpu"]
 
 
 def test_plan_utilise_le_profil_pour_la_faisabilite():

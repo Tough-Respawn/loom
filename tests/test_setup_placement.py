@@ -49,8 +49,9 @@ def test_dense_qui_tient_tout_gpu_seul():
 
 
 def test_dense_trop_gros_offload_partiel_estime():
-    # Deux partiels estimés : serré, puis prudent (moins de couches), cf. lot 3.
-    cands = _cands(model_size_mb=80_000, vram_total_mb=24_000)
+    # Deux partiels estimés : serré, puis prudent (moins de couches), cf. lot 3. La RAM
+    # doit accueillir les couches restées sur CPU (revue P1 2026-10-10).
+    cands = _cands(model_size_mb=80_000, vram_total_mb=24_000, ram_total_mb=96_000)
     assert [c.label for c in cands] == ["gpu_partiel", "gpu_partiel"]
     assert 0 < cands[1].ngl < cands[0].ngl < 40 and cands[0].estime
 

@@ -428,6 +428,14 @@ def test_estimation_memoire_par_slot_kv_plus_etat_recurrent():
     assert est["recurrent_mb"] == rec // (1024 * 1024)
     assert est["total_mb"] == est["kv_mb"] + est["recurrent_mb"]
     assert est["checkpoints"] == 8
+    # Revue P1 : les checkpoints sont en mémoire HÔTE (tableaux du serveur), l'état
+    # vivant suit le KV sur le device. La répartition est explicite.
+    vivant = prof.recurrent_bytes(slots=2, checkpoints=0) // (1024 * 1024)
+    assert est["recurrent_live_mb"] == vivant
+    assert est["checkpoints_mb"] == est["recurrent_mb"] - vivant
+    assert est["device_mb"] == est["kv_mb"] + est["recurrent_live_mb"]
+    assert est["host_mb"] == est["checkpoints_mb"]
+    assert est["total_mb"] == est["device_mb"] + est["host_mb"]
 
 
 def test_profil_provenance_declare_deduit_inconnu():

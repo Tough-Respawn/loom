@@ -49,7 +49,9 @@ def _measure_placement(
         slots=max(1, int(slots or 1)),
         checkpoints=getattr(probe, "ctx_checkpoints", None),
     )
-    kv_mb = estimation["total_mb"]
+    # Ventilée : KV + état vivant côté DEVICE, checkpoints côté HÔTE (RAM).
+    kv_mb = estimation["device_mb"]
+    host_mb = estimation["host_mb"]
     if trace is not None:
         trace["memoire_estimee"] = estimation
     plan = place_mod.plan_placements(
@@ -72,6 +74,7 @@ def _measure_placement(
             headroom=headroom_mb,
         ),
         profile=profile,
+        host_extra_mb=host_mb,
     )
     prefill_c, pp_floor = place_mod.constraints_from_config(raw or {})
     # Finalistes x deux couples (ubatch, batch) : celui de l'exécutant (la base) et
@@ -83,6 +86,7 @@ def _measure_placement(
         # Compte rendu commun : de quoi reproduire la mesure.
         trace["profil"] = profile.describe()
         trace["kv_estime_mb"] = kv_mb
+        trace["hote_estime_mb"] = host_mb
         trace["plan"] = plan
         trace["couples"] = couples
         trace["contrainte_prefill"] = prefill_c
