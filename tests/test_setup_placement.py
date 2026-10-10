@@ -49,9 +49,10 @@ def test_dense_qui_tient_tout_gpu_seul():
 
 
 def test_dense_trop_gros_offload_partiel_estime():
+    # Deux partiels estimés : serré, puis prudent (moins de couches), cf. lot 3.
     cands = _cands(model_size_mb=80_000, vram_total_mb=24_000)
-    assert [c.label for c in cands] == ["gpu_partiel"]
-    assert 0 < cands[0].ngl < 40 and cands[0].estime
+    assert [c.label for c in cands] == ["gpu_partiel", "gpu_partiel"]
+    assert 0 < cands[1].ngl < cands[0].ngl < 40 and cands[0].estime
 
 
 def test_moe_qui_tient_experts_cpu_en_base_puis_tout_gpu():
@@ -64,10 +65,16 @@ def test_moe_qui_tient_experts_cpu_en_base_puis_tout_gpu():
 
 def test_moe_trop_gros_experts_cpu_puis_partiel_estime():
     cands = _cands(moe=True, model_size_mb=35_193, vram_total_mb=16_000, uma=False)
-    assert [c.label for c in cands] == ["experts_cpu", "experts_partiel"]
+    # Deux partiels estimés : serré, puis prudent (plus de couches sur CPU), cf. lot 3.
+    assert [c.label for c in cands] == [
+        "experts_cpu",
+        "experts_partiel",
+        "experts_partiel",
+    ]
     partiel = cands[1]
     assert partiel.n_cpu_moe is not None and 0 < partiel.n_cpu_moe < 40
     assert partiel.estime and partiel.ngl == 999
+    assert cands[2].n_cpu_moe > partiel.n_cpu_moe
 
 
 def test_budget_device_uma_borne_par_la_ram():
@@ -114,7 +121,7 @@ def test_pick_depart_au_prefill_deux_alternatives_qui_battent_la_base():
         _mes(
             experts_cpu=(12.0, 200.0),
             gpu_total=(14.3, 250.0),
-            experts_partiel=(14.4, 200.0),
+            experts_partiel_n10=(14.4, 200.0),  # les mesures sont indexées par CLÉ
         ),
         [CPU, GPU, partiel],
     )
@@ -150,11 +157,12 @@ def _usine(table):
     return make
 
 
-def test_un_seul_candidat_ne_sonde_rien():
+def test_un_seul_candidat_est_valide_une_fois_sans_comparaison():
+    # Rien à comparer, mais une validation minimale : le candidat charge et génère.
     make = _usine({"gpu_total": (8.0, 60.0)})
     r = probe_placement(make, [GPU])
     assert r["placement"] is GPU and "seul candidat faisable" in r["mecanisme"]
-    assert make.journal == []
+    assert r["compare"] is False and len(make.journal) == 1
 
 
 def test_chaque_candidat_est_sonde_reps_fois_au_point_de_fonctionnement():

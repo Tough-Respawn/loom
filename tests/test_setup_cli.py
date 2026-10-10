@@ -301,11 +301,26 @@ def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):
         {"threads": 12, "ngl": 0, "kind": "pp", "ts": 22.0},
     ]
 
-    # La sonde linéaire doit valider chaque barreau sous la capacité.
+    # La sonde linéaire doit valider chaque barreau sous la capacité. Dataclass :
+    # la sonde de placement la clone par dataclasses.replace, comme la vraie.
+    from dataclasses import dataclass as _dc
+
+    @_dc
     class _FakeProbe:
-        def __init__(self, **kw):
-            self.kw = kw
-            self.n_parallel = kw.get("n_parallel", 1)
+        server_bin: str = ""
+        model_path: str = ""
+        threads: int = 0
+        ngl: int = 0
+        topology: str = ""
+        mmproj_path: object = None
+        cpu_moe: bool = False
+        n_cpu_moe: object = None
+        n_parallel: int = 1
+        ubatch: object = None
+        batch: object = None
+        checkpoint_min_step: object = None
+        ctx_checkpoints: object = None
+        profile: object = None
 
         def probe_isolation(self, ctx=4096):
             return 600, 4

@@ -1,0 +1,347 @@
+# tests/test_placement_candidats.py
+"""Candidats élargis et finalistes au contexte utile (lot 3 du bench de placement).
+
+Revue du 2026-10-10 : un dense ne produisait qu'un candidat (donc aucune mesure), un
+MoE ne proposait jamais CPU seul, le partiel n'apparaissait que si tout-GPU ne tenait
+pas, un candidat unique n'était pas sondé, la config ACTUELLE n'était pas la référence
+du /rebench, et les mesures étaient indexées par un label qui ne distinguait pas deux
+valeurs de n_cpu_moe. Le gagnant à 4 096 tokens n'était jamais réévalué plus loin.
+
+Objectif retenu : maximiser la génération au contexte utile, sous contraintes de
+mémoire, de conservation du cache et, si souhaité, d'un délai maximal de prefill
+(« N nouveaux tokens en moins de T secondes »). CPU seul n'est pas démontré dominé :
+quand on ne le mesure pas, la trace dit « non exploré », pas « moins performant ».
+"""
+
+from __future__ import annotations
+
+from loom.runtime.model_profile import ModelProfile
+from loom.setup.placement import (
+    PLACEMENT_FINAL_DEPTH_MAX,
+    PLACEMENT_PROBE_CTX,
+    PLACEMENT_PROBE_PROMPT,
+    Placement,
+    PrefillConstraint,
+    final_depth,
+    pick_placement,
+    placement_from_config,
+    plan_placements,
+    probe_placement,
+)
+from loom.setup.topology import ProbeResult
+
+# ── identité et configuration actuelle ───────────────────────────────────────────
+
+
+def test_la_cle_d_un_placement_porte_ses_parametres():
+    assert Placement("gpu_total", 999).key == "gpu_total"
+    assert Placement("experts_cpu", 999, cpu_moe=True).key == "experts_cpu"
+    assert Placement("experts_partiel", 999, n_cpu_moe=20).key == "experts_partiel_n20"
+    assert Placement("gpu_partiel", 36).key == "gpu_partiel_ngl36"
+    assert Placement("cpu", 0).key == "cpu"
+
+
+def test_placement_depuis_le_model_toml():
+    assert placement_from_config({"cpu_moe": True}, n_layers=40).key == "experts_cpu"
+    assert placement_from_config({"n_cpu_moe": 25}, n_layers=40).key == (
+        "experts_partiel_n25"
+    )
+    assert placement_from_config({"n_gpu_layers": 0}, n_layers=40).key == "cpu"
+    assert placement_from_config({"n_gpu_layers": 36}, n_layers=42).key == (
+        "gpu_partiel_ngl36"
+    )
+    assert placement_from_config({"n_gpu_layers": 999}, n_layers=42).key == "gpu_total"
+    assert placement_from_config({"n_gpu_layers": 42}, n_layers=42).key == "gpu_total"
+    assert placement_from_config({"cpu_moe": False}, n_layers=42) is None
+    assert placement_from_config({}, n_layers=42) is None
+    assert placement_from_config({"cpu_moe": True}, n_layers=40).actuel is True
+
+
+# ── plan : candidats et non explorés ─────────────────────────────────────────────
+
+
+def _plan(**kw):
+    base = dict(
+        moe=False,
+        n_layers=40,
+        model_size_mb=8_000,
+        kv_mb=2_000,
+        gpu_backend=True,
+        vram_total_mb=48_000,
+        ram_total_mb=64_000,
+        uma=False,
+        headroom_mb=640,
+    )
+    base.update(kw)
+    return plan_placements(**base)
+
+
+def _keys(plan):
+    return [c.key for c in plan.candidates]
+
+
+def test_plan_sans_gpu_cpu_seul_rien_de_non_explore():
+    plan = _plan(gpu_backend=False)
+    assert _keys(plan) == ["cpu"] and plan.non_explores == []
+
+
+def test_plan_l_actuel_devient_la_base():
+    # Ornith après le 2026-10-09 : cpu_moe = false (tout GPU) dans model.toml.
+    plan = _plan(
+        moe=True, model_size_mb=35_193, uma=True, current=Placement("gpu_total", 999)
+    )
+    assert _keys(plan) == ["gpu_total", "experts_cpu"]
+    assert plan.candidates[0].actuel is True
+    # Une config actuelle hors des candidats générés (n_cpu_moe = 25) entre en base.
+    plan = _plan(
+        moe=True,
+        model_size_mb=35_193,
+        uma=True,
+        current=Placement("experts_partiel", 999, n_cpu_moe=25, actuel=True),
+    )
+    assert _keys(plan) == ["experts_partiel_n25", "experts_cpu", "gpu_total"]
+
+
+def test_plan_moe_qui_tient_nomme_les_non_explores():
+    plan = _plan(moe=True, model_size_mb=35_193, uma=True)
+    assert _keys(plan) == ["experts_cpu", "gpu_total"]
+    non = {n["key"]: n["raison"] for n in plan.non_explores}
+    assert "cpu" in non and "non exploré" in non["cpu"] and "GPU" in non["cpu"]
+    assert any(k.startswith("experts_partiel") for k in non)
+
+
+def test_plan_dense_trop_gros_deux_partiels_serre_et_prudent():
+    plan = _plan(model_size_mb=80_000, vram_total_mb=24_000)
+    keys = _keys(plan)
+    assert len(keys) == 2 and all(k.startswith("gpu_partiel_ngl") for k in keys)
+    serre, prudent = plan.candidates
+    assert 0 < prudent.ngl < serre.ngl < 40 and serre.estime and prudent.estime
+    assert any(n["key"] == "cpu" for n in plan.non_explores)
+
+
+def test_plan_moe_trop_gros_deux_partiels():
+    plan = _plan(moe=True, model_size_mb=35_193, vram_total_mb=16_000)
+    keys = _keys(plan)
+    assert keys[0] == "experts_cpu" and len(keys) == 3
+    serre, prudent = plan.candidates[1], plan.candidates[2]
+    assert serre.n_cpu_moe < prudent.n_cpu_moe < 40
+
+
+def _profil_moe(n_layers, attention, experts, output=0):
+    w = {
+        "total": n_layers * (attention + experts) + output,
+        "familles": {
+            "attention": n_layers * attention,
+            "experts": n_layers * experts,
+            "output": output,
+        },
+        "par_couche": [attention + experts] * n_layers,
+        "experts_par_couche": [experts] * n_layers,
+        "couches_attention": list(range(n_layers)),
+        "couches_recurrentes": [],
+        "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+    }
+    return ModelProfile.from_meta(
+        {"n_layers": n_layers, "expert_count": 8, "weights": w}
+    )
+
+
+def test_plan_utilise_le_profil_pour_la_faisabilite():
+    """Le catalogue dit combien pèsent VRAIMENT les experts : le nombre de couches à
+    laisser sur CPU en découle, au lieu d'une proportion aveugle de la taille."""
+    mib = 1024 * 1024
+    prof = _profil_moe(4, attention=500 * mib, experts=8_500 * mib)
+    kw = dict(
+        moe=True,
+        n_layers=4,
+        model_size_mb=36_000,
+        kv_mb=1_000,
+        gpu_backend=True,
+        vram_total_mb=28_000 + 640,
+        ram_total_mb=64_000,
+        uma=False,
+        headroom_mb=640,
+    )
+    aveugle = plan_placements(**kw)
+    informe = plan_placements(**kw, profile=prof)
+    # Proportionnel : déficit 9 000 x 4 / 36 000 -> 1 couche. Catalogue : 1 couche
+    # laisse 28 500 > 28 000 sur le device, il en faut 2.
+    assert aveugle.candidates[1].n_cpu_moe == 1
+    assert informe.candidates[1].n_cpu_moe == 2
+    assert "catalogue" in informe.candidates[1].faisabilite
+
+
+# ── sonde : validation, présélection, finalistes ─────────────────────────────────
+
+
+class _Sonde:
+    """Rejoue (tg, pp) par (clé, ctx) ; "boom" lève. Journalise (clé, ctx, depth)."""
+
+    def __init__(self, placement, table, journal):
+        self.placement, self.table, self.journal = placement, table, journal
+
+    def run(self, ctx, depth):
+        self.journal.append((self.placement.key, ctx, depth))
+        val = (
+            self.table.get((self.placement.key, ctx)) or self.table[self.placement.key]
+        )
+        if val[0] == "boom":
+            raise RuntimeError("ErrorOutOfDeviceMemory")
+        return ProbeResult(ctx=ctx, mem_mb=1234, tg_ts=val[0], pp_ts=val[1])
+
+
+def _usine(table):
+    journal = []
+
+    def make(placement):
+        return _Sonde(placement, table, journal)
+
+    make.journal = journal
+    return make
+
+
+GPU = Placement("gpu_total", 999)
+CPU = Placement("experts_cpu", 999, cpu_moe=True)
+P10 = Placement("experts_partiel", 999, n_cpu_moe=10, estime=True)
+P20 = Placement("experts_partiel", 999, n_cpu_moe=20, estime=True)
+
+
+def test_un_seul_candidat_est_valide_au_contexte_utile():
+    make = _usine({"gpu_total": (8.0, 60.0)})
+    r = probe_placement(make, [GPU], useful_ctx=32_768, reps=1)
+    assert r["placement"] is GPU and r["compare"] is False
+    assert "validé" in r["mecanisme"] and "non comparé" in r["mecanisme"]
+    assert r["mesures"]["gpu_total"]["tg_ts"] == 8.0
+    assert make.journal == [("gpu_total", 32_768, final_depth(32_768))]
+
+
+def test_un_seul_candidat_en_echec_est_dit_en_echec():
+    make = _usine({"gpu_total": ("boom", 0)})
+    r = probe_placement(make, [GPU], useful_ctx=8_192, reps=1)
+    assert r["placement"] is None and "ÉCHEC" in r["mecanisme"]
+    assert r["mesures"]["gpu_total"]["echec"].startswith("RuntimeError")
+
+
+def test_profondeur_finale_bornee():
+    assert final_depth(32_768) == 16_384
+    assert final_depth(65_536) == PLACEMENT_FINAL_DEPTH_MAX
+    assert final_depth(8_192) == 4_096
+
+
+def test_finalistes_compares_au_contexte_utile_et_decision_a_cette_profondeur():
+    """Présélection à 8 192 : B et C devant, D loin derrière. Au contexte utile
+    (32 768, profondeur 16 384) le classement s'inverse entre B et C : la décision
+    suit la mesure en profondeur, D n'y est pas remesuré."""
+    table = {
+        "experts_cpu": (10.0, 200.0),
+        "gpu_total": (14.0, 260.0),
+        "experts_partiel_n10": (14.2, 240.0),
+        "experts_partiel_n20": (9.0, 150.0),
+        ("experts_cpu", 32_768): (8.0, 180.0),
+        ("gpu_total", 32_768): (12.0, 230.0),
+        ("experts_partiel_n10", 32_768): (11.0, 220.0),
+    }
+    make = _usine(table)
+    r = probe_placement(make, [CPU, GPU, P10, P20], useful_ctx=32_768, reps=1)
+    assert r["placement"] is GPU and r["compare"] is True
+    assert r["ctx_final"] == 32_768 and r["depth_final"] == 16_384
+    assert sorted(r["finalistes"]) == [
+        "experts_cpu",
+        "experts_partiel_n10",
+        "gpu_total",
+    ]
+    assert r["tg_ts"] == 12.0  # la mesure au contexte utile, pas celle de présélection
+    assert r["preselection"]["experts_partiel_n10"]["tg_ts"] == 14.2
+    profond = [j for j in make.journal if j[1] == 32_768]
+    assert ("experts_partiel_n20", 32_768, 16_384) not in profond
+    assert len(profond) == 3
+
+
+def test_contexte_utile_court_une_seule_phase():
+    make = _usine({"experts_cpu": (12.1, 217.0), "gpu_total": (14.4, 262.0)})
+    r = probe_placement(make, [CPU, GPU], useful_ctx=PLACEMENT_PROBE_CTX, reps=1)
+    assert r["placement"] is GPU
+    assert all(
+        j[1:] == (PLACEMENT_PROBE_CTX, PLACEMENT_PROBE_PROMPT) for j in make.journal
+    )
+    assert r["ctx_final"] == PLACEMENT_PROBE_CTX
+
+
+def test_trace_distingue_non_explore_et_mesure_moins_performant():
+    make = _usine({"experts_cpu": (12.1, 217.0), "gpu_total": (14.4, 262.0)})
+    non = [{"key": "cpu", "raison": "non exploré : déprioritisé, GPU disponible"}]
+    r = probe_placement(make, [CPU, GPU], reps=1, non_explores=non)
+    assert r["non_explores"] == non
+    assert "non exploré" in r["mecanisme"] and "cpu" in r["mecanisme"]
+    # experts_cpu a été MESURÉ moins performant : le mécanisme donne l'écart, pas « non exploré ».
+    assert "experts_cpu" in r["mecanisme"] and "12.1" in r["mecanisme"]
+
+
+# ── contraintes de prefill ───────────────────────────────────────────────────────
+
+
+def _mes(**par_cle):
+    return {k: {"tg_ts": v[0], "pp_ts": v[1]} for k, v in par_cle.items()}
+
+
+def test_contrainte_prefill_explicite_ecarte_et_le_dit():
+    # « 2 000 nouveaux tokens en moins de 10 s » : 150 t/s = 13,3 s -> écarté.
+    best, mecanisme = pick_placement(
+        _mes(experts_cpu=(12.0, 400.0), gpu_total=(14.4, 150.0)),
+        [CPU, GPU],
+        prefill=PrefillConstraint(new_tokens=2_000, max_seconds=10.0),
+    )
+    assert best is CPU
+    assert "contrainte prefill" in mecanisme and "gpu_total" in mecanisme
+    assert "13" in mecanisme and "écarté" in mecanisme
+
+
+def test_contrainte_prefill_insatisfiable_decide_a_la_generation():
+    best, mecanisme = pick_placement(
+        _mes(experts_cpu=(12.0, 100.0), gpu_total=(14.4, 120.0)),
+        [CPU, GPU],
+        prefill=PrefillConstraint(new_tokens=2_000, max_seconds=10.0),
+    )
+    assert best is GPU
+    assert "aucun candidat ne satisfait" in mecanisme
+
+
+def test_plancher_relatif_de_prefill_est_un_choix_de_confort():
+    best, mecanisme = pick_placement(
+        _mes(experts_cpu=(12.0, 400.0), gpu_total=(14.4, 150.0)),
+        [CPU, GPU],
+        pp_floor_ratio=0.5,
+    )
+    assert best is CPU
+    assert "choix de confort" in mecanisme
+
+
+def test_sans_contrainte_la_generation_tranche():
+    best, _ = pick_placement(
+        _mes(experts_cpu=(12.0, 400.0), gpu_total=(14.4, 150.0)), [CPU, GPU]
+    )
+    assert best is GPU
+
+
+def test_indecis_conserve_l_actuel():
+    actuel = Placement("gpu_total", 999, actuel=True)
+    best, mecanisme = pick_placement(
+        _mes(gpu_total=(14.0, 250.0), experts_cpu=(14.4, 260.0)), [actuel, CPU]
+    )
+    assert best is actuel and "conservé" in mecanisme
+
+
+# ── persistance d'un partiel dense ───────────────────────────────────────────────
+
+
+def test_set_model_placement_partiel_dense_ecrit_le_ngl_exact(tmp_path):
+    import tomllib
+
+    from loom.setup.cli import _set_model_placement
+
+    (tmp_path / "model.toml").write_text('filename = "m.gguf"\n', encoding="utf-8")
+    _set_model_placement(
+        tmp_path / "m.gguf", Placement("gpu_partiel", 36, estime=True), "d"
+    )
+    d = tomllib.loads((tmp_path / "model.toml").read_text(encoding="utf-8"))
+    assert d["n_gpu_layers"] == 36 and d["cpu_moe"] is False

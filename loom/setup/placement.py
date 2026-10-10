@@ -7,32 +7,49 @@ Ornith 35B-A3B Q8_0 (Radeon 860M, mémoire unifiée) : tout sur GPU = +21 % de p
 +17-19 % de génération par rapport aux experts sur CPU. La règle venait d'une sonde du
 21/07 qui n'avait mesuré que le prefill, à une répétition, avec ±12 % de bruit.
 
-Principes (ceux de topology.py, appliqués au placement) :
-- les CANDIDATS viennent de la faisabilité mémoire, jamais d'une doctrine ;
-- une sonde PAR CANDIDAT, avec les flags exacts de l'exécutant (ServerProbe), pour
-  qu'un échec mémoire n'emporte pas les autres mesures ;
-- les DEUX axes au point de fonctionnement : prefill sur un prompt long et génération
-  en profondeur, plusieurs répétitions ;
-- une MARGE de bruit : on ne quitte le placement le plus simple (candidat 0) que si le
-  gain la dépasse, et la décision porte son mécanisme.
+Objectif (revue du 2026-10-10) : MAXIMISER LA GÉNÉRATION AU CONTEXTE UTILE, sous
+contraintes de mémoire, de conservation du cache et, si souhaité, d'un délai maximal de
+prefill. Le prefill départage les ex æquo.
+
+Principes :
+- les CANDIDATS viennent de la faisabilité mémoire (profil GGUF quand il existe),
+  jamais d'une doctrine ; la configuration ACTUELLE est la ligne de base ; ce qu'on
+  choisit de ne pas mesurer est tracé « non exploré », jamais « moins performant » ;
+- une sonde PAR CANDIDAT, avec les flags exacts de l'exécutant (ServerProbe) ;
+- PRÉSÉLECTION rapide à profondeur fixe, puis les FINALISTES comparés au même contexte
+  utile et à la même profondeur ; un candidat unique est quand même VALIDÉ ;
+- une MARGE de changement : on ne quitte la base que si le gain la dépasse (politique,
+  pas une mesure du bruit), et la décision porte son mécanisme.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+import time
+from dataclasses import dataclass, field, replace
 
 from loom.runtime.hardware import recommend_gpu_layers
 
 #: Gain minimal de génération (en %) pour quitter le placement de base.
 PLACEMENT_MARGIN_PCT = 5.0
-#: Contexte et prompt de la sonde : prefill long (le levier n'existe pas à 128 tokens)
-#: et génération mesurée à la profondeur de ce prompt.
+#: Contexte et prompt de la PRÉSÉLECTION : prefill long (le levier n'existe pas à 128
+#: tokens) et génération mesurée à la profondeur de ce prompt.
 PLACEMENT_PROBE_CTX = 8192
 PLACEMENT_PROBE_PROMPT = 4096
 #: Répétitions par candidat (moyenne) : une seule mesure n'a pas d'écart-type.
 PLACEMENT_REPS = 2
+#: Finalistes : à moins de ce % du meilleur tg en présélection (la base y est toujours).
+PLACEMENT_FINALIST_PCT = 15.0
+PLACEMENT_MAX_FINALISTS = 3
+#: Profondeur de la comparaison finale : moitié du contexte utile, bornée (coût : un
+#: prefill de cette taille par candidat et par répétition). Choix provisoire.
+PLACEMENT_FINAL_DEPTH_RATIO = 0.5
+PLACEMENT_FINAL_DEPTH_MAX = 16384
+#: Budget temps de la sonde de placement (s) : au-delà, on décide sur l'acquis.
+PLACEMENT_TIME_BUDGET_S = 900
 #: Marge RAM laissée à l'OS quand le « device » est la RAM (mémoire unifiée).
 _OS_RAM_BUDGET_MB = 3072
+_MIB = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -46,17 +63,66 @@ class Placement:
         None  # --n-cpu-moe N : experts des N premières couches en RAM
     )
     estime: bool = False  # faisabilité seulement estimée (partiel) : peut échouer
+    actuel: bool = False  # configuration actuelle du model.toml (ligne de base)
+    faisabilite: str = ""  # comment la faisabilité a été établie (trace)
+
+    @property
+    def key(self) -> str:
+        """Identifiant qui porte les PARAMÈTRES : deux partiels ne se confondent pas."""
+        if self.label == "experts_partiel":
+            return f"experts_partiel_n{self.n_cpu_moe}"
+        if self.label == "gpu_partiel":
+            return f"gpu_partiel_ngl{self.ngl}"
+        return self.label
 
     def describe(self) -> str:
         if self.label == "cpu":
-            return "CPU seul (ngl 0)"
-        if self.label == "gpu_total":
-            return "tout sur GPU (ngl 999)"
-        if self.label == "gpu_partiel":
-            return f"offload partiel (ngl {self.ngl}, estimé)"
-        if self.label == "experts_cpu":
-            return "denses sur GPU, experts sur CPU (--cpu-moe)"
-        return f"denses sur GPU, experts de {self.n_cpu_moe} couches sur CPU (estimé)"
+            txt = "CPU seul (ngl 0)"
+        elif self.label == "gpu_total":
+            txt = "tout sur GPU (ngl 999)"
+        elif self.label == "gpu_partiel":
+            txt = f"offload partiel (ngl {self.ngl}, estimé)"
+        elif self.label == "experts_cpu":
+            txt = "denses sur GPU, experts sur CPU (--cpu-moe)"
+        else:
+            txt = (
+                f"denses sur GPU, experts de {self.n_cpu_moe} couches sur CPU (estimé)"
+            )
+        return txt + (" — configuration actuelle" if self.actuel else "")
+
+
+@dataclass(frozen=True)
+class PrefillConstraint:
+    """Garde-fou EXPLICITE : « traiter `new_tokens` nouveaux tokens en moins de
+    `max_seconds` ». Un candidat qui ne le tient pas est écarté — sauf si aucun ne le
+    tient : la contrainte est alors insatisfiable et la génération décide seule."""
+
+    new_tokens: int
+    max_seconds: float
+
+    def seconds(self, pp_ts: float) -> float:
+        return self.new_tokens / pp_ts if pp_ts and pp_ts > 0 else math.inf
+
+
+def constraints_from_config(raw: dict) -> tuple[PrefillConstraint | None, float | None]:
+    """(contrainte prefill explicite, plancher relatif) depuis la table [placement] de
+    config/local.toml : `prefill_new_tokens` + `prefill_max_s` (N tokens en T s) et
+    `prefill_floor_ratio` (0-1, choix de confort). Absents = aucune contrainte : la
+    génération décide, le prefill départage."""
+    tbl = (raw or {}).get("placement") or {}
+    prefill = None
+    if tbl.get("prefill_new_tokens") and tbl.get("prefill_max_s"):
+        prefill = PrefillConstraint(
+            int(tbl["prefill_new_tokens"]), float(tbl["prefill_max_s"])
+        )
+    floor = tbl.get("prefill_floor_ratio")
+    return prefill, (float(floor) if floor else None)
+
+
+@dataclass
+class PlacementPlan:
+    candidates: list[Placement]
+    non_explores: list[dict] = field(default_factory=list)  # [{key, raison}]
 
 
 def useful_context(
@@ -72,11 +138,18 @@ def useful_context(
     return max(4096, ctx)
 
 
+def final_depth(ctx: int) -> int:
+    """Profondeur (tokens déjà en contexte) de la comparaison finale à `ctx`."""
+    return max(
+        256, min(PLACEMENT_FINAL_DEPTH_MAX, int(ctx * PLACEMENT_FINAL_DEPTH_RATIO))
+    )
+
+
 def kv_estimate_mb(profile, ctx: int, *, gpu_tuning: bool, slots: int = 1) -> int:
     """Mio de cache KV au contexte `ctx` avec le type de cache de l'EXÉCUTANT (q8_0
     sous profil GPU, f16 sinon) et `slots` slots — cf. ModelProfile.kv_bytes."""
     kv_type = "q8_0" if gpu_tuning else "f16"
-    return int(profile.kv_bytes(ctx, kv_type, slots) // (1024 * 1024))
+    return int(profile.kv_bytes(ctx, kv_type, slots) // _MIB)
 
 
 def device_budget_mb(
@@ -91,7 +164,101 @@ def device_budget_mb(
     return max(0, vram_total_mb - headroom_mb)
 
 
-def placement_candidates(
+def placement_from_config(mt: dict, *, n_layers: int | None) -> Placement | None:
+    """La configuration ACTUELLE du model.toml traduite en Placement (actuel=True),
+    None si le fichier ne fixe rien d'explicite."""
+    mt = mt or {}
+    if mt.get("n_cpu_moe") is not None:
+        return Placement(
+            "experts_partiel", 999, n_cpu_moe=int(mt["n_cpu_moe"]), actuel=True
+        )
+    if mt.get("cpu_moe"):
+        return Placement("experts_cpu", 999, cpu_moe=True, actuel=True)
+    ngl = mt.get("n_gpu_layers")
+    if ngl is None:
+        return None
+    ngl = int(ngl)
+    if ngl <= 0:
+        return Placement("cpu", 0, actuel=True)
+    if n_layers and 0 < ngl < int(n_layers):
+        return Placement("gpu_partiel", ngl, actuel=True)
+    return Placement("gpu_total", 999, actuel=True)
+
+
+def _fits(
+    pl: Placement, *, profile, model_size_mb: int, kv_mb: int, budget: int, layers: int
+):
+    """(tient ?, trace) : octets device du placement + KV contre le budget. Catalogue des
+    tenseurs quand il existe, sinon proportion de la taille du fichier."""
+    b = (
+        profile.gpu_bytes(ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe)
+        if profile is not None
+        else None
+    )
+    if b is not None:
+        need = b // _MIB + kv_mb
+        return (
+            need <= budget,
+            f"catalogue : {need} Mo (poids device + KV) pour {budget} Mo",
+        )
+    if pl.cpu_moe:
+        # Experts en RAM : les denses seuls — leur poids est inconnu sans catalogue.
+        return True, "proportion : supposé faisable (denses seuls sur le device)"
+    part = 1.0
+    if pl.n_cpu_moe is not None and layers:
+        part = 1.0 - pl.n_cpu_moe / layers  # part d'experts gardée (approximation)
+    elif pl.label == "gpu_partiel" and layers:
+        part = min(1.0, pl.ngl / layers)
+    need = int(model_size_mb * part) + kv_mb
+    return need <= budget, f"proportion : ~{need} Mo pour {budget} Mo"
+
+
+def _partial_experts(*, profile, layers, model_size_mb, kv_mb, budget) -> int | None:
+    """Plus petit N tel que « experts des N premières couches sur CPU » tient."""
+    if layers <= 1:
+        return None
+    if profile is not None and profile.weights:
+        for n in range(1, layers):
+            ok, _ = _fits(
+                Placement("experts_partiel", 999, n_cpu_moe=n),
+                profile=profile,
+                model_size_mb=model_size_mb,
+                kv_mb=kv_mb,
+                budget=budget,
+                layers=layers,
+            )
+            if ok:
+                return n
+        return None
+    if model_size_mb <= 0:
+        return None
+    deficit = model_size_mb + kv_mb - budget
+    n = -(-deficit * layers // model_size_mb)  # arrondi supérieur
+    return int(min(layers - 1, max(1, n)))
+
+
+def _partial_dense(*, profile, layers, model_size_mb, kv_mb, budget) -> int:
+    """Plus grand -ngl qui tient (0 = rien)."""
+    if not layers:
+        return 0
+    if profile is not None and profile.weights:
+        for k in range(layers - 1, 0, -1):
+            ok, _ = _fits(
+                Placement("gpu_partiel", k),
+                profile=profile,
+                model_size_mb=model_size_mb,
+                kv_mb=kv_mb,
+                budget=budget,
+                layers=layers,
+            )
+            if ok:
+                return k
+        return 0
+    reco = recommend_gpu_layers(budget, model_size_mb + kv_mb, layers, 0)
+    return int(reco) if 0 < reco < 999 else 0
+
+
+def plan_placements(
     *,
     moe: bool,
     n_layers: int | None,
@@ -102,69 +269,114 @@ def placement_candidates(
     ram_total_mb: int,
     uma: bool,
     headroom_mb: int,
-) -> list[Placement]:
-    """Candidats faisables, le plus simple (ou le plus sûr) EN PREMIER = ligne de base.
+    current: Placement | None = None,
+    profile=None,
+) -> PlacementPlan:
+    """Candidats faisables (le plus sûr en premier, ou la configuration ACTUELLE) et
+    liste de ce qu'on choisit de NE PAS mesurer, avec sa raison.
 
     - sans GPU : CPU seul ;
-    - MoE : experts sur CPU (tient toujours si les denses tiennent), puis tout GPU si
-      poids + KV tiennent, sinon un partiel ESTIMÉ (part d'experts à laisser sur CPU
-      proportionnelle au déficit) ;
-    - dense : tout GPU si ça tient, sinon l'offload proportionnel (estimé), sinon CPU."""
+    - MoE : experts sur CPU (tient si les denses tiennent), puis tout GPU si poids + KV
+      tiennent, sinon DEUX partiels estimés (serré, prudent) ; CPU seul non exploré ;
+    - dense : tout GPU si ça tient, sinon deux offloads partiels (serré, prudent), sinon
+      CPU ; CPU seul non exploré tant qu'un candidat GPU existe.
+    `kv_mb` est le KV au contexte UTILE (kv_estimate_mb), `profile` le profil GGUF."""
+    non: list[dict] = []
     if not gpu_backend or vram_total_mb <= 0:
-        return [Placement("cpu", 0)]
+        cands = [Placement("cpu", 0, faisabilite="sans GPU exploitable")]
+        return _with_current(cands, current, non)
     budget = device_budget_mb(vram_total_mb, ram_total_mb, uma, headroom_mb)
-    need = model_size_mb + kv_mb
     layers = int(n_layers or 0)
+    kw = dict(
+        profile=profile,
+        model_size_mb=model_size_mb,
+        kv_mb=kv_mb,
+        budget=budget,
+        layers=layers,
+    )
+    cands: list[Placement] = []
     if moe:
-        out = [Placement("experts_cpu", 999, cpu_moe=True)]
-        if need <= budget:
-            out.append(Placement("gpu_total", 999))
-        elif layers > 1 and model_size_mb > 0:
-            deficit = need - budget
-            n = -(-deficit * layers // model_size_mb)  # arrondi supérieur
-            n = int(min(layers - 1, max(1, n)))
-            out.append(Placement("experts_partiel", 999, n_cpu_moe=n, estime=True))
-        return out
-    if need <= budget:
-        return [Placement("gpu_total", 999)]
-    reco = recommend_gpu_layers(budget, need, layers, 0) if layers else 0
-    if 0 < reco < 999:
-        return [Placement("gpu_partiel", reco, estime=True)]
-    return [Placement("cpu", 0)]
+        base = Placement("experts_cpu", 999, cpu_moe=True)
+        _ok, why = _fits(base, **kw)
+        cands.append(replace(base, faisabilite=why))
+        total = Placement("gpu_total", 999)
+        ok, why = _fits(total, **kw)
+        if ok:
+            cands.append(replace(total, faisabilite=why))
+            non.append(
+                {
+                    "key": "experts_partiel",
+                    "raison": "non exploré : tout-GPU tient, un partiel ne rendrait que "
+                    "de la mémoire (économie de mesure)",
+                }
+            )
+        else:
+            n = _partial_experts(**kw)
+            if n is not None:
+                serre = Placement("experts_partiel", 999, n_cpu_moe=n, estime=True)
+                cands.append(replace(serre, faisabilite=_fits(serre, **kw)[1]))
+                n_prudent = min(layers - 1, n + max(1, math.ceil(layers * 0.15)))
+                if n_prudent > n:
+                    prudent = Placement(
+                        "experts_partiel", 999, n_cpu_moe=n_prudent, estime=True
+                    )
+                    cands.append(replace(prudent, faisabilite=_fits(prudent, **kw)[1]))
+    else:
+        total = Placement("gpu_total", 999)
+        ok, why = _fits(total, **kw)
+        if ok:
+            cands.append(replace(total, faisabilite=why))
+        else:
+            k = _partial_dense(**kw)
+            if k > 0:
+                serre = Placement("gpu_partiel", k, estime=True)
+                cands.append(replace(serre, faisabilite=_fits(serre, **kw)[1]))
+                k_prudent = k - max(1, math.ceil(layers * 0.1))
+                if k_prudent > 0:
+                    prudent = Placement("gpu_partiel", k_prudent, estime=True)
+                    cands.append(replace(prudent, faisabilite=_fits(prudent, **kw)[1]))
+            else:
+                cands.append(
+                    Placement("cpu", 0, faisabilite="rien ne tient sur le device")
+                )
+    if any(c.label != "cpu" for c in cands):
+        non.append(
+            {
+                "key": "cpu",
+                "raison": "non exploré : déprioritisé, GPU disponible — CPU seul n'est pas "
+                "démontré dominé, hors budget de mesure",
+            }
+        )
+    return _with_current(cands, current, non)
 
 
-def probe_placement(
-    make_probe,
-    candidates: list[Placement],
-    *,
-    ctx: int = PLACEMENT_PROBE_CTX,
-    depth: int = PLACEMENT_PROBE_PROMPT,
-    reps: int = PLACEMENT_REPS,
-    margin_pct: float = PLACEMENT_MARGIN_PCT,
-    progress=None,
-) -> dict | None:
-    """Sonde chaque candidat avec le VRAI serveur (`make_probe(placement)` renvoie une
-    sonde exposant `.run(ctx, depth) -> ProbeResult`, cf. topology.ServerProbe), `reps`
-    fois, et élit par `pick_placement`. Un candidat qui échoue (mémoire, chargement)
-    est écarté et nommé ; rien de mesurable -> None (on n'écrit jamais une valeur
-    inventée). Un seul candidat faisable n'est pas sondé : rien à comparer."""
-    say = progress or (lambda _m: None)
-    if not candidates:
-        return None
-    if len(candidates) == 1:
-        seul = candidates[0]
-        return {
-            "placement": seul,
-            "baseline": seul.label,
-            "tg_ts": None,
-            "pp_ts": None,
-            "gain_pct": None,
-            "mesures": {},
-            "mecanisme": f"{seul.label} : seul candidat faisable (non sondé)",
-        }
-    mesures: dict[str, dict] = {}
-    for c in candidates:
-        say(f"placement {c.label} ({c.describe()}) : {reps} mesure(s)…")
+def _with_current(cands: list[Placement], current: Placement | None, non: list[dict]):
+    """La configuration actuelle devient la ligne de base (candidat 0), ajoutée si elle
+    n'est pas parmi les candidats générés ; elle sort des non-explorés."""
+    if current is None:
+        return PlacementPlan(cands, non)
+    idx = next((i for i, c in enumerate(cands) if c.key == current.key), None)
+    if idx is None:
+        base = replace(current, actuel=True, faisabilite="configuration actuelle")
+        cands = [base] + cands
+    else:
+        base = replace(cands[idx], actuel=True)
+        cands = [base] + cands[:idx] + cands[idx + 1 :]
+    non = [n for n in non if n["key"] != base.key and not base.key.startswith(n["key"])]
+    return PlacementPlan(cands, non)
+
+
+def placement_candidates(**kw) -> list[Placement]:
+    """Compatibilité : les candidats seuls (cf. plan_placements)."""
+    return plan_placements(**kw).candidates
+
+
+def _mesurer(make_probe, cands, ctx, depth, reps, say) -> dict[str, dict]:
+    """Une sonde par candidat, `reps` runs à (ctx, depth). Un candidat qui casse est
+    écarté et nommé (jamais fatal)."""
+    out: dict[str, dict] = {}
+    for c in cands:
+        say(f"placement {c.key} ({c.describe()}) : {reps} mesure(s) à ctx {ctx}…")
         tgs: list[float] = []
         pps: list[float] = []
         mems: list[int] = []
@@ -178,81 +390,250 @@ def probe_placement(
                     pps.append(float(r.pp_ts))
                 mems.append(int(r.mem_mb or 0))
         except Exception as exc:  # noqa: BLE001 - un candidat qui casse n'est PAS fatal
-            mesures[c.label] = {"echec": f"{type(exc).__name__}: {exc}"}
+            out[c.key] = {"echec": f"{type(exc).__name__}: {exc}"}
             continue
         if not tgs:
-            mesures[c.label] = {"echec": "débit illisible"}
+            out[c.key] = {"echec": "débit illisible"}
             continue
-        mesures[c.label] = {
+        out[c.key] = {
             "tg_ts": round(sum(tgs) / len(tgs), 2),
             "pp_ts": round(sum(pps) / len(pps), 2) if pps else 0.0,
             "mem_mb": max(mems) if mems else 0,
         }
-    if not any("tg_ts" in v for v in mesures.values()):
+    return out
+
+
+def _non_explores_txt(non: list[dict]) -> str:
+    return "".join(f" ; {n['key']} : {n['raison']}" for n in non)
+
+
+def probe_placement(
+    make_probe,
+    candidates: list[Placement],
+    *,
+    ctx: int = PLACEMENT_PROBE_CTX,
+    depth: int = PLACEMENT_PROBE_PROMPT,
+    reps: int = PLACEMENT_REPS,
+    margin_pct: float = PLACEMENT_MARGIN_PCT,
+    progress=None,
+    useful_ctx: int | None = None,
+    non_explores: list[dict] | None = None,
+    prefill: PrefillConstraint | None = None,
+    pp_floor_ratio: float | None = None,
+    time_budget_s: float = PLACEMENT_TIME_BUDGET_S,
+) -> dict | None:
+    """Sonde les candidats avec le VRAI serveur (`make_probe(placement)` renvoie une
+    sonde exposant `.run(ctx, depth) -> ProbeResult`, cf. topology.ServerProbe).
+
+    - un seul candidat : VALIDÉ une fois au contexte utile (charge, génère), non comparé ;
+    - plusieurs : PRÉSÉLECTION à (ctx, depth) `reps` fois, puis, si le contexte utile
+      dépasse `ctx`, les FINALISTES (la base + les meilleurs à PLACEMENT_FINALIST_PCT du
+      meilleur, PLACEMENT_MAX_FINALISTS au plus) remesurés au contexte utile et à
+      final_depth(utile) ; la décision (`pick_placement`) porte sur cette dernière
+      mesure. Rien de mesurable -> None (on n'écrit jamais une valeur inventée).
+
+    Renvoie {placement (None si validation en échec), baseline, tg_ts, pp_ts, gain_pct,
+    mesures (phase décisive, par clé), preselection, finalistes, ctx_final, depth_final,
+    non_explores, compare, mecanisme}."""
+    say = progress or (lambda _m: None)
+    non = list(non_explores or [])
+    if not candidates:
         return None
-    best, mecanisme = pick_placement(mesures, candidates, margin_pct)
+    t0 = time.monotonic()
+    two_phase = bool(useful_ctx and int(useful_ctx) > ctx)
+    ctx_final = int(useful_ctx) if useful_ctx else ctx
+    depth_final = final_depth(ctx_final) if useful_ctx else depth
+
+    def _res(**kw):
+        base = {
+            "baseline": candidates[0].key,
+            "non_explores": non,
+            "ctx_final": ctx_final,
+            "depth_final": depth_final,
+        }
+        base.update(kw)
+        return base
+
+    if len(candidates) == 1:
+        seul = candidates[0]
+        mes = _mesurer(make_probe, [seul], ctx_final, depth_final, 1, say)
+        m = mes[seul.key]
+        if "echec" in m:
+            return _res(
+                placement=None,
+                tg_ts=None,
+                pp_ts=None,
+                gain_pct=None,
+                mesures=mes,
+                preselection=mes,
+                finalistes=[],
+                compare=False,
+                mecanisme=(
+                    f"{seul.key} : seul candidat faisable, validation en ÉCHEC "
+                    f"({m['echec']})" + _non_explores_txt(non)
+                ),
+            )
+        return _res(
+            placement=seul,
+            tg_ts=m["tg_ts"],
+            pp_ts=m["pp_ts"],
+            gain_pct=None,
+            mesures=mes,
+            preselection=mes,
+            finalistes=[seul.key],
+            compare=False,
+            mecanisme=(
+                f"{seul.key} : seul candidat faisable — validé à ctx {ctx_final} "
+                f"(génération {m['tg_ts']} t/s, prefill {m['pp_ts']} t/s), non comparé"
+                + _non_explores_txt(non)
+            ),
+        )
+
+    phase1 = _mesurer(make_probe, candidates, ctx, depth, reps, say)
+    if not any("tg_ts" in v for v in phase1.values()):
+        return None
+    notes = ""
+    if two_phase:
+        valid = {k: v for k, v in phase1.items() if "tg_ts" in v}
+        best_tg = max(v["tg_ts"] for v in valid.values())
+        base_key = candidates[0].key
+        seuil = best_tg * (1 - PLACEMENT_FINALIST_PCT / 100)
+        autres = sorted(
+            (c for c in candidates if c.key in valid and c.key != base_key),
+            key=lambda c: valid[c.key]["tg_ts"],
+            reverse=True,
+        )
+        finalists = [c for c in candidates if c.key == base_key and c.key in valid]
+        finalists += [c for c in autres if valid[c.key]["tg_ts"] >= seuil][
+            : PLACEMENT_MAX_FINALISTS - len(finalists)
+        ]
+        mesures: dict[str, dict] = {}
+        for c in finalists:
+            if time.monotonic() - t0 >= time_budget_s:
+                notes += (
+                    f" ; budget temps ({time_budget_s:g} s) épuisé : {c.key} non remesuré "
+                    "au contexte utile"
+                )
+                continue
+            mesures.update(_mesurer(make_probe, [c], ctx_final, depth_final, reps, say))
+        finalistes = [c.key for c in finalists]
+        if not any("tg_ts" in v for v in mesures.values()):
+            # Rien de remesuré : décider sur la présélection, en le disant.
+            mesures = phase1
+            notes += " ; décision sur la présélection (aucun finaliste remesuré)"
+            ctx_final, depth_final = ctx, depth
+    else:
+        mesures = phase1
+        finalistes = [k for k, v in phase1.items() if "tg_ts" in v]
+    best, mecanisme = pick_placement(
+        mesures, candidates, margin_pct, prefill=prefill, pp_floor_ratio=pp_floor_ratio
+    )
     base = candidates[0]
     gain = None
-    if best.label != base.label and "tg_ts" in mesures.get(base.label, {}):
+    if best.key != base.key and "tg_ts" in mesures.get(base.key, {}):
         gain = round(
-            (mesures[best.label]["tg_ts"] / mesures[base.label]["tg_ts"] - 1) * 100, 1
+            (mesures[best.key]["tg_ts"] / mesures[base.key]["tg_ts"] - 1) * 100, 1
         )
-    return {
-        "placement": best,
-        "baseline": base.label,
-        "tg_ts": mesures[best.label]["tg_ts"],
-        "pp_ts": mesures[best.label]["pp_ts"],
-        "gain_pct": gain,
-        "mesures": mesures,
-        "mecanisme": mecanisme,
-    }
+    m_best = mesures.get(best.key) or {}
+    return _res(
+        placement=best,
+        tg_ts=m_best.get("tg_ts"),
+        pp_ts=m_best.get("pp_ts"),
+        gain_pct=gain,
+        mesures=mesures,
+        preselection=phase1,
+        finalistes=finalistes,
+        ctx_final=ctx_final,
+        depth_final=depth_final,
+        compare=sum(1 for v in mesures.values() if "tg_ts" in v) >= 2,
+        mecanisme=mecanisme + notes + _non_explores_txt(non),
+    )
 
 
 def pick_placement(
     mesures: dict[str, dict],
     candidates: list[Placement],
     margin_pct: float = PLACEMENT_MARGIN_PCT,
+    *,
+    prefill: PrefillConstraint | None = None,
+    pp_floor_ratio: float | None = None,
 ) -> tuple[Placement, str]:
     """(placement retenu, mécanisme). La génération tranche ; la ligne de base
-    (candidat 0) n'est quittée que si une alternative la bat de plus de `margin_pct` ;
-    entre alternatives équivalentes au tg, le prefill départage. Un candidat sans
-    mesure (échec) est écarté et nommé dans le mécanisme."""
-    by_label = {c.label: c for c in candidates}
+    (candidat 0 = configuration actuelle quand elle est connue) n'est quittée que si
+    une alternative la bat de plus de `margin_pct` ; entre alternatives équivalentes au
+    tg, le prefill départage. Un candidat sans mesure (échec) est écarté et nommé.
+
+    Contraintes optionnelles : `prefill` (N tokens en T s, explicite) écarte ceux qui ne
+    la tiennent pas, sauf si aucun ne la tient ; `pp_floor_ratio` (plancher relatif au
+    meilleur prefill) est un CHOIX DE CONFORT qui peut sacrifier de la génération."""
+    by_key = {c.key: c for c in candidates}
     valid = {
         k: v
         for k, v in mesures.items()
-        if k in by_label and float(v.get("tg_ts") or 0) > 0
+        if k in by_key and float(v.get("tg_ts") or 0) > 0
     }
-    echecs = [
+    notes = [
         f"{k} : {v.get('echec', 'sans mesure')}"
         for k, v in mesures.items()
         if k not in valid
     ]
-    suffixe = (" ; " + " ; ".join(echecs)) if echecs else ""
+    if prefill is not None and valid:
+        viol = {
+            k: prefill.seconds(float(v.get("pp_ts") or 0))
+            for k, v in valid.items()
+            if prefill.seconds(float(v.get("pp_ts") or 0)) > prefill.max_seconds
+        }
+        if viol and len(viol) < len(valid):
+            for k, s in viol.items():
+                notes.append(
+                    f"{k} écarté : contrainte prefill ({prefill.new_tokens} tokens en "
+                    f"{s:.1f} s > {prefill.max_seconds:g} s)"
+                )
+            valid = {k: v for k, v in valid.items() if k not in viol}
+        elif viol:
+            notes.append(
+                f"aucun candidat ne satisfait la contrainte prefill "
+                f"({prefill.new_tokens} tokens en {prefill.max_seconds:g} s) : décision "
+                "à la génération seule"
+            )
+    if pp_floor_ratio and valid:
+        best_pp = max(float(v.get("pp_ts") or 0) for v in valid.values())
+        low = {
+            k
+            for k, v in valid.items()
+            if float(v.get("pp_ts") or 0) < best_pp * pp_floor_ratio
+        }
+        if low and len(low) < len(valid):
+            for k in sorted(low):
+                notes.append(
+                    f"{k} écarté : prefill sous {pp_floor_ratio:.0%} du meilleur "
+                    "(plancher relatif = choix de confort, peut sacrifier de la génération)"
+                )
+            valid = {k: v for k, v in valid.items() if k not in low}
+    suffixe = (" ; " + " ; ".join(notes)) if notes else ""
     base = candidates[0]
     if not valid:
-        return base, f"aucune mesure exploitable, {base.label} conservé{suffixe}"
-    if base.label not in valid:
-        # La base n'a pas pu être mesurée : la meilleure alternative mesurée.
-        label = max(
-            valid, key=lambda k: (valid[k]["tg_ts"], valid[k].get("pp_ts") or 0)
-        )
-        return by_label[label], f"{label} retenu (base non mesurée){suffixe}"
-    base_tg = valid[base.label]["tg_ts"]
+        return base, f"aucune mesure exploitable, {base.key} conservé{suffixe}"
+    if base.key not in valid:
+        # La base n'a pas pu être mesurée (ou a été écartée) : la meilleure alternative.
+        key = max(valid, key=lambda k: (valid[k]["tg_ts"], valid[k].get("pp_ts") or 0))
+        return by_key[
+            key
+        ], f"{key} retenu (base {base.key} non mesurée ou écartée){suffixe}"
+    base_tg = valid[base.key]["tg_ts"]
     seuil = base_tg * (1 + margin_pct / 100)
-    gagnants = {
-        k: v for k, v in valid.items() if k != base.label and v["tg_ts"] > seuil
-    }
+    gagnants = {k: v for k, v in valid.items() if k != base.key and v["tg_ts"] > seuil}
     if not gagnants:
         if len(valid) == 1:
-            return base, f"{base.label} : seul candidat mesuré{suffixe}"
+            return base, f"{base.key} : seul candidat mesuré{suffixe}"
         meilleur = max(
-            (k for k in valid if k != base.label), key=lambda k: valid[k]["tg_ts"]
+            (k for k in valid if k != base.key), key=lambda k: valid[k]["tg_ts"]
         )
         ecart = (valid[meilleur]["tg_ts"] / base_tg - 1) * 100
         return base, (
-            f"{base.label} conservé : {meilleur} à {ecart:+.0f} % de tg, sous la marge "
-            f"de {margin_pct:g} %{suffixe}"
+            f"{base.key} conservé : {meilleur} mesuré à {ecart:+.0f} % de tg "
+            f"({valid[meilleur]['tg_ts']} contre {base_tg}), sous la marge de "
+            f"{margin_pct:g} %{suffixe}"
         )
     best_tg = max(v["tg_ts"] for v in gagnants.values())
     # Alternatives équivalentes entre elles (sous la marge) : le prefill tranche.
@@ -261,12 +642,19 @@ def pick_placement(
         for k, v in gagnants.items()
         if v["tg_ts"] >= best_tg * (1 - margin_pct / 100)
     }
-    label = max(
+    key = max(
         equivalents,
         key=lambda k: (equivalents[k].get("pp_ts") or 0, equivalents[k]["tg_ts"]),
     )
-    gain = (valid[label]["tg_ts"] / base_tg - 1) * 100
-    return by_label[label], (
-        f"{label} adopté : génération {valid[label]['tg_ts']} t/s contre {base_tg} "
-        f"({base.label}), {gain:+.0f} %, au-dessus de la marge de {margin_pct:g} %{suffixe}"
+    gain = (valid[key]["tg_ts"] / base_tg - 1) * 100
+    perdants = [
+        f"{k} ({valid[k]['tg_ts']} t/s)" for k in valid if k not in (key, base.key)
+    ]
+    perdants_txt = (
+        " ; mesurés moins performants : " + ", ".join(perdants) if perdants else ""
+    )
+    return by_key[key], (
+        f"{key} adopté : génération {valid[key]['tg_ts']} t/s contre {base_tg} "
+        f"({base.key}), {gain:+.0f} %, au-dessus de la marge de {margin_pct:g} %"
+        f"{perdants_txt}{suffixe}"
     )

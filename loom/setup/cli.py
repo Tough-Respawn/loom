@@ -843,9 +843,16 @@ def _set_model_placement(gguf_path: Path, placement, detail: str) -> None:
         "n_cpu_moe": (
             str(placement.n_cpu_moe) if placement.n_cpu_moe is not None else None
         ),
-        "n_gpu_layers": {"gpu_total": "999", "cpu": "0"}.get(placement.label),
+        # Partiel dense : le -ngl EXACT validé, pas une recommandation recalculée au
+        # lancement sur la VRAM libre du moment.
+        "n_gpu_layers": {
+            "gpu_total": "999",
+            "cpu": "0",
+            "gpu_partiel": str(placement.ngl),
+        }.get(placement.label),
     }
-    stamp = f"# placement élu par la sonde — {placement.label} : {detail}"
+    key = getattr(placement, "key", placement.label)
+    stamp = f"# placement élu par la sonde — {key} : {detail}"
     out: list[str] = []
     done: set[str] = set()
     for line in p.read_text(encoding="utf-8").splitlines():
@@ -1058,7 +1065,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         model_toml.get("context"), server_cfg.get("context"), meta.get("context_length")
     )
     kv_mb = place_mod.kv_estimate_mb(profile, ctx_utile, gpu_tuning=hw.has_gpu, slots=1)
-    candidats = place_mod.placement_candidates(
+    # Candidats par faisabilité (profil GGUF), la configuration ACTUELLE en base ; ce
+    # qu'on ne mesure pas est tracé « non exploré ». Contraintes de prefill optionnelles
+    # ([placement] dans local.toml) : explicite (N tokens en T s) ou plancher de confort.
+    plan = place_mod.plan_placements(
         moe=is_moe,
         n_layers=meta.get("n_layers"),
         model_size_mb=model_size_mb,
@@ -1068,21 +1078,31 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         ram_total_mb=ram_total_mb,
         uma=not hw.vram_is_discrete,
         headroom_mb=headroom,
+        current=place_mod.placement_from_config(model_toml, n_layers=meta.get("n_layers")),
+        profile=profile,
     )
+    prefill_c, pp_floor = place_mod.constraints_from_config(raw_cfg)
     con.progress("sonde de placement (où vivent les poids)…")
     try:
         pl_res = place_mod.probe_placement(
             lambda pl: _dc_replace(
                 probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
             ),
-            candidats,
+            plan.candidates,
             progress=lambda m: con.progress(f"placement : {m}"),
+            useful_ctx=ctx_utile,
+            non_explores=plan.non_explores,
+            prefill=prefill_c,
+            pp_floor_ratio=pp_floor,
         )
     except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
         pl_res = None
     con.progress_end()
-    if pl_res and pl_res["mesures"]:
-        # Comparaison faite : la suite (isolation, calibration, ubatch) mesure l'élu.
+    if pl_res and pl_res.get("placement") is None:
+        con.say(f"  [attention] placement : {pl_res['mecanisme']} — flags actuels conservés.")
+    if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
+        # Élu (comparé, ou seul candidat validé) : la suite (isolation, calibration,
+        # ubatch) mesure cette configuration-là.
         pl = pl_res["placement"]
         probe = _dc_replace(
             probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
@@ -1175,8 +1195,16 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         },
     }
     if pl_res:
-        values["bench"]["placement"] = pl_res["placement"].label
+        pl_elu = pl_res.get("placement")
+        values["bench"]["placement"] = pl_elu.key if pl_elu else "aucun (échec)"
         values["bench"]["placement_mecanisme"] = pl_res["mecanisme"]
+        values["bench"]["placement_compare"] = bool(pl_res.get("compare"))
+        values["bench"]["placement_ctx_final"] = pl_res["ctx_final"]
+        values["bench"]["placement_depth_final"] = pl_res["depth_final"]
+        values["bench"]["placement_finalistes"] = list(pl_res.get("finalistes") or [])
+        values["bench"]["placement_non_explores"] = [
+            f"{n['key']} : {n['raison']}" for n in pl_res.get("non_explores") or []
+        ]
         if pl_res["tg_ts"] is not None:
             values["bench"]["placement_tg_ts"] = pl_res["tg_ts"]
             values["bench"]["placement_pp_ts"] = pl_res["pp_ts"]
@@ -1186,6 +1214,11 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             values["bench"]["placement_mesures"] = {
                 k: {kk: vv for kk, vv in v.items()}
                 for k, v in pl_res["mesures"].items()
+            }
+        if pl_res.get("preselection") and pl_res["preselection"] is not pl_res["mesures"]:
+            values["bench"]["placement_preselection"] = {
+                k: {kk: vv for kk, vv in v.items()}
+                for k, v in pl_res["preselection"].items()
             }
     # Repli MACHINE : un modèle ajouté plus tard n'est jamais benché et tombait sur les
     # constantes aveugles de llama-server. On n'écrit QUE ce qui a été mesuré.
@@ -1212,8 +1245,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     set_local_values(PERSONAL_CONFIG_PATH, values)
     # La pente dépend de l'architecture; persister donc le contexte par modèle.
     _set_model_context(gguf_path, context, calib["mecanisme"])
-    if pl_res and pl_res["mesures"]:
-        # Le placement n'est écrit que s'il a été COMPARÉ (un seul candidat = rien à dire).
+    if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
+        # Écrit ce qui a été VALIDÉ (comparé, ou candidat unique validé au contexte utile).
         import datetime as _dt
 
         build = deps.verify_binary(server_bin) or "build ?"
@@ -1253,9 +1286,12 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             else ""
         )
         con.say(
-            f"  [ok] placement={pl_res['placement'].label} ({pl_res['tg_ts']} t/s gén., "
-            f"{pl_res['pp_ts']} t/s prefill sur {place_mod.PLACEMENT_PROBE_PROMPT} tokens{gain_pl})"
+            f"  [ok] placement={pl_res['placement'].key} ({pl_res['tg_ts']} t/s gén., "
+            f"{pl_res['pp_ts']} t/s prefill à ctx {pl_res['ctx_final']}, profondeur "
+            f"{pl_res['depth_final']} tokens{gain_pl})"
         )
+        for n in pl_res.get("non_explores") or []:
+            con.say(f"       {n['key']} : {n['raison']}")
     if ub_res:
         gain = (
             f", +{ub_res['gain_pct']:.0f} % de prefill"

@@ -20,12 +20,16 @@ def _measure_placement(
     gpu_backend: bool,
     progress,
     useful_ctx: int | None = None,
+    mt: dict | None = None,
+    raw: dict | None = None,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
-    (verdict sérialisable | None, sonde alignée sur l'élu). None quand il n'y a rien à
-    comparer (un seul candidat faisable) ou rien de mesurable : la calibration vaut
-    alors avec les flags actuels du modèle. La faisabilité s'estime au contexte UTILE
-    (`useful_ctx`) avec le type de cache de l'exécutant, via le profil GGUF."""
+    (verdict sérialisable | None, sonde alignée sur l'élu). None quand rien n'est
+    mesurable ou que la validation du seul candidat échoue : la calibration vaut alors
+    avec les flags actuels du modèle. La faisabilité s'estime au contexte UTILE
+    (`useful_ctx`) avec le type de cache de l'exécutant, via le profil GGUF ; la
+    configuration ACTUELLE (`mt`) est la ligne de base ; `raw` porte les contraintes
+    de prefill optionnelles ([placement])."""
     from dataclasses import replace as _dc_replace
 
     from loom.runtime.model_profile import ModelProfile
@@ -38,7 +42,7 @@ def _measure_placement(
         gpu_tuning=bool(getattr(hw, "has_gpu", False)),
         slots=1,
     )
-    cands = place_mod.placement_candidates(
+    plan = place_mod.plan_placements(
         moe=bool(meta.get("expert_count")),
         n_layers=meta.get("n_layers"),
         model_size_mb=int(model_size_mb or 0),
@@ -48,23 +52,31 @@ def _measure_placement(
         ram_total_mb=int(ram_total_mb),
         uma=not getattr(hw, "vram_is_discrete", True),
         headroom_mb=headroom_mb,
+        current=place_mod.placement_from_config(mt or {}, n_layers=meta.get("n_layers")),
+        profile=profile,
     )
+    prefill_c, pp_floor = place_mod.constraints_from_config(raw or {})
     try:
         res = place_mod.probe_placement(
             lambda pl: _dc_replace(
                 probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
             ),
-            cands,
+            plan.candidates,
             progress=progress,
+            useful_ctx=useful_ctx,
+            non_explores=plan.non_explores,
+            prefill=prefill_c,
+            pp_floor_ratio=pp_floor,
         )
     except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans
         res = None
-    if not res or not res["mesures"]:
+    if not res or res.get("placement") is None or not res["mesures"]:
         return None, probe
     pl = res["placement"]
     probe = _dc_replace(probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe)
     verdict = {
         "label": pl.label,
+        "key": pl.key,
         "ngl": pl.ngl,
         "cpu_moe": pl.cpu_moe,
         "n_cpu_moe": pl.n_cpu_moe,
@@ -74,12 +86,22 @@ def _measure_placement(
         "baseline": res["baseline"],
         "mecanisme": res["mecanisme"],
         "mesures": res["mesures"],
+        "preselection": res.get("preselection"),
+        "finalistes": res.get("finalistes"),
+        "ctx_final": res.get("ctx_final"),
+        "depth_final": res.get("depth_final"),
+        "non_explores": res.get("non_explores"),
+        "compare": bool(res.get("compare")),
     }
     return verdict, probe
 
 
-def _placement_implied_ngl(label: str):
-    """n_gpu_layers que _set_model_placement écrira pour ce label (None = retiré)."""
+def _placement_implied_ngl(pl: dict):
+    """n_gpu_layers que _set_model_placement écrira pour ce verdict (None = retiré) :
+    999 tout-GPU, 0 CPU seul, le -ngl exact d'un partiel dense."""
+    label = pl.get("label") if isinstance(pl, dict) else pl
+    if label == "gpu_partiel" and isinstance(pl, dict):
+        return int(pl.get("ngl") or 0)
     return {"gpu_total": 999, "cpu": 0}.get(label)
 
 
@@ -192,6 +214,8 @@ def _run_calibration(S, spec, progress):
         gpu_backend=gpu_backend,
         progress=progress,
         useful_ctx=ctx_utile,
+        mt=mt,
+        raw=raw,
     )
     # Sonde d'isolation AVANT la calibration : si le modèle exige un 2e slot,
     # la calibration doit mesurer avec le KV réellement doublé (même séquence
@@ -290,7 +314,7 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
         pl_change = bool(pl) and (
             bool(pl["cpu_moe"]) != bool(pl_avant.get("cpu_moe"))
             or pl.get("n_cpu_moe") != pl_avant.get("n_cpu_moe")
-            or _placement_implied_ngl(pl["label"]) != pl_avant.get("n_gpu_layers")
+            or _placement_implied_ngl(pl) != pl_avant.get("n_gpu_layers")
         )
         if pl is None:
             pl_line = "sonde de placement : non comparée (un seul candidat faisable, ou illisible)."
