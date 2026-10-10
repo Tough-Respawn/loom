@@ -973,7 +973,12 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     import os
 
     # Le binaire et les métadonnées GGUF dimensionnent les candidats d'offload.
-    hw = deps.detect_hardware(server_bin)
+    # Le binaire que l'EXÉCUTANT lancera pour CE modèle (model.toml server_bin — un build
+    # qui porte une PR —, sinon le global) porte la détection matérielle, la sonde et le
+    # build tracé. llama-bench, lui, reste celui livré à côté du binaire global.
+    model_toml = _read_model_toml(gguf_path)
+    probe_bin = topo_mod.model_server_bin(model_toml, str(server_bin))
+    hw = deps.detect_hardware(probe_bin)
     try:
         meta = read_gguf_meta(gguf_path)
     except ValueError:
@@ -983,7 +988,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     # GPU exploitable : le profil `--list-devices` du binaire fait foi (un build statique
     # n'a aucune DLL à côté de l'exe), cf. bench.gpu_backend_available.
     gpu_ok = bench_mod.gpu_backend_available(
-        hw, server_bin, has_dll=deps.has_gpu_backend
+        hw, probe_bin, has_dll=deps.has_gpu_backend
     )
     # Pour un MoE, mesurer l'offload réel avec experts en RAM plutôt qu'un impossible tout-GPU.
     moe = bool(meta.get("expert_count"))
@@ -1039,7 +1044,6 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     budget = topo_mod.memory_budget_mb(
         topo, vram_total, ram_total_mb, headroom, uma=uma
     )
-    model_toml = _read_model_toml(gguf_path)
     is_moe = bool(meta.get("expert_count"))
     mmproj_name = model_toml.get("mmproj_filename")
     from loom.setup import placement as place_mod
@@ -1062,9 +1066,11 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         headroom=headroom,
     )
     probe = deps.make_probe(
-        server_bin=str(server_bin),
+        server_bin=probe_bin,
         model_path=str(gguf_path),
         threads=best["threads"],
+        # Slots de l'exécutant : [server] n_parallel global (l'isolation peut monter à 2).
+        n_parallel=topo_mod.probe_slots(server_cfg, None),
         ngl=(
             cur_pl.ngl
             if (cur_pl is not None and topo != topo_mod.TOPO_RAM)
@@ -1113,7 +1119,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         con.progress_end()
         marque = "[attention]" if isolation else "[ok]"
         if isolation:
-            probe.n_parallel = 2
+            probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
         # Libellé honnête : ce que la mesure a montré, et pourquoi on isole quand même.
         con.say(f"  {marque} {topo_mod.isolation_text(isolation, first, back)}")
     # Placement MESURÉ des poids (où vivent denses et experts) x couples de batchs,
@@ -1321,7 +1327,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             )
         else:
             con.say("  [attention] vérification du cache illisible.")
-    build = deps.verify_binary(server_bin) or "build ?"
+    build = deps.verify_binary(probe_bin) or "build ?"
 
     values = {
         "server": {"context": context},

@@ -260,6 +260,28 @@ def test_sonde_prend_les_batchs_machine_comme_l_executant():
     assert obtenu[obtenu.index("-ub") + 1] == "2048"
 
 
+def test_binaire_propre_au_modele_et_slots_globaux():
+    """Revue 2026-10-10 : l'exécutant lance `model.server_bin or [server].bin` avec
+    resolve_parallel([server] n_parallel, cache_isolation) slots ; la sonde prenait le
+    binaire global et partait de 1 slot. Mêmes résolveurs des deux côtés."""
+    from loom.setup.topology import model_server_bin, probe_slots
+
+    assert model_server_bin(
+        {"server_bin": "C:/autre/llama-server.exe"}, "C:/g/llama-server.exe"
+    ) == ("C:/autre/llama-server.exe")
+    assert (
+        model_server_bin({"server_bin": ""}, "C:/g/llama-server.exe")
+        == "C:/g/llama-server.exe"
+    )
+    assert model_server_bin({}, "C:/g/llama-server.exe") == "C:/g/llama-server.exe"
+    # Slots : le global [server] n_parallel, monté à 2 au minimum si isolation.
+    assert probe_slots({}, isolation=False) == 1
+    assert probe_slots({}, isolation=True) == 2
+    assert probe_slots({"n_parallel": 3}, isolation=False) == 3
+    assert probe_slots({"n_parallel": 3}, isolation=True) == 3
+    assert probe_slots({"n_parallel": 0}, isolation=None) == 1
+
+
 def test_sonde_cpu_seul_sans_profil_gpu():
     probe = ServerProbe(
         server_bin="llama-server",

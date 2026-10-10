@@ -373,6 +373,24 @@ class ServerProbe:
             time.sleep(4)
 
 
+def model_server_bin(mt: dict, default_bin: str) -> str:
+    """Le binaire que l'EXÉCUTANT lancera pour ce modèle : `server_bin` du model.toml
+    (un build qui porte une PR pas encore mergée), sinon le [server].bin global —
+    même précédence que swap._model_cmd / serve.build_launch. La sonde, la détection
+    matérielle et le build tracé doivent porter sur CE binaire."""
+    own = str((mt or {}).get("server_bin") or "").strip()
+    return own or str(default_bin)
+
+
+def probe_slots(server_cfg: dict, isolation: bool | None) -> int:
+    """Slots de la sonde = ceux de l'exécutant : [server] n_parallel global, monté à 2
+    au minimum quand l'isolation est nécessaire (server_args.resolve_parallel)."""
+    from loom.runtime.server_args import resolve_parallel
+
+    base = int((server_cfg or {}).get("n_parallel") or 1)
+    return resolve_parallel(base, bool(isolation))
+
+
 def probe_batches(mt: dict, server_cfg: dict) -> tuple[int | None, int | None]:
     """(ubatch, batch) que l'EXÉCUTANT appliquera à ce modèle : model.toml, sinon le
     repli machine [server] ubatch/batch, sinon rien (défauts llama-server). La sonde

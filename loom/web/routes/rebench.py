@@ -200,9 +200,12 @@ def _run_calibration(S, spec, progress):
     # nvidia-smi n'est qu'un repli de VRAM.
     from loom.runtime.hardware import detect_hardware
 
-    hw = detect_hardware(str(server_bin))
+    # Le binaire que l'EXÉCUTANT lancera pour CE modèle (model.toml server_bin, sinon le
+    # global) : détection matérielle, sonde et build tracé portent sur lui.
+    probe_bin = topo_mod.model_server_bin(mt, str(server_bin))
+    hw = detect_hardware(probe_bin)
     # Le binaire fait foi (`--list-devices`) : un build statique n'a aucune DLL à côté.
-    gpu_backend = bench_mod.gpu_backend_available(hw, server_bin)
+    gpu_backend = bench_mod.gpu_backend_available(hw, probe_bin)
     over = raw.get("override") or {}
     server_cfg = raw.get("server") or {}
     headroom = int(server_cfg.get("gpu_kv_headroom_mb", 640) or 640)
@@ -223,8 +226,10 @@ def _run_calibration(S, spec, progress):
     budget = topo_mod.memory_budget_mb(topo, vram, ram, headroom, uma=uma)
     mmproj = mt.get("mmproj_filename")
     probe = topo_mod.ServerProbe(
-        server_bin=str(server_bin),
+        server_bin=probe_bin,
         model_path=str(gguf),
+        # Slots de l'exécutant : [server] n_parallel global (l'isolation peut monter à 2).
+        n_parallel=topo_mod.probe_slots(server_cfg, None),
         threads=threads,
         ngl=ngl,
         topology=topo,
@@ -256,7 +261,7 @@ def _run_calibration(S, spec, progress):
         if meta.get("recurrent"):
             iso_detail += ", mémoire récurrente"
         if isolation:
-            probe.n_parallel = 2
+            probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
     except Exception:  # noqa: BLE001 - sonde best-effort : la calibration vaut sans verdict
         pass
     # Placement MESURÉ x couples de batchs, avant la calibration, faisabilité estimée au
@@ -357,7 +362,7 @@ def _run_calibration(S, spec, progress):
     try:
         from loom.setup.llama_release import verify_binary
 
-        calib["build"] = verify_binary(str(server_bin)) or "build ?"
+        calib["build"] = verify_binary(probe_bin) or "build ?"
     except Exception:  # noqa: BLE001 - best-effort
         calib["build"] = "build ?"
     calib["ctx_utile"] = ctx_utile

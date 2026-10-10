@@ -468,6 +468,116 @@ def test_step_bench_build_statique_sans_dll_garde_le_gpu(monkeypatch, tmp_path):
     assert local["bench"]["placement"] in ("gpu_total", "experts_cpu")
 
 
+def test_step_bench_binaire_du_modele_et_slots_globaux(monkeypatch, tmp_path):
+    """Revue 2026-10-10 : un modèle qui porte son propre `server_bin` (build qui porte une
+    PR) doit être sondé AVEC ce binaire — détection matérielle comprise — et la sonde
+    doit partir des slots globaux ([server] n_parallel), comme l'exécutant."""
+    from dataclasses import dataclass as _dc
+
+    from loom.runtime.hardware import HardwareProfile
+    from loom.setup import cli
+    from tests.test_setup_cli import _console, _deps, _patch_paths
+
+    _patch_paths(monkeypatch, tmp_path)
+    exe = tmp_path / "rt" / "llama-server.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"")
+    autre = tmp_path / "autre" / "llama-server.exe"
+    autre.parent.mkdir()
+    autre.write_bytes(b"")
+    (tmp_path / "config" / "local.toml").write_text(
+        f'[server]\nbin = "{str(exe).replace(chr(92), "/")}"\nn_parallel = 3\n',
+        encoding="utf-8",
+    )
+    mdir = tmp_path / "models" / "local" / "text" / "m1"
+    mdir.mkdir(parents=True)
+    (mdir / "model.toml").write_text(
+        'repo = "o/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 8000\n'
+        f'server_bin = "{str(autre).replace(chr(92), "/")}"\n',
+        encoding="utf-8",
+    )
+    (mdir / "m.gguf").write_bytes(b"x")
+    monkeypatch.setattr(cli, "read_gguf_meta", lambda p: {"n_layers": 40})
+    rows = [
+        {"threads": 8, "ngl": 999, "kind": "tg", "ts": 14.0},
+        {"threads": 8, "ngl": 999, "kind": "pp", "ts": 250.0},
+    ]
+    sondes: list = []
+    detectes: list = []
+
+    @_dc
+    class FakeProbe:
+        server_bin: str
+        model_path: str
+        threads: int
+        ngl: int
+        topology: str
+        mmproj_path: object = None
+        cpu_moe: bool = False
+        n_cpu_moe: object = None
+        n_parallel: int = 1
+        ubatch: object = None
+        batch: object = None
+        checkpoint_min_step: object = None
+        ctx_checkpoints: object = None
+        profile: object = None
+
+        def __post_init__(self):
+            sondes.append(self)
+
+        def probe_isolation(self, ctx=4096):
+            return 600, 4
+
+        def verify_cache(self, ctx=4096):
+            return {
+                "first": 600,
+                "back": 4,
+                "annex_slot": 0,
+                "slots": self.n_parallel,
+                "reused": True,
+            }
+
+        def run(self, ctx, depth):
+            r = ProbeResult(ctx=ctx, mem_mb=int(1000 + ctx * 0.01))
+            if depth:
+                r.tg_ts, r.pp_ts = 14.0, 250.0
+            return r
+
+    def fake_detect(server_bin=None):
+        detectes.append(str(server_bin))
+        return HardwareProfile(
+            True,
+            "GPU",
+            20_000,
+            16,
+            vram_total_mb=24_000,
+            backend="CUDA",
+            vram_is_discrete=True,
+        )
+
+    con, _printed = _console(assume_yes=True)
+    deps = _deps(
+        tmp_path,
+        run_bench=lambda b, m, t, g, n_cpu_moe=0, progress=None: rows,
+        find_llama_bench=lambda sb: sb.parent / "llama-bench.exe",
+        has_gpu_backend=lambda sb: True,
+        cpu_physical=lambda: 8,
+        gpu_vram_total_mb=lambda: 24_000,
+        ram_total_mb=lambda: 64_000,
+        make_probe=FakeProbe,
+        detect_hardware=fake_detect,
+    )
+    assert cli.run(con, deps) == 0
+    assert sondes and sondes[0].server_bin.replace("\\", "/").endswith(
+        "autre/llama-server.exe"
+    )
+    assert any(
+        d.replace("\\", "/").endswith("autre/llama-server.exe") for d in detectes
+    )
+    # Slots globaux : 3 d'emblée, inchangés par une isolation non nécessaire.
+    assert sondes[0].n_parallel == 3
+
+
 # ---- câblage /rebench : helper de mesure ------------------------------------------------
 
 
