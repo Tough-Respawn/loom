@@ -34,6 +34,12 @@ _SCALAR = {
 }
 # Au-delà, un tableau est un vocabulaire ou une table de signes : traversé, pas gardé.
 _ARRAY_KEEP_MAX = 4096
+# Bornes de gguf.cpp (GGUF_MAX_STRING_LENGTH, GGUF_MAX_ARRAY_ELEMENTS, GGML_MAX_DIMS) :
+# au-delà, l'en-tête est corrompu — llama-server le rejette aussi. Sans elles, une
+# longueur de 2^62 faisait lever MemoryError/OverflowError, que personne n'attrape.
+_MAX_CHAINE = 1024 * 1024 * 1024
+_MAX_ELEMENTS = 1024 * 1024 * 1024
+_MAX_DIMS = 4
 _DEFAULT_ALIGNMENT = 32
 # Tenseurs d'une couche à mémoire récurrente (Mamba/GDN `ssm_*`, RWKV `time_mix*`,
 # LFM2 `shortconv*`).
@@ -48,6 +54,8 @@ class TypeGGUFInconnu(ValueError):
 
 def _read_string(f) -> str:
     (n,) = struct.unpack("<Q", f.read(8))
+    if n > _MAX_CHAINE:
+        raise ValueError(f"chaîne GGUF de {n} octets : en-tête corrompu")
     return f.read(n).decode("utf-8", errors="replace")
 
 
@@ -57,6 +65,8 @@ def _read_value(f, vtype: int, keep_arrays: bool = False):
     if vtype == 9:
         (itype,) = struct.unpack("<I", f.read(4))
         (count,) = struct.unpack("<Q", f.read(8))
+        if count > _MAX_ELEMENTS:
+            raise ValueError(f"tableau GGUF de {count} éléments : en-tête corrompu")
         keep = keep_arrays and count <= _ARRAY_KEEP_MAX
         vals = []
         # Traverser les tableaux garde le curseur aligné sur les clés suivantes.
@@ -79,6 +89,8 @@ def _read_tensor_infos(f, count: int) -> list[tuple[str, int, int]]:
     for _ in range(count):
         name = _read_string(f)
         (n_dims,) = struct.unpack("<I", f.read(4))
+        if n_dims > _MAX_DIMS:
+            raise ValueError(f"tenseur GGUF à {n_dims} dimensions : en-tête corrompu")
         f.read(8 * n_dims)
         (ty,) = struct.unpack("<I", f.read(4))
         (off,) = struct.unpack("<Q", f.read(8))
@@ -214,8 +226,12 @@ def read_gguf_meta(path: str | Path) -> dict:
             align = int(kv.get("general.alignment") or _DEFAULT_ALIGNMENT)
             data_start = -(-f.tell() // align) * align
             file_size = os.fstat(f.fileno()).st_size
-    except struct.error as exc:  # header tronqué/corrompu = pas un GGUF valide
-        raise ValueError(f"header GGUF tronqué ou corrompu ({exc})") from exc
+    except (struct.error, MemoryError, OverflowError) as exc:
+        # Header tronqué/corrompu = pas un GGUF valide (une longueur sous les bornes mais
+        # au-delà du fichier peut encore tenter une allocation démesurée).
+        raise ValueError(
+            f"header GGUF tronqué ou corrompu ({type(exc).__name__}: {exc})"
+        ) from exc
 
     arch = kv.get("general.architecture")
 

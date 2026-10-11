@@ -807,9 +807,15 @@ def lire_mmproj(path) -> dict:
     from loom.runtime.gguf_meta import TypeGGUFInconnu, read_gguf_meta
 
     p = Path(path)
-    echec = "llama-server échouerait au chargement (--mmproj)"
+    echec = "la sonde passerait --mmproj et llama-server échouerait au chargement"
     if not p.is_file():
-        return {"mb": 0, "bloquant": f"mmproj absent ({p.name}) : {echec}"}
+        # Portée dite : c'est la SONDE qui échouerait — loom serve, lui, télécharge le
+        # mmproj manquant avant de lancer llama-server (serve.ensure_all_models).
+        return {
+            "mb": 0,
+            "bloquant": f"mmproj absent ({p.name}) : {echec} — à télécharger d'abord "
+            "(loom serve le récupère au démarrage)",
+        }
     try:
         w = read_gguf_meta(p).get("weights") or {}
     except TypeGGUFInconnu:

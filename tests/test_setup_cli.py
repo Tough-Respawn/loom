@@ -968,6 +968,48 @@ def test_precontrole_gguf_a_l_en_tete_rejete_aucun_processus(monkeypatch, tmp_pa
     assert arch["precontrole"]["etabli"] is True
 
 
+def test_precontrole_type_gguf_inconnu_reste_incertain(monkeypatch, tmp_path):
+    """Fige la nuance du lot L12 : un type de valeur inconnu du LECTEUR (fichier plus
+    récent que lui) n'est pas un en-tête rejeté — « incertain », flux inchangé,
+    llama-bench tourne ; jamais « GGUF illisible »."""
+    import struct
+
+    appels: list = []
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        hw=_gpu(6144, 20_000),
+        run_bench=_bench_espion(appels),
+    )
+    blob = b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", 0, 1)
+    blob += struct.pack("<Q", 3) + b"cle" + struct.pack("<I", 99)  # type 99 inconnu
+    (mdir / "m.gguf").write_bytes(blob)
+    run(con, deps)
+    out = "\n".join(printed)
+    assert "précontrôle incertain" in out and "GGUF illisible" not in out
+    assert appels  # llama-bench a tourné
+
+
+def test_llama_bench_note_dite_quand_la_liste_reste_inchangee(monkeypatch, tmp_path):
+    """Fige la règle d'affichage du lot L10 : liste laissée telle quelle faute de
+    capacité modélisée (deux GPU listés) alors qu'elle charge le GPU — la note est
+    dite (elle restait cachée avant L10)."""
+    appels: list = []
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        hw=_gpu(6144, 20_000, count=2),
+        meta=_meta_complete(),
+        run_bench=_bench_espion(appels),
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert appels and 99 in appels[0]["ngl"]  # non filtrée
+    assert "llama-bench : capacité VRAM inconnue ou non modélisée" in out
+
+
 def test_precontrole_mmproj_absent_aucun_processus(monkeypatch, tmp_path):
     """Un mmproj annoncé par le model.toml mais absent (téléchargement interrompu : il
     est récupéré en dernier) comptait pour 0 Mo — or la sonde passe --mmproj et

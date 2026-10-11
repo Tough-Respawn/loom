@@ -91,3 +91,28 @@ def test_gguf_tronque_leve_valueerror(tmp_path):
     p.write_bytes(b"GGUFxxxx")
     with pytest.raises(ValueError):
         read_gguf_meta(p)
+
+
+def test_longueurs_aberrantes_levent_valueerror(tmp_path):
+    """Vérification adverse : une longueur de chaîne de 2^62 (en-tête corrompu) faisait
+    lever MemoryError/OverflowError, qu'aucun appelant n'attrape — loom-setup mourait
+    sans verdict. Comme gguf.cpp (chaînes et tableaux bornés à 1 Gi, n_dims à 4) :
+    ValueError, donc « GGUF illisible », impossibilité établie."""
+    import struct
+
+    entete = b"GGUF" + struct.pack("<I", 3)
+    p = tmp_path / "chaine.gguf"
+    p.write_bytes(entete + struct.pack("<QQ", 0, 1) + struct.pack("<Q", 1 << 62))
+    with pytest.raises(ValueError):
+        read_gguf_meta(p)
+    p = tmp_path / "dims.gguf"
+    tenseur = struct.pack("<Q", 1) + b"t" + struct.pack("<I", 99)  # 99 dimensions
+    p.write_bytes(entete + struct.pack("<QQ", 1, 0) + tenseur + b"\0" * 64)
+    with pytest.raises(ValueError):
+        read_gguf_meta(p)
+    p = tmp_path / "tableau.gguf"
+    kv = struct.pack("<Q", 3) + b"cle" + struct.pack("<I", 9)  # tableau
+    kv += struct.pack("<I", 4) + struct.pack("<Q", 1 << 40)  # 2^40 éléments u32
+    p.write_bytes(entete + struct.pack("<QQ", 0, 1) + kv)
+    with pytest.raises(ValueError):
+        read_gguf_meta(p)

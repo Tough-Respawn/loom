@@ -384,6 +384,9 @@ def test_mmproj_absent_ou_rejete_bloquant_type_inconnu_incertain(tmp_path):
 
     absent = lire_mmproj(tmp_path / "mmproj.gguf")
     assert absent["bloquant"] and "absent" in absent["bloquant"]
+    # Honnête sur la portée : c'est la SONDE qui échouerait ; loom serve, lui, télécharge
+    # le mmproj manquant avant de lancer llama-server (serve.ensure_all_models).
+    assert "sonde" in absent["bloquant"] and "loom serve" in absent["bloquant"]
     (tmp_path / "html.gguf").write_bytes(b"<html>404</html>")
     rejete = lire_mmproj(tmp_path / "html.gguf")
     assert rejete["bloquant"] and "pas un fichier GGUF" in rejete["bloquant"]
@@ -594,6 +597,15 @@ def test_isolation_checkpoints_bornes_par_le_ctx_checkpoints_du_modele():
     assert _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000)["prevu_tient"] is False
     d = _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000, ctx_checkpoints=0)
     assert d["prevu_tient"] is True and d["lancer"] is True
+
+
+def test_isolation_trois_listes_de_checkpoints_figees():
+    """Fige le facteur central du lot L13 (vérification adverse : ISOLATION_LISTES = 1
+    gardait la suite verte). Hybride, 8 Go + 4 300 Mo (1 228 de budget hôte),
+    ctx_checkpoints = 2 : 3 listes x 2 x 150 + 2 états ~ 1 565 Mo, ne tient pas — une
+    seule liste (~966) tiendrait, et la sonde partirait sur un pic qui déborde."""
+    d = _iso(_hybride(), NVIDIA_8G, PREVU_GPU, ram=4300, ctx_checkpoints=2)
+    assert d["prevu_tient"] is False
 
 
 def test_isolation_compte_les_copies_du_cache_de_prompts():
