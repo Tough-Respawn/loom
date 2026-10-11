@@ -146,6 +146,13 @@ def finalize_model_toml(model_dir: str | Path, gguf_path: str | Path) -> dict:
     if meta.get("n_layers"):
         doc["n_layers"] = meta["n_layers"]
     if meta.get("expert_count"):
+        # Défaut SÛR (tient toujours si les denses tiennent), mais NON mesuré : la
+        # sonde de placement (loom-setup, /rebench) compare experts-CPU et tout-GPU
+        # et peut l'inverser (Ornith 2026-10-09 : tout-GPU +19 % de génération).
+        doc.add(
+            tomlkit.comment("placement NON mesuré : experts en RAM par défaut (sûr)")
+        )
+        doc.add(tomlkit.comment("— /rebench compare avec tout-GPU et écrit l'élu."))
         doc["cpu_moe"] = True
     if meta.get("recurrent") and "cache_isolation" not in doc:
         # Deux slots d'emblée : sans ça reflect/titre écrasent la conversation, et

@@ -140,6 +140,8 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             from loom.setup.cli import (
                 _set_model_cache_isolation,
                 _set_model_context,
+                _set_model_placement,
+                _set_model_threads,
                 _set_model_ubatch,
             )
 
@@ -158,6 +160,44 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                     gguf, a["ubatch"], a["batch"], a.get("ubatch_detail", "")
                 )
                 applied += f" + ubatch={a['ubatch']}/batch={a['batch']}"
+            if a.get("placement"):
+                import datetime as _dt
+
+                from loom.setup.placement import Placement
+
+                pl = a["placement"]
+                _set_model_placement(
+                    gguf,
+                    Placement(
+                        pl["label"],
+                        int(pl["ngl"]),
+                        cpu_moe=bool(pl.get("cpu_moe")),
+                        n_cpu_moe=pl.get("n_cpu_moe"),
+                    ),
+                    f"{_dt.date.today().isoformat()} (/rebench, "
+                    f"{pl.get('build') or 'build ?'}) — {pl.get('mecanisme', '')}",
+                )
+                applied += f" + placement={pl['label']}"
+            if a.get("threads"):
+                _set_model_threads(gguf, int(a["threads"]), a.get("threads_detail", ""))
+                applied += f" + threads={a['threads']}"
+            note_ok = True
+            if a.get("archive"):
+                # Archive durable du bench : noter ce qui vient d'être appliqué. Un
+                # échec d'annotation est DIT : appliqué, mais sans trace.
+                from loom.setup.archive import note_application
+
+                pl_a = a.get("placement") or {}
+                note_ok = note_application(
+                    a["archive"],
+                    {
+                        "context": a["context"],
+                        "isolation": a.get("isolation"),
+                        "ubatch": a.get("ubatch"),
+                        "batch": a.get("batch"),
+                        "placement": pl_a.get("key") or pl_a.get("label"),
+                    },
+                )
             spec["context"] = a["context"]
             S.model_contexts[a["id"]] = a["context"]
             _regen_swap_yaml(S)
@@ -165,6 +205,11 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
                 f"\n✅ {applied} écrit dans le model.toml de "
                 f"« {a['id']} » — effet au prochain chargement du modèle."
             )
+            if not note_ok:
+                extra_reply += (
+                    "\n⚠ configuration appliquée, annotation de l'archive échouée "
+                    f"({a.get('archive')})."
+                )
     elif res.action and res.action["kind"] == "upsert_remote":
         rec = {k: v for k, v in res.action["record"].items() if v is not None}
         roots = _models_roots(S)

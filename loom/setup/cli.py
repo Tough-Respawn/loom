@@ -29,7 +29,7 @@ from loom.runtime.model_install import (
     start_download,
     write_model_toml,
 )
-from loom.runtime.gguf_meta import read_gguf_meta
+from loom.runtime.gguf_meta import TypeGGUFInconnu, read_gguf_meta
 from loom.runtime.hf_catalog import HfCatalogError
 from loom.runtime.platform_info import detect as detect_platform
 from loom.runtime.term import colorize, supports_color
@@ -232,8 +232,11 @@ class Deps:
     sleep: object = time.sleep
     gpu_vram_total_mb: object = topo_mod.gpu_vram_total_mb
     make_probe: object = topo_mod.ServerProbe  # (**kw) -> objet avec .run(ctx, depth)
+    ram_total_mb: object = None  # () -> int (RAM totale, Mo) ; défaut psutil
 
     def __post_init__(self):
+        if self.ram_total_mb is None:
+            self.ram_total_mb = _real_ram_total_mb
         if self.fetch_release is None:
             self.fetch_release = _real_fetch_release
         if self.fetch_swap_release is None:
@@ -246,6 +249,12 @@ class Deps:
             self.search_models = search_models
         if self.cpu_physical is None:
             self.cpu_physical = _real_cpu_physical
+
+
+def _real_ram_total_mb() -> int:
+    import psutil
+
+    return int(psutil.virtual_memory().total // (1024 * 1024))
 
 
 def _real_fetch_release() -> dict:
@@ -795,6 +804,30 @@ def _set_model_context(gguf_path: Path, context: int, mecanisme: str) -> None:
     atomic_write_text(p, "\n".join(lines) + "\n")
 
 
+def _set_model_threads(gguf_path: Path, threads: int, detail: str) -> None:
+    """Écrit les threads MESURÉS sur le placement élu dans le model.toml (option « par
+    modèle » : prioritaires sur [override] threads de la machine). Remplace la ligne
+    `threads =` existante ou l'ajoute, un seul tampon, le reste du fichier intact."""
+    p = Path(gguf_path).parent / "model.toml"
+    if not p.is_file():
+        return
+    lines = p.read_text(encoding="utf-8").splitlines()
+    stamp = f"# threads élus par la sonde (placement élu) — {detail}"
+    new_line = f"threads = {int(threads)}"
+    for i, line in enumerate(lines):
+        code = line.split("#")[0].strip().replace(" ", "")
+        if code.startswith("threads="):
+            lines[i] = new_line
+            if i == 0 or not lines[i - 1].strip().startswith("# threads élus"):
+                lines.insert(i, stamp)
+            else:
+                lines[i - 1] = stamp
+            break
+    else:
+        lines += ["", stamp, new_line]
+    atomic_write_text(p, "\n".join(lines) + "\n")
+
+
 def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> None:
     """Écrit le verdict MESURÉ de la sonde d'isolation dans le model.toml (vérité
     par modèle) : true = le cache ne survit pas à la pollution du slot -> serve
@@ -818,6 +851,99 @@ def _set_model_cache_isolation(gguf_path: Path, needed: bool, detail: str) -> No
     else:
         lines += ["", stamp, new_line]
     atomic_write_text(p, "\n".join(lines) + "\n")
+
+
+def _archive_setup(
+    con, trace: dict, *, echec: dict | None = None, applied: dict | None = None
+):
+    """Archive le compte rendu progressif d'un bench loom-setup (archive.bench_payload),
+    en échec (étape + erreur) comme en succès (+ application notée). Un échec d'écriture
+    est DIT, jamais silencieux, et n'empêche rien."""
+    from loom.setup import archive as archive_mod
+
+    model_id = Path(str(trace.get("gguf") or "modele")).parent.name or "modele"
+    try:
+        path = archive_mod.archive_bench(
+            model_id, archive_mod.bench_payload(**trace, echec=echec)
+        )
+        con.say(f"  archive : {path}")
+        if applied is not None and not archive_mod.note_application(path, applied):
+            con.say(
+                "  [attention] configuration appliquée, annotation de l'archive échouée."
+            )
+    except Exception as exc:  # noqa: BLE001 - l'archive n'empêche jamais le bench
+        con.say(f"  [attention] archive du bench non écrite ({exc}).")
+
+
+def _sans_none(obj):
+    """Copie récursive sans valeurs None : TOML n'a pas de null, tomlkit refuse."""
+    if isinstance(obj, dict):
+        return {k: _sans_none(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_sans_none(v) for v in obj if v is not None]
+    return obj
+
+
+def _set_model_placement(gguf_path: Path, placement, detail: str) -> None:
+    """Écrit le placement MESURÉ des poids (loom.setup.placement) dans le model.toml :
+    `cpu_moe`, `n_cpu_moe` et `n_gpu_layers` posés ou RETIRÉS selon le candidat élu
+    (tout GPU -> n_gpu_layers = 999 explicite, pour ne pas dépendre de la VRAM libre
+    au lancement ; CPU seul -> 0 ; experts partiels -> n_cpu_moe). Un seul tampon,
+    remplacé à chaque mesure ; le reste du fichier est intact."""
+    p = Path(gguf_path).parent / "model.toml"
+    if not p.is_file():
+        return
+    wanted: dict[str, str | None] = {
+        "cpu_moe": "true" if placement.cpu_moe else "false",
+        "n_cpu_moe": (
+            str(placement.n_cpu_moe) if placement.n_cpu_moe is not None else None
+        ),
+        # Partiel dense : le -ngl EXACT validé, pas une recommandation recalculée au
+        # lancement sur la VRAM libre du moment.
+        "n_gpu_layers": {
+            "gpu_total": "999",
+            "cpu": "0",
+            "gpu_partiel": str(placement.ngl),
+        }.get(placement.label),
+    }
+    # Identité du placement seul : les batchs ont leur propre tampon (ubatch/batch).
+    key = str(getattr(placement, "key", placement.label)).split("@")[0]
+    stamp = f"# placement élu par la sonde — {key} : {detail}"
+    out: list[str] = []
+    done: set[str] = set()
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("# placement élu par la sonde"):
+            continue  # ancien tampon : réécrit ci-dessous
+        code = line.split("#")[0].strip().replace(" ", "")
+        key = next((k for k in wanted if code.startswith(f"{k}=")), None)
+        if key is None:
+            out.append(line)
+            continue
+        val = wanted[key]
+        if val is None or key in done:
+            continue  # clé retirée pour ce placement (ou doublon)
+        out.append(f"{key} = {val}")
+        done.add(key)
+    missing = [
+        f"{k} = {v}" for k, v in wanted.items() if v is not None and k not in done
+    ]
+    first = next(
+        (
+            i
+            for i, line in enumerate(out)
+            if any(
+                line.split("#")[0].strip().replace(" ", "").startswith(f"{k}=")
+                for k in done
+            )
+        ),
+        None,
+    )
+    if first is None:
+        out += ["", stamp, *missing]
+    else:
+        out[first + 1 : first + 1] = missing
+        out.insert(first, stamp)
+    atomic_write_text(p, "\n".join(out) + "\n")
 
 
 def _set_model_ubatch(gguf_path: Path, ubatch: int, batch: int, detail: str) -> None:
@@ -893,22 +1019,205 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     import os
 
     # Le binaire et les métadonnées GGUF dimensionnent les candidats d'offload.
-    hw = deps.detect_hardware(server_bin)
+    # Le binaire que l'EXÉCUTANT lancera pour CE modèle (model.toml server_bin — un build
+    # qui porte une PR —, sinon le global) porte la détection matérielle, la sonde et le
+    # build tracé. llama-bench, lui, reste celui livré à côté du binaire global.
+    model_toml = _read_model_toml(gguf_path)
+    probe_bin = topo_mod.model_server_bin(model_toml, str(server_bin))
+    hw = deps.detect_hardware(probe_bin)
+    illisible = None
     try:
         meta = read_gguf_meta(gguf_path)
-    except ValueError:
+    except TypeGGUFInconnu:
+        # Fichier plus récent que le lecteur, pas invalide : métadonnées inconnues, le
+        # précontrôle le dira « incertain » et le serveur tranchera.
         meta = {}
+    except ValueError as exc:
+        # En-tête rejeté (pas un GGUF, version < 2, tronqué) : llama-server le
+        # refuserait aussi — arrêt au précontrôle, avant tout processus.
+        meta = {}
+        illisible = f"GGUF illisible ({exc}) : llama-server le refuserait aussi"
 
     threads = bench_mod.thread_candidates(os.cpu_count() or 4, deps.cpu_physical())
+    # GPU exploitable : le profil `--list-devices` du binaire fait foi (un build statique
+    # n'a aucune DLL à côté de l'exe), cf. bench.gpu_backend_available.
+    gpu_ok = bench_mod.gpu_backend_available(
+        hw, probe_bin, has_dll=deps.has_gpu_backend
+    )
     # Pour un MoE, mesurer l'offload réel avec experts en RAM plutôt qu'un impossible tout-GPU.
     moe = bool(meta.get("expert_count"))
     ngl, ncmoe = bench_mod.ngl_candidates(
-        deps.has_gpu_backend(server_bin) and hw.has_gpu,
+        gpu_ok,
         hw.vram_free_mb,
         model_size_mb,
         meta.get("n_layers"),
         moe=moe,
     )
+    from dataclasses import replace as _dc_replace
+
+    from loom.runtime.model_profile import ModelProfile
+    from loom.setup import placement as place_mod
+
+    # Entrées PURES du précontrôle et du contrôle d'étape 2, calculées AVANT tout
+    # chargement (revue n°16). La VRAM vient d'abord du profil de l'exécutant
+    # (`--list-devices`, Vulkan compris) ; nvidia-smi n'est qu'un repli — sinon une AMD
+    # passe en topologie « ram » et la sonde mesure sans profil GPU (vécu 2026-10-09).
+    vram_total = int(hw.vram_total_mb or deps.gpu_vram_total_mb() or 0)
+    topo = topo_mod.discover_topology(meta, gpu_ok, vram_total)
+    server_cfg = raw_cfg.get("server") or {}
+    headroom = int(server_cfg.get("gpu_kv_headroom_mb", 640) or 640)
+    # Utiliser la RAM totale rend la recommandation reproductible. Mémoire unifiée :
+    # le device est la RAM, comptée une fois (même quantité que la sonde mesure).
+    ram_total_mb = int(deps.ram_total_mb())
+    uma = bool(hw.has_gpu and not hw.vram_is_discrete)
+    budget = topo_mod.memory_budget_mb(
+        topo, vram_total, ram_total_mb, headroom, uma=uma
+    )
+    is_moe = bool(meta.get("expert_count"))
+    mmproj_name = model_toml.get("mmproj_filename")
+    profile = ModelProfile.from_meta(meta, model_size_mb=model_size_mb)
+    # Compte rendu PROGRESSIF (archive.BENCH_SCHEMA), créé AVANT tout chargement :
+    # une sortie de précontrôle ou un échec de llama-bench s'archivent aussi.
+    trace: dict = {
+        "source": "loom-setup",
+        "etape": "précontrôle",
+        "gguf": str(gguf_path),
+        "server_bin": probe_bin,
+        "materiel": hw,
+        "llama_bench": None,
+        "profil": profile.describe(),
+    }
+    # Fichiers que llama-server refuserait (GGUF à l'en-tête rejeté, mmproj absent ou
+    # rejeté) : impossibilité établie, arrêt avant tout processus — comme /rebench.
+    mm = (
+        place_mod.lire_mmproj(gguf_path.parent / mmproj_name)
+        if mmproj_name
+        else {"mb": 0, "bloquant": None}
+    )
+    bloquant = illisible or mm["bloquant"]
+    if bloquant:
+        trace["precontrole"] = {
+            "verdict": "impossible",
+            "etabli": True,
+            "complet": False,
+            "raison": bloquant,
+        }
+        con.say(
+            f"  [échec] précontrôle : {bloquant} — aucun processus modèle lancé, "
+            "configuration inchangée."
+        )
+        report.add("bench", "echec", bloquant)
+        _archive_setup(con, trace, echec={"etape": "précontrôle", "erreur": bloquant})
+        return
+    # PRÉCONTRÔLE (revue n°16, étape 1) : les démarrages serveur tiennent-ils, au
+    # plancher, AVANT llama-bench et la sonde d'isolation ? Même comptabilité que le
+    # contrôle d'étape 2 (mêmes VRAM, RAM, UMA, checkpoints) ; métadonnées incomplètes :
+    # « incertain », flux inchangé.
+    pc = place_mod.precontrole(
+        profile,
+        meta,
+        model_size_mb=model_size_mb,
+        hw=hw,
+        gpu_backend=gpu_ok,
+        vram_total_mb=vram_total,
+        ram_total_mb=ram_total_mb,
+        uma=not hw.vram_is_discrete,
+        headroom_mb=headroom,
+        base_slots=topo_mod.probe_slots(server_cfg, False),
+        ctx_checkpoints=model_toml.get("ctx_checkpoints"),
+        current=place_mod.current_placement(
+            model_toml,
+            n_layers=meta.get("n_layers"),
+            size_mb=model_size_mb,
+            profile=hw,
+            override_ngl=(raw_cfg.get("override") or {}).get("n_gpu_layers"),
+            headroom=headroom,
+        ),
+        mmproj_mb=mm["mb"],
+    )
+    trace["precontrole"] = pc
+    pc_texte = place_mod.precontrole_texte(pc)
+    if pc["verdict"] in ("impossible", "hors_budget"):
+        con.say(
+            f"  [échec] {pc_texte} — aucun processus modèle lancé, configuration "
+            "inchangée."
+        )
+        report.add("bench", "echec", pc["raison"])
+        _archive_setup(
+            con, trace, echec={"etape": "précontrôle", "erreur": pc["raison"]}
+        )
+        return
+    douteux = pc["verdict"] == "incertain" or pc.get("capacite_connue") is False
+    con.say(f"  [{'attention' if douteux else 'ok'}] {pc_texte}")
+    # llama-bench : un seul -ngl qui échoue fait échouer toute l'invocation — ceux qui
+    # ne tiennent pas (device et RAM, budgets du précontrôle) sont retirés (données
+    # complètes). llama-bench vient du build GLOBAL : jugé avec le matériel de CE build
+    # (--list-devices, sans modèle), pas celui de la sonde quand model.toml fixe un
+    # server_bin — un build sans GPU n'offloade rien (vérification adverse de L21).
+    hw_bench = (
+        hw if probe_bin == str(server_bin) else deps.detect_hardware(str(server_bin))
+    )
+    vram_bench = (
+        vram_total
+        if hw_bench is hw
+        else int(hw_bench.vram_total_mb or deps.gpu_vram_total_mb() or 0)
+    )
+    filtre = place_mod.filtre_llama_bench(
+        profile,
+        ngl=ngl,
+        ncmoe=ncmoe,
+        # Le MODÈLE seul : llama-bench ne charge jamais le mmproj.
+        complet=pc.get("complet_modele", pc["complet"]),
+        hw=hw_bench,
+        vram_total_mb=vram_bench,
+        ram_total_mb=ram_total_mb,
+        uma=not hw_bench.vram_is_discrete,
+        headroom_mb=headroom,
+        # Replis vérifiés : les candidats du plan au plancher, dans l'ordre.
+        replis=(pc.get("plan_plancher") or {}).get("flags"),
+        # Build global sans GPU alors que la sonde en a un : le dire, avec le remède.
+        sans_gpu=(
+            f"le build global de llama-bench ({server_bin}) ne liste aucun GPU — tout "
+            "y est en RAM ; installe un build GPU en [server] bin ou retire server_bin "
+            "du model.toml"
+            if hw_bench is not hw and hw.has_gpu
+            else "sans GPU : tout en RAM"
+        ),
+    )
+    pc["llama_bench"] = filtre
+    if hw_bench is not hw:
+        trace["materiel_llama_bench"] = hw_bench  # le matériel qui a jugé llama-bench
+    for retire in filtre["retires"]:
+        con.say(
+            f"  [attention] llama-bench : -ngl {retire['ngl']} retiré — "
+            f"{retire['raison']}."
+        )
+    # Note dite dès que llama-bench chargerait quelque chose sur le GPU (liste filtrée,
+    # ou laissée telle quelle faute de capacité ou de métadonnées) — jamais vide.
+    if filtre["note"] and (
+        filtre["retires"] or filtre["ngl"] != ngl or any(int(g) != 0 for g in ngl)
+    ):
+        con.say(f"  [attention] llama-bench : {filtre['note']}.")
+    if not filtre["ngl"]:
+        # Aucune configuration ne tient (device et RAM) : llama-bench n'est pas lancé —
+        # un chargement condamné ferait échouer toute l'invocation (revue n°17).
+        con.say(f"  [échec] llama-bench : {filtre['note']} — configuration inchangée.")
+        report.add("bench", "echec", filtre["note"])
+        _archive_setup(
+            con, trace, echec={"etape": "llama-bench", "erreur": filtre["note"]}
+        )
+        return
+    # Le choix du -ngl par llama-bench vaut sur la liste d'ORIGINE : un -ngl retiré
+    # parce qu'il ne tient pas est écarté, pas « non comparé » — mais seulement si une
+    # configuration GPU a VRAIMENT été mesurée : -ngl 0 resté seul n'est pas un choix,
+    # et l'écrire forcerait en CPU tous les modèles de la machine (vérification adverse).
+    ngl_decide = (
+        len(ngl) > 1
+        and not moe
+        and bool(getattr(hw_bench, "has_gpu", False))
+        and any(int(g) > 0 for g in filtre["ngl"])
+    )
+    ngl, ncmoe = filtre["ngl"], filtre["ncmoe"]
     combos = len(threads) * len(ngl)
     con.say(
         f"  On mesure la vitesse réelle sur TON modèle ({gguf_path.name}) : "
@@ -921,6 +1230,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         return
 
     con.progress("bench en cours… (llama-bench, plusieurs minutes)")
+    trace["etape"] = "llama-bench"
     try:
         # progress -> chaque mesure terminée s'affiche (ligne \r + chrono) au lieu
         # d'un silence de plusieurs minutes.
@@ -931,66 +1241,395 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         con.progress_end()
         con.say(f"  [échec] {exc}")
         report.add("bench", "echec", str(exc))
+        _archive_setup(con, trace, echec={"etape": "llama-bench", "erreur": str(exc)})
         return
     con.progress_end()
     best = bench_mod.pick_best(rows)
     if best is None:
         con.say("  [échec] Aucune mesure de génération exploitable.")
         report.add("bench", "echec", "sortie llama-bench vide")
+        _archive_setup(
+            con,
+            trace,
+            echec={"etape": "llama-bench", "erreur": "sortie llama-bench vide"},
+        )
         return
+    # -ncmoe de l'invocation (un repli MoE peut en mesurer un autre que n_layers) :
+    # consigné avec la mesure, sinon « -ngl 999 » ne dit plus quelle configuration.
+    best = dict(best, ncmoe=int(ncmoe or 0))
+    trace["llama_bench"] = best
 
-    # Mesurer pente et débit avec les vrais flags évite les erreurs d'une formule KV théorique.
-    import psutil
-
-    vram_total = deps.gpu_vram_total_mb()
-    topo = topo_mod.discover_topology(
-        meta, deps.has_gpu_backend(server_bin), vram_total
+    # Configuration ACTUELLE résolue comme l'exécutant (resolve_ngl) : réglages du
+    # model.toml, sinon l'override machine — celui que ce bench va écrire pour un
+    # dense —, sinon la VRAM libre. C'est la référence (ligne de base) du placement
+    # ET le point de départ de la sonde.
+    override_ngl = (
+        best["ngl"]
+        if ngl_decide
+        else (raw_cfg.get("override") or {}).get("n_gpu_layers")
     )
-    headroom = int((raw_cfg.get("server") or {}).get("gpu_kv_headroom_mb", 640) or 640)
-    # Utiliser la RAM totale rend la recommandation reproductible.
-    ram_total_mb = int(psutil.virtual_memory().total // (1024 * 1024))
-    budget = topo_mod.memory_budget_mb(topo, vram_total, ram_total_mb, headroom)
-    model_toml = _read_model_toml(gguf_path)
-    is_moe = bool(meta.get("expert_count"))
-    mmproj_name = model_toml.get("mmproj_filename")
+    cur_pl = place_mod.current_placement(
+        model_toml,
+        n_layers=meta.get("n_layers"),
+        size_mb=model_size_mb,
+        profile=hw,
+        override_ngl=override_ngl,
+        headroom=headroom,
+    )
     probe = deps.make_probe(
-        server_bin=str(server_bin),
+        server_bin=probe_bin,
         model_path=str(gguf_path),
         threads=best["threads"],
-        # Un MoE sur petit GPU garde l'attention en VRAM et les experts en RAM.
-        ngl=99 if (is_moe and topo != topo_mod.TOPO_RAM) else best["ngl"],
+        # Slots de l'exécutant : [server] n_parallel global monté par l'isolation
+        # ACTUELLE (model.toml) — un nouveau verdict seul la remplacera. Sans ça, une
+        # sonde d'isolation en échec faisait mesurer à 1 slot un modèle qui tourne à 2.
+        n_parallel=topo_mod.probe_slots(
+            server_cfg, bool(model_toml.get("cache_isolation"))
+        ),
+        ngl=(
+            cur_pl.ngl
+            if (cur_pl is not None and topo != topo_mod.TOPO_RAM)
+            else (0 if topo == topo_mod.TOPO_RAM else best["ngl"])
+        ),
         topology=topo,
         mmproj_path=str(gguf_path.parent / mmproj_name) if mmproj_name else None,
         cpu_moe=bool(model_toml.get("cpu_moe", is_moe)),
         n_cpu_moe=model_toml.get("n_cpu_moe"),
+        # Batchs de l'exécutant : modèle, sinon repli machine [server] ubatch/batch.
+        ubatch=topo_mod.probe_batches(model_toml, server_cfg)[0],
+        batch=topo_mod.probe_batches(model_toml, server_cfg)[1],
+        # Checkpoints des hybrides : mesurer la mémoire que l'exécutant prendra.
+        checkpoint_min_step=(
+            model_toml.get("checkpoint_min_step")
+            or server_cfg.get("checkpoint_min_step")
+        ),
+        ctx_checkpoints=model_toml.get("ctx_checkpoints"),
+        # Flags machine et mode de mesure mémoire dérivés du profil de l'exécutant.
+        profile=hw,
     )
-    # Mesurer l'isolation avant la calibration pour inclure le KV du second slot.
-    con.progress("sonde d'isolation du cache (A -> pollution -> A)…")
+    # Isolation D'ABORD : le placement se compare ensuite avec les slots FINAUX — le KV
+    # du second slot compte dans la faisabilité et dans la mesure (« mêmes slots »).
+    # La sonde tourne sur une COPIE à 1 slot (scénario A -> B -> A : à 2 slots, B
+    # partirait sur le slot libre et la pollution n'aurait jamais lieu), avec le
+    # démarrage prévu s'il tient à 4096 x 1, sinon un démarrage plus modeste ; le
+    # verdict pose les slots de la sonde PRINCIPALE (revue n°16).
+    trace["etape"] = "isolation"
+    iso = place_mod.demarrage_isolation(
+        profile,
+        meta,
+        flags={
+            "ngl": probe.ngl,
+            "cpu_moe": probe.cpu_moe,
+            "n_cpu_moe": probe.n_cpu_moe,
+        },
+        complet=pc["complet"],
+        model_size_mb=model_size_mb,
+        gpu_backend=gpu_ok,
+        vram_total_mb=vram_total,
+        ram_total_mb=ram_total_mb,
+        uma=not hw.vram_is_discrete,
+        headroom_mb=headroom,
+        gpu_tuning=bool(hw.has_gpu),
+        ctx_checkpoints=model_toml.get("ctx_checkpoints"),
+        mmproj_mb=int(mm["mb"] or 0),
+    )
     isolation: bool | None = None
     iso_detail = ""
-    try:
-        first, back = probe.probe_isolation()
-        isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
-        iso_detail = f"retour {back}/{first} tokens retraités"
+    first = back = 0
+    slots_mesure = 0
+    if not iso["lancer"]:
         if meta.get("recurrent"):
-            iso_detail += ", mémoire récurrente"
-    except Exception as exc:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
-        con.progress_end()
-        con.say(
-            f"  [attention] sonde d'isolation illisible ({exc}) — verdict non écrit."
-        )
+            # Verdict imposé par la mémoire récurrente (topology.isolation_needed) : la
+            # sonde n'apporterait que l'affichage, pas un chargement condamné.
+            isolation = True
+            probe.n_parallel = topo_mod.probe_slots(server_cfg, True)
+            iso_detail = f"non mesurée — {iso['raison']}"
+            con.say(f"  [ok] isolation imposée, sonde non lancée : {iso['raison']}.")
+        else:
+            iso_detail = (
+                f"sonde non lancée ({iso['raison']}) — isolation actuelle conservée"
+            )
+            con.say(f"  [attention] {iso_detail}.")
     else:
-        con.progress_end()
-        if isolation:
-            probe.n_parallel = 2
+        if iso["modeste"]:
+            con.say(f"  [attention] sonde d'isolation : {iso['raison']}.")
+        sonde_iso = _dc_replace(
+            probe,
+            n_parallel=1,
+            ngl=iso["flags"]["ngl"],
+            cpu_moe=iso["flags"]["cpu_moe"],
+            n_cpu_moe=iso["flags"]["n_cpu_moe"],
+        )
+        slots_mesure = 1
+        con.progress("sonde d'isolation du cache (A -> pollution -> A)…")
+        try:
+            first, back = sonde_iso.probe_isolation()
+            isolation = topo_mod.isolation_needed(first, back, meta.get("recurrent"))
+            iso_detail = f"retour {back}/{first} tokens retraités"
+            if meta.get("recurrent"):
+                iso_detail += ", mémoire récurrente"
+        except Exception as exc:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
+            con.progress_end()
+            iso_detail = f"sonde illisible ({exc}) — isolation actuelle conservée"
             con.say(
-                f"  [attention] cache PERDU après pollution du slot ({iso_detail}) "
-                "-> isolation par 2e slot (--parallel 2 pour ce modèle, KV x2)."
+                f"  [attention] sonde d'isolation illisible ({exc}) — verdict non écrit, "
+                f"isolation actuelle conservée ({probe.n_parallel} slot(s))."
+            )
+        else:
+            con.progress_end()
+            marque = "[attention]" if isolation else "[ok]"
+            # Nouveau verdict : il remplace l'isolation actuelle (dans les deux sens).
+            probe.n_parallel = topo_mod.probe_slots(server_cfg, isolation)
+            # Libellé honnête : ce que la mesure a montré, et pourquoi on isole quand même.
+            con.say(f"  {marque} {topo_mod.isolation_text(isolation, first, back)}")
+    trace["isolation"] = {
+        "necessaire": isolation,
+        "first": first,
+        "back": back,
+        "detail": iso_detail,
+        "avant": bool(model_toml.get("cache_isolation", False)),
+        # Slots de la MESURE (copie à 1 slot) et slots RETENUS pour la suite.
+        "slots_mesure": slots_mesure,
+        "slots_retenus": probe.n_parallel,
+        "demarrage": iso,
+    }
+    # Placement MESURÉ des poids (où vivent denses et experts) x couples de batchs,
+    # AVANT la calibration : elle mesure ainsi la configuration qui servira vraiment.
+    # Cf. loom/setup/placement.py (Ornith, 2026-10-09).
+    # Profil GGUF : couches à cache KV, poids par famille — chaque donnée avec sa
+    # provenance. Le KV est estimé au contexte UTILE avec le type de cache de
+    # l'exécutant (q8_0 sous profil GPU) et les slots FINAUX.
+    profile = ModelProfile.from_meta(meta, model_size_mb=model_size_mb)
+    for ligne in profile.describe():
+        con.say(f"  profil : {ligne}")
+    ctx_utile = place_mod.useful_context(
+        model_toml.get("context"), server_cfg.get("context"), meta.get("context_length")
+    )
+    pl_slots = int(getattr(probe, "n_parallel", 1) or 1)
+    # Mémoire par contexte au-delà des poids : KV au contexte utile + état récurrent
+    # (état vivant + checkpoints par slot) — la faisabilité des hybrides ne dépend plus
+    # de la seule pente mesurée (Bonsai 2 : 32 x 149 Mio par slot).
+    estimation = place_mod.memory_estimate_mb(
+        profile,
+        ctx_utile,
+        gpu_tuning=hw.has_gpu,
+        slots=pl_slots,
+        checkpoints=model_toml.get("ctx_checkpoints"),
+    )
+    # Ventilée : KV + état vivant côté DEVICE, checkpoints côté HÔTE (tableaux RAM du
+    # serveur) — les imputer à la VRAM faisait perdre des candidats tout-GPU.
+    kv_mb = estimation["device_mb"]
+    host_mb = estimation["host_mb"]
+    trace["memoire_estimee"] = estimation
+    if estimation["recurrent_mb"]:
+        con.say(
+            f"  mémoire estimée au contexte {ctx_utile} ({pl_slots} slot(s)) : device "
+            f"{kv_mb} Mio (KV {estimation['kv_mb']} + état vivant "
+            f"{estimation['recurrent_live_mb']}), hôte {host_mb} Mio "
+            f"({estimation['checkpoints']} checkpoints par slot, en RAM)"
+        )
+    # Candidats par faisabilité (profil GGUF), la configuration ACTUELLE en base si elle
+    # tient ; les candidats écartés sont tracés dans les non-explorés, avec leur raison.
+    # Contraintes de prefill optionnelles ([placement] dans local.toml) : explicite
+    # (N tokens en T s) ou plancher de confort.
+    plan = place_mod.plan_placements(
+        moe=is_moe,
+        n_layers=meta.get("n_layers"),
+        model_size_mb=model_size_mb,
+        kv_mb=kv_mb,
+        gpu_backend=gpu_ok,
+        vram_total_mb=vram_total,
+        ram_total_mb=ram_total_mb,
+        uma=not hw.vram_is_discrete,
+        headroom_mb=headroom,
+        current=cur_pl,
+        profile=profile,
+        host_extra_mb=host_mb,
+        # Chaque démarrage charge le mmproj en RAM (--no-mmproj-offload).
+        mmproj_mb=int(mm["mb"] or 0),
+        # KV et état vivant ventilés par couche réellement offloadée.
+        contexte=estimation["contexte"],
+    )
+    prefill_c, pp_floor = place_mod.constraints_from_config(raw_cfg)
+    # Les finalistes sont comparés x deux couples (ubatch, batch) : celui de
+    # l'exécutant (la base) et l'alternative du parc — la sonde ubatch séparée disparaît.
+    couples = place_mod.batch_couples(
+        (getattr(probe, "ubatch", None), getattr(probe, "batch", None))
+    )
+    trace.update(
+        etape="placement",
+        profil=profile.describe(),
+        contexte_utile=ctx_utile,
+        kv_estime_mb=kv_mb,
+        hote_estime_mb=host_mb,
+        plan=plan,
+        couples=couples,
+        contrainte_prefill=prefill_c,
+        prefill_floor_ratio=pp_floor,
+        flags={
+            "threads": int(best["threads"]),
+            "gpu_tuning": bool(hw.has_gpu),
+            "unified_memory": bool(not hw.vram_is_discrete),
+            "ubatch": getattr(probe, "ubatch", None),
+            "batch": getattr(probe, "batch", None),
+            "slots": int(getattr(probe, "n_parallel", 1) or 1),
+            "checkpoint_min_step": getattr(probe, "checkpoint_min_step", None),
+        },
+    )
+    if plan.aucun_faisable:
+        # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation au
+        # contexte UTILE, CPU seul et configuration actuelle compris — aucun placement
+        # comparé, calibration non lancée, réglages non écrits. Étape 2 (revue n°16) :
+        # le précontrôle a laissé passer le démarrage au plancher, c'est le contexte
+        # DEMANDÉ qui ne tient pas ; seule l'archive d'échec est écrite.
+        raison = place_mod.texte_etape2(
+            plan,
+            ctx=ctx_utile,
+            slots=pl_slots,
+            estimation=estimation,
+            precontrole=pc,
+        )
+        con.say(
+            f"  [échec] {raison} — aucun placement comparé, calibration non lancée, "
+            "réglages NON écrits (configuration inchangée)."
+        )
+        report.add("bench", "echec", raison)
+        _archive_setup(con, trace, echec={"etape": "placement", "erreur": raison})
+        return
+    # Threads candidats (l'actuel de la machine d'abord, puis le parc) : chaque
+    # finaliste à calcul CPU est réglé AVANT la finale (remarque de méthode, 2026-10-10).
+    th_options = place_mod.thread_options(
+        best["threads"], os.cpu_count() or 4, deps.cpu_physical()
+    )
+    con.progress("sonde de placement (où vivent les poids, x batchs)…")
+    try:
+        pl_res = place_mod.probe_placement(
+            lambda pl: _dc_replace(
+                probe, ngl=pl.ngl, cpu_moe=pl.cpu_moe, n_cpu_moe=pl.n_cpu_moe
+            ),
+            plan.candidates,
+            progress=lambda m: con.progress(f"placement : {m}"),
+            useful_ctx=ctx_utile,
+            non_explores=plan.non_explores,
+            prefill=prefill_c,
+            pp_floor_ratio=pp_floor,
+            batch_couples=couples,
+            thread_options=th_options,
+        )
+    except Exception as exc:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
+        pl_res = None
+        pl_err = f"sonde de placement en échec ({type(exc).__name__}: {exc})"
+    else:
+        pl_err = None
+    con.progress_end()
+    trace["placement"] = pl_res
+    valide = bool(pl_res and pl_res.get("placement") is not None and pl_res["mesures"])
+    meca = (pl_res or {}).get("mecanisme") or pl_err
+    if not valide:
+        # Les échecs des candidats, gardés dans l'archive même si le repli est accepté.
+        trace["placement_echec"] = meca
+        # Repli = les flags actuels de la sonde. Ne tient pas aux barreaux de PENTE de
+        # la calibration (chargements nus, au plus grand : 16384 x slots retenus)
+        # d'après l'estimation : y revenir lancerait un chargement condamné (revue
+        # adverse). Sortie explicite, rien d'écrit, avec les erreurs des candidats.
+        repli = place_mod.repli_calibration(
+            profile,
+            meta,
+            flags={
+                "ngl": probe.ngl,
+                "cpu_moe": probe.cpu_moe,
+                "n_cpu_moe": probe.n_cpu_moe,
+            },
+            complet=pc["complet"],
+            slots=pl_slots,
+            ctx=max(topo_mod.CALIBRATION_PENTE_CTX),
+            mmproj_mb=int(mm["mb"] or 0),
+            model_size_mb=model_size_mb,
+            gpu_backend=gpu_ok,
+            vram_total_mb=vram_total,
+            ram_total_mb=ram_total_mb,
+            uma=not hw.vram_is_discrete,
+            headroom_mb=headroom,
+            gpu_tuning=bool(hw.has_gpu),
+        )
+        trace["repli_calibration"] = repli
+        if repli["tient"] is False:
+            raison = place_mod.raison_repli_condamne(meca, repli)
+            con.say(
+                f"  [échec] {raison} — calibration non lancée, réglages NON écrits "
+                "(configuration inchangée)."
+            )
+            report.add("bench", "echec", raison)
+            _archive_setup(con, trace, echec={"etape": "placement", "erreur": raison})
+            return
+    trace["etape"] = "calibration"
+    if not valide and meca:
+        con.say(f"  [attention] placement : {meca} — flags actuels conservés.")
+    if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
+        # Élu (comparé, ou seul candidat validé) avec ses batchs et ses threads : la
+        # suite (calibration, validation finale) mesure cette configuration-là.
+        pl = pl_res["placement"]
+        probe = _dc_replace(
+            probe,
+            ngl=pl.ngl,
+            cpu_moe=pl.cpu_moe,
+            n_cpu_moe=pl.n_cpu_moe,
+            ubatch=pl.ubatch or getattr(probe, "ubatch", None),
+            batch=pl.batch or getattr(probe, "batch", None),
+            threads=pl.threads or getattr(probe, "threads", best["threads"]),
+        )
+        con.say(f"  [ok] placement : {pl.describe()} — {pl_res['mecanisme']}")
+    # Threads du placement ÉLU (option par modèle, 2026-10-10) : réglés avant la finale
+    # quand il y a eu finale (verdict repris) ; sinon un placement avec du calcul CPU se
+    # mesure maintenant, au contexte et à la profondeur de la finale ; tout GPU : non
+    # exploré, et la trace le dit.
+    th_res = None
+    pl_elu_th = (pl_res or {}).get("placement")
+    th_fin = (pl_res or {}).get("threads_finalistes") or {}
+    deja = th_fin.get(pl_elu_th.key.split("@")[0]) if pl_elu_th is not None else None
+    if pl_elu_th is not None and not place_mod.needs_cpu_compute(pl_elu_th):
+        th_res = {
+            "non_explore": (
+                f"non exploré : {pl_elu_th.key.split('@')[0]} sans calcul CPU attendu "
+                f"(threads machine {best['threads']} conservés)"
+            )
+        }
+        con.say(f"  threads : {th_res['non_explore']}")
+    elif deja and deja.get("threads") is not None:
+        th_res = dict(deja)
+        th_res["placement"] = pl_elu_th.key.split("@")[0]
+        con.say(
+            f"  [ok] threads sur {th_res['placement']} (réglés avant la finale) : "
+            f"{th_res['threads']} — {th_res['mecanisme']}"
+        )
+    elif pl_elu_th is not None and pl_res.get("mesures"):
+        con.progress("sonde de threads sur le placement élu…")
+        try:
+            th_res = place_mod.probe_threads(
+                lambda o: _dc_replace(probe, threads=o.threads),
+                th_options,
+                ctx=pl_res["ctx_final"],
+                depth=pl_res["depth_final"],
+                progress=lambda m: con.progress(f"threads : {m}"),
+                prefill=prefill_c,
+                pp_floor_ratio=pp_floor,
+            )
+        except Exception:  # noqa: BLE001 - sonde best-effort : sans verdict, rien d'écrit
+            th_res = None
+        con.progress_end()
+        if th_res:
+            th_res["placement"] = pl_elu_th.key.split("@")[0]
+            if th_res["threads"] != int(getattr(probe, "threads", best["threads"])):
+                probe = _dc_replace(probe, threads=th_res["threads"])
+            con.say(
+                f"  [ok] threads sur {th_res['placement']} : {th_res['threads']} — "
+                f"{th_res['mecanisme']}"
             )
         else:
             con.say(
-                f"  [ok] cache survit à la pollution ({iso_detail}) — 1 slot suffit."
+                "  [attention] sonde de threads illisible — threads machine conservés."
             )
+    trace["threads"] = th_res
     con.say(
         f"  Topologie découverte : {topo} (budget {budget} Mo). Calibration du "
         "contexte par PENTE MESURÉE + vitesse en profondeur (~5-15 min)…"
@@ -1004,31 +1643,156 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             budget_mb=budget,
             progress=lambda m: con.progress(f"calibration : {m}"),
         )
-    except (RuntimeError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 - erreurs opérationnelles comprises (OSError…)
         con.progress_end()
         con.say(
-            f"  [échec] calibration échouée ({exc}) — context inchangé, relance loom-setup."
+            f"  [échec] calibration échouée ({type(exc).__name__}: {exc}) — context "
+            "inchangé, relance loom-setup."
         )
         report.add("bench", "echec", f"calibration contexte : {exc}")
+        _archive_setup(con, trace, echec={"etape": "calibration", "erreur": str(exc)})
         return
     con.progress_end()
+    trace["calibration"] = calib
+    trace["etape"] = "batchs"
     context = calib["context"]
 
     # Sonde d'ubatch sur la MÊME sonde serveur que la calibration (flags exacts,
     # aucune dépendance à llama-bench) : un seul levier à la fois, ajouté au couple
     # threads/ngl déjà gagnant, sur un prompt assez long pour que le levier existe
     # (à 128 tokens tout tient dans un micro-batch : aucun effet mesurable).
-    con.progress("sonde ubatch (prefill sur prompt long)…")
-    try:
-        from dataclasses import replace as _dc_replace
+    pl_elu = (pl_res or {}).get("placement")
+    if pl_elu is not None and pl_elu.ubatch:
+        # Les batchs viennent du 2x2 des finalistes (même contexte, même profondeur,
+        # mêmes slots que le placement) : la sonde ubatch séparée est obsolète.
+        ub_res = {
+            "ubatch": int(pl_elu.ubatch),
+            "batch": int(pl_elu.batch or pl_elu.ubatch),
+            "pp_ts": float(pl_res.get("pp_ts") or 0.0),
+            "gain_pct": None,
+            "mesures": {
+                k: v.get("pp_ts")
+                for k, v in (pl_res.get("mesures") or {}).items()
+                if "pp_ts" in v
+            },
+            "detail": (
+                f"{pl_res.get('pp_ts')} t/s à profondeur {pl_res.get('depth_final')} "
+                f"(finalistes x batchs, ctx {pl_res.get('ctx_final')})"
+            ),
+        }
+    else:
+        con.progress("sonde ubatch (prefill sur prompt long)…")
+        try:
+            ub_res = bench_mod.probe_ubatch(
+                lambda ub, b: _dc_replace(probe, ubatch=ub, batch=b),
+                progress=lambda m: con.progress(f"sonde ubatch : {m}"),
+            )
+        except Exception:  # noqa: BLE001 - sonde best-effort, jamais fatale
+            ub_res = None
+        con.progress_end()
 
-        ub_res = bench_mod.probe_ubatch(
-            lambda ub, b: _dc_replace(probe, ubatch=ub, batch=b),
-            progress=lambda m: con.progress(f"sonde ubatch : {m}"),
+    # Vérifier le CACHE avec la configuration FINALE (placement élu, slots décidés,
+    # batchs mesurés) : conversation sur le slot 0, appel annexe routé comme Loom le
+    # fera, retour — le cache doit être réutilisé. C'est la preuve qui justifie de
+    # traiter le gros prefill comme un coût amorti.
+    trace["ubatch"] = ub_res
+    trace["etape"] = "réglage final"
+    # Sonde FINALE = placement élu + slots décidés + batchs mesurés. D'abord valider ce
+    # réglage complet au contexte CALIBRÉ, à la profondeur de la comparaison : le
+    # verdict n'assemble plus des mesures prises avec des paramètres différents.
+    probe_final = (
+        _dc_replace(probe, ubatch=ub_res["ubatch"], batch=ub_res["batch"])
+        if ub_res
+        else probe
+    )
+    con.progress("validation du réglage final au contexte calibré…")
+    try:
+        final = place_mod.validate_final(
+            probe_final,
+            ctx=context,
+            depth=place_mod.final_depth(ctx_utile),
+            n_layers=meta.get("n_layers"),
+            reference_tg=(pl_res or {}).get("tg_ts"),
+            prefill=prefill_c,
+            # Insatisfiable = aucun candidat comparé ne la tenait : avertir, pas bloquer.
+            prefill_insatisfiable=place_mod.prefill_satisfiable(
+                (pl_res or {}).get("mesures") or {}, prefill_c
+            )
+            is False,
+            progress=lambda m: con.progress(f"réglage final : {m}"),
         )
-    except Exception:  # noqa: BLE001 - sonde best-effort, jamais fatale
-        ub_res = None
+    except Exception as exc:  # noqa: BLE001 - validation best-effort, nommée
+        final = {"echec": f"{type(exc).__name__}: {exc}", "ctx": context}
     con.progress_end()
+    if final.get("bloquant"):
+        # Contrainte EXPLICITE de prefill tenue par un candidat mais pas par le réglage
+        # final : ce qui a été demandé n'est pas livré — réglages non écrits, seule
+        # l'archive d'échec l'est (revue #14).
+        con.say(
+            f"  [échec] réglage final {final.get('placement')} : génération "
+            f"{final.get('tg_ts')} t/s{place_mod.final_checks_text(final)} — réglages "
+            "NON écrits, configuration actuelle conservée."
+        )
+        report.add("bench", "echec", f"réglage final : {final['bloquant']}")
+        trace["final"] = final
+        _archive_setup(
+            con, trace, echec={"etape": "réglage final", "erreur": final["bloquant"]}
+        )
+        return
+    if "echec" in final:
+        # Une baisse de vitesse avertit ; un échec de FONCTIONNEMENT empêche : réglages
+        # non écrits (seule l'archive d'échec l'est), la configuration actuelle reste.
+        con.say(
+            f"  [échec] réglage final non validé ({final['echec']}) — réglages NON "
+            "écrits, configuration actuelle conservée. Relance loom-setup une fois la "
+            "cause levée."
+        )
+        report.add("bench", "echec", f"réglage final non validé : {final['echec']}")
+        trace["final"] = final
+        _archive_setup(
+            con, trace, echec={"etape": "réglage final", "erreur": final["echec"]}
+        )
+        return
+    else:
+        # Génération et contrainte de prefill dites SÉPARÉMENT (revue #14).
+        pc_fin = final.get("prefill_contrainte") or {}
+        marque = (
+            "attention"
+            if final.get("coherent") is False
+            or (pc_fin and not pc_fin.get("respectee"))
+            else "ok"
+        )
+        con.say(
+            f"  [{marque}] réglage final {final['placement']} (ctx {final['ctx']}, "
+            f"{final['slots']} slot(s), ub {final['ubatch']}/b {final['batch']}) : "
+            f"génération {final['tg_ts']} t/s, prefill {final['pp_ts']} t/s à profondeur "
+            f"{final['depth']}{place_mod.final_checks_text(final)}"
+            f"{place_mod.checkpoints_text(final)}"
+        )
+    cache_v = None
+    con.progress("vérification du cache avec la configuration finale…")
+    try:
+        # Avec le contexte réellement alloué, pas un 4 096 de confort.
+        cache_v = probe_final.verify_cache(ctx=context)
+    except Exception as exc:  # noqa: BLE001 - vérification best-effort, jamais fatale
+        con.progress_end()
+        con.say(f"  [attention] vérification du cache impossible ({exc}).")
+    else:
+        con.progress_end()
+        if cache_v.get("reused") is True:
+            con.say(
+                "  [ok] cache réutilisé après routage des appels annexes "
+                f"({topo_mod.cache_check_text(cache_v)})."
+            )
+        elif cache_v.get("reused") is False:
+            con.say(
+                "  [attention] cache NON réutilisé avec la configuration finale "
+                f"({topo_mod.cache_check_text(cache_v)})."
+            )
+        else:
+            con.say("  [attention] vérification du cache illisible.")
+    build = deps.verify_binary(probe_bin) or "build ?"
+    trace.update(final=final, cache=cache_v, build=build, etape="écriture")
 
     values = {
         "server": {"context": context},
@@ -1036,6 +1800,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         "bench": {
             "threads": best["threads"],
             "ngl": best["ngl"],
+            **({"ncmoe": best["ncmoe"]} if best.get("ncmoe") else {}),
             "tg_ts": round(best["tg_ts"], 2),
             "pp_ts": round(best["pp_ts"], 2),
             "context": context,
@@ -1044,8 +1809,90 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "context_mecanisme": calib["mecanisme"],
             "context_pente_kb_tok": calib["slope_kb_tok"],
             "context_valide_jusqua": calib["valide_jusqua"],
+            # False = plancher de repli, aucun barreau de vitesse validé.
+            "context_valide": bool(calib.get("valide", True)),
+            "context_utile_estime": ctx_utile,
+            "kv_estime_mb": estimation["kv_mb"],
+            "recurrent_estime_mb": estimation["recurrent_mb"],
+            "memoire_estimee_mb": estimation["total_mb"],
+            "checkpoints_estimes": estimation["checkpoints"],
         },
     }
+    if cache_v and cache_v.get("reused") is not None:
+        values["bench"]["cache_verifie"] = bool(cache_v["reused"])
+        values["bench"]["cache_verifie_detail"] = topo_mod.cache_check_text(cache_v)
+    if th_res and "non_explore" in th_res:
+        values["bench"]["threads_non_explore"] = th_res["non_explore"]
+    elif th_res:
+        values["bench"]["threads_modele"] = th_res["threads"]
+        values["bench"]["threads_placement"] = th_res.get("placement")
+        values["bench"]["threads_mecanisme"] = th_res["mecanisme"]
+        values["bench"]["threads_mesures"] = _sans_none(th_res["mesures"])
+    if "echec" in final:
+        values["bench"]["final_echec"] = final["echec"]
+    else:
+        values["bench"]["final_placement"] = final["placement"]
+        values["bench"]["final_ctx"] = final["ctx"]
+        values["bench"]["final_depth"] = final["depth"]
+        values["bench"]["final_slots"] = final["slots"]
+        values["bench"]["final_tg_ts"] = final["tg_ts"]
+        values["bench"]["final_pp_ts"] = final["pp_ts"]
+        values["bench"]["final_tg_disp_pct"] = final["tg_disp_pct"]
+        values["bench"]["final_echantillons"] = _sans_none(final["echantillons"])
+        for k in ("ubatch", "batch", "ecart_pct", "coherent"):
+            if final.get(k) is not None:
+                values["bench"][f"final_{k}"] = final[k]
+        # Contrainte de prefill : résultat DISTINCT de la cohérence de génération.
+        if final.get("prefill_contrainte"):
+            values["bench"]["final_prefill_contrainte"] = _sans_none(
+                final["prefill_contrainte"]
+            )
+        # Checkpoints EFFECTIFS du réglage final (journal serveur), à côté du plafond
+        # estimé (`checkpoints_estimes`) : 32 est un maximum, pas le nombre créé.
+        for k in ("checkpoints_effectifs", "checkpoints_detail"):
+            if final.get(k) is not None:
+                values["bench"][k] = final[k]
+    if pl_res:
+        pl_elu = pl_res.get("placement")
+        # `placement` = l'identité du placement ; le couple de batchs est tracé à part
+        # (`placement_config`, ubatch/batch).
+        values["bench"]["placement"] = (
+            pl_elu.key.split("@")[0] if pl_elu else "aucun (échec)"
+        )
+        values["bench"]["placement_config"] = pl_elu.key if pl_elu else "aucun"
+        values["bench"]["placement_couples"] = [
+            f"ub {ub}/b {b}" for ub, b in (pl_res.get("couples") or [])
+        ]
+        values["bench"]["placement_mecanisme"] = pl_res["mecanisme"]
+        values["bench"]["placement_compare"] = bool(pl_res.get("compare"))
+        # Avec quoi le placement a été mesuré : moteur, slots, flags machine.
+        values["bench"]["placement_build"] = build
+        values["bench"]["placement_slots"] = pl_slots
+        values["bench"]["placement_flags"] = {
+            "threads": int(best["threads"]),
+            "gpu_tuning": bool(hw.has_gpu),
+            "unified_memory": bool(not hw.vram_is_discrete),
+        }
+        values["bench"]["placement_ctx_final"] = pl_res["ctx_final"]
+        values["bench"]["placement_depth_final"] = pl_res["depth_final"]
+        values["bench"]["placement_finalistes"] = list(pl_res.get("finalistes") or [])
+        values["bench"]["placement_non_explores"] = [
+            f"{n['key']} : {n['raison']}" for n in pl_res.get("non_explores") or []
+        ]
+        if pl_res["tg_ts"] is not None:
+            values["bench"]["placement_tg_ts"] = pl_res["tg_ts"]
+            values["bench"]["placement_pp_ts"] = pl_res["pp_ts"]
+        if pl_res["gain_pct"] is not None:
+            values["bench"]["placement_gain_pct"] = pl_res["gain_pct"]
+        if pl_res["mesures"]:
+            values["bench"]["placement_mesures"] = _sans_none(pl_res["mesures"])
+        if (
+            pl_res.get("preselection")
+            and pl_res["preselection"] is not pl_res["mesures"]
+        ):
+            values["bench"]["placement_preselection"] = _sans_none(
+                pl_res["preselection"]
+            )
     # Repli MACHINE : un modèle ajouté plus tard n'est jamais benché et tombait sur les
     # constantes aveugles de llama-server. On n'écrit QUE ce qui a été mesuré.
     if ub_res:
@@ -1066,29 +1913,96 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "défaut raisonné (NON mesuré) — modèle à mémoire hybride détecté"
         )
     # Persister même un zéro mesuré, sauf pour un MoE dont l'override global serait trompeur.
-    if len(ngl) > 1 and not moe:
+    if ngl_decide:
         values["override"]["n_gpu_layers"] = best["ngl"]
     set_local_values(PERSONAL_CONFIG_PATH, values)
     # La pente dépend de l'architecture; persister donc le contexte par modèle.
     _set_model_context(gguf_path, context, calib["mecanisme"])
+    if pl_res and pl_res.get("placement") is not None and pl_res["mesures"]:
+        # Écrit ce qui a été VALIDÉ (comparé, ou candidat unique validé au contexte utile).
+        import datetime as _dt
+
+        _set_model_placement(
+            gguf_path,
+            pl_res["placement"],
+            f"{_dt.date.today().isoformat()}, {build} — {pl_res['mecanisme']}",
+        )
     if ub_res:
         _set_model_ubatch(
             gguf_path,
             ub_res["ubatch"],
             ub_res["batch"],
-            f"{ub_res['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens",
+            ub_res.get("detail")
+            or f"{ub_res['pp_ts']} t/s sur {bench_mod.UBATCH_PROBE_PROMPT} tokens",
+        )
+    if th_res and th_res.get("compare"):
+        # Vérité PAR MODÈLE : les threads mesurés sur son placement élu, prioritaires sur
+        # l'override machine (qui reste le repli des modèles non benchés).
+        import datetime as _dt
+
+        _set_model_threads(
+            gguf_path,
+            th_res["threads"],
+            f"{_dt.date.today().isoformat()} — {th_res['mecanisme']} (sur "
+            f"{th_res.get('placement')} à ctx {th_res['ctx']}, profondeur {th_res['depth']})",
         )
     if isolation is not None:
-        _set_model_cache_isolation(gguf_path, isolation, iso_detail)
-    gpu_txt = f", offload GPU -ngl {best['ngl']}" if best["ngl"] > 0 else ""
+        cache_txt = ""
+        if cache_v and cache_v.get("reused") is not None:
+            cache_txt = (
+                " ; cache réutilisé après routage"
+                if cache_v["reused"]
+                else " ; cache NON réutilisé avec la configuration finale"
+            ) + f" ({topo_mod.cache_check_text(cache_v)})"
+        _set_model_cache_isolation(gguf_path, isolation, iso_detail + cache_txt)
+    # Archive DURABLE du bench (var/bench/<modèle>/<horodatage>.json) : le compte rendu
+    # progressif complet, puis la trace de l'application (immédiate ici).
+    trace.update(ecrit=values, etape="fin")
+    _archive_setup(
+        con,
+        trace,
+        applied={
+            "context": context,
+            "placement": (pl_res or {}).get("placement"),
+            "ubatch": (ub_res or {}).get("ubatch"),
+            "batch": (ub_res or {}).get("batch"),
+            "cache_isolation": isolation,
+            "threads": (th_res or {}).get("threads"),
+        },
+    )
+    gpu_txt = (
+        f", offload GPU -ngl {best['ngl']}"
+        + (f" -ncmoe {best['ncmoe']}" if best.get("ncmoe") else "")
+        if best["ngl"] > 0
+        else ""
+    )
     con.say(
         f"  Mesuré : génération {best['tg_ts']:.1f} t/s · prefill "
         f"{best['pp_ts']:.1f} t/s (threads={best['threads']}{gpu_txt})"
     )
-    con.say(
-        f"  [ok] context={context} ({topo}, pente {calib['slope_kb_tok']} Ko/token "
-        f"mesurée, vitesse validée jusqu'à {calib['valide_jusqua']} tokens)"
-    )
+    if calib.get("valide", True):
+        con.say(
+            f"  [ok] context={context} ({topo}, pente {calib['slope_kb_tok']} Ko/token "
+            f"mesurée, vitesse validée jusqu'à {calib['valide_jusqua']} tokens)"
+        )
+    else:
+        con.say(
+            f"  [attention] context={context} : repli NON validé — aucun barreau de "
+            f"vitesse n'a pu être mesuré ({topo}, pente {calib['slope_kb_tok']} Ko/token)."
+        )
+    if pl_res and pl_res["tg_ts"] is not None:
+        gain_pl = (
+            f", {pl_res['gain_pct']:+.0f} % de génération vs {pl_res['baseline']}"
+            if pl_res["gain_pct"] is not None
+            else ""
+        )
+        con.say(
+            f"  [ok] placement={pl_res['placement'].key} ({pl_res['tg_ts']} t/s gén., "
+            f"{pl_res['pp_ts']} t/s prefill à ctx {pl_res['ctx_final']}, profondeur "
+            f"{pl_res['depth_final']} tokens{gain_pl})"
+        )
+        for n in pl_res.get("non_explores") or []:
+            con.say(f"       {n['key']} : {n['raison']}")
     if ub_res:
         gain = (
             f", +{ub_res['gain_pct']:.0f} % de prefill"

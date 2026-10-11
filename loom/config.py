@@ -88,6 +88,10 @@ class ModelConfig:
     n_cpu_moe: int | None = None
     # Un contexte par modèle peut remplacer la valeur globale selon son coût KV.
     context: int | None = None
+    # Threads par modèle (mesurés par le bench sur le placement élu : un modèle
+    # experts-CPU et un modèle tout-GPU n'ont pas la même charge CPU), prioritaires
+    # sur [override] threads de la machine.
+    threads: int | None = None
     # Des batchs de prefill plus grands amortissent le CPU mais consomment plus de VRAM.
     ubatch: int | None = None
     batch: int | None = None
@@ -235,6 +239,7 @@ def _parse_model(d: dict, default_id: str = "") -> ModelConfig:
         cpu_moe=bool(d.get("cpu_moe", False)),
         n_cpu_moe=d.get("n_cpu_moe"),
         context=d.get("context"),
+        threads=d.get("threads"),
         ubatch=d.get("ubatch"),
         batch=d.get("batch"),
         cache_isolation=bool(d.get("cache_isolation", False)),

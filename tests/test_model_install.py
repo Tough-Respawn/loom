@@ -97,6 +97,9 @@ def test_finalize_model_toml(tmp_path, monkeypatch):
     assert raw["cpu_moe"] is True  # MoE détecté -> experts en RAM par défaut
     assert meta["expert_count"] == 128
     assert "cache_isolation" not in raw  # pas de mémoire récurrente
+    # Le défaut est étiqueté comme NON mesuré : la sonde de placement peut l'inverser.
+    txt = (d / "model.toml").read_text(encoding="utf-8")
+    assert "placement NON mesuré" in txt and "/rebench" in txt
 
 
 def test_finalize_modele_hybride_isole(tmp_path, monkeypatch):

@@ -177,6 +177,9 @@ class HardwareProfile:
     backend: str | None = None
     # La VRAM partagée d'un iGPU ne doit pas être ajoutée une seconde fois à la RAM.
     vram_is_discrete: bool = False
+    # Nombre de GPU listés par `--list-devices` : llama.cpp offloade sur TOUS les GPU
+    # discrets, Loom n'en décrit qu'un — une capacité n'est connue qu'avec un seul.
+    gpu_count: int = 0
 
     @property
     def budget_vram_mb(self) -> int:
@@ -270,6 +273,7 @@ def detect_hardware(server_bin=None) -> HardwareProfile:
                     d["backend"].lower() == "cuda"
                     or shutil.which("nvidia-smi") is not None
                 ),
+                gpu_count=len(devices),
             )
     raw = _run_nvidia_smi()
     parsed = parse_nvidia_smi(raw) if raw else None

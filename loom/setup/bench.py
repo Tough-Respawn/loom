@@ -61,6 +61,21 @@ def has_gpu_backend(server_bin: str | Path) -> bool:
     )
 
 
+def gpu_backend_available(hw, server_bin: str | Path, has_dll=None) -> bool:
+    """Y a-t-il un GPU EXPLOITABLE par ce binaire ? La vérité est le profil matériel
+    issu de `llama-server --list-devices` (`hw.backend` renseigné) : il liste ce que CE
+    build sait piloter. L'heuristique « DLL ggml-vulkan/cuda à côté du binaire »
+    (`has_gpu_backend`) est FAUSSE pour un build statique (vécu 2026-10-10 : build
+    maison Vulkan sans DLL -> machine vue sans GPU, bench en ngl 0, topologie « ram »,
+    placement CPU seul). Elle ne sert plus qu'au repli nvidia-smi (profil sans
+    `backend`), qui voit un GPU mais ne sait pas si le build offloade."""
+    if not getattr(hw, "has_gpu", False):
+        return False
+    if getattr(hw, "backend", None):
+        return True
+    return bool((has_dll or has_gpu_backend)(server_bin))
+
+
 def ngl_candidates(
     gpu_backend: bool,
     vram_free_mb: int,
