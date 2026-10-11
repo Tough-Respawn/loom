@@ -1175,8 +1175,18 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         headroom_mb=headroom,
         # Replis vérifiés : les candidats du plan au plancher, dans l'ordre.
         replis=(pc.get("plan_plancher") or {}).get("flags"),
+        # Build global sans GPU alors que la sonde en a un : le dire, avec le remède.
+        sans_gpu=(
+            f"le build global de llama-bench ({server_bin}) ne liste aucun GPU — tout "
+            "y est en RAM ; installe un build GPU en [server] bin ou retire server_bin "
+            "du model.toml"
+            if hw_bench is not hw and hw.has_gpu
+            else "sans GPU : tout en RAM"
+        ),
     )
     pc["llama_bench"] = filtre
+    if hw_bench is not hw:
+        trace["materiel_llama_bench"] = hw_bench  # le matériel qui a jugé llama-bench
     for retire in filtre["retires"]:
         con.say(
             f"  [attention] llama-bench : -ngl {retire['ngl']} retiré — "

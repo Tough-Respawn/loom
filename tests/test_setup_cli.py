@@ -1131,20 +1131,18 @@ def test_pas_d_override_0_sans_aucune_mesure_gpu(monkeypatch, tmp_path):
     assert "n_gpu_layers" not in (cfg.get("override") or {})
 
 
-def test_llama_bench_d_un_build_sans_gpu_juge_en_ram(monkeypatch, tmp_path):
-    """Vérification adverse de L21 : la sonde (build de PR, model.toml server_bin) voit
-    un GPU, mais le llama-bench du build global n'en a pas — -ngl 99 n'y offloade rien.
-    Son propre build est détecté (--list-devices, sans modèle) : tout y est jugé en
-    RAM ; 16 640 Mo pour 5 120, rien ne tient — llama-bench non lancé."""
-    appels: list = []
+def _scenario_bench_global_sans_gpu(monkeypatch, tmp_path, ram, appels, journal):
+    """La sonde (build de PR, model.toml server_bin) voit un GPU de 24 Go ; le build
+    GLOBAL, d'où vient llama-bench, n'en liste aucun. nvidia-smi voit 24 Go aussi : la
+    VRAM de repli ne peut pas masquer un câblage qui jugerait llama-bench sur le GPU."""
     con, printed, deps, mdir = _harnais_bench(
         monkeypatch,
         tmp_path,
-        _fake_probe_cls(_rien_ne_doit_tourner),
-        ram_total_mb=8192,
+        _fake_probe_cls(_mesure_ok, journal=journal),
+        ram_total_mb=ram,
         hw=_gpu(24_576),
         meta=_meta_complete(par_mb=400),
-        run_bench=_bench_espion(appels),
+        run_bench=_bench_au_ngl_demande(appels),
     )
     pr = tmp_path / "pr" / "llama-server.exe"
     pr.parent.mkdir()
@@ -1153,15 +1151,55 @@ def test_llama_bench_d_un_build_sans_gpu_juge_en_ram(monkeypatch, tmp_path):
     deps = dataclasses.replace(
         deps,
         detect_hardware=lambda server_bin=None: gpu if "pr" in str(server_bin) else cpu,
+        gpu_vram_total_mb=lambda: 24_576,
     )
     (mdir / "model.toml").write_text(
         'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 16600\n'
         f'server_bin = "{str(pr).replace(chr(92), "/")}"\n',
         encoding="utf-8",
     )
+    return con, printed, deps
+
+
+def test_llama_bench_d_un_build_sans_gpu_juge_en_ram(monkeypatch, tmp_path):
+    """Vérification adverse de L21 : le llama-bench du build global n'a pas de GPU —
+    -ngl 99 n'y offloade rien. Son propre build est détecté (--list-devices, sans
+    modèle) : tout y est jugé en RAM ; 16 640 Mo pour 5 120, rien ne tient —
+    llama-bench non lancé, et le message nomme le build global et le remède."""
+    appels: list = []
+    con, printed, deps = _scenario_bench_global_sans_gpu(
+        monkeypatch, tmp_path, 8192, appels, []
+    )
     assert run(con, deps) != 0
     out = "\n".join(printed)
     assert appels == [] and "llama-bench non lancé" in out
+    assert "le build global de llama-bench" in out and "Mo hôte" in out
+    assert (
+        "Mo device"
+        not in out.split("llama-bench non lancé")[0].split("[ok] précontrôle")[-1]
+    )
+
+
+def test_llama_bench_d_un_build_sans_gpu_mesure_cpu_une_fois(monkeypatch, tmp_path):
+    """Vérification adverse de L23 : build global sans GPU, modèle qui tient en RAM —
+    -ngl 0 et -ngl 99 y sont la même charge CPU : mesurée une fois, sans « offload
+    GPU » affiché, ni override n_gpu_layers écrit ; le matériel qui a jugé llama-bench
+    est archivé."""
+    appels: list = []
+    con, printed, deps = _scenario_bench_global_sans_gpu(
+        monkeypatch, tmp_path, 32_768, appels, []
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert appels and appels[0]["ngl"] == [0] and appels[0]["ncmoe"] == 0
+    assert "offload GPU" not in out and "identiques à -ngl 0" in out
+    cfg = tomllib.loads(
+        (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
+    )
+    assert "n_gpu_layers" not in (cfg.get("override") or {})
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["materiel_llama_bench"]["has_gpu"] is False
 
 
 def test_ncmoe_mesure_par_llama_bench_consigne(monkeypatch, tmp_path):

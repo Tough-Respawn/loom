@@ -1388,6 +1388,7 @@ def filtre_llama_bench(
     headroom_mb: int,
     meme_binaire: bool = True,
     replis: list[dict] | None = None,
+    sans_gpu: str = "sans GPU : tout en RAM",
 ) -> dict:
     """-ngl de llama-bench qui ne tiennent pas, DES DEUX CÔTÉS (_fits), dans les
     budgets du précontrôle et de l'étape 2 : device (poids offloadés selon la règle de
@@ -1401,8 +1402,10 @@ def filtre_llama_bench(
     `replis` (flags des candidats du plan au plancher ; CPU seul par défaut) qui tient
     lui aussi ; sinon liste VIDE, llama-bench non lancé. llama-bench d'un autre
     binaire, aucune VRAM connue ou plusieurs GPU : le côté device n'est pas modélisé
-    (non vérifié, dit), le côté hôte se juge quand même. Sans GPU, tout reste en RAM.
-    Métadonnées du modèle incomplètes : inchangée."""
+    (non vérifié, dit), le côté hôte se juge quand même. Sans GPU, tout reste en RAM :
+    les -ngl > 0 y sont la même charge que -ngl 0, mesurée une fois (`sans_gpu` dit
+    pourquoi — l'appelant y nomme le build de llama-bench). Métadonnées du modèle
+    incomplètes : inchangée."""
     liste = [int(g) for g in ngl]
     res = {"ngl": liste, "ncmoe": int(ncmoe or 0), "retires": [], "note": ""}
     vram = int(vram_total_mb or 0) or int(getattr(hw, "vram_total_mb", 0) or 0)
@@ -1410,8 +1413,18 @@ def filtre_llama_bench(
         res["note"] = "métadonnées incomplètes : liste inchangée"
         return res
     has_gpu = bool(getattr(hw, "has_gpu", False))
+    if not has_gpu and any(g != 0 for g in liste):
+        # Sans device, llama.cpp n'offloade rien quel que soit -ngl
+        # (src/llama-model.cpp:1313-1318) : une seule mesure, -ngl 0, sans -ncmoe.
+        liste = [0]
+        res.update(
+            ngl=liste,
+            ncmoe=0,
+            note=f"{sans_gpu} — les -ngl > 0 y sont identiques à -ngl 0, mesuré une "
+            "fois",
+        )
     if not has_gpu:
-        pourquoi = "sans GPU : tout en RAM"
+        pourquoi = sans_gpu
     elif not meme_binaire:
         pourquoi = "llama-bench vient d'un autre binaire que la sonde"
     elif vram <= 0 or int(getattr(hw, "gpu_count", 0) or 0) > 1:
@@ -1422,7 +1435,7 @@ def filtre_llama_bench(
     n = int(getattr(profile, "n_layers", 0) or 0)
     budget: int | None = None
     if not has_gpu:
-        budgets = f"sans GPU : tout en RAM, RAM {hote} Mo"
+        budgets = f"{sans_gpu}, RAM {hote} Mo"
     elif pourquoi:
         # Côté device non modélisé : seul l'hôte borne (vérification adverse de L20).
         budgets = f"budget device non vérifié ({pourquoi}), RAM {hote} Mo"

@@ -955,13 +955,19 @@ def test_llama_bench_budget_device_non_verifie_dit_sans_sentinelle():
     f = _bench(_dense(n=40, par_mb=400), deux_gpu, [0, 24], ram=9216)
     raisons = " ".join(r["raison"] for r in f["retires"])
     assert f["retires"] and "1099511627776" not in raisons
-    assert "device non vérifié" in raisons
+    # Le texte corrigé de _fits lui-même, pas seulement le préfixe des budgets.
+    r24 = next(r["raison"] for r in f["retires"] if r["ngl"] == 24)
+    assert "Mo device (poids + KV, non vérifié)" in r24 and "None" not in r24
 
 
 def test_llama_bench_sans_gpu_dit_comme_tel():
-    """Sans GPU, la raison n'est pas « capacité VRAM inconnue » : tout est en RAM."""
+    """Sans GPU, la raison n'est pas « capacité VRAM inconnue » ni un budget device :
+    tout est en RAM ; les -ngl > 0 y sont identiques à -ngl 0, mesuré une fois."""
     f = _bench(_dense(n=40, par_mb=400), CPU_SEUL, [0], ram=8192)
-    assert f["ngl"] == [] and "sans GPU" in f["retires"][0]["raison"]
+    raison = f["retires"][0]["raison"]
+    assert f["ngl"] == [] and "sans GPU" in raison and "budget device" not in raison
+    g = _bench(_dense(n=40, par_mb=400), CPU_SEUL, [0, 99], ram=64_000)
+    assert g["ngl"] == [0] and "identiques à -ngl 0" in g["note"]
 
 
 def test_llama_bench_non_lance_si_rien_ne_tient():
