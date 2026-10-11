@@ -809,7 +809,18 @@ def test_flags_bruts_ngl_0_cpu_moe_rien_sur_le_device():
 # ── filtre des -ngl de llama-bench (lot L3) ──────────────────────────────────────
 
 
-def _bench(meta, hw, ngl, ncmoe=0, *, complet=True, meme_binaire=True, vram=None):
+def _bench(
+    meta,
+    hw,
+    ngl,
+    ncmoe=0,
+    *,
+    complet=True,
+    meme_binaire=True,
+    vram=None,
+    ram=64_000,
+    replis=None,
+):
     prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
     return filtre_llama_bench(
         prof,
@@ -818,11 +829,53 @@ def _bench(meta, hw, ngl, ncmoe=0, *, complet=True, meme_binaire=True, vram=None
         complet=complet,
         hw=hw,
         vram_total_mb=hw.vram_total_mb if vram is None else vram,
-        ram_total_mb=64_000,
+        ram_total_mb=ram,
         uma=hw.has_gpu and not hw.vram_is_discrete,
         headroom_mb=640,
         meme_binaire=meme_binaire,
+        replis=replis,
     )
+
+
+def test_llama_bench_verifie_aussi_la_ram_hote():
+    """Revue n°17 (P1) : seule la mémoire GPU était vérifiée. Dense de 16 600 Mo, GPU
+    de 24 576 Mo, RAM de 8 192 Mo (5 120 de budget) : le précontrôle tient par le
+    tout-GPU, mais llama-bench recevait [0, 99] — -ngl 0 met les 16 600 Mo en RAM."""
+    f = _bench(_dense(n=40, par_mb=400), NVIDIA_24G, [0, 99], ram=8192)
+    assert f["ngl"] == [99]
+    assert [r["ngl"] for r in f["retires"]] == [0]
+    raison = f["retires"][0]["raison"]
+    assert "RAM 5120 Mo" in raison and "Mo hôte" in raison
+
+
+def test_llama_bench_repli_sur_le_plan_au_plancher_verifie():
+    """Le repli n'est plus un -ngl 0 ajouté sans contrôle : le premier placement du
+    plan au plancher qui tient AUSSI pour llama-bench. MoE de 39 800 Mo, GPU de 24 Go,
+    20 000 Mo de RAM : -ngl 999 -ncmoe 8 (tous les experts en RAM, 32 300 Mo) ne tient
+    pas, -ngl 0 non plus ; le plan au plancher retient les experts de 4 couches en RAM."""
+    moe = _moe()
+    plan = _pc(moe, NVIDIA_24G, ram=20_000)["plan_plancher"]
+    assert plan["candidats"] == ["experts_partiel_n4"]
+    f = _bench(moe, NVIDIA_24G, [999], ncmoe=8, ram=20_000, replis=plan["flags"])
+    assert f["ngl"] == [999] and f["ncmoe"] == 4
+    assert "plan au plancher" in f["note"]
+
+
+def test_llama_bench_non_lance_si_rien_ne_tient():
+    """Ni la liste ni le repli (CPU seul, vérifié lui aussi) ne tiennent : liste vide,
+    llama-bench non lancé — et dit. Dense de 16 600 Mo, GPU de 4 Go, RAM de 8 192 Mo."""
+    gpu_4g = HardwareProfile(
+        True,
+        "RTX 4G",
+        4000,
+        16,
+        vram_total_mb=4096,
+        backend="CUDA",
+        vram_is_discrete=True,
+        gpu_count=1,
+    )
+    f = _bench(_dense(n=40, par_mb=400), gpu_4g, [0, 99], ram=8192)
+    assert f["ngl"] == [] and "non lancé" in f["note"]
 
 
 def test_llama_bench_retire_les_ngl_impossibles_sur_le_device():

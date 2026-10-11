@@ -996,6 +996,11 @@ def precontrole(
             "ctx": PRECONTROLE_CTX,
             "slots": slots,
             "candidats": [c.key for c in plan0.candidates],
+            # Flags bruts des candidats, dans l'ordre : replis de llama-bench.
+            "flags": [
+                {"ngl": c.ngl, "cpu_moe": c.cpu_moe, "n_cpu_moe": c.n_cpu_moe}
+                for c in plan0.candidates
+            ],
             "non_explores": plan0.non_explores,
             "postes": postes,
         },
@@ -1375,14 +1380,18 @@ def filtre_llama_bench(
     uma: bool,
     headroom_mb: int,
     meme_binaire: bool = True,
+    replis: list[dict] | None = None,
 ) -> dict:
-    """-ngl de llama-bench dont la borne DEVICE (poids offloadés selon la règle de
-    llama.cpp, KV f16 de LLAMA_BENCH_CELLS cellules et état récurrent d'une séquence
-    sur les couches offloadées) dépasse le budget device — le MÊME que le précontrôle
-    et l'étape 2 (device_budget_mb sur la VRAM de l'appelant, repli nvidia-smi compris,
-    marge comprise) : retirés (un seul -ngl qui échoue fait échouer toute
-    l'invocation). Liste vide : repli sur -ngl 0. Données incomplètes, aucune VRAM
-    connue, plusieurs GPU ou llama-bench d'un autre binaire : inchangée."""
+    """-ngl de llama-bench qui ne tiennent pas, DES DEUX CÔTÉS (_fits), dans les
+    budgets du précontrôle et de l'étape 2 : device (poids offloadés selon la règle de
+    llama.cpp, KV f16 de LLAMA_BENCH_CELLS cellules et état récurrent d'une séquence,
+    par couche offloadée ; device_budget_mb sur la VRAM de l'appelant, repli
+    nvidia-smi compris) ET hôte (poids restés en RAM, KV et état des couches CPU ;
+    RAM moins la marge OS — revue n°17 : la RAM n'était pas vérifiée). Retirés : un
+    seul -ngl qui échoue fait échouer toute l'invocation. Rien ne tient : le premier
+    des `replis` (flags des candidats du plan au plancher ; CPU seul par défaut) qui
+    tient lui aussi ; sinon liste VIDE, llama-bench non lancé. Données incomplètes,
+    aucune VRAM connue, plusieurs GPU ou llama-bench d'un autre binaire : inchangée."""
     liste = [int(g) for g in ngl]
     res = {"ngl": liste, "ncmoe": int(ncmoe or 0), "retires": [], "note": ""}
     vram = int(vram_total_mb or 0) or int(getattr(hw, "vram_total_mb", 0) or 0)
@@ -1402,36 +1411,66 @@ def filtre_llama_bench(
         res["note"] = "capacité VRAM inconnue ou non modélisée : liste inchangée"
         return res
     budget = device_budget_mb(vram, int(ram_total_mb or 0), uma, int(headroom_mb))
+    hote = host_budget_mb(int(ram_total_mb or 0))
+    n = int(getattr(profile, "n_layers", 0) or 0)
+    budgets = (
+        f"budget device {budget} Mo (VRAM {vram} Mo, marge {int(headroom_mb)} Mo), "
+        f"RAM {hote} Mo"
+    )
+
+    def _juge(g: int, k: int) -> tuple[bool, str]:
+        # Une invocation llama-bench : 256 cellules de KV f16, une séquence, ni
+        # checkpoint ni mmproj ; KV et état ventilés par couche offloadée.
+        return _fits(
+            placement_brut(g, False, k or None, n),
+            profile=profile,
+            model_size_mb=0,
+            kv_mb=0,
+            budget=budget,
+            layers=n,
+            host_budget=hote,
+            uma=uma,
+            contexte=(LLAMA_BENCH_CELLS, "f16", 1),
+        )
+
     garde = []
     for g in liste:
-        couches = profile.device_layers(ngl=g)
-        poids = profile.gpu_bytes(ngl=g, n_cpu_moe=int(ncmoe) if ncmoe else None) or 0
-        kv = profile.kv_bytes(LLAMA_BENCH_CELLS, "f16", 1, layers=couches)
-        etat = profile.recurrent_live_bytes(layers=couches)
-        dev_mb = int((poids + kv + etat) // _MIB)
-        if dev_mb > budget:
-            res["retires"].append(
-                {
-                    "ngl": g,
-                    "raison": f"dépasse le budget device : {dev_mb} Mo sur le device > "
-                    f"{budget} Mo (VRAM {vram} Mo, marge {int(headroom_mb)} Mo)",
-                }
-            )
-        else:
+        ok, why = _juge(g, res["ncmoe"])
+        if ok:
             garde.append(g)
+        else:
+            res["retires"].append(
+                {"ngl": g, "raison": f"ne tient pas ({budgets}) — {why}"}
+            )
     if garde:
         res["ngl"] = garde
         if garde == [0] and any(g != 0 for g in liste):
-            res["note"] = (
-                "tous les -ngl > 0 dépassent le budget device : -ngl 0 seul (CPU)"
+            res["note"] = "aucun -ngl > 0 ne tient : -ngl 0 seul (CPU)"
+        return res
+    # Rien ne tient : le premier repli qui tient LUI AUSSI (jamais ajouté sans contrôle).
+    for r in replis if replis is not None else [{"ngl": 0}]:
+        g = int(r.get("ngl") or 0)
+        k = n if r.get("cpu_moe") else int(r.get("n_cpu_moe") or 0)
+        if _juge(g, k)[0]:
+            quoi = (
+                f"-ngl {g}"
+                + (f" -ncmoe {k}" if k else "")
+                + (" (CPU)" if g == 0 else "")
             )
-    else:
-        res.update(
-            ngl=[0],
-            ncmoe=0,
-            note="tous les -ngl candidats dépassent le budget device : repli sur -ngl "
-            "0 (CPU)",
-        )
+            source = " du plan au plancher" if replis is not None else ""
+            res.update(
+                ngl=[g],
+                ncmoe=k,
+                note=f"aucun -ngl candidat ne tient : repli sur {quoi}{source}, "
+                "vérifié device et RAM",
+            )
+            return res
+    res.update(
+        ngl=[],
+        ncmoe=0,
+        note="aucune configuration de llama-bench ne tient (device et RAM) : "
+        "llama-bench non lancé",
+    )
     return res
 
 

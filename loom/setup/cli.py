@@ -1163,6 +1163,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         uma=not hw.vram_is_discrete,
         headroom_mb=headroom,
         meme_binaire=(probe_bin == str(server_bin)),
+        # Replis vérifiés : les candidats du plan au plancher, dans l'ordre.
+        replis=(pc.get("plan_plancher") or {}).get("flags"),
     )
     pc["llama_bench"] = filtre
     for retire in filtre["retires"]:
@@ -1172,8 +1174,19 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         )
     # Note dite dès que llama-bench chargerait quelque chose sur le GPU (liste filtrée,
     # ou laissée telle quelle faute de capacité ou de métadonnées) — jamais vide.
-    if filtre["note"] and any(int(g) != 0 for g in ngl):
+    if filtre["note"] and (
+        filtre["retires"] or filtre["ngl"] != ngl or any(int(g) != 0 for g in ngl)
+    ):
         con.say(f"  [attention] llama-bench : {filtre['note']}.")
+    if not filtre["ngl"]:
+        # Aucune configuration ne tient (device et RAM) : llama-bench n'est pas lancé —
+        # un chargement condamné ferait échouer toute l'invocation (revue n°17).
+        con.say(f"  [échec] llama-bench : {filtre['note']} — configuration inchangée.")
+        report.add("bench", "echec", filtre["note"])
+        _archive_setup(
+            con, trace, echec={"etape": "llama-bench", "erreur": filtre["note"]}
+        )
+        return
     ngl, ncmoe = filtre["ngl"], filtre["ncmoe"]
     combos = len(threads) * len(ngl)
     con.say(

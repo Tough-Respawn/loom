@@ -915,6 +915,91 @@ def test_precontrole_moe_llama_bench_repli_sur_ngl_0_dit(monkeypatch, tmp_path):
     assert "llama-bench : ." not in out
 
 
+def test_llama_bench_ne_recoit_que_des_configurations_qui_tiennent_en_ram(
+    monkeypatch, tmp_path
+):
+    """Revue n°17 (P1), parcours loom-setup : dense de 16 600 Mo, GPU de 24 576 Mo, RAM
+    de 8 192 Mo. Le précontrôle tient par le tout-GPU ; llama-bench recevait [0, 99] et
+    aurait chargé les 16 600 Mo en RAM avec -ngl 0. Il ne reçoit plus que [99]."""
+    appels: list = []
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        ram_total_mb=8192,
+        hw=_gpu(24_576),
+        meta=_meta_complete(par_mb=400),
+        run_bench=_bench_espion(appels),
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 16600\n',
+        encoding="utf-8",
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert appels and appels[0]["ngl"] == [99]
+    assert "-ngl 0 retiré" in out and "RAM" in out
+
+
+def test_llama_bench_repli_sur_le_plan_au_plancher(monkeypatch, tmp_path):
+    """MoE de 39 800 Mo, GPU de 24 Go, 20 000 Mo de RAM : -ngl 999 -ncmoe 8 (tous les
+    experts en RAM) ne tient pas, -ngl 0 non plus. llama-bench part sur le placement
+    du plan au plancher (experts de 4 couches en RAM), vérifié des deux côtés — jamais
+    sur un -ngl 0 ajouté sans contrôle."""
+    appels: list = []
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        ram_total_mb=20_000,
+        hw=_gpu(24_576),
+        meta=_meta_moe(),
+        run_bench=_bench_espion(appels),
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert appels and appels[0]["ngl"] == [999] and appels[0]["ncmoe"] == 4
+    assert "repli sur -ngl 999 -ncmoe 4 du plan au plancher" in out
+
+
+def test_llama_bench_non_lance_si_aucune_configuration_ne_tient(monkeypatch, tmp_path):
+    """Filet de sécurité : si aucune configuration de llama-bench ne tient (device et
+    RAM), il n'est pas lancé — aucun processus, sortie explicite, archive."""
+    from loom.setup import placement as place_mod
+
+    appels: list = []
+    journal: list = []
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_rien_ne_doit_tourner, journal=journal),
+        hw=_gpu(24_576),
+        meta=_meta_complete(),
+        run_bench=_bench_espion(appels),
+    )
+    monkeypatch.setattr(
+        place_mod,
+        "filtre_llama_bench",
+        lambda *a, **k: {
+            "ngl": [],
+            "ncmoe": 0,
+            "retires": [],
+            "note": "aucune configuration de llama-bench ne tient (device et RAM) : "
+            "llama-bench non lancé",
+        },
+    )
+    assert run(con, deps) != 0
+    out = "\n".join(printed)
+    assert appels == [] and journal == []
+    assert "llama-bench non lancé" in out
+    arch = json.loads(
+        next((tmp_path / "var" / "bench" / "m1").glob("*.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert arch["echec"]["etape"] == "llama-bench"
+
+
 def test_precontrole_vram_de_repli_filtre_llama_bench_et_le_dit(monkeypatch, tmp_path):
     """Revue adverse de L7 : VRAM lue par nvidia-smi seulement (profil de repli de
     detect_hardware, total 0). Le précontrôle et la sonde jugeaient cette VRAM,
