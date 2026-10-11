@@ -141,9 +141,12 @@ Navigateur ──HTTP──► Loom (Flask :8000) ──OpenAI API──► llam
   [docs/adr/0001-llamacpp-vs-ollama.md](docs/adr/0001-llamacpp-vs-ollama.md).
 - **Lanceur auto-adaptatif** : `loom/runtime/serve.py` détecte le GPU (sinon CPU) et règle l'offload
   selon la VRAM libre (`nvidia-smi`). Inclut `--jinja` (appels d'outils) et `--mmproj` (vision).
-- **Modèles** : des **MoE 24B+** rendus jouables même sur petite VRAM par **offload des experts en
-  RAM** (`--cpu-moe` / `--n-cpu-moe` ; attention/dense sur GPU, experts routés en RAM). Par
-  défaut `gemma4-26b-a4b-uncensored` ; `qwen3.6-35b-a3b-abliterated` dispo (avec vision).
+- **Modèles** : le critère est le **nombre d'octets lus par token**, pas l'architecture (le
+  décodage est borné par la bande passante mémoire). Deux familles tiennent sur une petite VRAM :
+  les **MoE 24B+** avec **experts en RAM** (`--cpu-moe` / `--n-cpu-moe` ; attention sur GPU,
+  experts routés en RAM, ~3-4 Go lus par token) et les **denses 27B ternaires** (~1,7-2 bits par
+  poids, ~6-7 Go, presque entièrement en VRAM). Un dense 27B à 4 bits (~15 Go) reste exclu :
+  3-4 t/s. Le placement GPU/CPU se mesure (`loom-setup`, `/rebench`), il ne se devine pas.
   Chacun branche les siens — voir [loom/models/README.md](loom/models/README.md) et
   `loom/models/_TEMPLATE/`.
 
@@ -266,4 +269,4 @@ Re-calibrer (nouveau matériel, nouveau modèle par défaut) : supprimer la tabl
 
 ## Stack
 
-Python 3.12+ · `uv` · `ruff` · Flask · Preact/htm · SDK `openai` · llama.cpp · MoE 24B+ (offload experts).
+Python 3.12+ · `uv` · `ruff` · Flask · Preact/htm · SDK `openai` · llama.cpp · MoE 24B+ (offload experts) ou dense 27B ternaire.

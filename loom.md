@@ -11,7 +11,7 @@ Le pari architectural : pas d'orchestrateur déterministe, pas de rail de réfle
 ## Stack
 
 - **Python 3.12+**, gestionnaire `uv`, build `hatchling`.
-- **Runtime LLM** : `llama.cpp` (`llama-server`), API OpenAI-compatible sur `:8080` ; `llama-swap` pour le hot-swap multi-modèles. MoE 24B+ rendus jouables même sur petite VRAM par offload des experts en RAM (`--cpu-moe`).
+- **Runtime LLM** : `llama.cpp` (`llama-server`), API OpenAI-compatible sur `:8080` ; `llama-swap` pour le hot-swap multi-modèles. Modèles choisis par octets lus par token : MoE 24B+ avec experts en RAM (`--cpu-moe`) ou dense 27B ternaire (~6 Go, quasi tout en VRAM).
 - **Web/UI** : Flask + Preact/htm (zéro build, libs vendorées en `loom/web/static/`), streaming SSE, markdown, MathJax (LaTeX offline). Multi-onglets (une session par onglet, génération concurrente pour les distants), console de configuration (édition des TOML à chaud), gestionnaire de modèles (locaux + distants, ajout/édition sans redémarrer), compteur tokens/cache + jauge de remplissage du contexte, moniteur système (CPU/RAM/GPU) pour les modèles locaux.
 - **SDK** : `openai` (client API), `httpx`, `huggingface-hub` (téléchargement des GGUF).
 - **Ingestion docs** : `pypdf`, `openpyxl`, `python-docx`, `trafilatura`.

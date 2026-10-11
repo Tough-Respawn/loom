@@ -41,9 +41,11 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
   offload réglé selon la VRAM libre via `nvidia-smi`), `--jinja` + `--mmproj` inclus.
 - **Modèles découverts par dossier** `loom/models/<id>/` (`model.toml` + `profile.md` + GGUF) ;
   1 modèle → `llama-server` direct, 2+ → `llama-swap`. Template : `loom/models/_TEMPLATE/`.
-- **MoE 24B+ sur petite VRAM** : offload des experts en RAM (`--cpu-moe` / `--n-cpu-moe`,
-  attention/dense sur GPU). Par défaut `gemma4-26b-a4b-uncensored` ;
-  `qwen3.6-35b-a3b-abliterated` (vision) dispo. Les tout-petits 4B ont été abandonnés.
+- **Modèles viables sur petite VRAM** (critère : octets lus par token, décodage borné par la
+  bande passante) : MoE 24B+ avec experts en RAM (`--cpu-moe` / `--n-cpu-moe`, attention sur
+  GPU), et depuis 2026-10-11 les denses 27B ternaires (~1,7-2 bits/poids, ~6-7 Go, quasi tout
+  en VRAM ; ex. Bonsai 2 = Qwen3.8-27B, support upstream llama.cpp #29600 mergé le 2026-10-11).
+  Exclus : les tout-petits 4B (2026-06-09) et les denses 27B à 4 bits (~15 Go, 3-4 t/s).
 - Décision runtime : [docs/adr/0001-llamacpp-vs-ollama.md](docs/adr/0001-llamacpp-vs-ollama.md).
 
 ### Chat / UI
@@ -247,8 +249,10 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 - **Dé-emphaser les règles critiques du prompt** (ex. PowerShell) : régression mesurée
   (qwen 0/3 ; retour à 3/3 en rétablissant l'emphase). Un modèle local a besoin d'impératifs
   fermes, même si la doc frontière conseille l'inverse.
-- **Petits modèles denses (4B)** : abandonnés (2026-06-09). Cible = MoE 24B+ avec experts en
-  RAM (`--cpu-moe`) ; les outils/prompts ne compensent pas un modèle sous la barre.
+- **Petits modèles denses (4B)** : abandonnés (2026-06-09) ; les outils/prompts ne compensent
+  pas un modèle sous la barre. La cible « MoE 24B+ seulement » qui en découlait est RÉVISÉE le
+  2026-10-11 : le vrai critère est les octets lus par token, et un dense 27B ternaire (~6 Go)
+  le satisfait aussi bien qu'un MoE à experts en RAM.
 - **Descripteur vision détourné (« VLM comme outil »)** : SUPPRIMÉ (2026-07-09). read_image
   routait l'image d'un modèle texte-only vers glm-5v — un appel DISTANT PAYANT jamais
   consenti par l'utilisateur (découvert quand le compte Z.ai à sec a renvoyé 1113). Règle
