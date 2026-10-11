@@ -616,9 +616,7 @@ def test_isolation_compte_les_copies_du_cache_de_prompts():
     )  # 300 + ~370 <= 928
 
 
-def _repli(
-    meta, hw, flags, *, ram, slots, complet=True, ctx_checkpoints=None, mmproj_mb=0
-):
+def _repli(meta, hw, flags, *, ram, slots, complet=True, mmproj_mb=0, ctx=16384):
     from loom.setup.placement import repli_calibration
 
     prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
@@ -628,8 +626,7 @@ def _repli(
         flags=flags,
         complet=complet,
         slots=slots,
-        ctx=8192,
-        ctx_checkpoints=ctx_checkpoints,
+        ctx=ctx,
         model_size_mb=_taille(meta),
         gpu_backend=hw.has_gpu,
         vram_total_mb=hw.vram_total_mb,
@@ -644,8 +641,8 @@ def _repli(
 def test_mmproj_compte_cote_hote_pour_la_sonde_et_le_repli():
     """Chaque sonde passe --mmproj --no-mmproj-offload : 887 Mo de plus en RAM (Bonsai
     2). Cas du lot L13 (hybride, 8 Go + 4 000 Mo, ctx_checkpoints = 0) : 667 Mo hôte
-    sans mmproj (tient), 1 554 avec (non). Repli CPU seul d'un dense de 4 600 Mo sur 9
-    000 Mo de RAM : tient sans mmproj, pas avec."""
+    sans mmproj (tient), 1 554 avec (non). Repli CPU seul d'un dense de 4 600 Mo sur
+    9 800 Mo de RAM : tient sans mmproj, pas avec."""
     meta = _hybride()
     assert (
         _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000, ctx_checkpoints=0)["prevu_tient"]
@@ -655,26 +652,41 @@ def test_mmproj_compte_cote_hote_pour_la_sonde_et_le_repli():
     assert avec["prevu_tient"] is False
     cpu = {"ngl": 0, "cpu_moe": False, "n_cpu_moe": None}
     dense = _dense(n=40, par_mb=100)
-    assert _repli(dense, NVIDIA_8G, cpu, ram=9000, slots=1)["tient"] is True
-    r = _repli(dense, NVIDIA_8G, cpu, ram=9000, slots=1, mmproj_mb=887)
+    assert _repli(dense, NVIDIA_8G, cpu, ram=9800, slots=1)["tient"] is True
+    r = _repli(dense, NVIDIA_8G, cpu, ram=9800, slots=1, mmproj_mb=887)
     assert r["tient"] is False and "mmproj 887 Mo" in r["raison"]
 
 
-def test_repli_de_la_calibration_juge_a_son_premier_chargement():
-    """Revue adverse : la garde du repli regardait 4096 x 1 (la sonde d'isolation),
-    alors que la calibration charge d'abord à 8192 x slots retenus. 40 x 168 Mo + 280 +
-    280 sur 8 Go : tout GPU tient à 4096 (7 340 Mo) mais pas à 8192 (7 680 pour 7 552)
-    — repli condamné. 40 x 130 Mo tient à 8192 (6 160) : même refusé par l'étape 2 à un
-    contexte utile plus grand, la calibration trouvera un contexte qui tient."""
-    lourd = _dense(n=40, par_mb=168, sortie_mb=280, emb_mb=280)
-    r = _repli(lourd, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1)
-    assert r["tient"] is False and r["ctx"] == 8192 and r["slots"] == 1
-    assert "7680 Mo device" in r["raison"]
-    assert _iso(lourd, NVIDIA_8G, PREVU_GPU, ram=32_000)["prevu_tient"] is True
+def test_repli_de_la_calibration_juge_a_ses_chargements_de_pente():
+    """La calibration charge TOUJOURS ses deux barreaux de pente (8192 puis 16384 x
+    slots retenus), sans protection : le repli est jugé au plus grand (vérification
+    adverse : la garde à 8192 laissait passer un 16384 refusé par la même estimation).
+    40 x 160 Mo + 280 + 280 sur 8 Go : 7 360 Mo à 8192 (tenait), 8 040 à 16384 — repli
+    condamné. 40 x 130 Mo tient à 16384 (6 840) : la calibration trouvera un contexte.
+    Les slots retenus comptent : 40 x 140 Mo tient à 1 slot (7 240), pas à 2 (8 600)."""
+    moyen = _dense(n=40, par_mb=160, sortie_mb=280, emb_mb=280)
+    assert _repli(moyen, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1, ctx=8192)["tient"]
+    r = _repli(moyen, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1)
+    assert r["tient"] is False and r["ctx"] == 16384 and r["slots"] == 1
+    assert "8040 Mo device" in r["raison"]
     leger = _dense(n=40, par_mb=130, sortie_mb=280, emb_mb=280)
     assert _repli(leger, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1)["tient"] is True
-    inconnu = _repli(lourd, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1, complet=False)
+    a_deux = _dense(n=40, par_mb=140, sortie_mb=280, emb_mb=280)
+    assert _repli(a_deux, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1)["tient"] is True
+    assert _repli(a_deux, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=2)["tient"] is False
+    inconnu = _repli(moyen, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1, complet=False)
     assert inconnu["tient"] is None
+
+
+def test_repli_de_la_calibration_sans_checkpoints_aux_chargements_nus():
+    """Régression du lot L11 (vérification adverse) : la garde comptait 32 checkpoints
+    par slot, or les barreaux de pente sont des chargements NUS (aucun prompt, donc ni
+    checkpoint ni copie du cache de prompts). Hybride, 8 Go + 13 000 Mo, 2 slots, -ngl
+    40 : refusé à tort pour 9 576 Mo de checkpoints, alors que le chargement tient
+    (~3 200 Mo côté hôte)."""
+    ngl40 = {"ngl": 40, "cpu_moe": False, "n_cpu_moe": None}
+    r = _repli(_hybride(), NVIDIA_8G, ngl40, ram=13_000, slots=2)
+    assert r["tient"] is True and "checkpoints 0 Mo" in r["raison"]
 
 
 def test_flags_bruts_ngl_0_cpu_moe_rien_sur_le_device():

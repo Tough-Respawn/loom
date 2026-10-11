@@ -1478,10 +1478,10 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     valide = bool(pl_res and pl_res.get("placement") is not None and pl_res["mesures"])
     meca = (pl_res or {}).get("mecanisme") or pl_err
     if not valide:
-        # Repli = les flags actuels de la sonde. Ne tient pas au PREMIER chargement de
-        # la calibration (8192 x slots retenus) d'après l'estimation : y revenir
-        # lancerait un chargement condamné (revue adverse). Sortie explicite, rien
-        # d'écrit, avec les erreurs des candidats.
+        # Repli = les flags actuels de la sonde. Ne tient pas aux barreaux de PENTE de
+        # la calibration (chargements nus, au plus grand : 16384 x slots retenus)
+        # d'après l'estimation : y revenir lancerait un chargement condamné (revue
+        # adverse). Sortie explicite, rien d'écrit, avec les erreurs des candidats.
         repli = place_mod.repli_calibration(
             profile,
             meta,
@@ -1492,8 +1492,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             },
             complet=pc["complet"],
             slots=pl_slots,
-            ctx=topo_mod.CALIBRATION_PENTE_CTX[0],
-            ctx_checkpoints=model_toml.get("ctx_checkpoints"),
+            ctx=max(topo_mod.CALIBRATION_PENTE_CTX),
             mmproj_mb=int(mm["mb"] or 0),
             model_size_mb=model_size_mb,
             gpu_backend=gpu_ok,

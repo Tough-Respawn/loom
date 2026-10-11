@@ -167,9 +167,10 @@ def _measure_placement(
     else:
         err = None
     if not res or res.get("placement") is None or not res["mesures"]:
-        # Repli = les flags actuels de la sonde. Ne tient pas au PREMIER chargement de
-        # la calibration (8192 x slots retenus) : y revenir lancerait un chargement
-        # condamné (revue adverse) — PlacementNonValide, avec les erreurs des candidats.
+        # Repli = les flags actuels de la sonde. Ne tient pas aux barreaux de PENTE de
+        # la calibration (chargements nus, au plus grand : 16384 x slots retenus) : y
+        # revenir lancerait un chargement condamné (revue adverse) — PlacementNonValide,
+        # avec les erreurs des candidats.
         repli = place_mod.repli_calibration(
             profile,
             meta,
@@ -180,8 +181,7 @@ def _measure_placement(
             },
             complet=bool((precontrole or {}).get("complet")),
             slots=max(1, int(slots or 1)),
-            ctx=topo_mod.CALIBRATION_PENTE_CTX[0],
-            ctx_checkpoints=getattr(probe, "ctx_checkpoints", None),
+            ctx=max(topo_mod.CALIBRATION_PENTE_CTX),
             mmproj_mb=int(mmproj_mb or 0),
             model_size_mb=int(model_size_mb or 0),
             gpu_backend=bool(gpu_backend),

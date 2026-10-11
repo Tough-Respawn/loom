@@ -438,7 +438,7 @@ def test_run_calibration_demarrage_prevu_condamne_jamais_repris_en_repli(
     with pytest.raises(PlacementNonValide) as exc:
         rebench._run_calibration(None, spec, lambda m: None, trace_out=trace)
     assert "aucun placement validé" in str(exc.value)
-    assert "premier chargement de la calibration" in str(exc.value)
+    assert "chargements de pente de la calibration" in str(exc.value)
     assert "ErrorOutOfDeviceMemory" in str(exc.value)  # la vraie erreur des candidats
     lances = [e for e in journal if e[0] in ("run", "isolation", "verify_cache")]
     assert lances and not any(e[1] == 999 for e in lances)
@@ -446,12 +446,13 @@ def test_run_calibration_demarrage_prevu_condamne_jamais_repris_en_repli(
     assert trace["repli_calibration"]["tient"] is False
 
 
-def test_run_calibration_repli_refuse_au_premier_chargement_de_la_calibration(
+def test_run_calibration_repli_refuse_aux_chargements_de_pente_de_la_calibration(
     monkeypatch, tmp_path
 ):
-    """Le démarrage prévu tient à 4096 x 1 (la sonde d'isolation tourne dessus) mais
-    pas à 8192 ; les partiels échouent : PlacementNonValide, pas de calibration sur
-    -ngl 999 — la garde porte sur le premier chargement de la calibration."""
+    """Le démarrage prévu tient à 4096 x 1 (la sonde d'isolation tourne dessus) et à
+    8192, mais pas à 16384, le second barreau de pente que la calibration charge quoi
+    qu'il arrive ; l'étape 2 (contexte 32768) le refuse, les partiels échouent :
+    PlacementNonValide, pas de calibration sur -ngl 999."""
     from loom.web.routes import rebench
 
     journal: list = []
@@ -462,15 +463,16 @@ def test_run_calibration_repli_refuse_au_premier_chargement_de_la_calibration(
     spec = _environnement(
         monkeypatch,
         tmp_path,
-        meta=_meta_complete(par_mb=168, sortie_mb=280, emb_mb=280),
+        meta=_meta_complete(par_mb=160, sortie_mb=280, emb_mb=280),
         hw=GPU_8G,
         ram_mb=32_000,
         journal=journal,
+        toml_extra="context = 32768\n",
         run_impl=_oom,
     )
     with pytest.raises(PlacementNonValide) as exc:
         rebench._run_calibration(None, spec, lambda m: None, trace_out={})
-    assert "(8192 x 1 slot)" in str(exc.value)
+    assert "(16384 x 1 slot)" in str(exc.value)
     assert any(e[0] == "isolation" and e[1] == 999 for e in journal)
     assert not any(e[0] == "run" and e[1] == 999 for e in journal)
 

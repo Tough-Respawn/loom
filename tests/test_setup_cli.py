@@ -591,11 +591,12 @@ def _harnais_bench(
     return con, printed, deps, mdir
 
 
-def _fake_probe_cls(run_impl, isolation=(600, 4), journal=None):
+def _fake_probe_cls(run_impl, isolation=(600, 4), journal=None, avec_sonde=False):
     """Fausse sonde compatible dataclasses.replace. `journal` (liste) enregistre chaque
     CONSTRUCTION et chaque LANCEMENT (probe_isolation, run, verify_cache) avec les flags
     — la preuve « aucun processus modèle » ne doit pas reposer sur une exception, que
-    les `except Exception` du bench avaleraient."""
+    les `except Exception` du bench avaleraient. `avec_sonde` : run_impl reçoit aussi
+    la sonde (un échec qui dépend du -ngl)."""
     from dataclasses import dataclass as _dc
 
     def _note(kind, s, *extra):
@@ -638,7 +639,7 @@ def _fake_probe_cls(run_impl, isolation=(600, 4), journal=None):
 
         def run(self, ctx, depth):
             _note("run", self, ctx, depth)
-            return run_impl(ctx, depth)
+            return run_impl(ctx, depth, self) if avec_sonde else run_impl(ctx, depth)
 
     return _FakeProbe
 
@@ -1151,16 +1152,16 @@ def test_demarrage_prevu_qui_ne_tient_pas_jamais_repris_en_repli(monkeypatch, tm
     archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
     arch = json.loads(archives[-1].read_text(encoding="utf-8"))
     assert arch["echec"]["etape"] == "placement"
-    assert "premier chargement de la calibration" in arch["echec"]["erreur"]
+    assert "chargements de pente de la calibration" in arch["echec"]["erreur"]
     assert arch["repli_calibration"]["tient"] is False
 
 
-def test_repli_refuse_au_premier_chargement_de_la_calibration(monkeypatch, tmp_path):
-    """Revue adverse : le démarrage prévu (tout GPU) tient à 4096 x 1 — la sonde
-    d'isolation tourne dessus — mais pas à 8192, le premier chargement de la
-    calibration ; les deux partiels échouent. La calibration relançait -ngl 999 à 8192,
-    ce que l'estimation venait de refuser. Sortie à l'étape placement, avec les VRAIES
-    erreurs des candidats (« sonde de placement illisible » les cachait)."""
+def test_repli_refuse_aux_chargements_de_pente_de_la_calibration(monkeypatch, tmp_path):
+    """Vérifications adverses : le démarrage prévu (tout GPU) tient à 4096 x 1 — la
+    sonde d'isolation tourne dessus — et à 8192, mais pas à 16384, le second barreau de
+    pente que la calibration charge quoi qu'il arrive ; l'étape 2 (contexte 32768) le
+    refuse et ses partiels échouent. La calibration relançait -ngl 999. Sortie à
+    l'étape placement, avec les VRAIES erreurs des candidats."""
     journal: list = []
 
     def run_impl(ctx, depth):
@@ -1172,11 +1173,11 @@ def test_repli_refuse_au_premier_chargement_de_la_calibration(monkeypatch, tmp_p
         _fake_probe_cls(run_impl, journal=journal),
         ram_total_mb=32_000,
         hw=_gpu(8192, 8000),
-        meta=_meta_complete(par_mb=168, sortie_mb=280, emb_mb=280),
+        meta=_meta_complete(par_mb=160, sortie_mb=280, emb_mb=280),
     )
     (mdir / "model.toml").write_text(
-        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 7280\n'
-        "n_gpu_layers = 999\n",
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 6960\n'
+        "n_gpu_layers = 999\ncontext = 32768\n",
         encoding="utf-8",
     )
     assert run(con, deps) != 0
@@ -1185,11 +1186,71 @@ def test_repli_refuse_au_premier_chargement_de_la_calibration(monkeypatch, tmp_p
     out = "\n".join(printed)
     assert "aucun placement validé (toutes les mesures en échec" in out
     assert "vk::Device::allocateMemory" in out
-    assert "premier chargement de la calibration (8192 x 1 slot)" in out
+    assert "chargements de pente de la calibration (16384 x 1 slot)" in out
     archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
     arch = json.loads(archives[-1].read_text(encoding="utf-8"))
     assert arch["echec"]["etape"] == "placement"
     assert "allocateMemory" in arch["echec"]["erreur"]
+
+
+def _meta_hybride(n=64, par_mb=100):
+    """qwen35 : 1 couche d'attention sur 4, état récurrent de Bonsai 2 (~150 Mio)."""
+    meta = _meta_complete(n=n, par_mb=par_mb)
+    meta.update(
+        architecture="qwen35",
+        context_length=262144,
+        head_count_kv=4,
+        key_length=256,
+        value_length=256,
+        full_attention_interval=4,
+        recurrent=True,
+        ssm_conv_kernel=4,
+        ssm_inner_size=6144,
+        ssm_state_size=128,
+        ssm_group_count=16,
+    )
+    meta["weights"] = dict(
+        meta["weights"],
+        couches_attention=[i for i in range(n) if (i + 1) % 4 == 0],
+        couches_recurrentes=[i for i in range(n) if (i + 1) % 4 != 0],
+    )
+    return meta
+
+
+def test_repli_hybride_calibre_sans_checkpoints_fantomes(monkeypatch, tmp_path):
+    """Régression du lot L11 (vérification adverse) : la garde du repli comptait 32
+    checkpoints par slot aux barreaux de pente, chargements NUS qui n'en créent aucun.
+    Hybride sur 8 Go + 13 000 Mo, -ngl 40 actuel, 2 slots imposés : le seul candidat
+    (tout GPU) échoue ; le repli -ngl 40 tient (~3 200 Mo côté hôte) — il était refusé
+    pour 9 576 Mo de checkpoints fantômes et la calibration n'avait jamais lieu."""
+    journal: list = []
+
+    def run_impl(ctx, depth, sonde):
+        if sonde.ngl == 999:
+            raise RuntimeError("ErrorOutOfDeviceMemory")
+        return _mesure_ok(ctx, depth)
+
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(run_impl, journal=journal, avec_sonde=True),
+        ram_total_mb=13_000,
+        hw=_gpu(8192, 8000),
+        meta=_meta_hybride(),
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 64\nsize_mb = 7000\n'
+        "n_gpu_layers = 40\n",
+        encoding="utf-8",
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert "aucun placement validé" not in out
+    pente = [e for e in journal if e[0] == "run" and e[1] == 40 and e[6] is None]
+    assert [(e[4], e[5]) for e in pente][:2] == [(2, 8192), (2, 16384)]
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["repli_calibration"]["tient"] is True
 
 
 def test_isolation_imposee_par_la_memoire_recurrente_sonde_non_lancee(

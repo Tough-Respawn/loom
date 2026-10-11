@@ -775,9 +775,9 @@ class DemarrageImpossible(RuntimeError):
 
 class PlacementNonValide(RuntimeError):
     """Aucun placement validé par la mesure, et le repli — les flags actuels — ne tient
-    pas au premier chargement de la calibration d'après l'estimation (repli_calibration)
-    : y revenir lancerait un chargement condamné. Calibration non lancée, rien
-    d'appliqué."""
+    pas aux chargements de pente de la calibration d'après l'estimation
+    (repli_calibration) : y revenir lancerait un chargement condamné. Calibration non
+    lancée, rien d'appliqué."""
 
 
 def raison_repli_condamne(mecanisme: str | None, repli: dict) -> str:
@@ -789,7 +789,7 @@ def raison_repli_condamne(mecanisme: str | None, repli: dict) -> str:
     s = "s" if slots > 1 else ""
     return (
         f"aucun placement validé ({meca}) et le repli sur la configuration actuelle ne "
-        f"tient pas au premier chargement de la calibration ({repli.get('ctx')} x "
+        f"tient pas aux chargements de pente de la calibration ({repli.get('ctx')} x "
         f"{slots} slot{s}) d'après l'estimation — {repli.get('raison')}"
     )
 
@@ -1159,7 +1159,6 @@ def repli_calibration(
     complet: bool,
     slots: int,
     ctx: int,
-    ctx_checkpoints: int | None,
     model_size_mb: int,
     gpu_backend: bool,
     vram_total_mb: int,
@@ -1170,12 +1169,14 @@ def repli_calibration(
     mmproj_mb: int = 0,
 ) -> dict:
     """Le REPLI de la calibration — les flags actuels, quand aucun placement n'est
-    validé — tient-il à son PREMIER chargement (topology.calibrate : `ctx` x `slots`
-    retenus, checkpoints du modèle, mmproj en RAM) ? {tient: bool | None, ctx, slots,
-    raison} ; None : métadonnées incomplètes, rien n'est conclu (le serveur tranchera).
-    La garde porte sur ce que la calibration chargera vraiment : ni le plancher de la
-    sonde d'isolation (4096 x 1), ni le contexte utile (la calibration peut trouver
-    plus petit que lui)."""
+    validé — tient-il à ses barreaux de PENTE (topology.calibrate les charge tous, sans
+    protection) ? Jugé au plus grand, `ctx` x `slots` retenus — l'estimation croît avec
+    le contexte, il couvre les autres —, sans checkpoint : ces chargements sont NUS
+    (aucun prompt, donc ni checkpoint ni copie du cache de prompts) ; mmproj en RAM.
+    {tient: bool | None, ctx, slots, raison} ; None : métadonnées incomplètes, rien
+    n'est conclu (le serveur tranchera). Ni le plancher de la sonde d'isolation (4096 x
+    1), ni le contexte utile : la calibration peut trouver plus petit que lui, et ses
+    barreaux de vitesse tolèrent un échec."""
     meta = meta or {}
     slots = max(1, int(slots or 1))
     base = {"tient": None, "ctx": int(ctx), "slots": slots}
@@ -1186,7 +1187,7 @@ def repli_calibration(
         int(ctx),
         gpu_tuning=gpu_tuning,
         slots=slots,
-        checkpoints=ctx_checkpoints,
+        checkpoints=0,
     )
     ok, why = _flags_tiennent(
         profile,

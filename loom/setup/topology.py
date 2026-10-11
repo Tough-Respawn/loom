@@ -677,7 +677,8 @@ def _point(r, base: dict) -> dict:
 
 
 #: Contextes des barreaux de PENTE de calibrate, chargés dans cet ordre quoi qu'il
-#: arrive : le premier chargement de la calibration est à CALIBRATION_PENTE_CTX[0].
+#: arrive et sans protection (un échec arrête la calibration) : des chargements nus,
+#: sans prompt. La garde du repli les juge au plus grand (placement.repli_calibration).
 CALIBRATION_PENTE_CTX = (8192, 16384)
 
 
