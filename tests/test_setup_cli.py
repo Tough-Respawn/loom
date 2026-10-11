@@ -1235,6 +1235,34 @@ def test_repli_refuse_aux_chargements_de_pente_de_la_calibration(monkeypatch, tm
     assert "allocateMemory" in arch["echec"]["erreur"]
 
 
+def test_repli_juge_avec_les_slots_retenus(monkeypatch, tmp_path):
+    """La garde du repli reçoit les slots RETENUS (vérification adverse : slots=1 à la
+    place gardait la suite verte). 40 x 140 Mo + 280 + 280 sur 8 Go, isolation
+    nécessaire (2 slots) : le repli tient à 16384 x 1 (7 240 Mo) mais pas x 2 (8 600)
+    — sortie, aucun -ngl 999 relancé."""
+    journal: list = []
+
+    def run_impl(ctx, depth):
+        raise RuntimeError("ErrorOutOfDeviceMemory")
+
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(run_impl, isolation=(600, 590), journal=journal),
+        ram_total_mb=32_000,
+        hw=_gpu(8192, 8000),
+        meta=_meta_complete(par_mb=140, sortie_mb=280, emb_mb=280),
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 6160\n'
+        "n_gpu_layers = 999\ncontext = 32768\n",
+        encoding="utf-8",
+    )
+    assert run(con, deps) != 0
+    assert not any(e[0] == "run" and e[1] == 999 for e in journal)
+    assert "(16384 x 2 slots)" in "\n".join(printed)
+
+
 def _meta_hybride(n=64, par_mb=100):
     """qwen35 : 1 couche d'attention sur 4, état récurrent de Bonsai 2 (~150 Mio)."""
     meta = _meta_complete(n=n, par_mb=par_mb)
