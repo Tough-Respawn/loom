@@ -1149,21 +1149,30 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         return
     douteux = pc["verdict"] == "incertain" or pc.get("capacite_connue") is False
     con.say(f"  [{'attention' if douteux else 'ok'}] {pc_texte}")
-    # llama-bench : un seul -ngl qui échoue fait échouer toute l'invocation — ceux dont
-    # la borne device dépasse le budget device du précontrôle (même VRAM, même marge)
-    # sont retirés (données complètes).
+    # llama-bench : un seul -ngl qui échoue fait échouer toute l'invocation — ceux qui
+    # ne tiennent pas (device et RAM, budgets du précontrôle) sont retirés (données
+    # complètes). llama-bench vient du build GLOBAL : jugé avec le matériel de CE build
+    # (--list-devices, sans modèle), pas celui de la sonde quand model.toml fixe un
+    # server_bin — un build sans GPU n'offloade rien (vérification adverse de L21).
+    hw_bench = (
+        hw if probe_bin == str(server_bin) else deps.detect_hardware(str(server_bin))
+    )
+    vram_bench = (
+        vram_total
+        if hw_bench is hw
+        else int(hw_bench.vram_total_mb or deps.gpu_vram_total_mb() or 0)
+    )
     filtre = place_mod.filtre_llama_bench(
         profile,
         ngl=ngl,
         ncmoe=ncmoe,
         # Le MODÈLE seul : llama-bench ne charge jamais le mmproj.
         complet=pc.get("complet_modele", pc["complet"]),
-        hw=hw,
-        vram_total_mb=vram_total,
+        hw=hw_bench,
+        vram_total_mb=vram_bench,
         ram_total_mb=ram_total_mb,
-        uma=not hw.vram_is_discrete,
+        uma=not hw_bench.vram_is_discrete,
         headroom_mb=headroom,
-        meme_binaire=(probe_bin == str(server_bin)),
         # Replis vérifiés : les candidats du plan au plancher, dans l'ordre.
         replis=(pc.get("plan_plancher") or {}).get("flags"),
     )
@@ -1189,8 +1198,15 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         )
         return
     # Le choix du -ngl par llama-bench vaut sur la liste d'ORIGINE : un -ngl retiré
-    # parce qu'il ne tient pas est écarté, pas « non comparé » (vérification adverse).
-    ngl_decide = len(ngl) > 1 and not moe
+    # parce qu'il ne tient pas est écarté, pas « non comparé » — mais seulement si une
+    # configuration GPU a VRAIMENT été mesurée : -ngl 0 resté seul n'est pas un choix,
+    # et l'écrire forcerait en CPU tous les modèles de la machine (vérification adverse).
+    ngl_decide = (
+        len(ngl) > 1
+        and not moe
+        and bool(getattr(hw_bench, "has_gpu", False))
+        and any(int(g) > 0 for g in filtre["ngl"])
+    )
     ngl, ncmoe = filtre["ngl"], filtre["ncmoe"]
     combos = len(threads) * len(ngl)
     con.say(

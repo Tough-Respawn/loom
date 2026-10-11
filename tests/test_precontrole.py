@@ -915,6 +915,55 @@ def test_completude_du_modele_separee_du_mmproj():
     )
 
 
+GPU_4G = HardwareProfile(
+    True,
+    "GPU 4 Go",
+    4000,
+    16,
+    vram_total_mb=4096,
+    backend="CUDA",
+    vram_is_discrete=True,
+    gpu_count=1,
+)
+
+
+def test_llama_bench_compare_0_a_un_gpu_du_plan_quand_les_siens_debordent():
+    """Vérification adverse de L22 : le seul candidat GPU de llama-bench (-ngl 8,
+    sortie de 1 500 Mo offloadée en premier) déborde le budget device ; [0] restait
+    seul et loom-setup en faisait un choix machine sans aucune comparaison GPU. Le plan
+    au plancher, lui, tient en -ngl 7 : llama-bench compare 0 à ce placement vérifié."""
+    meta = _dense(n=40, par_mb=300, sortie_mb=1500, emb_mb=1500)
+    plan = _pc(meta, GPU_4G, ram=32_768)["plan_plancher"]
+    f = _bench(meta, GPU_4G, [0, 8], ram=32_768, replis=plan["flags"])
+    assert f["ngl"] == [0, 7] and [r["ngl"] for r in f["retires"]] == [8]
+    assert "plan au plancher" in f["note"]
+
+
+def test_llama_bench_budget_device_non_verifie_dit_sans_sentinelle():
+    """Vérification adverse de L21 : sur les chemins où le device n'est pas modélisé,
+    la raison affichait la sentinelle comme budget (« pour 1099511627776 Mo »)."""
+    deux_gpu = HardwareProfile(
+        True,
+        "RTX x2",
+        11000,
+        16,
+        vram_total_mb=12_288,
+        backend="CUDA",
+        vram_is_discrete=True,
+        gpu_count=2,
+    )
+    f = _bench(_dense(n=40, par_mb=400), deux_gpu, [0, 24], ram=9216)
+    raisons = " ".join(r["raison"] for r in f["retires"])
+    assert f["retires"] and "1099511627776" not in raisons
+    assert "device non vérifié" in raisons
+
+
+def test_llama_bench_sans_gpu_dit_comme_tel():
+    """Sans GPU, la raison n'est pas « capacité VRAM inconnue » : tout est en RAM."""
+    f = _bench(_dense(n=40, par_mb=400), CPU_SEUL, [0], ram=8192)
+    assert f["ngl"] == [] and "sans GPU" in f["retires"][0]["raison"]
+
+
 def test_llama_bench_non_lance_si_rien_ne_tient():
     """Ni la liste ni le repli (CPU seul, vérifié lui aussi) ne tiennent : liste vide,
     llama-bench non lancé — et dit. Dense de 16 600 Mo, GPU de 4 Go, RAM de 8 192 Mo."""
