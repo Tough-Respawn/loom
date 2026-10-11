@@ -421,12 +421,15 @@ def _split_mb(
     kv_mb: int,
     host_extra_mb: int,
     layers,
+    mmproj_mb: int = 0,
 ) -> tuple[int, int, str]:
     """(device Mo, hôte Mo, source) de ce que le placement alloue de chaque côté : poids
     offloadés + KV et état vivant des couches offloadées sur le device ; poids restés
-    sur CPU + KV de ces couches + `host_extra_mb` (checkpoints) sur l'hôte. Catalogue
-    des tenseurs quand il existe (règle des couches de llama.cpp, cf.
-    ModelProfile.device_layers), sinon proportion de la taille du fichier."""
+    sur CPU + KV de ces couches + `host_extra_mb` (checkpoints) + `mmproj_mb` (chargé
+    en RAM : --no-mmproj-offload) sur l'hôte. Catalogue des tenseurs quand il existe
+    (règle des couches de llama.cpp, cf. ModelProfile.device_layers), sinon proportion
+    de la taille du fichier."""
+    host_extra_mb = int(host_extra_mb or 0) + int(mmproj_mb or 0)
     frac = 1.0  # part des couches (donc du KV / état vivant) sur le device
     if pl.label == "cpu":
         frac = 0.0
@@ -472,11 +475,13 @@ def _fits(
     host_extra_mb: int = 0,
     host_budget: int | None = None,
     uma: bool = False,
+    mmproj_mb: int = 0,
 ):
     """(tient ?, trace) : le placement contre DEUX plafonds. Device (`budget`) : poids
     offloadés + KV/état vivant. Hôte (`host_budget`, RAM moins la marge OS) : poids CPU
-    + KV des couches CPU + checkpoints. Mémoire unifiée : le device reste borné par son
-    plafond (heap), et la SOMME device + hôte par la RAM, comptée une seule fois."""
+    + KV des couches CPU + checkpoints + mmproj. Mémoire unifiée : le device reste borné
+    par son plafond (heap), et la SOMME device + hôte par la RAM, comptée une seule
+    fois."""
     dev, host, src = _split_mb(
         pl,
         profile=profile,
@@ -484,14 +489,18 @@ def _fits(
         kv_mb=kv_mb,
         host_extra_mb=host_extra_mb,
         layers=layers,
+        mmproj_mb=mmproj_mb,
     )
     approx = "~" if src.startswith("proportion") else ""
+    extra = f"checkpoints {host_extra_mb} Mo" + (
+        f" + mmproj {int(mmproj_mb)} Mo" if mmproj_mb else ""
+    )
     if pl.label == "cpu" and host_budget is not None:
         # CPU seul : tout est côté hôte (poids, KV, checkpoints), rien sur le device.
         ok = host <= host_budget
         return ok, (
-            f"{src} : {approx}{host} Mo hôte (poids + KV + checkpoints "
-            f"{host_extra_mb} Mo) pour {host_budget} Mo de RAM"
+            f"{src} : {approx}{host} Mo hôte (poids + KV + {extra}) pour "
+            f"{host_budget} Mo de RAM"
         )
     if host_budget is None:
         return (
@@ -503,13 +512,12 @@ def _fits(
         return ok, (
             f"{src} : {approx}{dev} Mo device (poids + KV) pour {budget} Mo ; "
             f"{approx}{dev + host} Mo au total (mémoire unifiée, hôte {host} Mo dont "
-            f"checkpoints {host_extra_mb} Mo, comptée une fois) pour {host_budget} Mo de RAM"
+            f"{extra}, comptée une fois) pour {host_budget} Mo de RAM"
         )
     ok = dev <= budget and host <= host_budget
     return ok, (
         f"{src} : {approx}{dev} Mo device (poids + KV) pour {budget} Mo ; "
-        f"{approx}{host} Mo hôte (poids CPU + checkpoints {host_extra_mb} Mo) pour "
-        f"{host_budget} Mo de RAM"
+        f"{approx}{host} Mo hôte (poids CPU + {extra}) pour {host_budget} Mo de RAM"
     )
 
 
@@ -579,6 +587,7 @@ def plan_placements(
     current: Placement | None = None,
     profile=None,
     host_extra_mb: int = 0,
+    mmproj_mb: int = 0,
 ) -> PlacementPlan:
     """Candidats faisables (le plus sûr en premier, ou la configuration ACTUELLE) et
     liste de ce qu'on choisit de NE PAS mesurer, avec sa raison.
@@ -589,8 +598,9 @@ def plan_placements(
     - dense : tout GPU si ça tient, sinon deux offloads partiels (serré, prudent), sinon
       CPU ; CPU seul non exploré tant qu'un candidat GPU existe.
     `kv_mb` est la mémoire par contexte côté DEVICE au contexte utile (KV + état
-    récurrent vivant), `host_extra_mb` celle côté HÔTE (checkpoints), `profile` le
-    profil GGUF. Chaque candidat est vérifié des deux côtés (cf. _fits) — CPU seul et
+    récurrent vivant), `host_extra_mb` celle côté HÔTE (checkpoints), `mmproj_mb` le
+    projecteur multimodal chargé en RAM par chaque démarrage, `profile` le profil
+    GGUF. Chaque candidat est vérifié des deux côtés (cf. _fits) — CPU seul et
     la configuration actuelle compris. Rien ne tient : plan VIDE (`aucun_faisable`,
     `raison`), à traiter explicitement par l'appelant."""
     non: list[dict] = []
@@ -610,6 +620,7 @@ def plan_placements(
         host_extra_mb=int(host_extra_mb or 0),
         host_budget=host_budget_mb(ram_total_mb),
         uma=uma and not sans_gpu,
+        mmproj_mb=int(mmproj_mb or 0),
     )
     cands: list[Placement] = []
 
@@ -936,6 +947,7 @@ def precontrole(
         headroom_mb=int(headroom_mb),
         current=current,
         profile=profile,
+        mmproj_mb=mmproj,  # chaque démarrage le charge en RAM (--no-mmproj-offload)
     )
     postes = {
         "poids_mb": poids or int(model_size_mb or 0),
@@ -943,6 +955,7 @@ def precontrole(
         "etat_vivant_mb": est["recurrent_live_mb"],
         "checkpoints_mb": est["checkpoints_mb"],
         "checkpoints_par_slot": est["checkpoints"],
+        "mmproj_mb": mmproj,
     }
     res = {
         "verdict": "faisable",
@@ -1007,8 +1020,9 @@ def precontrole(
                 f"{refus} ; postes au plancher : poids {postes['poids_mb']} Mo, KV "
                 f"{postes['kv_mb']} Mo, état vivant {postes['etat_vivant_mb']} Mo, "
                 f"checkpoints {postes['checkpoints_mb']} Mo "
-                f"({postes['checkpoints_par_slot']} par slot){conseil}. Non établi "
-                f"physiquement ({non_etabli})"
+                f"({postes['checkpoints_par_slot']} par slot)"
+                + (f", mmproj {mmproj} Mo" if mmproj else "")
+                + f"{conseil}. Non établi physiquement ({non_etabli})"
             ),
         )
     elif not complet:
@@ -1108,9 +1122,10 @@ def _flags_tiennent(
     ram_total_mb: int,
     uma: bool,
     headroom_mb: int,
+    mmproj_mb: int = 0,
 ) -> tuple[bool, str]:
     """(tient ?, trace) : un démarrage aux flags BRUTS (placement_brut), contre les deux
-    plafonds de _fits — `kv_mb` côté device, `host_extra_mb` côté hôte."""
+    plafonds de _fits — `kv_mb` côté device, `host_extra_mb` et `mmproj_mb` côté hôte."""
     n = meta.get("n_layers")
     sans_gpu = not gpu_backend or int(vram_total_mb or 0) <= 0
     budget = (
@@ -1132,6 +1147,7 @@ def _flags_tiennent(
         host_extra_mb=int(host_extra_mb or 0),
         host_budget=host_budget_mb(ram_total_mb),
         uma=bool(uma) and not sans_gpu,
+        mmproj_mb=int(mmproj_mb or 0),
     )
 
 
@@ -1151,14 +1167,15 @@ def repli_calibration(
     uma: bool,
     headroom_mb: int,
     gpu_tuning: bool,
+    mmproj_mb: int = 0,
 ) -> dict:
     """Le REPLI de la calibration — les flags actuels, quand aucun placement n'est
     validé — tient-il à son PREMIER chargement (topology.calibrate : `ctx` x `slots`
-    retenus, checkpoints du modèle) ? {tient: bool | None, ctx, slots, raison} ; None :
-    métadonnées incomplètes, rien n'est conclu (le serveur tranchera). La garde porte
-    sur ce que la calibration chargera vraiment : ni le plancher de la sonde
-    d'isolation (4096 x 1), ni le contexte utile (la calibration peut trouver plus
-    petit que lui)."""
+    retenus, checkpoints du modèle, mmproj en RAM) ? {tient: bool | None, ctx, slots,
+    raison} ; None : métadonnées incomplètes, rien n'est conclu (le serveur tranchera).
+    La garde porte sur ce que la calibration chargera vraiment : ni le plancher de la
+    sonde d'isolation (4096 x 1), ni le contexte utile (la calibration peut trouver
+    plus petit que lui)."""
     meta = meta or {}
     slots = max(1, int(slots or 1))
     base = {"tient": None, "ctx": int(ctx), "slots": slots}
@@ -1183,6 +1200,7 @@ def repli_calibration(
         ram_total_mb=ram_total_mb,
         uma=uma,
         headroom_mb=headroom_mb,
+        mmproj_mb=mmproj_mb,
     )
     return {**base, "tient": bool(ok), "raison": why}
 
@@ -1201,13 +1219,14 @@ def demarrage_isolation(
     headroom_mb: int,
     gpu_tuning: bool,
     ctx_checkpoints: int | None = None,
+    mmproj_mb: int = 0,
 ) -> dict:
     """Démarrage de la sonde d'isolation : TOUJOURS 1 slot, 4096 tokens (à 2 slots,
     l'appel B part sur le slot libre et la pollution n'a jamais lieu). Les flags
     prévus (bruts) s'ils tiennent — comptabilité de la sonde au pic, côté hôte :
     ISOLATION_LISTES listes de min(CHECKPOINTS_PAR_PROMPT, `ctx_checkpoints`)
-    checkpoints et ISOLATION_ETATS états de séquence copiés dans le cache de prompts
-    RAM —, sinon, données complètes, le premier candidat du plan à 4096 x 1 ; mémoire
+    checkpoints, ISOLATION_ETATS états de séquence copiés dans le cache de prompts RAM
+    et le mmproj —, sinon, données complètes, le premier candidat du plan à 4096 x 1 ; mémoire
     récurrente : verdict imposé, sonde non lancée. Données incomplètes : le démarrage
     prévu, inchangé (le serveur tranchera). `prevu_tient` : le démarrage prévu tient-il
     d'après l'estimation (None : inconnu) — information de trace ; la garde du repli
@@ -1259,6 +1278,7 @@ def demarrage_isolation(
         ram_total_mb=ram_total_mb,
         uma=uma,
         headroom_mb=headroom_mb,
+        mmproj_mb=mmproj_mb,
     )
     if ok:
         return {
@@ -1286,6 +1306,7 @@ def demarrage_isolation(
         headroom_mb=int(headroom_mb),
         current=None,
         profile=profile,
+        mmproj_mb=mmproj_mb,
     )
     if not plan1.candidates:
         return {

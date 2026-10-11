@@ -402,6 +402,17 @@ def test_mmproj_absent_ou_rejete_bloquant_type_inconnu_incertain(tmp_path):
     assert lire_mmproj(inconnu) == {"mb": None, "bloquant": None}
 
 
+def test_mmproj_compte_cote_hote_dans_le_plan_au_plancher():
+    """Vérification adverse : le mmproj n'entrait que dans la borne de l'« établi ». Or
+    chaque sonde le charge en RAM (--no-mmproj-offload) : il compte côté hôte dans le
+    plan au plancher. Dense de 4 600 Mo, CPU seul, 8 500 Mo de RAM (5 428 de budget) :
+    tient sans mmproj (5 240), pas avec 887 Mo."""
+    meta = _dense(n=40, par_mb=100)
+    assert _pc(meta, CPU_SEUL, ram=8500)["verdict"] == "faisable"
+    res = _pc(meta, CPU_SEUL, ram=8500, mmproj_mb=887)
+    assert res["verdict"] == "hors_budget" and "mmproj 887 Mo" in res["raison"]
+
+
 def test_mmproj_de_taille_inconnue_rend_incertain():
     res = _pc(_dense(), NVIDIA_24G, ram=64_000, mmproj_mb=None)
     assert res["verdict"] == "incertain" and any(
@@ -515,7 +526,7 @@ def test_texte_de_l_etape_2_distingue_contexte_demande_et_demarrage():
 # ── démarrage de la sonde d'isolation (lot L3) ───────────────────────────────────
 
 
-def _iso(meta, hw, flags, *, ram, complet=True, ctx_checkpoints=None):
+def _iso(meta, hw, flags, *, ram, complet=True, ctx_checkpoints=None, mmproj_mb=0):
     prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
     return demarrage_isolation(
         prof,
@@ -530,6 +541,7 @@ def _iso(meta, hw, flags, *, ram, complet=True, ctx_checkpoints=None):
         headroom_mb=640,
         gpu_tuning=hw.has_gpu,
         ctx_checkpoints=ctx_checkpoints,
+        mmproj_mb=mmproj_mb,
     )
 
 
@@ -604,7 +616,9 @@ def test_isolation_compte_les_copies_du_cache_de_prompts():
     )  # 300 + ~370 <= 928
 
 
-def _repli(meta, hw, flags, *, ram, slots, complet=True, ctx_checkpoints=None):
+def _repli(
+    meta, hw, flags, *, ram, slots, complet=True, ctx_checkpoints=None, mmproj_mb=0
+):
     from loom.setup.placement import repli_calibration
 
     prof = ModelProfile.from_meta(meta, model_size_mb=_taille(meta))
@@ -623,7 +637,27 @@ def _repli(meta, hw, flags, *, ram, slots, complet=True, ctx_checkpoints=None):
         uma=hw.has_gpu and not hw.vram_is_discrete,
         headroom_mb=640,
         gpu_tuning=hw.has_gpu,
+        mmproj_mb=mmproj_mb,
     )
+
+
+def test_mmproj_compte_cote_hote_pour_la_sonde_et_le_repli():
+    """Chaque sonde passe --mmproj --no-mmproj-offload : 887 Mo de plus en RAM (Bonsai
+    2). Cas du lot L13 (hybride, 8 Go + 4 000 Mo, ctx_checkpoints = 0) : 667 Mo hôte
+    sans mmproj (tient), 1 554 avec (non). Repli CPU seul d'un dense de 4 600 Mo sur 9
+    000 Mo de RAM : tient sans mmproj, pas avec."""
+    meta = _hybride()
+    assert (
+        _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000, ctx_checkpoints=0)["prevu_tient"]
+        is True
+    )
+    avec = _iso(meta, NVIDIA_8G, PREVU_GPU, ram=4000, ctx_checkpoints=0, mmproj_mb=887)
+    assert avec["prevu_tient"] is False
+    cpu = {"ngl": 0, "cpu_moe": False, "n_cpu_moe": None}
+    dense = _dense(n=40, par_mb=100)
+    assert _repli(dense, NVIDIA_8G, cpu, ram=9000, slots=1)["tient"] is True
+    r = _repli(dense, NVIDIA_8G, cpu, ram=9000, slots=1, mmproj_mb=887)
+    assert r["tient"] is False and "mmproj 887 Mo" in r["raison"]
 
 
 def test_repli_de_la_calibration_juge_a_son_premier_chargement():

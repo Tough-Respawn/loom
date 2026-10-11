@@ -211,6 +211,51 @@ def test_run_calibration_gguf_illisible_impossibilite_etablie_aucune_sonde(
     assert trace["gguf"].endswith("m.gguf") and trace["materiel"] is GPU_6G
 
 
+def test_run_calibration_mmproj_compte_par_la_sonde_et_le_plan(monkeypatch, tmp_path):
+    """Le mmproj (chargé en RAM par chaque sonde) entre dans la sonde d'isolation et
+    dans le contrôle d'étape 2 : _measure_placement le reçoit."""
+    from pathlib import Path
+
+    from loom.runtime import gguf_meta
+    from loom.web.routes import rebench
+    from tests.test_gguf_profile import _gguf
+
+    vrai = gguf_meta.read_gguf_meta
+    meta = _meta_complete()
+    vu: dict = {}
+    spec = _environnement(
+        monkeypatch,
+        tmp_path,
+        meta=meta,
+        hw=GPU_24G,
+        ram_mb=64_000,
+        journal=[],
+        toml_extra='mmproj_filename = "mmproj.gguf"\n',
+    )
+    mdir = Path(spec["dir"])
+    _gguf(
+        mdir / "mmproj.gguf",
+        {"general.architecture": "clip"},
+        [("v.blk.0.attn_k.weight", 2 * MIB)],
+    )
+    monkeypatch.setattr(
+        gguf_meta,
+        "read_gguf_meta",
+        lambda p: vrai(p) if Path(p).name == "mmproj.gguf" else meta,
+    )
+
+    def _note(*a, **k):
+        vu["mmproj_mb"] = k.get("mmproj_mb")
+        raise _Stop()
+
+    monkeypatch.setattr(rebench, "_measure_placement", _note)
+    trace: dict = {}
+    with pytest.raises(_Stop):
+        rebench._run_calibration(None, spec, lambda m: None, trace_out=trace)
+    assert vu["mmproj_mb"] == 2
+    assert "mmproj 2 Mo" in trace["isolation"]["demarrage"]["raison"]
+
+
 def test_run_calibration_mmproj_absent_aucune_sonde(monkeypatch, tmp_path):
     """mmproj annoncé mais absent : la sonde passerait --mmproj et llama-server
     échouerait au chargement — impossibilité établie, aucune sonde (il comptait 0 Mo)."""

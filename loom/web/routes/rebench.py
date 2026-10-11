@@ -31,6 +31,7 @@ def _measure_placement(
     physical: int | None = None,
     vram_total_mb: int | None = None,
     precontrole: dict | None = None,
+    mmproj_mb: int = 0,
 ):
     """Sonde de placement (loom.setup.placement) sur la sonde serveur `probe` : renvoie
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand la sonde n'obtient
@@ -103,6 +104,8 @@ def _measure_placement(
         ),
         profile=profile,
         host_extra_mb=host_mb,
+        # Chaque démarrage charge le mmproj en RAM (--no-mmproj-offload).
+        mmproj_mb=int(mmproj_mb or 0),
     )
     if plan.aucun_faisable:
         # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation au contexte
@@ -179,6 +182,7 @@ def _measure_placement(
             slots=max(1, int(slots or 1)),
             ctx=topo_mod.CALIBRATION_PENTE_CTX[0],
             ctx_checkpoints=getattr(probe, "ctx_checkpoints", None),
+            mmproj_mb=int(mmproj_mb or 0),
             model_size_mb=int(model_size_mb or 0),
             gpu_backend=bool(gpu_backend),
             vram_total_mb=vram,
@@ -551,6 +555,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         headroom_mb=headroom,
         gpu_tuning=bool(hw.has_gpu),
         ctx_checkpoints=mt.get("ctx_checkpoints"),
+        mmproj_mb=int(mm["mb"] or 0),
     )
     slots_mesure = 0
     if not iso["lancer"]:
@@ -633,6 +638,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
         physical=psutil.cpu_count(logical=False),
         vram_total_mb=vram,
         precontrole=pc,
+        mmproj_mb=int(mm["mb"] or 0),
     )
     trace["placement"] = pl_verdict
     trace["placement_avant"] = {

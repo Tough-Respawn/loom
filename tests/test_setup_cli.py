@@ -993,6 +993,37 @@ def test_precontrole_mmproj_absent_aucun_processus(monkeypatch, tmp_path):
     assert "mmproj absent" in out and "aucun processus modèle lancé" in out
 
 
+def test_mmproj_compte_cote_hote_par_la_sonde_et_le_plan_d_etape_2(
+    monkeypatch, tmp_path
+):
+    """Chaque sonde charge le mmproj en RAM (--no-mmproj-offload) : la sonde
+    d'isolation et le plan d'étape 2 le comptent côté hôte (vérification adverse)."""
+    from tests.test_gguf_profile import _gguf
+
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        hw=_gpu(24_576),
+        meta=_meta_complete(),
+    )
+    _gguf(
+        mdir / "mmproj.gguf",
+        {"general.architecture": "clip"},
+        [("v.blk.0.attn_k.weight", 2 * _MIB)],
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 12600\n'
+        'mmproj_filename = "mmproj.gguf"\n',
+        encoding="utf-8",
+    )
+    run(con, deps)
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert "mmproj 2 Mo" in arch["isolation"]["demarrage"]["raison"]
+    assert "mmproj 2 Mo" in json.dumps(arch["plan"], ensure_ascii=False)
+
+
 def test_precontrole_compte_le_mmproj_du_model_toml(monkeypatch, tmp_path):
     """Chemin `mmproj_filename` jamais exercé (revue adverse) : son catalogue est une
     allocation hôte certaine. 10 200 Mo de poids pour 6 144 + 4 057 Mo : seuls, ils

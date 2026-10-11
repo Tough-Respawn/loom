@@ -1285,6 +1285,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         headroom_mb=headroom,
         gpu_tuning=bool(hw.has_gpu),
         ctx_checkpoints=model_toml.get("ctx_checkpoints"),
+        mmproj_mb=int(mm["mb"] or 0),
     )
     isolation: bool | None = None
     iso_detail = ""
@@ -1398,6 +1399,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         current=cur_pl,
         profile=profile,
         host_extra_mb=host_mb,
+        # Chaque démarrage charge le mmproj en RAM (--no-mmproj-offload).
+        mmproj_mb=int(mm["mb"] or 0),
     )
     prefill_c, pp_floor = place_mod.constraints_from_config(raw_cfg)
     # Les finalistes sont comparés x deux couples (ubatch, batch) : celui de
@@ -1491,6 +1494,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             slots=pl_slots,
             ctx=topo_mod.CALIBRATION_PENTE_CTX[0],
             ctx_checkpoints=model_toml.get("ctx_checkpoints"),
+            mmproj_mb=int(mm["mb"] or 0),
             model_size_mb=model_size_mb,
             gpu_backend=gpu_ok,
             vram_total_mb=vram_total,
