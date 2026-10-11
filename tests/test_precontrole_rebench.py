@@ -89,6 +89,7 @@ def _environnement(
     toml_extra="",
     run_impl=_refuse_les_mesures,
     run_avec_sonde=False,
+    isolation=(600, 4),
 ):
     import psutil
 
@@ -145,7 +146,7 @@ def _environnement(
 
         def probe_isolation(self, ctx=4096):
             journal.append(("isolation", self.ngl, self.n_parallel))
-            return 600, 4
+            return isolation
 
         def run(self, ctx, depth):
             journal.append(("run", self.ngl, ctx, depth))
@@ -524,6 +525,155 @@ def test_run_calibration_repli_accepte_sans_sonde_de_threads_et_echecs_gardes(
     assert "aucun placement validé" in trace["threads"]["non_explore"]
     assert "ErrorOutOfDeviceMemory" in trace["placement_echec"]
     assert trace["repli_calibration"]["tient"] is True
+
+
+@dataclass
+class _SondeKO:
+    """Sonde de _measure_placement dont chaque mesure échoue (OOM)."""
+
+    ngl: int = 20
+    cpu_moe: bool = False
+    n_cpu_moe: object = None
+    ctx_checkpoints: object = None
+
+    def run(self, ctx, depth):
+        raise RuntimeError("ErrorOutOfDeviceMemory")
+
+
+def _mesure_placement(ram, trace, **k):
+    from loom.web.routes.rebench import _measure_placement
+
+    return _measure_placement(
+        _SondeKO(),
+        _meta_complete(par_mb=168, sortie_mb=280, emb_mb=280),
+        model_size_mb=7280,
+        hw=GPU_8G,
+        ram_total_mb=ram,
+        headroom_mb=640,
+        gpu_backend=True,
+        progress=lambda m: None,
+        useful_ctx=32768,
+        mt={"n_gpu_layers": 20},
+        trace=trace,
+        vram_total_mb=8192,
+        precontrole={"verdict": "faisable", "complet": True},
+        **k,
+    )
+
+
+def test_measure_placement_compte_le_mmproj_dans_la_garde_et_le_plan():
+    """Vérification adverse : retirer le mmproj de la garde du repli ou du plan d'étape
+    2 de /rebench gardait la suite verte. Dense de 7 280 Mo sur 8 Go, -ngl 20 actuel,
+    mmproj de 887 Mo. RAM 8 000 : la garde compte 4 522 + 887 = 5 409 Mo hôte pour 4 928
+    — PlacementNonValide (sans mmproj : 4 522, le repli passait). RAM 8 800 : le plan
+    exclut -ngl 20 (6 123 Mo hôte pour 5 728 ; sans mmproj 5 236, il serait la base)."""
+    with pytest.raises(PlacementNonValide) as exc:
+        _mesure_placement(8000, {}, mmproj_mb=887)
+    assert "mmproj 887 Mo" in str(exc.value)
+    trace: dict = {}
+    verdict, _sonde = _mesure_placement(8800, trace, mmproj_mb=887)
+    assert verdict is None and trace["repli_calibration"]["tient"] is True
+    assert "gpu_partiel_ngl20" not in [c.key for c in trace["plan"].candidates]
+    raisons = " ".join(n["raison"] for n in trace["plan"].non_explores)
+    assert "6123 Mo hôte" in raisons and "mmproj 887 Mo" in raisons
+
+
+def test_run_calibration_garde_du_repli_avec_les_slots_retenus(monkeypatch, tmp_path):
+    """Pendant de test_repli_juge_avec_les_slots_retenus (loom-setup) : slots=1 dans
+    l'appel de la garde de /rebench gardait la suite verte. Isolation nécessaire (2
+    slots), 40 x 140 Mo : le repli tient à 16384 x 1 (7 240 Mo), pas x 2 (8 600)."""
+    from loom.web.routes import rebench
+
+    journal: list = []
+
+    def _oom(ctx, depth):
+        raise RuntimeError("ErrorOutOfDeviceMemory")
+
+    spec = _environnement(
+        monkeypatch,
+        tmp_path,
+        meta=_meta_complete(par_mb=140, sortie_mb=280, emb_mb=280),
+        hw=GPU_8G,
+        ram_mb=32_000,
+        journal=journal,
+        toml_extra="context = 32768\n",
+        run_impl=_oom,
+        isolation=(600, 590),
+    )
+    with pytest.raises(PlacementNonValide) as exc:
+        rebench._run_calibration(None, spec, lambda m: None, trace_out={})
+    assert "(16384 x 2 slots)" in str(exc.value)
+    assert not any(e[0] == "run" and e[1] == 999 for e in journal)
+
+
+def test_run_calibration_echecs_du_placement_jusqu_au_verdict(monkeypatch, tmp_path):
+    """Les échecs des candidats vont jusqu'au résultat de la calibration (le worker en
+    fait sa ligne « sonde de placement ») quand le repli est accepté : retirer leur
+    report dans `calib` gardait la suite verte."""
+    from loom.setup import llama_release, topology
+    from loom.web.routes import rebench
+
+    def _mesures(ctx, depth, sonde):
+        if sonde.ngl != 40:
+            raise RuntimeError("ErrorOutOfDeviceMemory")
+        raise RuntimeError("non mesuré dans ce test")
+
+    spec = _environnement(
+        monkeypatch,
+        tmp_path,
+        meta=_meta_complete(par_mb=130, sortie_mb=280, emb_mb=280),
+        hw=GPU_8G,
+        ram_mb=32_000,
+        journal=[],
+        run_impl=_mesures,
+        run_avec_sonde=True,
+    )
+    (tmp_path / "models" / "m1" / "model.toml").write_text(
+        'filename = "m.gguf"\nsize_mb = 5760\nn_gpu_layers = 40\ncontext = 32768\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        topology,
+        "calibrate",
+        lambda *a, **k: {"context": 8192, "mecanisme": "test", "valide": True},
+    )
+    monkeypatch.setattr(llama_release, "verify_binary", lambda p: "b-test")
+    calib, _gguf = rebench._run_calibration(None, spec, lambda m: None, trace_out={})
+    assert calib["placement"] is None
+    assert "ErrorOutOfDeviceMemory" in calib["placement_echec"]
+
+
+def test_measure_placement_garde_l_exception_de_la_sonde_si_le_repli_tient():
+    """Une exception de probe_placement elle-même, repli accepté : son texte reste dans
+    la trace (retirer `or err` gardait la suite verte)."""
+    from loom.setup import placement as place_mod
+    from loom.web.routes.rebench import _measure_placement
+
+    def _casse(*a, **k):
+        raise RuntimeError("sonde cassée en interne")
+
+    original = place_mod.probe_placement
+    place_mod.probe_placement = _casse
+    trace: dict = {}
+    try:
+        verdict, _sonde = _measure_placement(
+            _SondeKO(ngl=999),
+            _meta_complete(),
+            model_size_mb=12_600,
+            hw=GPU_24G,
+            ram_total_mb=64_000,
+            headroom_mb=640,
+            gpu_backend=True,
+            progress=lambda m: None,
+            useful_ctx=8192,
+            trace=trace,
+            vram_total_mb=24_576,
+            precontrole={"verdict": "faisable", "complet": True},
+        )
+    finally:
+        place_mod.probe_placement = original
+    assert verdict is None and trace["repli_calibration"]["tient"] is True
+    assert "sonde cassée en interne" in trace["placement_echec"]
 
 
 def test_measure_placement_dit_l_exception_de_la_sonde_de_placement():

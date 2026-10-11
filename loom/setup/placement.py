@@ -1237,7 +1237,7 @@ def demarrage_isolation(
     récurrente : verdict imposé, sonde non lancée. Données incomplètes : le démarrage
     prévu, inchangé (le serveur tranchera). `prevu_tient` : le démarrage prévu tient-il
     d'après l'estimation (None : inconnu) — information de trace ; la garde du repli
-    de la calibration, elle, juge son premier chargement (repli_calibration)."""
+    de la calibration, elle, juge ses barreaux de pente (repli_calibration)."""
     meta = meta or {}
     flags = _flags_bruts(flags)
     base = {

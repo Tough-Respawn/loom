@@ -37,7 +37,7 @@ def _measure_placement(
     (verdict sérialisable | None, sonde alignée sur l'élu). None quand la sonde n'obtient
     aucune mesure exploitable (exception, présélection sans débit, mesures vides) ou que
     la validation du seul candidat échoue : la calibration vaut alors avec les flags
-    actuels du modèle — sauf si ce repli ne tient pas au premier chargement de la
+    actuels du modèle — sauf si ce repli ne tient pas aux barreaux de pente de la
     calibration (repli_calibration, métadonnées complètes d'après `precontrole`) :
     PlacementNonValide, avec les erreurs des candidats. Lève AucunPlacementFaisable
     quand aucun candidat (configuration actuelle et CPU seul compris) ne tient d'après

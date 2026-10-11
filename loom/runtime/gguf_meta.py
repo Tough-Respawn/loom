@@ -223,7 +223,11 @@ def read_gguf_meta(path: str | Path) -> dict:
                 (vtype,) = struct.unpack("<I", f.read(4))
                 kv[key] = _read_value(f, vtype, not key.startswith("tokenizer."))
             infos = _read_tensor_infos(f, tensor_count)
-            align = int(kv.get("general.alignment") or _DEFAULT_ALIGNMENT)
+            align = kv.get("general.alignment", _DEFAULT_ALIGNMENT)
+            # gguf.cpp : uint32, puissance de 2 non nulle (gguf.cpp:622-636) — sinon le
+            # fichier est rejeté ; un tableau faisait lever TypeError, attrapé par personne.
+            if not isinstance(align, int) or align <= 0 or align & (align - 1):
+                raise ValueError(f"general.alignment invalide ({align!r})")
             data_start = -(-f.tell() // align) * align
             file_size = os.fstat(f.fileno()).st_size
     except (struct.error, MemoryError, OverflowError) as exc:

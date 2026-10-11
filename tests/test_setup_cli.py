@@ -1235,6 +1235,66 @@ def test_repli_refuse_aux_chargements_de_pente_de_la_calibration(monkeypatch, tm
     assert "allocateMemory" in arch["echec"]["erreur"]
 
 
+def test_repli_compte_le_mmproj_dans_la_garde(monkeypatch, tmp_path):
+    """Vérification adverse : retirer le mmproj de l'appel de la garde du repli gardait
+    la suite verte. Dense de 7 280 Mo sur 8 Go + 8 000 Mo de RAM, -ngl 20 actuel,
+    contexte 32768, mmproj de 887 Mo : la garde compte 4 522 + 887 = 5 409 Mo hôte pour
+    4 928 — sortie ; sans mmproj, le repli (-ngl 20) passait en calibration."""
+    from loom.setup import placement as place_mod
+
+    journal: list = []
+
+    def run_impl(ctx, depth):
+        raise RuntimeError("ErrorOutOfDeviceMemory")
+
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(run_impl, journal=journal),
+        ram_total_mb=8000,
+        hw=_gpu(8192, 8000),
+        meta=_meta_complete(par_mb=168, sortie_mb=280, emb_mb=280),
+    )
+    monkeypatch.setattr(
+        place_mod, "lire_mmproj", lambda p: {"mb": 887, "bloquant": None}
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 7280\n'
+        'n_gpu_layers = 20\ncontext = 32768\nmmproj_filename = "mmproj.gguf"\n',
+        encoding="utf-8",
+    )
+    assert run(con, deps) != 0
+    assert not any(e[0] == "run" and e[1] == 20 for e in journal)
+    out = "\n".join(printed)
+    assert "chargements de pente de la calibration" in out and "mmproj 887 Mo" in out
+
+
+def test_exception_de_la_sonde_de_placement_gardee_si_le_repli_tient(
+    monkeypatch, tmp_path
+):
+    """Une exception de probe_placement elle-même, repli accepté : dite en console et
+    gardée dans l'archive (retirer `or pl_err` gardait la suite verte)."""
+    from loom.setup import placement as place_mod
+
+    def _casse(*a, **k):
+        raise RuntimeError("sonde cassée en interne")
+
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        hw=_gpu(24_576),
+        meta=_meta_complete(),
+    )
+    monkeypatch.setattr(place_mod, "probe_placement", _casse)
+    run(con, deps)
+    out = "\n".join(printed)
+    assert "placement : sonde de placement en échec (RuntimeError: sonde cassée" in out
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert "sonde cassée en interne" in arch["placement_echec"]
+
+
 def test_repli_juge_avec_les_slots_retenus(monkeypatch, tmp_path):
     """La garde du repli reçoit les slots RETENUS (vérification adverse : slots=1 à la
     place gardait la suite verte). 40 x 140 Mo + 280 + 280 sur 8 Go, isolation
