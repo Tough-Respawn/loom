@@ -506,6 +506,25 @@ def test_rebench_verdict_dit_le_precontrole_et_un_demarrage_modeste(env, monkeyp
     assert "mesurée sur un démarrage plus modeste" in txt and "ngl 23" in txt
 
 
+def test_rebench_verdict_dit_les_echecs_du_placement_quand_le_repli_est_garde(
+    env, monkeypatch
+):
+    """Les candidats ont échoué, le repli (flags actuels) tient : le verdict disait « non
+    comparée (un seul candidat faisable, ou illisible) », faux — il dit les échecs."""
+    calib = dict(
+        CALIB,
+        context=4096,
+        placement=None,
+        placement_echec="toutes les mesures en échec — gpu_partiel_ngl37 : "
+        "RuntimeError: ErrorOutOfDeviceMemory",
+    )
+    _launch(env, monkeypatch, calib=calib)
+    txt = _wait_verdict(env)
+    assert "sonde de placement : aucun placement validé (toutes les mesures" in txt
+    assert "ErrorOutOfDeviceMemory" in txt and "flags actuels conservés" in txt
+    assert "un seul candidat faisable, ou illisible" not in txt
+
+
 def test_rebench_verdict_dit_une_sonde_non_lancee_et_un_precontrole_incertain(
     env, monkeypatch
 ):

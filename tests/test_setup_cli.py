@@ -1251,6 +1251,7 @@ def test_repli_hybride_calibre_sans_checkpoints_fantomes(monkeypatch, tmp_path):
     archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
     arch = json.loads(archives[-1].read_text(encoding="utf-8"))
     assert arch["repli_calibration"]["tient"] is True
+    assert "ErrorOutOfDeviceMemory" in arch["placement_echec"]  # échec gardé
 
 
 def test_isolation_imposee_par_la_memoire_recurrente_sonde_non_lancee(

@@ -88,6 +88,7 @@ def _environnement(
     journal,
     toml_extra="",
     run_impl=_refuse_les_mesures,
+    run_avec_sonde=False,
 ):
     import psutil
 
@@ -148,6 +149,8 @@ def _environnement(
 
         def run(self, ctx, depth):
             journal.append(("run", self.ngl, ctx, depth))
+            if run_avec_sonde:
+                return run_impl(ctx, depth, self)
             return run_impl(ctx, depth)
 
         def verify_cache(self, ctx=4096):
@@ -475,6 +478,52 @@ def test_run_calibration_repli_refuse_aux_chargements_de_pente_de_la_calibration
     assert "(16384 x 1 slot)" in str(exc.value)
     assert any(e[0] == "isolation" and e[1] == 999 for e in journal)
     assert not any(e[0] == "run" and e[1] == 999 for e in journal)
+
+
+def test_run_calibration_repli_accepte_sans_sonde_de_threads_et_echecs_gardes(
+    monkeypatch, tmp_path
+):
+    """Vérification adverse : quand le repli est accepté (il tient aux barreaux de
+    pente), /rebench lançait la sonde de threads sur lui au contexte UTILE — que l'étape
+    2 venait de refuser — avant la calibration. Comme loom-setup : pas de sonde de
+    threads sans placement validé. Et les erreurs des candidats sont gardées."""
+    from loom.setup import topology
+    from loom.web.routes import rebench
+
+    journal: list = []
+    trace: dict = {}
+
+    def _partiels_ko(ctx, depth, sonde):
+        if sonde.ngl != 40:
+            raise RuntimeError("ErrorOutOfDeviceMemory")
+        raise AssertionError("aucune mesure du repli attendue avant la calibration")
+
+    spec = _environnement(
+        monkeypatch,
+        tmp_path,
+        meta=_meta_complete(par_mb=130, sortie_mb=280, emb_mb=280),
+        hw=GPU_8G,
+        ram_mb=32_000,
+        journal=journal,
+        toml_extra="context = 32768\n",
+        run_impl=_partiels_ko,
+        run_avec_sonde=True,
+    )
+    (tmp_path / "models" / "m1" / "model.toml").write_text(
+        'filename = "m.gguf"\nsize_mb = 5760\nn_gpu_layers = 40\ncontext = 32768\n',
+        encoding="utf-8",
+    )
+
+    def _stop(*a, **k):
+        raise _Stop()
+
+    monkeypatch.setattr(topology, "calibrate", _stop)
+    with pytest.raises(_Stop):
+        rebench._run_calibration(None, spec, lambda m: None, trace_out=trace)
+    assert not any(e[0] == "run" and e[1] == 40 for e in journal)
+    assert "aucun placement validé" in trace["threads"]["non_explore"]
+    assert "ErrorOutOfDeviceMemory" in trace["placement_echec"]
+    assert trace["repli_calibration"]["tient"] is True
 
 
 def test_measure_placement_dit_l_exception_de_la_sonde_de_placement():

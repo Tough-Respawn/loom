@@ -1478,6 +1478,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     valide = bool(pl_res and pl_res.get("placement") is not None and pl_res["mesures"])
     meca = (pl_res or {}).get("mecanisme") or pl_err
     if not valide:
+        # Les échecs des candidats, gardés dans l'archive même si le repli est accepté.
+        trace["placement_echec"] = meca
         # Repli = les flags actuels de la sonde. Ne tient pas aux barreaux de PENTE de
         # la calibration (chargements nus, au plus grand : 16384 x slots retenus)
         # d'après l'estimation : y revenir lancerait un chargement condamné (revue

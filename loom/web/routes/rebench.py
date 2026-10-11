@@ -193,6 +193,9 @@ def _measure_placement(
         )
         if trace is not None:
             trace["repli_calibration"] = repli
+            # Les échecs des candidats, gardés même quand le repli est accepté (le
+            # verdict et l'archive les disent : jamais « illisible » à la place).
+            trace["placement_echec"] = (res or {}).get("mecanisme") or err
         if repli["tient"] is False:
             if trace is not None:
                 trace["placement"] = res
@@ -653,21 +656,30 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
 
     prefill_c, pp_floor = constraints_from_config(raw)
     trace["etape"] = "threads"
-    progress("sonde de threads sur le placement élu…")
-    th_verdict, probe = _measure_threads(
-        probe,
-        pl_verdict,
-        logical=os.cpu_count() or 4,
-        physical=psutil.cpu_count(logical=False),
-        ctx=int((pl_verdict or {}).get("ctx_final") or ctx_utile),
-        depth=int(
-            (pl_verdict or {}).get("depth_final") or place_mod_final_depth(ctx_utile)
-        ),
-        progress=progress,
-        n_layers=meta.get("n_layers"),
-        prefill=prefill_c,
-        pp_floor_ratio=pp_floor,
-    )
+    if pl_verdict is None:
+        # Aucun placement validé : comme loom-setup, pas de sonde de threads sur le
+        # repli — elle le chargerait au contexte utile, que l'étape 2 a pu refuser,
+        # avant même la calibration (revue adverse).
+        th_verdict = {
+            "non_explore": "non exploré : aucun placement validé, threads actuels "
+            "conservés"
+        }
+    else:
+        progress("sonde de threads sur le placement élu…")
+        th_verdict, probe = _measure_threads(
+            probe,
+            pl_verdict,
+            logical=os.cpu_count() or 4,
+            physical=psutil.cpu_count(logical=False),
+            ctx=int(pl_verdict.get("ctx_final") or ctx_utile),
+            depth=int(
+                pl_verdict.get("depth_final") or place_mod_final_depth(ctx_utile)
+            ),
+            progress=progress,
+            n_layers=meta.get("n_layers"),
+            prefill=prefill_c,
+            pp_floor_ratio=pp_floor,
+        )
     trace["threads"] = th_verdict
     trace["etape"] = "calibration"
     progress(f"topologie {topo}, budget {budget} Mo")
@@ -683,6 +695,7 @@ def _run_calibration(S, spec, progress, trace_out: dict | None = None):
     calib["isolation_avant"] = bool(mt.get("cache_isolation", False))
     calib["isolation_demarrage"] = iso
     calib["precontrole"] = pc
+    calib["placement_echec"] = trace.get("placement_echec")
     if pl_verdict and pl_verdict.get("ubatch"):
         # Les batchs viennent du 2x2 des finalistes (même contexte, même profondeur,
         # mêmes slots que le placement) : la sonde ubatch séparée est obsolète.
@@ -922,7 +935,13 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
             or pl.get("n_cpu_moe") != pl_avant.get("n_cpu_moe")
             or _placement_implied_ngl(pl) != pl_avant.get("n_gpu_layers")
         )
-        if pl is None:
+        if pl is None and calib.get("placement_echec"):
+            # Les candidats ont échoué, le repli (flags actuels) tenait : dit tel quel.
+            pl_line = (
+                f"sonde de placement : aucun placement validé "
+                f"({calib['placement_echec']}) — flags actuels conservés."
+            )
+        elif pl is None:
             pl_line = "sonde de placement : non comparée (un seul candidat faisable, ou illisible)."
         else:
             pl_line = f"sonde de placement : {pl['mecanisme']}."
