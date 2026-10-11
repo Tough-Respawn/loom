@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -118,6 +119,25 @@ def prefix_diff(
     return "diverge", len(cur)
 
 
+def _dump_request(purpose: str, kwargs: dict) -> None:
+    """Copie intégrale de la requête (tout `kwargs` sauf `stream`) dans le dossier
+    `LOOM_DUMP_REQUESTS` quand il est défini. Sert à REJOUER les vrais prompts contre
+    llama-server hors de Loom (`evals/clm/replay_edit_cost.py` : coût de re-prefill selon
+    l'endroit d'une édition du contexte, étude CLM 2026-10). Inactif sinon.
+
+    Le dump contient le prompt COMPLET (mémoire SOUL/USER, contenus de fichiers lus) :
+    données personnelles, à garder hors dépôt et hors partage."""
+    target = os.environ.get("LOOM_DUMP_REQUESTS", "").strip()
+    if not target:
+        return
+    os.makedirs(target, exist_ok=True)
+    payload = {k: v for k, v in kwargs.items() if k != "stream"}
+    payload["purpose"] = purpose
+    name = f"{time.strftime('%Y%m%dT%H%M%S')}_{int(time.time() * 1000) % 1000:03d}_{purpose}.json"
+    with open(os.path.join(target, name), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, default=str)
+
+
 class CallTrace:
     """Un appel modèle : `call.request` à la création, `call.end` à la clôture."""
 
@@ -133,6 +153,7 @@ class CallTrace:
         self.done = False
         try:
             self._log_request(kwargs)
+            _dump_request(purpose, kwargs)
         except Exception:  # noqa: BLE001 - la trace ne casse jamais un appel
             pass
 

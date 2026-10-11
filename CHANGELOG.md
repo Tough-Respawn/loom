@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-10-11 : étude CLM (édition de contexte) et hook de capture des requêtes
+
+- **Étude CLM** (`docs/clm-chiffrage-2026-10-08.md`) : coût mesuré d'une édition de contexte sur
+  llama-server avec une vraie requête Loom de 22 311 tokens (ornith). Fin de contexte 0,4 à 24 s,
+  milieu 52 à 77 s (recul au dernier checkpoint, ~12k tokens refaits), system prompt 97 s. Verdict :
+  pas de mode CLM tant que llama-server ne pose pas de checkpoint par résultat d'outil. Script et
+  séries de mesures dans `evals/clm/`.
+- **`LOOM_DUMP_REQUESTS=<dossier>`** (`loom/agent/calltrace.py`) : copie JSON de chaque requête
+  envoyée au modèle, pour la rejouer hors de Loom. Inactif sans la variable. Le dump contient le
+  prompt complet (données personnelles) : hors dépôt.
+
 ## 2026-10-03 : outil watch_video (lire une vidéo)
 
 - **`watch_video`** (`loom/tools/video.py`, PR #34) : lit ce qu'une vidéo **dit**, à partir
