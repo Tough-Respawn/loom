@@ -3,6 +3,10 @@
 Harnais d'évaluation à la Anthropic : jeu de cas figé + grader, pour comparer deux
 variantes du *system prompt* sur le comportement réel du modèle local.
 
+À part : `clm/` mesure le coût de re-prefill d'une édition de contexte sur llama-server
+(étude CLM, `docs/clm-chiffrage-2026-10-08.md`), à partir d'une requête capturée avec
+`LOOM_DUMP_REQUESTS`.
+
 ## Principe
 
 - **Eval set figé** (`cases.py`) : 9 cas, chacun ciblant un travers documenté du petit

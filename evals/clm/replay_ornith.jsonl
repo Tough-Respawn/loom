@@ -1,0 +1,13 @@
+{"dump": "req_dump\\20261008T212826_414_turn.json", "messages": 43, "tool_msgs": 19, "tools": 27, "slot": 1}
+{"variant": "base_cold_or_whatever_slot_had", "prompt_n": 11884, "cache_n": 10427, "prompt_ms": 80024, "wall_s": 82.41}
+{"variant": "base_again_warm", "prompt_n": 4, "cache_n": 22307, "prompt_ms": 370, "wall_s": 0.63}
+{"variant": "restore_base", "prompt_n": 4, "cache_n": 22307, "prompt_ms": 377, "wall_s": 0.58}
+{"variant": "edit_tail", "prompt_n": 3097, "cache_n": 19218, "prompt_ms": 23906, "wall_s": 24.14}
+{"variant": "restore_base", "prompt_n": 3093, "cache_n": 19218, "prompt_ms": 24136, "wall_s": 24.38}
+{"variant": "edit_middle_tool", "prompt_n": 11878, "cache_n": 10427, "prompt_ms": 76729, "wall_s": 77.0}
+{"variant": "restore_base", "prompt_n": 11884, "cache_n": 10427, "prompt_ms": 47867, "wall_s": 48.06}
+{"variant": "edit_oldest_tool", "prompt_n": 11882, "cache_n": 10427, "prompt_ms": 71577, "wall_s": 71.78}
+{"variant": "restore_base", "prompt_n": 4, "cache_n": 22307, "prompt_ms": 467, "wall_s": 3.36}
+{"variant": "compact_tools_keep2", "prompt_n": 8369, "cache_n": 10427, "prompt_ms": 56699, "wall_s": 57.64}
+{"variant": "restore_base", "prompt_n": 11884, "cache_n": 10427, "prompt_ms": 72544, "wall_s": 72.8}
+{"variant": "edit_head_system", "prompt_n": 22312, "cache_n": 0, "prompt_ms": 97243, "wall_s": 97.43}
