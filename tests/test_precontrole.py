@@ -861,6 +861,60 @@ def test_llama_bench_repli_sur_le_plan_au_plancher_verifie():
     assert "plan au plancher" in f["note"]
 
 
+def test_llama_bench_ram_verifiee_meme_sans_modele_du_device():
+    """Vérification adverse de L20 : sur les sorties anticipées du filtre (llama-bench
+    d'un autre binaire que la sonde, plusieurs GPU listés), la RAM n'était pas vérifiée
+    — le scénario de la revue n°17 repassait avec [0, 99]. Le côté device reste non
+    modélisé là ; le côté hôte, lui, se juge toujours (-ngl 0 est CPU seul quoi qu'il
+    arrive)."""
+    dense = _dense(n=40, par_mb=400)
+    autre = _bench(dense, NVIDIA_24G, [0, 99], ram=8192, meme_binaire=False)
+    assert autre["ngl"] == [99] and "autre binaire" in autre["note"]
+    deux_gpu = HardwareProfile(
+        True,
+        "RTX x2",
+        24000,
+        16,
+        vram_total_mb=24_576,
+        backend="CUDA",
+        vram_is_discrete=True,
+        gpu_count=2,
+    )
+    multi = _bench(dense, deux_gpu, [0, 99], ram=8192)
+    assert multi["ngl"] == [99] and "non modélisée" in multi["note"]
+
+
+def test_llama_bench_somme_comptee_une_fois_en_memoire_unifiee():
+    """Fige la somme UMA du filtre (une mutation uma=False survivait). iGPU au tas de
+    8 192 Mo, 16 384 Mo de RAM (13 312 de budget) : -ngl 15 met 5 914 Mo sur le
+    « device » et 10 726 en RAM — 16 640 au total, hors budget ; -ngl 0 aussi."""
+    igpu = HardwareProfile(
+        True, "iGPU", 8000, 16, vram_total_mb=8192, backend="Vulkan", gpu_count=1
+    )
+    f = _bench(_dense(n=40, par_mb=400), igpu, [0, 15], ram=16_384)
+    assert f["ngl"] == [] and [r["ngl"] for r in f["retires"]] == [0, 15]
+
+
+def test_llama_bench_kv_et_etat_par_couche_comptes():
+    """Fige le terme KV + état récurrent du filtre (une mutation contexte=None
+    survivait : seuls les poids comptaient). Hybride 64 x 112 Mo sur 8 Go : -ngl 99
+    met 7 468 Mo de poids + 16 de KV + 150 d'état = 7 633 pour un budget de 7 552."""
+    f = _bench(_hybride(n=64, par_mb=112), NVIDIA_8G, [99])
+    assert f["retires"] and "7633 Mo device" in f["retires"][0]["raison"]
+
+
+def test_completude_du_modele_separee_du_mmproj():
+    """Un mmproj de taille inconnue rend le précontrôle incertain (la sonde le charge)
+    mais ne dit rien du MODÈLE : llama-bench, qui ne charge jamais le mmproj, garde
+    son filtre (complet_modele)."""
+    res = _pc(_dense(), NVIDIA_24G, ram=64_000, mmproj_mb=None)
+    assert res["complet"] is False and res["complet_modele"] is True
+    assert (
+        _pc(dict(_dense(), weights=None), NVIDIA_24G, ram=64_000)["complet_modele"]
+        is False
+    )
+
+
 def test_llama_bench_non_lance_si_rien_ne_tient():
     """Ni la liste ni le repli (CPU seul, vérifié lui aussi) ne tiennent : liste vide,
     llama-bench non lancé — et dit. Dense de 16 600 Mo, GPU de 4 Go, RAM de 8 192 Mo."""

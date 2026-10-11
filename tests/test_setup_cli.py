@@ -941,6 +941,66 @@ def test_llama_bench_ne_recoit_que_des_configurations_qui_tiennent_en_ram(
     assert "-ngl 0 retiré" in out and "RAM" in out
 
 
+def test_llama_bench_autre_binaire_ram_toujours_verifiee(monkeypatch, tmp_path):
+    """Vérification adverse de L20 : model.toml `server_bin` (un build de PR) — la sonde
+    et llama-bench ne sont plus le même binaire, le filtre sortait sans rien juger et
+    llama-bench recevait [0, 99] (16 640 Mo en RAM pour 5 120). Le côté hôte se juge
+    toujours."""
+    appels: list = []
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        ram_total_mb=8192,
+        hw=_gpu(24_576),
+        meta=_meta_complete(par_mb=400),
+        run_bench=_bench_espion(appels),
+    )
+    pr = tmp_path / "pr" / "llama-server.exe"
+    pr.parent.mkdir()
+    pr.write_bytes(b"")
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 16600\n'
+        f'server_bin = "{str(pr).replace(chr(92), "/")}"\n',
+        encoding="utf-8",
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert appels and appels[0]["ngl"] == [99]
+    assert "autre binaire" in out and "-ngl 0 retiré" in out
+
+
+def test_llama_bench_garde_son_filtre_malgre_un_mmproj_de_taille_inconnue(
+    monkeypatch, tmp_path
+):
+    """Un mmproj de taille inconnue rend le précontrôle incertain, mais llama-bench ne
+    le charge jamais : son filtre (RAM comprise) s'applique quand même."""
+    from loom.setup import placement as place_mod
+
+    appels: list = []
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        ram_total_mb=8192,
+        hw=_gpu(24_576),
+        meta=_meta_complete(par_mb=400),
+        run_bench=_bench_espion(appels),
+    )
+    monkeypatch.setattr(
+        place_mod, "lire_mmproj", lambda p: {"mb": None, "bloquant": None}
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 16600\n'
+        'mmproj_filename = "mmproj.gguf"\n',
+        encoding="utf-8",
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert "précontrôle incertain" in out
+    assert appels and appels[0]["ngl"] == [99]
+
+
 def test_llama_bench_repli_sur_le_plan_au_plancher(monkeypatch, tmp_path):
     """MoE de 39 800 Mo, GPU de 24 Go, 20 000 Mo de RAM : -ngl 999 -ncmoe 8 (tous les
     experts en RAM) ne tient pas, -ngl 0 non plus. llama-bench part sur le placement

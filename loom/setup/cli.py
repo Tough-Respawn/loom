@@ -1156,7 +1156,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         profile,
         ngl=ngl,
         ncmoe=ncmoe,
-        complet=pc["complet"],
+        # Le MODÈLE seul : llama-bench ne charge jamais le mmproj.
+        complet=pc.get("complet_modele", pc["complet"]),
         hw=hw,
         vram_total_mb=vram_total,
         ram_total_mb=ram_total_mb,

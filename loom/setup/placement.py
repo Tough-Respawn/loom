@@ -933,6 +933,9 @@ def precontrole(
     """
     meta = meta or {}
     inconnues = inconnues_decisives(profile, meta)
+    complet_modele = (
+        not inconnues
+    )  # le MODÈLE seul (llama-bench ne charge pas le mmproj)
     if mmproj_mb is None:
         inconnues.append("mmproj : taille inconnue (type GGUF inconnu du lecteur)")
     capacite, inc_cap = _capacite(hw, ram_total_mb)
@@ -987,6 +990,7 @@ def precontrole(
         "verdict": "faisable",
         "etabli": False,
         "complet": complet,
+        "complet_modele": complet_modele,
         "capacite_connue": capacite_connue,
         "inconnues": toutes,
         "capacite": capacite,
@@ -1390,46 +1394,50 @@ def filtre_llama_bench(
     RAM moins la marge OS — revue n°17 : la RAM n'était pas vérifiée). Retirés : un
     seul -ngl qui échoue fait échouer toute l'invocation. Rien ne tient : le premier
     des `replis` (flags des candidats du plan au plancher ; CPU seul par défaut) qui
-    tient lui aussi ; sinon liste VIDE, llama-bench non lancé. Données incomplètes,
-    aucune VRAM connue, plusieurs GPU ou llama-bench d'un autre binaire : inchangée."""
+    tient lui aussi ; sinon liste VIDE, llama-bench non lancé. llama-bench d'un autre
+    binaire, aucune VRAM connue ou plusieurs GPU : le côté device n'est pas modélisé,
+    le côté hôte se juge quand même (-ngl 0 est CPU seul quoi qu'il arrive). Sans GPU,
+    tout reste en RAM. Métadonnées du modèle incomplètes : inchangée."""
     liste = [int(g) for g in ngl]
     res = {"ngl": liste, "ncmoe": int(ncmoe or 0), "retires": [], "note": ""}
     vram = int(vram_total_mb or 0) or int(getattr(hw, "vram_total_mb", 0) or 0)
     if not complet:
         res["note"] = "métadonnées incomplètes : liste inchangée"
         return res
+    has_gpu = bool(getattr(hw, "has_gpu", False))
     if not meme_binaire:
-        res["note"] = (
-            "llama-bench vient d'un autre binaire que la sonde : liste inchangée"
-        )
-        return res
-    if (
-        not getattr(hw, "has_gpu", False)
-        or vram <= 0
-        or int(getattr(hw, "gpu_count", 0) or 0) > 1
-    ):
-        res["note"] = "capacité VRAM inconnue ou non modélisée : liste inchangée"
-        return res
-    budget = device_budget_mb(vram, int(ram_total_mb or 0), uma, int(headroom_mb))
+        pourquoi = "llama-bench vient d'un autre binaire que la sonde"
+    elif not has_gpu or vram <= 0 or int(getattr(hw, "gpu_count", 0) or 0) > 1:
+        pourquoi = "capacité VRAM inconnue ou non modélisée"
+    else:
+        pourquoi = ""
     hote = host_budget_mb(int(ram_total_mb or 0))
     n = int(getattr(profile, "n_layers", 0) or 0)
-    budgets = (
-        f"budget device {budget} Mo (VRAM {vram} Mo, marge {int(headroom_mb)} Mo), "
-        f"RAM {hote} Mo"
-    )
+    if pourquoi:
+        # Côté device non modélisé : seul l'hôte borne (vérification adverse de L20).
+        budget = 1 << 40
+        budgets = f"budget device non vérifié ({pourquoi}), RAM {hote} Mo"
+        res["note"] = f"{pourquoi} : côté device non vérifié, RAM vérifiée"
+    else:
+        budget = device_budget_mb(vram, int(ram_total_mb or 0), uma, int(headroom_mb))
+        budgets = (
+            f"budget device {budget} Mo (VRAM {vram} Mo, marge {int(headroom_mb)} Mo), "
+            f"RAM {hote} Mo"
+        )
 
     def _juge(g: int, k: int) -> tuple[bool, str]:
         # Une invocation llama-bench : 256 cellules de KV f16, une séquence, ni
-        # checkpoint ni mmproj ; KV et état ventilés par couche offloadée.
+        # checkpoint ni mmproj ; KV et état ventilés par couche offloadée. Sans GPU,
+        # rien n'est offloadé, quel que soit -ngl.
         return _fits(
-            placement_brut(g, False, k or None, n),
+            placement_brut(g if has_gpu else 0, False, k or None, n),
             profile=profile,
             model_size_mb=0,
             kv_mb=0,
             budget=budget,
             layers=n,
             host_budget=hote,
-            uma=uma,
+            uma=uma and has_gpu,
             contexte=(LLAMA_BENCH_CELLS, "f16", 1),
         )
 
@@ -1446,6 +1454,8 @@ def filtre_llama_bench(
         res["ngl"] = garde
         if garde == [0] and any(g != 0 for g in liste):
             res["note"] = "aucun -ngl > 0 ne tient : -ngl 0 seul (CPU)"
+            if pourquoi:
+                res["note"] += f" ; {pourquoi} : côté device non vérifié"
         return res
     # Rien ne tient : le premier repli qui tient LUI AUSSI (jamais ajouté sans contrôle).
     for r in replis if replis is not None else [{"ngl": 0}]:
@@ -1458,18 +1468,24 @@ def filtre_llama_bench(
                 + (" (CPU)" if g == 0 else "")
             )
             source = " du plan au plancher" if replis is not None else ""
+            verifie = (
+                f"RAM vérifiée ({pourquoi} : côté device non vérifié)"
+                if pourquoi
+                else "vérifié device et RAM"
+            )
             res.update(
                 ngl=[g],
                 ncmoe=k,
                 note=f"aucun -ngl candidat ne tient : repli sur {quoi}{source}, "
-                "vérifié device et RAM",
+                f"{verifie}",
             )
             return res
+    cotes = "RAM" if pourquoi else "device et RAM"
     res.update(
         ngl=[],
         ncmoe=0,
-        note="aucune configuration de llama-bench ne tient (device et RAM) : "
-        "llama-bench non lancé",
+        note=f"aucune configuration de llama-bench ne tient ({cotes}) : llama-bench "
+        "non lancé",
     )
     return res
 
