@@ -106,6 +106,8 @@ def _measure_placement(
         host_extra_mb=host_mb,
         # Chaque démarrage charge le mmproj en RAM (--no-mmproj-offload).
         mmproj_mb=int(mmproj_mb or 0),
+        # KV et état vivant ventilés par couche réellement offloadée.
+        contexte=estimation["contexte"],
     )
     if plan.aucun_faisable:
         # Résultat EXPLICITE (revue #14) : rien ne tient d'après l'estimation au contexte

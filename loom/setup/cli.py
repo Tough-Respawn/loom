@@ -1401,6 +1401,8 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         host_extra_mb=host_mb,
         # Chaque démarrage charge le mmproj en RAM (--no-mmproj-offload).
         mmproj_mb=int(mm["mb"] or 0),
+        # KV et état vivant ventilés par couche réellement offloadée.
+        contexte=estimation["contexte"],
     )
     prefill_c, pp_floor = place_mod.constraints_from_config(raw_cfg)
     # Les finalistes sont comparés x deux couples (ubatch, batch) : celui de

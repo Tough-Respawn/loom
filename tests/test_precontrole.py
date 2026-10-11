@@ -21,6 +21,7 @@ from loom.setup.placement import (
     demarrage_isolation,
     filtre_llama_bench,
     inconnues_decisives,
+    memory_estimate_mb,
     plan_placements,
     precontrole,
     precontrole_texte,
@@ -688,6 +689,101 @@ def test_repli_de_la_calibration_juge_a_ses_chargements_de_pente():
     assert _repli(a_deux, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=2)["tient"] is False
     inconnu = _repli(moyen, NVIDIA_8G, PREVU_GPU, ram=32_000, slots=1, complet=False)
     assert inconnu["tient"] is None
+
+
+def _hybride_4(kv_heads=32, kv_len=256):
+    """3 couches récurrentes (0, 1, 2) et UNE couche d'attention (3), 1 000 Mo chacune."""
+    w = {
+        "total": (4 * 1000 + 600) * MIB,
+        "familles": {"embeddings": 300 * MIB, "output": 300 * MIB},
+        "par_couche": [1000 * MIB] * 4,
+        "experts_par_couche": [0] * 4,
+        "couches_attention": [3],
+        "couches_recurrentes": [0, 1, 2],
+        "couches_nextn": [],
+        "provenance": "déduit (catalogue des tenseurs, tailles par offsets)",
+        "sortie_liee": False,
+    }
+    return _meta_hybride(
+        n_layers=4,
+        head_count_kv=kv_heads,
+        key_length=kv_len,
+        value_length=kv_len,
+        weights=w,
+    )
+
+
+def test_memoire_de_contexte_ventilee_par_couche_reellement_offloadee():
+    """Revue n°17 (P2) : KV + état vivant étaient répartis au prorata du NOMBRE de
+    couches porteuses — or une couche d'attention et une couche récurrente n'occupent
+    pas la même mémoire. -ngl 2 sur 4 couches : la couche 3 (la seule d'attention) est
+    sur le device, donc TOUT le KV et aucun état vivant ; les 3 couches récurrentes
+    restent sur l'hôte avec leur état."""
+    from loom.setup.placement import _split_mb, placement_brut
+
+    meta = _hybride_4()
+    prof = ModelProfile.from_meta(meta, model_size_mb=4600)
+    est = memory_estimate_mb(prof, 16384, gpu_tuning=True, slots=2, checkpoints=0)
+    dev, host, src = _split_mb(
+        placement_brut(2, False, None, 4),
+        profile=prof,
+        model_size_mb=4600,
+        kv_mb=est["device_mb"],
+        host_extra_mb=0,
+        layers=4,
+        contexte=est["contexte"],
+    )
+    kv = prof.kv_bytes(16384, "q8_0", 2) // MIB
+    vivant = prof.recurrent_live_bytes() * 2 // MIB
+    assert src == "catalogue" and kv == est["kv_mb"]
+    assert dev == 1300 + kv  # couche 3 + sortie + TOUT le KV, aucun état vivant
+    assert host == 3300 + vivant  # embeddings + couches 0-2 + leur état vivant
+
+
+def test_repli_refuse_quand_le_kv_de_la_seule_couche_offloadee_deborde():
+    """Contre-exemple de la revue n°17 : la seule couche offloadée porte un KV de
+    4 352 Mo (16384 x 2 slots). Au prorata (1 couche porteuse sur 4), la garde
+    comptait 1 300 + 1 091 Mo et acceptait ; par couche, 1 300 + 4 352 = 5 652 Mo pour
+    un budget device de 5 504."""
+    meta = _hybride_4(kv_heads=128, kv_len=512)
+    r = _repli(meta, NVIDIA_6G, {"ngl": 2}, ram=64_000, slots=2)
+    assert r["tient"] is False and "5652 Mo device" in r["raison"]
+
+
+GPU_3G = HardwareProfile(
+    True,
+    "GPU 3 Go",
+    3000,
+    16,
+    vram_total_mb=3000,
+    backend="CUDA",
+    vram_is_discrete=True,
+    gpu_count=1,
+)
+GPU_2200 = HardwareProfile(
+    True,
+    "GPU 2,2 Go",
+    2200,
+    16,
+    vram_total_mb=2200,
+    backend="CUDA",
+    vram_is_discrete=True,
+    gpu_count=1,
+)
+
+
+def test_plan_au_plancher_et_sonde_ventilent_par_couche():
+    """Les appelants passent le contexte (sinon, retour silencieux au prorata). Hybride
+    à 4 couches, KV de la couche d'attention 544 Mo à 4096 x 1, GPU de 2 200 Mo (budget
+    1 560) : -ngl 2 (la couche 3 seule) met 1 300 + 544 = 1 844 Mo sur le device — ne
+    tient pas (le prorata disait 1 439). Le plan au plancher retombe sur -ngl 1 (la
+    sortie seule) et la sonde d'isolation ne part pas sur -ngl 2."""
+    meta = _hybride_4(kv_heads=128, kv_len=512)
+    assert _pc(meta, GPU_2200, ram=64_000)["plan_plancher"]["candidats"] == [
+        "gpu_partiel_ngl1"
+    ]
+    iso = _iso(meta, GPU_2200, {"ngl": 2}, ram=64_000, ctx_checkpoints=0)
+    assert iso["prevu_tient"] is False
 
 
 def test_repli_de_la_calibration_sans_checkpoints_aux_chargements_nus():

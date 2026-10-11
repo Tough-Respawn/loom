@@ -339,6 +339,8 @@ def memory_estimate_mb(
         "total_mb": kv_mb + rec_mb,
         "checkpoints": cp,
         "slots": max(1, int(slots)),
+        # De quoi ventiler KV et état vivant PAR COUCHE réellement offloadée (_split_mb).
+        "contexte": (int(ctx), "q8_0" if gpu_tuning else "f16", max(1, int(slots))),
     }
 
 
@@ -422,13 +424,17 @@ def _split_mb(
     host_extra_mb: int,
     layers,
     mmproj_mb: int = 0,
+    contexte: tuple[int, str, int] | None = None,
 ) -> tuple[int, int, str]:
     """(device Mo, hôte Mo, source) de ce que le placement alloue de chaque côté : poids
     offloadés + KV et état vivant des couches offloadées sur le device ; poids restés
     sur CPU + KV de ces couches + `host_extra_mb` (checkpoints) + `mmproj_mb` (chargé
     en RAM : --no-mmproj-offload) sur l'hôte. Catalogue des tenseurs quand il existe
     (règle des couches de llama.cpp, cf. ModelProfile.device_layers), sinon proportion
-    de la taille du fichier."""
+    de la taille du fichier. Avec `contexte` (ctx, type de cache, slots — cf.
+    memory_estimate_mb), KV et état vivant sont comptés PAR COUCHE réellement
+    offloadée : une couche d'attention et une couche récurrente n'occupent pas la même
+    mémoire (revue n°17) ; sans, prorata de `kv_mb` (approximation)."""
     host_extra_mb = int(host_extra_mb or 0) + int(mmproj_mb or 0)
     frac = 1.0  # part des couches (donc du KV / état vivant) sur le device
     if pl.label == "cpu":
@@ -439,17 +445,25 @@ def _split_mb(
     b = profile.gpu_bytes(**flags) if profile is not None else None
     if b is not None:
         # KV et état vivant vivent avec LEUR couche (src/llama-kv-cache.cpp:212-221,
-        # src/llama-memory-recurrent.cpp:83-92) : prorata des couches à mémoire de
-        # contexte réellement offloadées, pas ngl/n.
-        porteuses = set(profile.attention_layers) | set(profile.recurrent_layers)
+        # src/llama-memory-recurrent.cpp:83-92).
         dev_layers = profile.device_layers(ngl=pl.ngl)
+        dev_w = b // _MIB
+        host_w = int(profile.host_bytes(**flags) or 0) // _MIB
+        if contexte is not None:
+            ctx, kv_type, slots = contexte
+            kv_tot = profile.kv_bytes(ctx, kv_type, slots)
+            kv_dev = profile.kv_bytes(ctx, kv_type, slots, layers=dev_layers)
+            vivant_tot = profile.recurrent_live_bytes() * int(slots)
+            vivant_dev = profile.recurrent_live_bytes(layers=dev_layers) * int(slots)
+            ctx_dev = int((kv_dev + vivant_dev) // _MIB)
+            ctx_hote = int((kv_tot - kv_dev + vivant_tot - vivant_dev) // _MIB)
+            return dev_w + ctx_dev, host_w + ctx_hote + host_extra_mb, "catalogue"
+        porteuses = set(profile.attention_layers) | set(profile.recurrent_layers)
         if porteuses:
             frac = len(dev_layers & porteuses) / len(porteuses)
         elif layers:
             frac = min(1.0, len(dev_layers) / layers)
         kv_dev = int(kv_mb * frac)
-        dev_w = b // _MIB
-        host_w = int(profile.host_bytes(**flags) or 0) // _MIB
         return dev_w + kv_dev, host_w + (kv_mb - kv_dev) + host_extra_mb, "catalogue"
     kv_dev = int(kv_mb * frac)
     kv_host = kv_mb - kv_dev
@@ -476,12 +490,13 @@ def _fits(
     host_budget: int | None = None,
     uma: bool = False,
     mmproj_mb: int = 0,
+    contexte: tuple[int, str, int] | None = None,
 ):
     """(tient ?, trace) : le placement contre DEUX plafonds. Device (`budget`) : poids
     offloadés + KV/état vivant. Hôte (`host_budget`, RAM moins la marge OS) : poids CPU
     + KV des couches CPU + checkpoints + mmproj. Mémoire unifiée : le device reste borné
     par son plafond (heap), et la SOMME device + hôte par la RAM, comptée une seule
-    fois."""
+    fois. `contexte` : ventilation exacte par couche (cf. _split_mb)."""
     dev, host, src = _split_mb(
         pl,
         profile=profile,
@@ -490,6 +505,7 @@ def _fits(
         host_extra_mb=host_extra_mb,
         layers=layers,
         mmproj_mb=mmproj_mb,
+        contexte=contexte,
     )
     approx = "~" if src.startswith("proportion") else ""
     extra = f"checkpoints {host_extra_mb} Mo" + (
@@ -588,6 +604,7 @@ def plan_placements(
     profile=None,
     host_extra_mb: int = 0,
     mmproj_mb: int = 0,
+    contexte: tuple[int, str, int] | None = None,
 ) -> PlacementPlan:
     """Candidats faisables (le plus sûr en premier, ou la configuration ACTUELLE) et
     liste de ce qu'on choisit de NE PAS mesurer, avec sa raison.
@@ -600,7 +617,8 @@ def plan_placements(
     `kv_mb` est la mémoire par contexte côté DEVICE au contexte utile (KV + état
     récurrent vivant), `host_extra_mb` celle côté HÔTE (checkpoints), `mmproj_mb` le
     projecteur multimodal chargé en RAM par chaque démarrage, `profile` le profil
-    GGUF. Chaque candidat est vérifié des deux côtés (cf. _fits) — CPU seul et
+    GGUF, `contexte` (ctx, type de cache, slots) de quoi ventiler KV et état vivant par
+    couche réellement offloadée. Chaque candidat est vérifié des deux côtés (cf. _fits) — CPU seul et
     la configuration actuelle compris. Rien ne tient : plan VIDE (`aucun_faisable`,
     `raison`), à traiter explicitement par l'appelant."""
     non: list[dict] = []
@@ -621,6 +639,7 @@ def plan_placements(
         host_budget=host_budget_mb(ram_total_mb),
         uma=uma and not sans_gpu,
         mmproj_mb=int(mmproj_mb or 0),
+        contexte=contexte,
     )
     cands: list[Placement] = []
 
@@ -954,6 +973,7 @@ def precontrole(
         current=current,
         profile=profile,
         mmproj_mb=mmproj,  # chaque démarrage le charge en RAM (--no-mmproj-offload)
+        contexte=est["contexte"],
     )
     postes = {
         "poids_mb": poids or int(model_size_mb or 0),
@@ -1129,9 +1149,11 @@ def _flags_tiennent(
     uma: bool,
     headroom_mb: int,
     mmproj_mb: int = 0,
+    contexte: tuple[int, str, int] | None = None,
 ) -> tuple[bool, str]:
     """(tient ?, trace) : un démarrage aux flags BRUTS (placement_brut), contre les deux
-    plafonds de _fits — `kv_mb` côté device, `host_extra_mb` et `mmproj_mb` côté hôte."""
+    plafonds de _fits — `kv_mb` côté device, `host_extra_mb` et `mmproj_mb` côté hôte,
+    `contexte` pour ventiler KV et état vivant par couche réellement offloadée."""
     n = meta.get("n_layers")
     sans_gpu = not gpu_backend or int(vram_total_mb or 0) <= 0
     budget = (
@@ -1154,6 +1176,7 @@ def _flags_tiennent(
         host_budget=host_budget_mb(ram_total_mb),
         uma=bool(uma) and not sans_gpu,
         mmproj_mb=int(mmproj_mb or 0),
+        contexte=contexte,
     )
 
 
@@ -1208,6 +1231,7 @@ def repli_calibration(
         uma=uma,
         headroom_mb=headroom_mb,
         mmproj_mb=mmproj_mb,
+        contexte=est["contexte"],
     )
     return {**base, "tient": bool(ok), "raison": why}
 
@@ -1286,6 +1310,7 @@ def demarrage_isolation(
         uma=uma,
         headroom_mb=headroom_mb,
         mmproj_mb=mmproj_mb,
+        contexte=est["contexte"],
     )
     if ok:
         return {
@@ -1314,6 +1339,7 @@ def demarrage_isolation(
         current=None,
         profile=profile,
         mmproj_mb=mmproj_mb,
+        contexte=est["contexte"],
     )
     if not plan1.candidates:
         return {

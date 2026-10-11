@@ -561,6 +561,46 @@ def _mesure_placement(ram, trace, **k):
     )
 
 
+def test_measure_placement_ventile_kv_et_etat_par_couche():
+    """Revue n°17 (P2), appelant /rebench : le plan d'étape 2 ventile KV et état vivant
+    par couche réellement offloadée. Hybride à 4 couches (une seule d'attention, KV de
+    2 176 Mo à 8192 x 2), GPU de 3 000 Mo : -ngl 2 (actuel) met 1 300 + 2 176 Mo sur le
+    device et ne tient pas — au prorata il passait (1 850) et devenait la base."""
+    from tests.test_precontrole import _hybride_4
+
+    hw = HardwareProfile(
+        True,
+        "GPU 3 Go",
+        3000,
+        16,
+        vram_total_mb=3000,
+        backend="CUDA",
+        vram_is_discrete=True,
+        gpu_count=1,
+    )
+    from loom.web.routes.rebench import _measure_placement
+
+    trace: dict = {}
+    with pytest.raises(PlacementNonValide):
+        _measure_placement(
+            _SondeKO(ngl=2),
+            _hybride_4(kv_heads=128, kv_len=512),
+            model_size_mb=4600,
+            hw=hw,
+            ram_total_mb=64_000,
+            headroom_mb=640,
+            gpu_backend=True,
+            progress=lambda m: None,
+            useful_ctx=8192,
+            mt={"n_gpu_layers": 2},
+            slots=2,
+            trace=trace,
+            vram_total_mb=3000,
+            precontrole={"verdict": "faisable", "complet": True},
+        )
+    assert [c.key for c in trace["plan"].candidates] == ["gpu_partiel_ngl1"]
+
+
 def test_measure_placement_compte_le_mmproj_dans_la_garde_et_le_plan():
     """Vérification adverse : retirer le mmproj de la garde du repli ou du plan d'étape
     2 de /rebench gardait la suite verte. Dense de 7 280 Mo sur 8 Go, -ngl 20 actuel,

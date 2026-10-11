@@ -1347,6 +1347,38 @@ def _meta_hybride(n=64, par_mb=100):
     return meta
 
 
+def test_etape_2_ventile_kv_et_etat_par_couche(monkeypatch, tmp_path):
+    """Revue n°17 (P2), appelant loom-setup : le plan d'étape 2 ventile KV et état
+    vivant par couche réellement offloadée. Hybride à 4 couches (une seule d'attention,
+    KV de 2 176 Mo à 8192 x 2 slots imposés), GPU de 3 000 Mo : l'actuel -ngl 2 met
+    1 300 + 2 176 Mo sur le device — exclu (au prorata, 1 850 : il devenait la base)."""
+    journal: list = []
+
+    def run_impl(ctx, depth):
+        raise RuntimeError("ErrorOutOfDeviceMemory")
+
+    meta = _meta_hybride(n=4, par_mb=1000)
+    meta.update(head_count_kv=128, key_length=512, value_length=512)
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(run_impl, journal=journal),
+        ram_total_mb=64_000,
+        hw=_gpu(3000),
+        meta=meta,
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 4\nsize_mb = 4600\n'
+        "n_gpu_layers = 2\n",
+        encoding="utf-8",
+    )
+    run(con, deps)
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    cles = [c["key"] for c in arch["plan"]["candidates"]]
+    assert cles == ["gpu_partiel_ngl1"]
+
+
 def test_repli_hybride_calibre_sans_checkpoints_fantomes(monkeypatch, tmp_path):
     """Régression du lot L11 (vérification adverse) : la garde du repli comptait 32
     checkpoints par slot aux barreaux de pente, chargements NUS qui n'en créent aucun.
