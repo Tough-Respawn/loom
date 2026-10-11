@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-10-11 : règle de choix des modèles révisée (ternaire admis)
+
+- La règle « seulement MoE 24B+ avec experts en RAM » (2026-06-09) devient : **critère = octets
+  lus par token**. Deux familles viables sur 6 Go : MoE 24B+ (experts en RAM) et dense 27B
+  ternaire (~1,7-2 bits/poids, ~6-7 Go, quasi tout en VRAM). Déclencheur : Bonsai 2 27B
+  (Qwen3.8-27B, AA Index 34 contre 18 pour la classe 35B-A3B), support upstream llama.cpp
+  #29600 mergé le 2026-10-11. Docs : README, ETAT_PROJET, loom.md.
+
 ## 2026-10-11 : étude CLM (édition de contexte) et hook de capture des requêtes
 
 - **Étude CLM** (`docs/clm-chiffrage-2026-10-08.md`) : coût mesuré d'une édition de contexte sur
