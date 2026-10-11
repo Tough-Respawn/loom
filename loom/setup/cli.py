@@ -1188,6 +1188,9 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             con, trace, echec={"etape": "llama-bench", "erreur": filtre["note"]}
         )
         return
+    # Le choix du -ngl par llama-bench vaut sur la liste d'ORIGINE : un -ngl retiré
+    # parce qu'il ne tient pas est écarté, pas « non comparé » (vérification adverse).
+    ngl_decide = len(ngl) > 1 and not moe
     ngl, ncmoe = filtre["ngl"], filtre["ncmoe"]
     combos = len(threads) * len(ngl)
     con.say(
@@ -1225,6 +1228,9 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             echec={"etape": "llama-bench", "erreur": "sortie llama-bench vide"},
         )
         return
+    # -ncmoe de l'invocation (un repli MoE peut en mesurer un autre que n_layers) :
+    # consigné avec la mesure, sinon « -ngl 999 » ne dit plus quelle configuration.
+    best = dict(best, ncmoe=int(ncmoe or 0))
     trace["llama_bench"] = best
 
     # Configuration ACTUELLE résolue comme l'exécutant (resolve_ngl) : réglages du
@@ -1233,7 +1239,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
     # ET le point de départ de la sonde.
     override_ngl = (
         best["ngl"]
-        if (len(ngl) > 1 and not moe)
+        if ngl_decide
         else (raw_cfg.get("override") or {}).get("n_gpu_layers")
     )
     cur_pl = place_mod.current_placement(
@@ -1768,6 +1774,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
         "bench": {
             "threads": best["threads"],
             "ngl": best["ngl"],
+            **({"ncmoe": best["ncmoe"]} if best.get("ncmoe") else {}),
             "tg_ts": round(best["tg_ts"], 2),
             "pp_ts": round(best["pp_ts"], 2),
             "context": context,
@@ -1880,7 +1887,7 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "défaut raisonné (NON mesuré) — modèle à mémoire hybride détecté"
         )
     # Persister même un zéro mesuré, sauf pour un MoE dont l'override global serait trompeur.
-    if len(ngl) > 1 and not moe:
+    if ngl_decide:
         values["override"]["n_gpu_layers"] = best["ngl"]
     set_local_values(PERSONAL_CONFIG_PATH, values)
     # La pente dépend de l'architecture; persister donc le contexte par modèle.
@@ -1937,7 +1944,12 @@ def step_bench(con: Console, report: SetupReport, deps: Deps, raw_cfg):
             "threads": (th_res or {}).get("threads"),
         },
     )
-    gpu_txt = f", offload GPU -ngl {best['ngl']}" if best["ngl"] > 0 else ""
+    gpu_txt = (
+        f", offload GPU -ngl {best['ngl']}"
+        + (f" -ncmoe {best['ncmoe']}" if best.get("ncmoe") else "")
+        if best["ngl"] > 0
+        else ""
+    )
     con.say(
         f"  Mesuré : génération {best['tg_ts']:.1f} t/s · prefill "
         f"{best['pp_ts']:.1f} t/s (threads={best['threads']}{gpu_txt})"

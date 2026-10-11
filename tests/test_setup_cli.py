@@ -1022,6 +1022,80 @@ def test_llama_bench_repli_sur_le_plan_au_plancher(monkeypatch, tmp_path):
     assert "repli sur -ngl 999 -ncmoe 4 du plan au plancher" in out
 
 
+def _bench_au_ngl_demande(appels):
+    """Faux llama-bench dont les lignes portent le PREMIER -ngl demandé."""
+
+    def run_bench(b, m, t, g, n_cpu_moe=0, progress=None):
+        appels.append({"threads": list(t), "ngl": list(g), "ncmoe": n_cpu_moe})
+        return [
+            {"threads": 10, "ngl": g[0], "kind": "tg", "ts": 3.4},
+            {"threads": 10, "ngl": g[0], "kind": "pp", "ts": 25.0},
+        ]
+
+    return run_bench
+
+
+def test_ngl_retenu_par_elimination_remplace_un_override_perime(monkeypatch, tmp_path):
+    """Vérification adverse de L20 : -ngl 0 retiré (RAM), la liste n'avait plus qu'une
+    valeur et loom-setup cessait d'utiliser le -ngl mesuré — un [override]
+    n_gpu_layers = 0 d'un ancien bench restait la base de la sonde et du repli, et
+    était réécrit à côté de [bench] ngl = 99. Le choix vaut sur la liste d'ORIGINE :
+    les retirés ont été écartés (ils ne tiennent pas)."""
+    journal: list = []
+    appels: list = []
+    con, printed, deps, mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok, journal=journal),
+        ram_total_mb=8192,
+        hw=_gpu(24_576),
+        meta=_meta_complete(par_mb=400),
+        run_bench=_bench_au_ngl_demande(appels),
+    )
+    local = tmp_path / "config" / "local.toml"
+    local.write_text(
+        local.read_text(encoding="utf-8") + "\n[override]\nn_gpu_layers = 0\n",
+        encoding="utf-8",
+    )
+    (mdir / "model.toml").write_text(
+        'repo = "org/r"\nfilename = "m.gguf"\nn_layers = 40\nsize_mb = 16600\n',
+        encoding="utf-8",
+    )
+    assert run(con, deps) == 0
+    assert appels and appels[0]["ngl"] == [99]
+    construites = [e for e in journal if e[0] == "construite"]
+    assert construites[0][1] == 999  # la sonde part du -ngl mesuré, pas du 0 périmé
+    cfg = tomllib.loads(local.read_text(encoding="utf-8"))
+    assert cfg["override"]["n_gpu_layers"] == 99 and cfg["bench"]["ngl"] == 99
+
+
+def test_ncmoe_mesure_par_llama_bench_consigne(monkeypatch, tmp_path):
+    """Vérification adverse de L20 : le repli MoE fait mesurer -ngl 999 -ncmoe 4 ;
+    [bench], la trace et la ligne « Mesuré » ne disaient que -ngl 999 (qui peut
+    désormais vouloir dire 8, 4 ou 0 couches d'experts en RAM)."""
+    appels: list = []
+    con, printed, deps, _mdir = _harnais_bench(
+        monkeypatch,
+        tmp_path,
+        _fake_probe_cls(_mesure_ok),
+        ram_total_mb=20_000,
+        hw=_gpu(24_576),
+        meta=_meta_moe(),
+        run_bench=_bench_au_ngl_demande(appels),
+    )
+    run(con, deps)
+    out = "\n".join(printed)
+    assert appels and appels[0]["ncmoe"] == 4
+    assert "offload GPU -ngl 999 -ncmoe 4" in out
+    cfg = tomllib.loads(
+        (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
+    )
+    assert cfg["bench"]["ncmoe"] == 4
+    archives = list((tmp_path / "var" / "bench" / "m1").glob("*.json"))
+    arch = json.loads(archives[-1].read_text(encoding="utf-8"))
+    assert arch["llama_bench"]["ncmoe"] == 4
+
+
 def test_llama_bench_non_lance_si_aucune_configuration_ne_tient(monkeypatch, tmp_path):
     """Filet de sécurité : si aucune configuration de llama-bench ne tient (device et
     RAM), il n'est pas lancé — aucun processus, sortie explicite, archive."""
