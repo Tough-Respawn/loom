@@ -72,3 +72,51 @@ def test_context_fingerprint_stable_et_discriminante():
     # tool_calls comptent dans l'empreinte (une trace d'outil qui change = visible)
     tc = [dict(msgs[0]), dict(msgs[1], tool_calls=[{"id": "t1"}])]
     assert context_fingerprint(tc).split()[1] != a.split()[1]
+
+
+# ---- nature du serveur local, pour la config llama-swap (revue post-fusion 2026-10-14)
+# « llama-server direct » doit être IDENTIFIÉ (/running -> 404, /v1/models répond),
+# jamais déduit d'une réponse illisible : une erreur 500 de llama-swap classée
+# « direct » autorisait l'écriture du yaml, donc le rechargement qui coupe le modèle.
+
+
+def _kind(monkeypatch, running, v1=b'{"data": [{"id": "A"}]}'):
+    def fake(url, timeout=0):
+        if url.endswith("/running"):
+            if isinstance(running, int):
+                raise urllib.error.HTTPError(url, running, "x", {}, io.BytesIO(b""))
+            if isinstance(running, Exception):
+                raise running
+            return _resp(running)
+        if isinstance(v1, int):
+            raise urllib.error.HTTPError(url, v1, "x", {}, io.BytesIO(b""))
+        return _resp(v1)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    return _client().local_server_kind()
+
+
+def test_nature_swap(monkeypatch):
+    kind, body = _kind(monkeypatch, b'{"running": [{"model": "A", "state": "ready"}]}')
+    assert kind == "swap" and '"A"' in body
+
+
+def test_nature_direct_identifiee_par_le_404(monkeypatch):
+    assert _kind(monkeypatch, 404)[0] == "direct"
+
+
+def test_nature_inconnue_si_running_echoue_autrement(monkeypatch):
+    assert _kind(monkeypatch, 500)[0] == "inconnu"
+    assert _kind(monkeypatch, 503)[0] == "inconnu"
+
+
+def test_nature_inconnue_si_le_404_n_est_pas_un_llama_server(monkeypatch):
+    assert _kind(monkeypatch, 404, v1=404)[0] == "inconnu"
+
+
+def test_nature_inconnue_si_running_illisible(monkeypatch):
+    assert _kind(monkeypatch, b"<html>oops</html>")[0] == "inconnu"
+
+
+def test_nature_injoignable(monkeypatch):
+    assert _kind(monkeypatch, urllib.error.URLError("refus"))[0] == "injoignable"

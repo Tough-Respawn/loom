@@ -175,13 +175,11 @@ class ReloadWatch:
     surveillé (immédiate, ou version en attente posée à la transition) ouvre un état
     « rechargement attendu » ; la requête locale suivante attend sa confirmation.
 
-    Confirmation, par ordre de fiabilité : « configuration reloaded » apparu dans
-    /logs après l'écriture ; sinon (journal indisponible) le catalogue servi par
-    /v1/models égal au nouveau quand la liste des modèles change ; sinon un délai
-    minimal (intervalle de surveillance de 2 s + rechargement). Délai dépassé : l'état
-    reste actif et l'appelant refuse la requête."""
-
-    MIN_WITHOUT_LOGS = 4.5
+    Confirmation : « configuration reloaded » apparu dans /logs après l'écriture ;
+    sinon (journal indisponible) le catalogue servi par /v1/models égal au nouveau,
+    quand la liste des modèles change. Rien d'autre : un délai écoulé n'atteste pas
+    le rechargement (revue post-fusion du 2026-10-14). Sans confirmation dans le
+    délai, l'état reste actif et l'appelant refuse la requête."""
 
     def __init__(self) -> None:
         self._state: dict | None = None
@@ -195,7 +193,6 @@ class ReloadWatch:
         anchor: str | None,
         previous_text: str | None,
         new_text: str | None,
-        clock=time.monotonic,
     ) -> None:
         prev = _models(previous_text) if previous_text else None
         new = _models(new_text) if new_text else None
@@ -203,10 +200,9 @@ class ReloadWatch:
             "anchor": anchor,
             "previous": set(prev) if prev is not None else None,
             "expected": set(new) if new is not None else None,
-            "since": clock(),
         }
 
-    def _confirmed(self, st: dict, root: str, fetch_logs, fetch_models, clock) -> bool:
+    def _confirmed(self, st: dict, root: str, fetch_logs, fetch_models) -> bool:
         if st["anchor"] is not None:
             logs = fetch_logs(root)
             if logs is not None:
@@ -214,7 +210,7 @@ class ReloadWatch:
         expected, previous = st["expected"], st["previous"]
         if expected is not None and previous is not None and expected != previous:
             return fetch_models(root) == expected
-        return clock() - st["since"] >= self.MIN_WITHOUT_LOGS
+        return False  # rien d'observable : pas de confirmation
 
     def wait(
         self,
@@ -236,7 +232,7 @@ class ReloadWatch:
         fetch_models = fetch_models or globals()["fetch_models"]
         deadline = clock() + timeout
         while True:
-            if self._confirmed(st, root, fetch_logs, fetch_models, clock):
+            if self._confirmed(st, root, fetch_logs, fetch_models):
                 if self._state is st:
                     self._state = None
                 return True

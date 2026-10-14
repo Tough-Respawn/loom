@@ -36,6 +36,12 @@ class _FakeClient:
         }
         return True, json.dumps(body)
 
+    def local_server_kind(self, timeout=2.0):
+        """Comme LoomClient.local_server_kind : nature identifiée + corps de /running."""
+        if not self.reachable:
+            return "injoignable", ""
+        return "swap", self.running_local(timeout)[1]
+
     def mark_all_cold(self):
         self.cold_calls += 1
 
@@ -276,13 +282,43 @@ def test_serveur_direct_ecrit_tout_de_suite_sans_attente(env):
     from loom.web.routes.config import _regen_swap_yaml
 
     class _Direct(_FakeClient):
-        def running_local(self, timeout=5.0):
-            return True, '{"object": "list", "data": [{"id": "A"}]}'
+        def local_server_kind(self, timeout=2.0):
+            return "direct", ""  # /running -> 404, /v1/models répond
 
     env.S.client = _Direct()
     (env.text_dir / "B").rename(env.text_dir / "B-retire")
     assert _regen_swap_yaml(env.S) == "written"
     assert not getattr(env.S, "swap_watch", swap_sync.ReloadWatch()).active
+
+
+def test_inventaire_inconnu_differe(env):
+    # [P1 revue post-fusion] Le serveur répond mais /running est illisible ou en
+    # erreur : ce n'est PAS un llama-server direct, on ne sait pas ce qui tourne.
+    applied = env.yaml.read_text(encoding="utf-8")
+
+    class _Inconnu(_FakeClient):
+        def local_server_kind(self, timeout=2.0):
+            return "inconnu", ""
+
+    env.S.client = _Inconnu(running={"A"})
+    _remove(env, "B")
+    assert env.yaml.read_text(encoding="utf-8") == applied
+    assert swap_sync.pending_path(env.yaml).exists()
+
+
+def test_sans_sonde_de_nature_jamais_classe_direct(env):
+    # Client minimal (sans local_server_kind) : une réponse illisible vaut « inconnu ».
+    from loom.web.routes.config import _probe_swap
+
+    class _Minimal:
+        def running_local(self, timeout=5.0):
+            return True, ""
+
+        def local_server_root(self):
+            return "http://swap.test"
+
+    kind, running, _root = _probe_swap(SimpleNamespace(client=_Minimal()))
+    assert kind == "inconnu" and running is None
 
 
 def test_ecriture_immediate_fait_attendre_le_premier_appel(env, logs):
@@ -430,3 +466,21 @@ def test_config_non_chargee_remonte_jusqu_a_l_appelant():
     c.local_preflight = not_loaded
     with pytest.raises(swap_sync.SwapConfigNotLoaded):
         c._resolve("A")
+
+
+def test_preflight_inventaire_inconnu_garde_l_attente(tmp_path, monkeypatch, logs):
+    # On ne sait pas ce qui tourne : poser la version en attente pourrait couper le
+    # modèle actif. Elle attend une sonde lisible.
+    from loom.web.routes.config import _swap_preflight
+
+    y = _with_pending(tmp_path, monkeypatch)
+
+    class _Inconnu(_FakeClient):
+        def local_server_kind(self, timeout=2.0):
+            return "inconnu", ""
+
+    fake = _Inconnu(running={"A"})
+    _swap_preflight(SimpleNamespace(client=fake), "C")
+    assert swap_sync.pending_path(y).exists()
+    assert "B: {cmd: b}" in y.read_text(encoding="utf-8")
+    assert fake.cold_calls == 0

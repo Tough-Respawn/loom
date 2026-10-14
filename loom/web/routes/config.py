@@ -53,20 +53,31 @@ def _probe_swap(S) -> tuple[str, set[str] | None, str | None]:
     - 'absent'      : pas de client, rien à interrompre ;
     - 'injoignable' : /running en échec ou en délai -> modèles INCONNUS (None) : on
       n'en déduit jamais « rien ne tourne » (revue du 2026-10-14) ;
-    - 'direct'      : llama-server sans llama-swap, personne ne surveille le yaml ;
+    - 'inconnu'     : le serveur répond mais l'inventaire est illisible ou en erreur
+      -> modèles INCONNUS (None), comme injoignable ;
+    - 'direct'      : llama-server sans llama-swap, IDENTIFIÉ (404 sur /running),
+      personne ne surveille le yaml ;
     - 'swap'        : llama-swap, modèles en cours lus dans /running."""
     from loom.runtime.swap_sync import running_models
 
     client = getattr(S, "client", None)
     if client is None:
         return "absent", set(), None
-    reachable, txt = client.running_local(timeout=2.0)
-    if not reachable:
+    probe = getattr(client, "local_server_kind", None)
+    if probe is not None:
+        kind, body = probe(timeout=2.0)
+    else:  # client minimal : jamais « direct » faute de pouvoir l'identifier
+        reachable, body = client.running_local(timeout=2.0)
+        kind = "swap" if reachable else "injoignable"
+    if kind == "injoignable":
         return "injoignable", None, None
-    running = running_models(txt)
+    root = client.local_server_root()
+    if kind == "direct":
+        return "direct", set(), root
+    running = running_models(body) if kind == "swap" else None
     if running is None:
-        return "direct", set(), client.local_server_root()
-    return "swap", running, client.local_server_root()
+        return "inconnu", None, root
+    return "swap", running, root
 
 
 def _running_local_models(S) -> set[str] | None:
@@ -174,7 +185,7 @@ def _swap_preflight(S, model: str) -> None:
         if swap_sync.pending_path(y).exists():
             if kind == "direct":
                 swap_sync.apply_pending(y)  # personne ne surveille ce fichier
-            elif model not in running:
+            elif kind == "swap" and model not in running:
                 anchor = swap_sync.fetch_logs(root)
                 previous = _read_text(y)
                 swap_sync.apply_pending(y)
@@ -182,7 +193,9 @@ def _swap_preflight(S, model: str) -> None:
                 log_event("swap.config", statut="applied", cible=model)
                 if running:
                     _client_mark_all_cold(S)
-        if kind == "swap" and watch.active:
+            # 'inconnu' : on ne sait pas ce qui tourne -> la version attend une
+            # sonde lisible (la poser pourrait couper le modèle actif).
+        if kind in ("swap", "inconnu") and watch.active:
             if not watch.wait(root, timeout=SWAP_RELOAD_TIMEOUT_S):
                 log_event(
                     "swap.config", level="WARN", statut="non_confirme", cible=model
