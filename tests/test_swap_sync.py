@@ -218,24 +218,25 @@ def test_watch_sans_journal_le_catalogue_confirme():
     assert not w.active
 
 
-def test_watch_sans_journal_catalogue_inchange_attend_le_delai_minimal():
-    # Même liste de modèles avant/après (réglage d'un modèle) : rien d'observable dans
-    # le catalogue -> on attend au moins l'intervalle de surveillance + le rechargement.
+def test_watch_sans_journal_catalogue_inchange_ne_confirme_rien():
+    # Même liste de modèles avant/après (réglage d'un modèle) et pas de journal : rien
+    # n'atteste le rechargement. Un délai écoulé n'est PAS une preuve (revue post-
+    # fusion du 2026-10-14) : l'état reste en attente, l'appelant refusera.
     w = swap_sync.ReloadWatch()
     same = _yaml({"A": {"cmd": A["cmd"] + " -c 4096"}, "B": B})
     clock = _Clock()
-    w.mark(None, OLD, same, clock=clock)
-    assert (
-        w.wait(
-            "r",
-            fetch_logs=lambda r: None,
-            fetch_models=lambda r: {"A", "B"},
-            clock=clock,
-            sleep=clock.sleep,
-        )
-        is True
+    w.mark(None, OLD, same)
+    ok = w.wait(
+        "r",
+        timeout=30,
+        fetch_logs=lambda r: None,
+        fetch_models=lambda r: {"A", "B"},
+        clock=clock,
+        sleep=clock.sleep,
     )
-    assert clock.t >= swap_sync.ReloadWatch.MIN_WITHOUT_LOGS
+    assert ok is False
+    assert w.active
+    assert clock.t >= 30
 
 
 def test_watch_delai_depasse_reste_actif():

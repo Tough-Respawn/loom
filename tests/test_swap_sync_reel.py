@@ -224,3 +224,30 @@ def test_sans_journal_le_catalogue_confirme_le_rechargement(
     monkeypatch.setattr(swap_sync, "fetch_logs", lambda root: None)
     _swap_preflight(loom_side.S, "C")
     assert _status(swap.root + "/upstream/C/health") == 200
+
+
+def test_inventaire_en_erreur_ne_coupe_pas_le_modele_actif(
+    swap, loom_side, monkeypatch
+):
+    # [P1 revue post-fusion] llama-swap répond mais /running est en erreur (500) :
+    # ce n'est pas un llama-server direct, l'inventaire est inconnu -> rien n'est écrit.
+    import io
+    import urllib.error
+    import urllib.request
+
+    from loom.web.routes.config import _regen_swap_yaml
+
+    pid_a = _get(swap.root + "/upstream/A/health")["pid"]
+    real_urlopen = urllib.request.urlopen
+
+    def running_en_erreur(url, *a, **k):
+        target = url if isinstance(url, str) else url.full_url
+        if target.endswith("/running"):
+            raise urllib.error.HTTPError(target, 500, "boom", {}, io.BytesIO(b""))
+        return real_urlopen(url, *a, **k)
+
+    monkeypatch.setattr(urllib.request, "urlopen", running_en_erreur)
+    loom_side.ids[:] = ["A"]
+    assert _regen_swap_yaml(loom_side.S) == "deferred"
+    time.sleep(3.0)
+    assert _get(f"http://127.0.0.1:{swap.ports['A']}/health")["pid"] == pid_a

@@ -459,6 +459,38 @@ class LoomClient:
         except (urllib.error.URLError, OSError, ValueError):
             return False, ""
 
+    def local_server_kind(self, timeout: float = 2.0) -> tuple[str, str]:
+        """Nature du serveur local, pour la config llama-swap : ('swap', corps de
+        /running) | ('direct', '') | ('inconnu', '') | ('injoignable', '').
+
+        « direct » est IDENTIFIÉ, jamais déduit : /running répond 404 (llama-server n'a
+        pas cette route) ET /v1/models répond. Toute autre erreur HTTP, ou un corps
+        illisible, vaut « inconnu » : une erreur 500 de llama-swap prise pour un
+        serveur direct autorisait l'écriture du yaml, donc le rechargement qui coupe
+        le modèle actif (revue post-fusion du 2026-10-14)."""
+        import urllib.error
+        import urllib.request
+
+        from loom.runtime.swap_sync import running_models
+
+        root = self.local_server_root()
+        try:
+            with urllib.request.urlopen(root + "/running", timeout=timeout) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            return (
+                ("swap", body) if running_models(body) is not None else ("inconnu", "")
+            )
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                return "inconnu", ""
+            try:
+                with urllib.request.urlopen(root + "/v1/models", timeout=timeout):
+                    return "direct", ""
+            except (urllib.error.URLError, OSError, ValueError):
+                return "inconnu", ""
+        except (urllib.error.URLError, OSError, ValueError):
+            return "injoignable", ""
+
     def warmup_local(self, model: str) -> None:
         """Charge un modèle LOCAL en envoyant un ping 1-token : llama-swap charge à la 1re
         requête (et swap l'ancien si besoin). BLOQUANT le temps du chargement -> appeler dans
