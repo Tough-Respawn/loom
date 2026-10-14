@@ -661,13 +661,10 @@ class LoomClient:
         if ok and session_id and getattr(self, "hot_resume_enabled", False):
             try:
                 meta = self._slots_meta_path(name)
-                data = {"model": model or "", "session": session_id}
-                # Taille sauvée : le slot n'est « chaud » que s'il en contient au moins
-                # autant (cf. _conversation_slot_state).
-                n_saved = (getattr(self, "_last_slot_body", None) or {}).get("n_saved")
-                if isinstance(n_saved, int):
-                    data["n_saved"] = n_saved
-                meta.write_text(json.dumps(data), encoding="utf-8")
+                meta.write_text(
+                    json.dumps({"model": model or "", "session": session_id}),
+                    encoding="utf-8",
+                )
                 self._warm_slots().add(model or "")
             except OSError as e:  # meta best-effort, le save reste valide sans lui
                 _debug("HOT_RESUME_META_ERR", str(e), terminal=False)
@@ -713,9 +710,12 @@ class LoomClient:
         sache (incident du 2026-10-14 : marqué chaud, slot vide, zéro restore tenté).
 
         Froid : le modèle ne tourne pas, ou son slot 0 n'a traité aucune tâche depuis
-        le démarrage du serveur (`n_prompt_tokens` absent de GET /slots), ou contient
-        moins de tokens que la dernière sauvegarde. 'inconnu' (serveur muet, /slots
-        indisponible) garde la confiance d'origine dans le marqueur."""
+        le démarrage du serveur (`n_prompt_tokens` absent ou nul dans GET /slots).
+        Pas de comparaison à la taille sauvée : la sauvegarde contient le raisonnement
+        généré, que le prompt suivant ne renvoie pas (mesuré : 10 348 tokens dans le
+        slot réamorcé pour 10 381 sauvés) — un tel seuil restaurait à chaque tour.
+        Un restore raté suivi d'un tour laisse une tâche : chaud, pas de nouvel essai.
+        'inconnu' (serveur muet, /slots indisponible) garde la confiance d'origine."""
         import urllib.request
 
         from loom.runtime.swap_sync import running_models
@@ -743,18 +743,7 @@ class LoomClient:
         if slot0 is None:
             return "inconnu"
         n = slot0.get("n_prompt_tokens")
-        if not isinstance(n, int):
-            return "froid"  # aucune tâche depuis le démarrage du serveur
-        need = 1
-        try:
-            meta = json.loads(
-                self._slots_meta_path("turnend.kv").read_text(encoding="utf-8")
-            )
-            if meta.get("model") == model and isinstance(meta.get("n_saved"), int):
-                need = max(1, meta["n_saved"])
-        except (OSError, ValueError, AttributeError):
-            pass
-        return "chaud" if n >= need else "froid"
+        return "chaud" if isinstance(n, int) and n > 0 else "froid"
 
     def try_hot_resume(self, model: str | None, session_id: str) -> bool:
         """Restore ONE-SHOT du slot d'une conversation sur slot FROID. Best-effort,

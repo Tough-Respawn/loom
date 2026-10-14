@@ -246,19 +246,6 @@ def test_slot_verifie_chaud_pas_de_restore(monkeypatch, tmp_path):
     assert len(calls) == 1
 
 
-def test_save_slot_note_le_nombre_de_tokens_sauves(monkeypatch, tmp_path):
-    c = _client(tmp_path)
-
-    def fake(model, action, name, force=False):
-        c._last_slot_body = {"n_saved": 10460, "n_written": 1619623876}
-        return True
-
-    monkeypatch.setattr(c, "_slot_action", fake)
-    assert c.save_slot("orn", "turnend.kv", session_id="s1") is True
-    meta = json.loads((tmp_path / "turnend.kv.meta.json").read_text(encoding="utf-8"))
-    assert meta == {"model": "orn", "session": "s1", "n_saved": 10460}
-
-
 class _Resp:
     def __init__(self, body: bytes):
         self.body = body
@@ -310,26 +297,26 @@ def test_etat_slot_sans_tache_depuis_le_demarrage_froid(monkeypatch, tmp_path):
     assert urls == ["http://127.0.0.1:9/upstream/orn/slots"]
 
 
-def test_etat_slot_plus_court_que_la_sauvegarde_froid(monkeypatch, tmp_path):
-    slots = [{"id": 0, "n_prompt_tokens": 120}, {"id": 1, "n_prompt_tokens": 9000}]
-    meta = {"model": "orn", "session": "s1", "n_saved": 10460}
-    assert _etat(monkeypatch, tmp_path, _ORN, slots, meta)[0] == "froid"
-
-
-def test_etat_slot_contenant_la_conversation_chaud(monkeypatch, tmp_path):
-    slots = [{"id": 0, "n_prompt_tokens": 10567}]
-    meta = {"model": "orn", "session": "s1", "n_saved": 10460}
+def test_etat_slot_reamorce_plus_court_que_la_sauvegarde_reste_chaud(
+    monkeypatch, tmp_path
+):
+    # Mesuré dans Loom le 2026-10-14 : la sauvegarde contient aussi le raisonnement
+    # généré (10 381 tokens), que le prompt suivant ne renvoie pas ; après le
+    # réamorçage le slot en tient 10 348. Il est bien chaud : pas de restore à chaque
+    # tour (un seuil « au moins la taille sauvée » en déclenchait un par tour).
+    slots = [{"id": 0, "n_prompt_tokens": 10348}, {"id": 1, "n_ctx": 32768}]
+    meta = {"model": "orn", "session": "s1", "n_saved": 10381}
     assert _etat(monkeypatch, tmp_path, _ORN, slots, meta)[0] == "chaud"
 
 
-def test_etat_sans_taille_sauvegardee_une_tache_suffit(monkeypatch, tmp_path):
+def test_etat_slot_ayant_traite_une_tache_chaud(monkeypatch, tmp_path):
     slots = [{"id": 0, "n_prompt_tokens": 50}]
-    meta = {
-        "model": "autre",
-        "session": "s1",
-        "n_saved": 10460,
-    }  # autre modèle : ignoré
-    assert _etat(monkeypatch, tmp_path, _ORN, slots, meta)[0] == "chaud"
+    assert _etat(monkeypatch, tmp_path, _ORN, slots)[0] == "chaud"
+
+
+def test_etat_slot_vide_froid(monkeypatch, tmp_path):
+    slots = [{"id": 0, "n_prompt_tokens": 0}]
+    assert _etat(monkeypatch, tmp_path, _ORN, slots)[0] == "froid"
 
 
 def test_etat_inconnu_si_le_serveur_ne_repond_pas(monkeypatch, tmp_path):
