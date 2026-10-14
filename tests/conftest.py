@@ -22,6 +22,18 @@ def _archives_bench_isolees(tmp_path, monkeypatch):
     monkeypatch.setattr(_archive, "BENCH_DIR", tmp_path / "var" / "bench")
 
 
+@pytest.fixture(autouse=True)
+def _yaml_llama_swap_isole(tmp_path, monkeypatch):
+    """Aucun test n'écrit le VRAI var/cache/llama-swap.yaml (surveillé par llama-swap
+    quand Loom tourne). Vécu le 2026-10-14 : un test du parcours /remove-model l'a
+    écrasé par sa config factice."""
+    from loom.runtime import serve
+
+    monkeypatch.setattr(
+        serve, "SWAP_YAML", tmp_path / "var" / "cache" / "llama-swap.yaml"
+    )
+
+
 @pytest.fixture()
 def tmp_env(tmp_path):
     """Arborescence isolée : tout ce que l'app écrit reste sous tmp_path."""

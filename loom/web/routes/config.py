@@ -4,6 +4,9 @@ from __future__ import annotations
 import threading
 from flask import request
 
+from loom.agent.debuglog import log_event
+from loom.web.routes.helpers import _client_mark_all_cold
+
 
 # ---- Config vivante ----------------------------------------------------------------
 
@@ -39,26 +42,94 @@ def _reload_app_config(S):
     S.perm["fn"] = lambda name, args: evaluate(name, args, c.permissions)
 
 
+def _running_local_models(S) -> set[str] | None:
+    """Modèles servis par llama-swap : set vide si rien n'écoute (rien à interrompre),
+    None si la réponse est illisible (prudence : on n'interrompt pas)."""
+    from loom.runtime.swap_sync import running_models
+
+    client = getattr(S, "client", None)
+    if client is None:
+        return set()
+    reachable, txt = client.running_local(timeout=2.0)
+    return running_models(txt) if reachable else set()
+
+
 def _regen_swap_yaml(S):
-    """Régénère le llama-swap.yaml depuis la config (llama-swap -watch-config le recharge).
-    Best-effort, silencieux si serve indispo. Renvoie True si écrit."""
+    """Recalcule le llama-swap.yaml depuis la config SANS interrompre le modèle qui
+    tourne : llama-swap (-watch-config) recharge GLOBALEMENT, donc une modification qui
+    ne touche pas le modèle actif est mise en attente jusqu'à la prochaine transition
+    (cf. loom.runtime.swap_sync ; incident du 2026-10-14).
+
+    Renvoie 'written', 'deferred' ou 'unchanged' (vrais), False en cas d'échec."""
     if not (S.config_defaults_path and S.config_local_path):
         return False
-    try:
-        from loom.runtime.serve import regenerate_swap_yaml
+    from loom.runtime import serve
 
-        ok = bool(regenerate_swap_yaml(S.config_defaults_path, S.config_local_path))
-        if ok and getattr(S, "client", None) is not None:
+    try:
+        running = _running_local_models(S)
+        status = serve.sync_swap_yaml(
+            S.config_defaults_path,
+            S.config_local_path,
+            serve.SWAP_YAML,
+            running=running,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[loom] regen swap yaml échoué: {e}", flush=True)
+        return False
+    if status is None:
+        print("[loom] regen swap yaml échoué: config illisible", flush=True)
+        return False
+    log_event(
+        "swap.config", statut=status, actifs=",".join(sorted(running or ())) or "-"
+    )
+    if status == "written" and running:
+        # llama-swap recharge tout : aucun slot ne peut plus être présumé chaud.
+        _client_mark_all_cold(S)
+    if getattr(S, "client", None) is not None:
+        try:
             # Les slots effectifs suivent la config (cache_isolation posé après un bench).
             from loom.config import load_config
             from loom.runtime.server_args import compute_slot_counts
 
             cfg = load_config(S.config_defaults_path, S.config_local_path)
             S.client.slot_counts = compute_slot_counts(cfg.models, cfg.n_parallel)
-        return ok
-    except Exception as e:  # noqa: BLE001
-        print(f"[loom] regen swap yaml échoué: {e}", flush=True)
-        return False
+        except Exception as e:  # noqa: BLE001 - la config yaml reste appliquée
+            print(f"[loom] slots effectifs non recalculés: {e}", flush=True)
+    return status
+
+
+_SWAP_PREFLIGHT_LOCK = threading.Lock()
+
+
+def _swap_preflight(S, model: str) -> None:
+    """Avant toute requête vers le modèle local `model` : si une config llama-swap est
+    EN ATTENTE et que ce modèle ne tourne pas, l'appliquer et attendre la fin du
+    rechargement. Le modèle actif s'arrêterait de toute façon (llama-swap permute) ; et
+    sans attente, la requête démarrerait `model` sous l'ancienne config, aussitôt tué
+    par le rechargement. Sans attente en cours : un simple test d'existence de fichier."""
+    from loom.runtime import serve, swap_sync
+
+    y = serve.SWAP_YAML
+    if not swap_sync.pending_path(y).exists():
+        return
+    with _SWAP_PREFLIGHT_LOCK:
+        if not swap_sync.pending_path(y).exists():
+            return
+        reachable, txt = S.client.running_local(timeout=2.0)
+        running = swap_sync.running_models(txt) if reachable else set()
+        if running is not None and model in running:
+            return  # il sert déjà avec une entrée inchangée : l'attente peut attendre
+        root = S.client.local_server_root() if reachable else None
+        result = swap_sync.apply_pending(y, root=root)
+        log_event("swap.config", statut=result or "rien", cible=model)
+        if reachable:
+            _client_mark_all_cold(S)
+
+
+def _install_swap_preflight(S) -> None:
+    """Branche le préalable sur le client : il passe avant chaque requête locale."""
+    if getattr(S, "client", None) is not None:
+        S.client.local_preflight = lambda model: _swap_preflight(S, model)
 
 
 def _apply_to_model_server(S, section):
@@ -67,7 +138,7 @@ def _apply_to_model_server(S, section):
     (llama-swap -watch-config). Ne touche pas les autres process. Best-effort, en tâche de fond."""
     if section not in ("server", "override"):
         return
-    if _regen_swap_yaml(S):
+    if _regen_swap_yaml(S) == "written":
         threading.Thread(
             target=S.client.unload_local, daemon=True, name="loom-reload-models"
         ).start()

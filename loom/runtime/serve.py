@@ -22,7 +22,7 @@ from loom.runtime.models_fetch import ModelUnavailable, ensure_model
 from loom.runtime.ngl import resolve_ngl
 from loom.runtime.server_args import build_server_args, resolve_parallel
 from loom.runtime.serverlog import archive_all, server_log_path
-from loom.runtime.swap import build_swap_config, write_swap_yaml
+from loom.runtime.swap import build_swap_config, dump_yaml, write_swap_yaml
 
 LOOM_DIR = Path(__file__).resolve().parent.parent  # = loom/ (le package)
 REPO_ROOT = LOOM_DIR.parent
@@ -257,7 +257,11 @@ def _swap_config(cfg: RuntimeConfig, profile: HardwareProfile) -> dict:
 
 def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
     """Plusieurs modèles : llama-swap route vers le bon selon le champ 'model'."""
+    from loom.runtime import swap_sync
+
     write_swap_yaml(_swap_config(cfg, profile), SWAP_YAML)
+    # Config fraîche : une version mise en attente par loom.web est obsolète.
+    swap_sync.drop_pending(SWAP_YAML)
     args = [
         cfg.swap_bin,
         "--config",
@@ -276,7 +280,7 @@ def launch_swap(cfg: RuntimeConfig, profile: HardwareProfile) -> int:
 
 
 def regenerate_swap_yaml(
-    defaults_path=CONFIG_PATH, local_path=PERSONAL_CONFIG_PATH, out_path=SWAP_YAML
+    defaults_path=CONFIG_PATH, local_path=PERSONAL_CONFIG_PATH, out_path=None
 ) -> Path | None:
     """Régénère le llama-swap.yaml depuis la config COURANTE (sans rien télécharger).
 
@@ -285,6 +289,8 @@ def regenerate_swap_yaml(
     modèle rechargé (après déchargement) démarre avec les nouveaux args. Ferme la boucle
     « customiser un modèle local depuis l'UI » sans toucher au TOML ni tout relancer.
     Best-effort : renvoie le chemin écrit, ou None si la config est illisible."""
+    # Lu à l'appel : un défaut figé à la définition échappait à toute redirection.
+    out_path = out_path or SWAP_YAML
     try:
         cfg = load_config(defaults_path, local_path)
         # Le binaire configuré détecte aussi les GPU non-NVIDIA.
@@ -292,6 +298,31 @@ def regenerate_swap_yaml(
         write_swap_yaml(_swap_config(cfg, profile), out_path)
         return Path(out_path)
     except Exception:  # noqa: BLE001 - régénération best-effort, jamais fatale pour l'UI
+        return None
+
+
+def sync_swap_yaml(
+    defaults_path=CONFIG_PATH,
+    local_path=PERSONAL_CONFIG_PATH,
+    out_path=None,
+    running: set[str] | None = None,
+) -> str | None:
+    """Comme `regenerate_swap_yaml`, sans interrompre le modèle qui tourne : llama-swap
+    recharge GLOBALEMENT (tous les modèles arrêtés), donc le yaml surveillé n'est écrit
+    que si rien ne tourne ou si l'entrée d'un modèle en cours change ; sinon la nouvelle
+    version attend la prochaine transition (cf. loom.runtime.swap_sync).
+
+    `running` : modèles servis par llama-swap (set vide = rien ; None = inconnu).
+    Renvoie 'unchanged', 'written', 'deferred', ou None si la config est illisible."""
+    from loom.runtime import swap_sync
+
+    out_path = out_path or SWAP_YAML
+    try:
+        cfg = load_config(defaults_path, local_path)
+        profile = detect_hardware(cfg.server_bin)
+        text = dump_yaml(_swap_config(cfg, profile))
+        return swap_sync.write_or_defer(text, out_path, running)
+    except Exception:  # noqa: BLE001 - best-effort, jamais fatale pour l'UI
         return None
 
 

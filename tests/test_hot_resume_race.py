@@ -29,6 +29,9 @@ class _Client(LoomClient):
     def _slots_meta_path(self, name):
         return self._meta
 
+    def _conversation_slot_state(self, model):
+        return "inconnu"  # sonde du slot hors sujet ici (testée dans test_hot_resume)
+
     def restore_slot(self, model, name, force=False):
         self.appels += 1
         self._slot_unreachable = self._echec == "injoignable"

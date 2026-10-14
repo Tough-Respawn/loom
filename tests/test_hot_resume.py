@@ -14,6 +14,9 @@ def _client(tmp_path, hot_resume=True, restore_safe=False, hybrid=()):
     c.restore_safe = restore_safe
     c.hybrid_models = set(hybrid)
     c.slots_dir_override = str(tmp_path)
+    # Sonde du slot neutre : « inconnu » garde la confiance dans le marqueur chaud, sans
+    # réseau (une connexion refusée coûte 2 s sous Windows). Testée à part plus bas.
+    c._conversation_slot_state = lambda model: "inconnu"
     return c
 
 
@@ -213,3 +216,122 @@ def test_timeout_modele_charge_desactive_bien_le_slot(monkeypatch, tmp_path):
     assert c.restore_slot("orn", "turnend.kv", force=True) is False
     assert "orn" in c._slot_broken
     assert seen == [20]
+
+
+# ---- le marqueur « chaud » vérifié auprès du serveur (incident du 2026-10-14) --------
+# Un rechargement de llama-swap (ou un crash) relance llama-server : le slot est vide
+# alors que Loom le croyait chaud -> zéro tentative de restore, re-prefill total.
+
+
+def test_redemarrage_du_serveur_detecte_restaure_a_nouveau(monkeypatch, tmp_path):
+    c = _client(tmp_path)
+    calls = _spy_actions(monkeypatch, c)
+    _write_meta(tmp_path)
+    assert c.try_hot_resume("orn", "s1") is True
+    # llama-swap a rechargé : le slot 0 ne contient plus la conversation.
+    c._conversation_slot_state = lambda model: "froid"
+    assert c.try_hot_resume("orn", "s1") is True
+    assert calls == [("orn", "restore", "turnend.kv", True)] * 2
+
+
+def test_slot_verifie_chaud_pas_de_restore(monkeypatch, tmp_path):
+    # Après un restore raté, le tour re-préfille tout : le slot est plein -> pas de
+    # nouvel essai (un seul par période froide, pas de tempête de retries).
+    c = _client(tmp_path)
+    calls = _spy_actions(monkeypatch, c, result=False)
+    _write_meta(tmp_path)
+    assert c.try_hot_resume("orn", "s1") is False
+    c._conversation_slot_state = lambda model: "chaud"
+    assert c.try_hot_resume("orn", "s1") is False
+    assert len(calls) == 1
+
+
+def test_save_slot_note_le_nombre_de_tokens_sauves(monkeypatch, tmp_path):
+    c = _client(tmp_path)
+
+    def fake(model, action, name, force=False):
+        c._last_slot_body = {"n_saved": 10460, "n_written": 1619623876}
+        return True
+
+    monkeypatch.setattr(c, "_slot_action", fake)
+    assert c.save_slot("orn", "turnend.kv", session_id="s1") is True
+    meta = json.loads((tmp_path / "turnend.kv.meta.json").read_text(encoding="utf-8"))
+    assert meta == {"model": "orn", "session": "s1", "n_saved": 10460}
+
+
+class _Resp:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _etat(monkeypatch, tmp_path, running, slots, meta=None):
+    import urllib.request
+
+    c = LoomClient(base_url="http://127.0.0.1:9/v1")
+    c.slots_dir_override = str(tmp_path)
+    if meta is not None:
+        (tmp_path / "turnend.kv.meta.json").write_text(
+            json.dumps(meta), encoding="utf-8"
+        )
+    monkeypatch.setattr(c, "running_local", lambda timeout=5.0: running)
+    urls = []
+
+    def fake_urlopen(url, timeout=None):
+        urls.append(url if isinstance(url, str) else url.full_url)
+        if isinstance(slots, Exception):
+            raise slots
+        return _Resp(json.dumps(slots).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return c._conversation_slot_state("orn"), urls
+
+
+_ORN = (True, '{"running": [{"model": "orn", "state": "ready"}]}')
+
+
+def test_etat_modele_arrete_froid_sans_le_charger(monkeypatch, tmp_path):
+    state, urls = _etat(monkeypatch, tmp_path, (True, '{"running": []}'), [])
+    assert state == "froid"
+    assert urls == []  # /upstream/<m>/ aurait CHARGÉ le modèle juste pour regarder
+
+
+def test_etat_slot_sans_tache_depuis_le_demarrage_froid(monkeypatch, tmp_path):
+    state, urls = _etat(monkeypatch, tmp_path, _ORN, [{"id": 0, "n_ctx": 32768}])
+    assert state == "froid"
+    assert urls == ["http://127.0.0.1:9/upstream/orn/slots"]
+
+
+def test_etat_slot_plus_court_que_la_sauvegarde_froid(monkeypatch, tmp_path):
+    slots = [{"id": 0, "n_prompt_tokens": 120}, {"id": 1, "n_prompt_tokens": 9000}]
+    meta = {"model": "orn", "session": "s1", "n_saved": 10460}
+    assert _etat(monkeypatch, tmp_path, _ORN, slots, meta)[0] == "froid"
+
+
+def test_etat_slot_contenant_la_conversation_chaud(monkeypatch, tmp_path):
+    slots = [{"id": 0, "n_prompt_tokens": 10567}]
+    meta = {"model": "orn", "session": "s1", "n_saved": 10460}
+    assert _etat(monkeypatch, tmp_path, _ORN, slots, meta)[0] == "chaud"
+
+
+def test_etat_sans_taille_sauvegardee_une_tache_suffit(monkeypatch, tmp_path):
+    slots = [{"id": 0, "n_prompt_tokens": 50}]
+    meta = {
+        "model": "autre",
+        "session": "s1",
+        "n_saved": 10460,
+    }  # autre modèle : ignoré
+    assert _etat(monkeypatch, tmp_path, _ORN, slots, meta)[0] == "chaud"
+
+
+def test_etat_inconnu_si_le_serveur_ne_repond_pas(monkeypatch, tmp_path):
+    assert _etat(monkeypatch, tmp_path, (False, ""), [])[0] == "inconnu"
+    assert _etat(monkeypatch, tmp_path, _ORN, OSError("404"))[0] == "inconnu"

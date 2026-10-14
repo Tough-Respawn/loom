@@ -600,9 +600,11 @@ def _register_model_routes(app, S):
                 atomic_write_text(tp, tomlkit.dumps(doc))
         except (ValueError, TypeError) as e:
             return {"ok": False, "error": str(e)[:120]}, 400
-        # Régénérer puis décharger applique le nouveau tuning au prochain usage.
+        # Régénérer puis décharger applique le nouveau tuning au prochain usage. Seule
+        # une écriture réelle le justifie : « différé » vise un modèle qui ne tourne pas
+        # (appliqué à son prochain chargement), « inchangé » n'a rien à recharger.
         applied = _regen_swap_yaml(S)
-        if applied:
+        if applied == "written":
             threading.Thread(
                 target=lambda: S.client.unload_local(mid),
                 daemon=True,
