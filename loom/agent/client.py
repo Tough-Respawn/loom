@@ -156,7 +156,26 @@ class LoomClient:
         if model and model in self._routes:
             r = self._routes[model]
             return r["client"], r["model"], r["enable_thinking_param"]
+        self._preflight_local(model)
         return self._client, (model or self.model), True
+
+    def _preflight_local(self, model: str | None) -> None:
+        """Préalable posé par loom.web (`local_preflight`) avant toute requête vers un
+        modèle LOCAL : applique une config llama-swap mise en attente si ce modèle ne
+        tourne pas encore, et attend que llama-swap l'ait chargée. Best-effort, sauf
+        une config écrite mais non confirmée chargée : SwapConfigNotLoaded remonte
+        (explicite) au lieu d'envoyer la requête vers l'ancien catalogue."""
+        from loom.runtime.swap_sync import SwapConfigNotLoaded
+
+        hook = getattr(self, "local_preflight", None)
+        if hook is None or not model or self.is_remote(model):
+            return
+        try:
+            hook(model)
+        except SwapConfigNotLoaded:
+            raise  # config écrite mais pas chargée : erreur explicite, pas de 404 muet
+        except Exception as e:  # noqa: BLE001 - jamais bloquant
+            _debug("PREFLIGHT_ERR", f"{model} : {e}", terminal=False)
 
     def summarize_slice(
         self,
@@ -522,6 +541,9 @@ class LoomClient:
         key = model or "(local)"
         if key in self._slot_broken:
             return False
+        # `/upstream/<m>/` charge le modèle s'il ne tourne pas : même préalable qu'une
+        # requête de génération (config llama-swap en attente appliquée d'abord).
+        self._preflight_local(model)
         root = self.local_server_root()
         payload = json.dumps({"filename": name}).encode()
         paths = [f"/upstream/{model}/slots/0?action={action}"] if model else []
@@ -686,6 +708,48 @@ class LoomClient:
         slot n'est présumé chaud — le prochain amorçage tentera la reprise."""
         self._warm_slots().clear()
 
+    def _conversation_slot_state(self, model: str) -> str:
+        """Le slot 0 (celui de la conversation et du save) la contient-il ENCORE ?
+        'chaud' | 'froid' | 'inconnu'. Le marqueur chaud ne suffit pas : un
+        rechargement de llama-swap ou un crash relance llama-server sans que Loom le
+        sache (incident du 2026-10-14 : marqué chaud, slot vide, zéro restore tenté).
+
+        Froid : le modèle ne tourne pas, ou son slot 0 n'a traité aucune tâche depuis
+        le démarrage du serveur (`n_prompt_tokens` absent ou nul dans GET /slots).
+        Pas de comparaison à la taille sauvée : la sauvegarde contient le raisonnement
+        généré, que le prompt suivant ne renvoie pas (mesuré : 10 348 tokens dans le
+        slot réamorcé pour 10 381 sauvés) — un tel seuil restaurait à chaque tour.
+        Un restore raté suivi d'un tour laisse une tâche : chaud, pas de nouvel essai.
+        'inconnu' (serveur muet, /slots indisponible) garde la confiance d'origine."""
+        import urllib.request
+
+        from loom.runtime.swap_sync import running_models
+
+        reachable, txt = self.running_local(timeout=2.0)
+        if not reachable:
+            return "inconnu"
+        running = running_models(txt)
+        if running is not None and model not in running:
+            return "froid"  # sans le charger : /upstream/<m>/ le démarrerait
+        root = self.local_server_root()
+        slots = None
+        for path in (f"/upstream/{model}/slots", "/slots"):
+            try:
+                with urllib.request.urlopen(root + path, timeout=3) as resp:
+                    slots = json.loads(resp.read().decode("utf-8", "replace") or "[]")
+                break
+            except Exception:  # noqa: BLE001 - sonde best-effort
+                continue
+        if not isinstance(slots, list):
+            return "inconnu"
+        slot0 = next(
+            (s for s in slots if isinstance(s, dict) and s.get("id") == 0), None
+        )
+        if slot0 is None:
+            return "inconnu"
+        n = slot0.get("n_prompt_tokens")
+        return "chaud" if isinstance(n, int) and n > 0 else "froid"
+
     def try_hot_resume(self, model: str | None, session_id: str) -> bool:
         """Restore ONE-SHOT du slot d'une conversation sur slot FROID. Best-effort,
         jamais d'exception. True = un restore a réussi (le re-prefill d'amorçage
@@ -709,7 +773,17 @@ class LoomClient:
             warm.discard(last)
         self._last_local_model = model
         if model in warm:
-            return False
+            # Vérifié auprès du serveur : un redémarrage a pu vider le slot sans que
+            # Loom le sache. Inconnu -> on garde la confiance d'origine.
+            if self._conversation_slot_state(model) != "froid":
+                return False
+            warm.discard(model)
+            _debug(
+                "HOT_RESUME_FROID",
+                f"{model} : marqué chaud mais le slot ne contient plus la conversation "
+                "(serveur modèle relancé) -> reprise tentée",
+                terminal=False,
+            )
         warm.add(model)  # un seul essai par période froide, succès ou pas
         try:
             meta = json.loads(

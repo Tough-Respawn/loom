@@ -587,6 +587,12 @@ def create_app(
     _register_soul_routes(app, S)
     _register_config_routes(app, S)
 
+    # Avant chaque requête locale : appliquer une config llama-swap mise en attente
+    # (modifier le catalogue n'interrompt pas le modèle qui tourne).
+    from loom.web.routes.config import _install_swap_preflight
+
+    _install_swap_preflight(S)
+
     # Le thread dormant permet d'activer keep-warm à chaud.
     threading.Thread(
         target=_keepwarm_loop, args=(S,), daemon=True, name="loom-keepwarm"
