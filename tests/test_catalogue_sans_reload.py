@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -181,48 +180,65 @@ def test_regen_qui_recharge_le_modele_actif_le_declare_froid(env, monkeypatch):
     assert fake.cold_calls == 1
 
 
-# ---- préalable : appliquer l'attente à la prochaine transition -----------------------
+# ---- préalable : appliquer l'attente et attendre le rechargement -------------------
+
+
+@pytest.fixture()
+def logs(monkeypatch):
+    """Journal de llama-swap simulé : « configuration reloaded » apparaît au relevé
+    qui suit l'écriture (comme sur v241, ~1,4 s après)."""
+    state = {"text": "[INFO] llama-swap listening\n", "calls": 0, "reload_on": True}
+
+    def fetch(root):
+        state["calls"] += 1
+        out = state["text"]
+        if state["reload_on"] and state["calls"] >= 2:
+            state["text"] += "[INFO] configuration reloaded\n"
+        return out
+
+    monkeypatch.setattr(swap_sync, "fetch_logs", fetch)
+    monkeypatch.setattr(swap_sync, "fetch_models", lambda root: None)
+    return state
 
 
 def _with_pending(tmp_path, monkeypatch):
     y = tmp_path / "llama-swap.yaml"
     monkeypatch.setattr(serve, "SWAP_YAML", y)
-    y.write_text("ancien", encoding="utf-8")
-    swap_sync.pending_path(y).write_text("nouveau", encoding="utf-8")
-    calls = []
-
-    def fake_apply(path, root, **k):
-        calls.append(root)
-        os.replace(swap_sync.pending_path(path), path)
-        return "applied"
-
-    monkeypatch.setattr(swap_sync, "apply_pending", fake_apply)
-    return y, calls
+    y.write_text("models: {A: {cmd: a}, B: {cmd: b}}\n", encoding="utf-8")
+    swap_sync.pending_path(y).write_text(
+        "models: {A: {cmd: a}, C: {cmd: c}}\n", encoding="utf-8"
+    )
+    return y
 
 
 def test_preflight_applique_l_attente_avant_un_modele_qui_ne_tourne_pas(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, logs
 ):
     from loom.web.routes.config import _swap_preflight
 
-    y, calls = _with_pending(tmp_path, monkeypatch)
+    y = _with_pending(tmp_path, monkeypatch)
     fake = _FakeClient(running={"A"})
-    _swap_preflight(SimpleNamespace(client=fake), "C")
-    assert calls == ["http://swap.test"]
-    assert y.read_text(encoding="utf-8") == "nouveau"
+    S = SimpleNamespace(client=fake)
+    _swap_preflight(S, "C")
+    assert "C: {cmd: c}" in y.read_text(encoding="utf-8")
+    assert not swap_sync.pending_path(y).exists()
+    assert not S.swap_watch.active  # rechargement confirmé AVANT de rendre la main
+    assert logs["calls"] >= 2
     assert fake.cold_calls == 1  # le rechargement a arrêté A
 
 
-def test_preflight_garde_l_attente_si_le_modele_tourne_deja(tmp_path, monkeypatch):
+def test_preflight_garde_l_attente_si_le_modele_tourne_deja(
+    tmp_path, monkeypatch, logs
+):
     from loom.web.routes.config import _swap_preflight
 
-    y, calls = _with_pending(tmp_path, monkeypatch)
+    y = _with_pending(tmp_path, monkeypatch)
     fake = _FakeClient(running={"A"})
     _swap_preflight(SimpleNamespace(client=fake), "A")
-    assert calls == []
-    assert y.read_text(encoding="utf-8") == "ancien"
+    assert "B: {cmd: b}" in y.read_text(encoding="utf-8")
     assert swap_sync.pending_path(y).exists()
     assert fake.cold_calls == 0
+    assert logs["calls"] == 0
 
 
 def test_preflight_sans_attente_ne_coute_rien(tmp_path, monkeypatch):
@@ -234,16 +250,69 @@ def test_preflight_sans_attente_ne_coute_rien(tmp_path, monkeypatch):
     assert fake.running_calls == 0  # aucun appel réseau sur le chemin courant
 
 
-def test_preflight_llama_swap_injoignable_pose_le_fichier(tmp_path, monkeypatch):
+def test_preflight_llama_swap_injoignable_ne_touche_a_rien(tmp_path, monkeypatch, logs):
+    # Rien ne répond : la requête échouera ou lancera la pile, qui écrit un yaml frais.
     from loom.web.routes.config import _swap_preflight
 
-    y, calls = _with_pending(tmp_path, monkeypatch)
+    y = _with_pending(tmp_path, monkeypatch)
     fake = _FakeClient(reachable=False)
     _swap_preflight(SimpleNamespace(client=fake), "C")
-    assert calls == [
-        None
-    ]  # rien à attendre : llama-swap relira le fichier au lancement
+    assert swap_sync.pending_path(y).exists()
     assert fake.cold_calls == 0
+
+
+def test_sonde_running_en_echec_differe(env):
+    # [P1 revue] /running en échec ou en délai : « inconnu », pas « rien ne tourne ».
+    # Écrire tout de suite rechargerait llama-swap et couperait le modèle actif.
+    applied = env.yaml.read_text(encoding="utf-8")
+    env.S.client = _FakeClient(running={"A"}, reachable=False)
+    _remove(env, "B")
+    assert env.yaml.read_text(encoding="utf-8") == applied
+    assert swap_sync.pending_path(env.yaml).exists()
+
+
+def test_serveur_direct_ecrit_tout_de_suite_sans_attente(env):
+    # llama-server lancé en direct (sans llama-swap) : personne ne surveille le yaml.
+    from loom.web.routes.config import _regen_swap_yaml
+
+    class _Direct(_FakeClient):
+        def running_local(self, timeout=5.0):
+            return True, '{"object": "list", "data": [{"id": "A"}]}'
+
+    env.S.client = _Direct()
+    (env.text_dir / "B").rename(env.text_dir / "B-retire")
+    assert _regen_swap_yaml(env.S) == "written"
+    assert not getattr(env.S, "swap_watch", swap_sync.ReloadWatch()).active
+
+
+def test_ecriture_immediate_fait_attendre_le_premier_appel(env, logs):
+    # [P2 revue] Rien ne tourne -> le yaml est écrit tout de suite, mais llama-swap ne
+    # l'a pas encore chargé : le premier appel vers le nouveau modèle attend.
+    from loom.web.routes.config import _regen_swap_yaml, _swap_preflight
+
+    env.S.client = _FakeClient(running=())
+    (env.text_dir / "C").mkdir()
+    assert _regen_swap_yaml(env.S) == "written"
+    assert env.S.swap_watch.active
+    calls_before = logs["calls"]
+    _swap_preflight(env.S, "C")
+    assert logs["calls"] > calls_before
+    assert not env.S.swap_watch.active
+
+
+def test_rechargement_non_confirme_refuse_la_requete(env, logs, monkeypatch):
+    # [P3 revue] Pas de confirmation dans le délai : erreur explicite, pas un 404 ou un
+    # modèle tué en plein chargement ; l'état reste actif pour l'appel suivant.
+    from loom.web.routes import config as routes_config
+
+    logs["reload_on"] = False
+    monkeypatch.setattr(routes_config, "SWAP_RELOAD_TIMEOUT_S", 0.05)
+    env.S.client = _FakeClient(running=())
+    (env.text_dir / "C").mkdir()
+    assert routes_config._regen_swap_yaml(env.S) == "written"
+    with pytest.raises(swap_sync.SwapConfigNotLoaded):
+        routes_config._swap_preflight(env.S, "C")
+    assert env.S.swap_watch.active
 
 
 # ---- branchement sur le client ---------------------------------------------------------
@@ -349,3 +418,15 @@ def test_reglage_d_un_modele_ne_decharge_que_si_le_yaml_est_ecrit(
     done.wait(timeout=2 if dechargements else 0.3)
     assert calls == dechargements
     assert r.get_json()["applies"] == ("model-reload" if statut else "restart")
+
+
+def test_config_non_chargee_remonte_jusqu_a_l_appelant():
+    # Les autres échecs du préalable restent silencieux ; celui-ci doit être VU.
+    c = LoomClient(base_url="http://127.0.0.1:9/v1")
+
+    def not_loaded(model):
+        raise swap_sync.SwapConfigNotLoaded("config non chargée")
+
+    c.local_preflight = not_loaded
+    with pytest.raises(swap_sync.SwapConfigNotLoaded):
+        c._resolve("A")

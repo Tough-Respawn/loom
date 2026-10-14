@@ -10,7 +10,14 @@ de cache perdus, 210 s avant le premier token).
 Règle : on n'écrit le yaml surveillé que si rien ne tourne, ou si l'entrée d'un modèle
 en cours change (il doit être relancé de toute façon). Sinon la nouvelle version est
 mise EN ATTENTE (`<yaml>.pending`) et appliquée à la prochaine transition — une requête
-vers un modèle qui ne tourne pas, que llama-swap aurait de toute façon fait permuter."""
+vers un modèle qui ne tourne pas, que llama-swap aurait de toute façon fait permuter.
+« Rien ne tourne » exige une réponse valide de /running : une sonde en échec vaut
+« inconnu », donc attente.
+
+Écrite n'est pas chargée : llama-swap relit le fichier toutes les 2 s. Toute écriture
+(immédiate ou à la transition) ouvre une ReloadWatch ; la requête suivante attend sa
+confirmation, ou est refusée explicitement (SwapConfigNotLoaded) au lieu de partir vers
+l'ancien catalogue (404 sur un modèle ajouté — reproduit en revue le 2026-10-14)."""
 
 from __future__ import annotations
 
@@ -126,30 +133,113 @@ def _reloaded_since(before: str, after: str) -> bool:
     return after.count(RELOADED_MARK) > before.count(RELOADED_MARK)
 
 
-def apply_pending(
-    yaml_path: str | Path,
-    root: str | None,
-    timeout: float = 20.0,
-    poll: float = 0.2,
-    fetch_logs=fetch_logs,
-) -> str | None:
-    """Applique la version en attente et attend que llama-swap l'ait rechargée, pour
-    qu'une requête envoyée ensuite ne démarre pas un modèle sous l'ANCIENNE config (le
-    rechargement le tuerait aussitôt). None si rien n'attendait ; 'applied' (rechargement
-    vu dans /logs) ; 'applied_unconfirmed' (llama-swap injoignable, ou délai dépassé)."""
+def apply_pending(yaml_path: str | Path) -> bool:
+    """Pose la version en attente sur le yaml surveillé. False si rien n'attendait.
+    Le rechargement qui suit s'attend avec ReloadWatch, comme une écriture immédiate."""
     y = Path(yaml_path)
     pend = pending_path(y)
     if not pend.exists():
-        return None
-    before = fetch_logs(root) if root else None
+        return False
     os.replace(pend, y)
-    if before is None:
-        return "applied_unconfirmed"
-    deadline = time.monotonic() + timeout
-    while True:
-        after = fetch_logs(root)
-        if after is not None and _reloaded_since(before, after):
-            return "applied"
-        if time.monotonic() >= deadline:
-            return "applied_unconfirmed"
-        time.sleep(poll)
+    return True
+
+
+def models_from_v1(text: str) -> set[str] | None:
+    """Ids du catalogue servi (`GET /v1/models`), None si illisible."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return None
+    return {str(m["id"]) for m in items if isinstance(m, dict) and m.get("id")}
+
+
+def fetch_models(root: str) -> set[str] | None:
+    try:
+        with urllib.request.urlopen(root.rstrip("/") + "/v1/models", timeout=3) as resp:
+            return models_from_v1(resp.read().decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 - signal best-effort, l'appelant a un délai
+        return None
+
+
+class SwapConfigNotLoaded(RuntimeError):
+    """La config écrite n'a pas été confirmée chargée par llama-swap dans le délai :
+    la requête est refusée explicitement plutôt que de partir vers l'ancien catalogue
+    (404 sur un modèle ajouté, ou modèle démarré puis tué par le rechargement)."""
+
+
+class ReloadWatch:
+    """« Configuration écrite » != « configuration chargée ». Toute écriture du yaml
+    surveillé (immédiate, ou version en attente posée à la transition) ouvre un état
+    « rechargement attendu » ; la requête locale suivante attend sa confirmation.
+
+    Confirmation, par ordre de fiabilité : « configuration reloaded » apparu dans
+    /logs après l'écriture ; sinon (journal indisponible) le catalogue servi par
+    /v1/models égal au nouveau quand la liste des modèles change ; sinon un délai
+    minimal (intervalle de surveillance de 2 s + rechargement). Délai dépassé : l'état
+    reste actif et l'appelant refuse la requête."""
+
+    MIN_WITHOUT_LOGS = 4.5
+
+    def __init__(self) -> None:
+        self._state: dict | None = None
+
+    @property
+    def active(self) -> bool:
+        return self._state is not None
+
+    def mark(
+        self,
+        anchor: str | None,
+        previous_text: str | None,
+        new_text: str | None,
+        clock=time.monotonic,
+    ) -> None:
+        prev = _models(previous_text) if previous_text else None
+        new = _models(new_text) if new_text else None
+        self._state = {
+            "anchor": anchor,
+            "previous": set(prev) if prev is not None else None,
+            "expected": set(new) if new is not None else None,
+            "since": clock(),
+        }
+
+    def _confirmed(self, st: dict, root: str, fetch_logs, fetch_models, clock) -> bool:
+        if st["anchor"] is not None:
+            logs = fetch_logs(root)
+            if logs is not None:
+                return _reloaded_since(st["anchor"], logs)
+        expected, previous = st["expected"], st["previous"]
+        if expected is not None and previous is not None and expected != previous:
+            return fetch_models(root) == expected
+        return clock() - st["since"] >= self.MIN_WITHOUT_LOGS
+
+    def wait(
+        self,
+        root: str,
+        timeout: float = 20.0,
+        poll: float = 0.2,
+        fetch_logs=None,
+        fetch_models=None,
+        clock=time.monotonic,
+        sleep=time.sleep,
+    ) -> bool:
+        """True si rien n'était attendu ou si le rechargement est confirmé (état levé) ;
+        False si le délai est dépassé (état conservé)."""
+        st = self._state
+        if st is None:
+            return True
+        # Résolus à l'appel : les tests remplacent les fonctions du module.
+        fetch_logs = fetch_logs or globals()["fetch_logs"]
+        fetch_models = fetch_models or globals()["fetch_models"]
+        deadline = clock() + timeout
+        while True:
+            if self._confirmed(st, root, fetch_logs, fetch_models, clock):
+                if self._state is st:
+                    self._state = None
+                return True
+            if clock() >= deadline:
+                return False
+            sleep(poll)

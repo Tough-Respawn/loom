@@ -125,28 +125,102 @@ def swap(tmp_path):
         proc.wait(timeout=10)
 
 
-def test_modifier_le_catalogue_ne_coupe_pas_le_modele_actif(swap):
-    pid_a = _get(swap.root + "/upstream/A/health")["pid"]  # A démarre (la conversation)
-    running = swap_sync.running_models(_get(swap.root + "/running", raw=True))
-    assert running == {"A"}
+@pytest.fixture()
+def loom_side(swap, monkeypatch):
+    """Les vraies fonctions de Loom (régénération, préalable) branchées sur ce
+    llama-swap : la config suit la liste `ids` comme load_config suit les dossiers."""
+    from types import SimpleNamespace
 
-    # Suppression de B puis ajout de C pendant que A tourne : tout est mis en attente.
-    assert swap_sync.write_or_defer(swap.text(["A"]), swap.yaml, running) == "deferred"
-    assert (
-        swap_sync.write_or_defer(swap.text(["A", "C"]), swap.yaml, running)
-        == "deferred"
+    from loom.agent.client import LoomClient
+    from loom.runtime import serve
+
+    ids = ["A", "B"]
+
+    def cfg(*a, **k):
+        return SimpleNamespace(
+            models=[SimpleNamespace(id=m, cache_isolation=False) for m in ids],
+            server_bin="llama-server",
+            n_parallel=1,
+        )
+
+    monkeypatch.setattr(serve, "SWAP_YAML", swap.yaml)
+    monkeypatch.setattr(serve, "load_config", cfg)
+    monkeypatch.setattr("loom.config.load_config", cfg)
+    monkeypatch.setattr(serve, "detect_hardware", lambda *a, **k: object())
+    monkeypatch.setattr(
+        serve,
+        "_swap_config",
+        lambda c, profile: yaml.safe_load(swap.text([m.id for m in c.models])),
     )
+    S = SimpleNamespace(
+        client=LoomClient(base_url=swap.root + "/v1"),
+        config_defaults_path="defaults.toml",
+        config_local_path="local.toml",
+    )
+    return SimpleNamespace(S=S, ids=ids)
+
+
+def _status(url: str) -> int:
+    import urllib.error
+
+    try:
+        _get(url)
+        return 200
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_modifier_le_catalogue_ne_coupe_pas_le_modele_actif(swap, loom_side):
+    from loom.web.routes.config import _regen_swap_yaml, _swap_preflight
+
+    pid_a = _get(swap.root + "/upstream/A/health")["pid"]  # A démarre (la conversation)
+    loom_side.ids[:] = ["A", "C"]  # B supprimé, C ajouté, pendant que A tourne
+    assert _regen_swap_yaml(loom_side.S) == "deferred"
     time.sleep(3.0)  # plus que l'intervalle de surveillance de llama-swap (2 s)
     assert "reloading configuration" not in _get(swap.root + "/logs", raw=True)
-    assert (
-        _get(f"http://127.0.0.1:{swap.ports['A']}/health")["pid"] == pid_a
-    )  # même processus
+    assert _get(f"http://127.0.0.1:{swap.ports['A']}/health")["pid"] == pid_a
 
-    # Transition vers C : la config en attente est appliquée, rechargement attendu.
-    assert swap_sync.apply_pending(swap.yaml, root=swap.root, timeout=15) == "applied"
-    ids = {m["id"] for m in _get(swap.root + "/v1/models")["data"]}
-    assert ids == {"A", "C"}
-    assert _get(swap.root + "/upstream/C/health")["status"] == "ok"
-    assert not _alive(
-        swap.ports["A"]
-    )  # A arrêté par la transition, comme un swap normal
+    # Transition vers C : la config en attente est posée ET son chargement attendu.
+    _swap_preflight(loom_side.S, "C")
+    assert {m["id"] for m in _get(swap.root + "/v1/models")["data"]} == {"A", "C"}
+    assert _status(swap.root + "/upstream/C/health") == 200
+    assert not _alive(swap.ports["A"])  # arrêté par la transition, comme un swap normal
+
+
+def test_sonde_en_echec_ne_coupe_pas_le_modele_actif(swap, loom_side, monkeypatch):
+    # [P1 revue] /running en échec pendant que A tourne : rien n'est écrit.
+    from loom.web.routes.config import _regen_swap_yaml
+
+    pid_a = _get(swap.root + "/upstream/A/health")["pid"]
+    monkeypatch.setattr(
+        loom_side.S.client, "running_local", lambda timeout=5.0: (False, "")
+    )
+    loom_side.ids[:] = ["A"]
+    assert _regen_swap_yaml(loom_side.S) == "deferred"
+    time.sleep(3.0)
+    assert _get(f"http://127.0.0.1:{swap.ports['A']}/health")["pid"] == pid_a
+
+
+def test_ajout_ecrit_tout_de_suite_le_premier_appel_attend(swap, loom_side):
+    # [P2 revue] Rien ne tourne : écriture immédiate. Sans attente, le premier appel
+    # vers C partait vers l'ancien catalogue -> HTTP 404.
+    from loom.web.routes.config import _regen_swap_yaml, _swap_preflight
+
+    loom_side.ids[:] = ["A", "B", "C"]
+    assert _regen_swap_yaml(loom_side.S) == "written"
+    _swap_preflight(loom_side.S, "C")
+    assert _status(swap.root + "/upstream/C/health") == 200
+
+
+def test_sans_journal_le_catalogue_confirme_le_rechargement(
+    swap, loom_side, monkeypatch
+):
+    # [P3 revue] /logs indisponible : la confirmation vient du catalogue /v1/models.
+    from loom.web.routes.config import _regen_swap_yaml, _swap_preflight
+
+    _get(swap.root + "/upstream/A/health")
+    loom_side.ids[:] = ["A", "C"]
+    assert _regen_swap_yaml(loom_side.S) == "deferred"
+    monkeypatch.setattr(swap_sync, "fetch_logs", lambda root: None)
+    _swap_preflight(loom_side.S, "C")
+    assert _status(swap.root + "/upstream/C/health") == 200

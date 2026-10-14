@@ -162,13 +162,18 @@ class LoomClient:
     def _preflight_local(self, model: str | None) -> None:
         """Préalable posé par loom.web (`local_preflight`) avant toute requête vers un
         modèle LOCAL : applique une config llama-swap mise en attente si ce modèle ne
-        tourne pas encore. Best-effort : un préalable en échec ne bloque jamais la
-        requête."""
+        tourne pas encore, et attend que llama-swap l'ait chargée. Best-effort, sauf
+        une config écrite mais non confirmée chargée : SwapConfigNotLoaded remonte
+        (explicite) au lieu d'envoyer la requête vers l'ancien catalogue."""
+        from loom.runtime.swap_sync import SwapConfigNotLoaded
+
         hook = getattr(self, "local_preflight", None)
         if hook is None or not model or self.is_remote(model):
             return
         try:
             hook(model)
+        except SwapConfigNotLoaded:
+            raise  # config écrite mais pas chargée : erreur explicite, pas de 404 muet
         except Exception as e:  # noqa: BLE001 - jamais bloquant
             _debug("PREFLIGHT_ERR", f"{model} : {e}", terminal=False)
 

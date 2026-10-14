@@ -288,7 +288,11 @@ def regenerate_swap_yaml(
     serveur : llama-swap lancé avec --watch-config recharge alors le fichier tout seul, et le
     modèle rechargé (après déchargement) démarre avec les nouveaux args. Ferme la boucle
     « customiser un modèle local depuis l'UI » sans toucher au TOML ni tout relancer.
-    Best-effort : renvoie le chemin écrit, ou None si la config est illisible."""
+    Best-effort : renvoie le chemin écrit, ou None si la config est illisible.
+
+    ÉCRITURE INCONDITIONNELLE : serveur arrêté seulement (restauration manuelle). Pendant
+    que llama-swap tourne, passer par loom.web (`_regen_swap_yaml`) : il diffère ce qui
+    couperait le modèle actif et fait attendre le rechargement aux requêtes suivantes."""
     # Lu à l'appel : un défaut figé à la définition échappait à toute redirection.
     out_path = out_path or SWAP_YAML
     try:
@@ -313,7 +317,9 @@ def sync_swap_yaml(
     version attend la prochaine transition (cf. loom.runtime.swap_sync).
 
     `running` : modèles servis par llama-swap (set vide = rien ; None = inconnu).
-    Renvoie 'unchanged', 'written', 'deferred', ou None si la config est illisible."""
+    Renvoie 'unchanged', 'written', 'deferred', ou None si la config est illisible.
+    Après 'written', l'APPELANT ouvre l'attente du rechargement (swap_sync.ReloadWatch,
+    ancre /logs prise avant l'écriture) : écrit n'est pas chargé."""
     from loom.runtime import swap_sync
 
     out_path = out_path or SWAP_YAML

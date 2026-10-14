@@ -128,72 +128,135 @@ def test_retour_a_la_config_appliquee_annule_l_attente(tmp_path):
 # ---- application à la transition --------------------------------------------------
 
 
-def test_apply_pending_sans_attente_ne_fait_rien(tmp_path):
+def test_apply_pending_pose_la_version_en_attente(tmp_path):
     y = tmp_path / "llama-swap.yaml"
-    y.write_text("x", encoding="utf-8")
-    assert swap_sync.apply_pending(y, root=None) is None
-    assert y.read_text(encoding="utf-8") == "x"
+    y.write_text("ancien", encoding="utf-8")
+    assert swap_sync.apply_pending(y) is False  # rien n'attendait
+    swap_sync.pending_path(y).write_text("nouveau", encoding="utf-8")
+    assert swap_sync.apply_pending(y) is True
+    assert y.read_text(encoding="utf-8") == "nouveau"
+    assert not swap_sync.pending_path(y).exists()
 
 
-def test_apply_pending_attend_la_fin_du_rechargement(tmp_path):
-    # La fin du rechargement se lit dans /logs : « configuration reloaded » apparaît
-    # APRÈS l'arrêt de l'ancien serveur (vérifié sur v241 : 1,4 s après l'écriture).
-    y = tmp_path / "llama-swap.yaml"
-    y.write_text(_yaml({"A": A, "B": B}), encoding="utf-8")
-    new = _yaml({"A": A, "C": C})
-    swap_sync.pending_path(y).write_text(new, encoding="utf-8")
-    before = "[INFO] llama-swap listening\n[INFO] <A> Health check passed\n"
+# ---- « configuration écrite » != « configuration chargée » ------------------------
+# Toute écriture du yaml surveillé (immédiate OU à la transition) ouvre un état
+# « rechargement attendu » : la requête suivante attend que llama-swap l'ait chargé,
+# sinon elle part vers l'ancien catalogue (404 sur un modèle ajouté, reproduit avec
+# le vrai llama-swap en revue).
+
+OLD = _yaml({"A": A, "B": B})
+NEW = _yaml({"A": A, "C": C})
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, dt):
+        self.t += max(dt, 0.01)
+
+
+def test_watch_inactif_ne_coute_rien():
+    w = swap_sync.ReloadWatch()
+    assert not w.active
+    called = []
+    assert w.wait("r", fetch_logs=lambda r: called.append(r)) is True
+    assert called == []
+
+
+def test_watch_confirme_par_le_journal():
+    w = swap_sync.ReloadWatch()
+    before = "[INFO] llama-swap listening\n"
+    w.mark(before, OLD, NEW)
     logs = iter(
         [
-            before,
             before,
             before + "[INFO] reloading configuration\n",
             before + "[INFO] reloading configuration\n[INFO] configuration reloaded\n",
         ]
     )
-    seen = []
-
-    def fetch(root):
-        seen.append(root)
-        return next(logs)
-
-    out = swap_sync.apply_pending(
-        y, root="http://swap", fetch_logs=fetch, poll=0, timeout=5
+    clock = _Clock()
+    assert (
+        w.wait("r", fetch_logs=lambda r: next(logs), clock=clock, sleep=clock.sleep)
+        is True
     )
-    assert out == "applied"
-    assert y.read_text(encoding="utf-8") == new
-    assert not swap_sync.pending_path(y).exists()
-    assert len(seen) == 4  # 1 ancre avant l'écriture + 3 relevés jusqu'au signal
+    assert not w.active
 
 
-def test_apply_pending_ignore_un_ancien_rechargement(tmp_path):
-    # Un « configuration reloaded » déjà présent AVANT l'écriture ne compte pas.
-    y = tmp_path / "llama-swap.yaml"
-    y.write_text("ancien", encoding="utf-8")
-    swap_sync.pending_path(y).write_text("nouveau", encoding="utf-8")
-    old = "[INFO] reloading configuration\n[INFO] configuration reloaded\n[INFO] x\n"
-    logs = iter([old, old, old + "[INFO] configuration reloaded\n"])
-    out = swap_sync.apply_pending(
-        y, root="r", fetch_logs=lambda r: next(logs), poll=0, timeout=5
+def test_watch_ignore_un_rechargement_anterieur():
+    w = swap_sync.ReloadWatch()
+    old_logs = (
+        "[INFO] reloading configuration\n[INFO] configuration reloaded\n[INFO] x\n"
     )
-    assert out == "applied"
-
-
-def test_apply_pending_delai_depasse_applique_quand_meme(tmp_path):
-    y = tmp_path / "llama-swap.yaml"
-    y.write_text("ancien", encoding="utf-8")
-    swap_sync.pending_path(y).write_text("nouveau", encoding="utf-8")
-    out = swap_sync.apply_pending(
-        y, root="r", fetch_logs=lambda r: "rien", poll=0, timeout=0.05
+    w.mark(old_logs, OLD, NEW)
+    logs = iter([old_logs, old_logs + "[INFO] configuration reloaded\n"])
+    clock = _Clock()
+    assert (
+        w.wait("r", fetch_logs=lambda r: next(logs), clock=clock, sleep=clock.sleep)
+        is True
     )
-    assert out == "applied_unconfirmed"
-    assert y.read_text(encoding="utf-8") == "nouveau"
 
 
-def test_apply_pending_llama_swap_injoignable(tmp_path):
-    # Rien n'écoute : pas de rechargement à attendre, le fichier est simplement posé.
-    y = tmp_path / "llama-swap.yaml"
-    y.write_text("ancien", encoding="utf-8")
-    swap_sync.pending_path(y).write_text("nouveau", encoding="utf-8")
-    assert swap_sync.apply_pending(y, root=None) == "applied_unconfirmed"
-    assert y.read_text(encoding="utf-8") == "nouveau"
+def test_watch_sans_journal_le_catalogue_confirme():
+    # /logs indisponible : le nouveau catalogue servi par /v1/models fait foi (B retiré,
+    # C ajouté -> la liste servie ne correspond qu'après rechargement).
+    w = swap_sync.ReloadWatch()
+    w.mark(None, OLD, NEW)
+    served = iter([{"A", "B"}, {"A", "B"}, {"A", "C"}])
+    clock = _Clock()
+    ok = w.wait(
+        "r",
+        fetch_logs=lambda r: None,
+        fetch_models=lambda r: next(served),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert ok is True
+    assert not w.active
+
+
+def test_watch_sans_journal_catalogue_inchange_attend_le_delai_minimal():
+    # Même liste de modèles avant/après (réglage d'un modèle) : rien d'observable dans
+    # le catalogue -> on attend au moins l'intervalle de surveillance + le rechargement.
+    w = swap_sync.ReloadWatch()
+    same = _yaml({"A": {"cmd": A["cmd"] + " -c 4096"}, "B": B})
+    clock = _Clock()
+    w.mark(None, OLD, same, clock=clock)
+    assert (
+        w.wait(
+            "r",
+            fetch_logs=lambda r: None,
+            fetch_models=lambda r: {"A", "B"},
+            clock=clock,
+            sleep=clock.sleep,
+        )
+        is True
+    )
+    assert clock.t >= swap_sync.ReloadWatch.MIN_WITHOUT_LOGS
+
+
+def test_watch_delai_depasse_reste_actif():
+    w = swap_sync.ReloadWatch()
+    w.mark("x", OLD, NEW)
+    clock = _Clock()
+    ok = w.wait(
+        "r",
+        timeout=1.0,
+        fetch_logs=lambda r: "x",
+        fetch_models=lambda r: {"A", "B"},
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert ok is False
+    assert (
+        w.active
+    )  # la requête suivante attendra encore : rien ne part vers l'ancien catalogue
+
+
+def test_fetch_models_lit_v1_models():
+    body = '{"object": "list", "data": [{"id": "A"}, {"id": "C"}]}'
+    assert swap_sync.models_from_v1(body) == {"A", "C"}
+    assert swap_sync.models_from_v1("pas du json") is None
