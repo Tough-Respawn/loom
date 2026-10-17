@@ -570,6 +570,7 @@ def _list_quants(repo, deps):
             lines.append(
                 f"  {letter}. {a['repo_id']} : {kind}, {p['label'] or p['filename']} "
                 f"{p['size_mb'] / 1024:.1f} Go, {_placement_text(p)}"
+                + (f", dérivé tiers de {a['derived_from']}" if a.get("derived_from") else "")
             )
     mmprojs = sorted(f["filename"] for f in files if f["is_mmproj"])
     s = {

@@ -101,10 +101,27 @@ def _wizard_deps(S):
                 hits += hf_catalog.search_family(base_stem)
         except hf_catalog.HfCatalogError:
             pass
-        return model_install.suggest_alternatives(
+        found = model_install.suggest_alternatives(
             repo, analysis, hits, hf_catalog.list_gguf_files, vram_budget, ram_total,
             supported, recommender=lambda candidate, files: evaluate(candidate, files)[0],
         )
+        # Filiation lue sur Hugging Face, en parallèle : une variante tierce est signalée
+        # (vécu : un « Qwen3.8-35B-A3B » d'Empero pris pour une sortie officielle).
+        from concurrent.futures import ThreadPoolExecutor
+        from functools import lru_cache
+
+        parent_of = lru_cache(maxsize=64)(hf_catalog.base_model_of)
+
+        def origin(alt):
+            try:
+                return model_install.third_party_origin(alt["repo_id"], parent_of)
+            except hf_catalog.HfCatalogError:
+                return None  # filiation illisible : rien n'est affirmé
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for alt, source in zip(found, pool.map(origin, found)):
+                alt["derived_from"] = source
+        return found
 
     def recommend(files, repo=None):
         out, analysis = evaluate(repo, files)

@@ -202,6 +202,52 @@ def family_stem(repo_id: str | None) -> str | None:
     return stem if len(stem) >= 3 else None
 
 
+# Suffixes d'emballage d'un dépôt GGUF, sans rapport avec le modèle lui-même.
+_PACKAGING_RE = re.compile(r"[-_.](gguf|i1|imatrix|mtp|ud|dev|q\d\w*)$", re.IGNORECASE)
+
+
+def _org(repo_id: str) -> str:
+    return repo_id.split("/")[0]
+
+
+def _bare_name(repo_id: str, org: str = "") -> str:
+    """Nom du modèle sans l'emballage : « bartowski/Qwen_Qwen3-8B-GGUF » -> « qwen3-8b »."""
+    name = repo_id.split("/")[-1].lower()
+    if org and name.startswith(org.lower() + "_"):
+        name = name[len(org) + 1 :]
+    while m := _PACKAGING_RE.search(name):
+        name = name[: m.start()]
+    return name
+
+
+def third_party_origin(repo_id: str, parent_of) -> str | None:
+    """Modèle officiel dont `repo_id` est une variante publiée par un tiers (affinage,
+    distillation, abliteration, ternarisation…). None pour l'éditeur d'origine, une simple
+    quantification par un tiers, ou une filiation non déclarée.
+
+    `parent_of(repo)` -> (relation, parent) ou None (hf_catalog.base_model_of). Deux
+    signaux, les balises ne suffisant pas (vécu 2026-10-17) : Empero déclare son affinage
+    de Qwen3.6-35B-A3B (un « Qwen3.8-35B-A3B » qui n'existe pas chez Qwen), mais des
+    variantes abliterated ou Bonsai se déclarent « quantized » du modèle officiel ; c'est
+    alors leur nom de dépôt, différent du sien, qui les trahit."""
+    first = parent_of(repo_id)
+    if not first:
+        return None
+    relation, parent = first
+    model = parent if relation in ("quantized", "") else repo_id
+    chain, step = [model], (first if model == repo_id else parent_of(model))
+    while step and len(chain) < 4:
+        chain.append(step[1])
+        step = parent_of(step[1])
+    root_org = _org(chain[-1])
+    if _org(repo_id) == root_org:
+        return None
+    official = next(r for r in chain if _org(r) == root_org)
+    if _org(model) != root_org or _bare_name(repo_id, _org(model)) != _bare_name(model):
+        return official
+    return None
+
+
 def _hit_size(hit: dict) -> tuple[float, float | None]:
     """(paramètres, paramètres actifs si MoE) d'un résultat de search_family. Hugging Face
     lit parfois un GGUF auxiliaire du repo (drafter DFlash ou MTP, projecteur) : le nom

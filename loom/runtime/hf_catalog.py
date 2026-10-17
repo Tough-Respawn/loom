@@ -91,6 +91,27 @@ def search_family(query: str, limit: int = 40, api=None) -> list[dict]:
         raise _err("recherche Hugging Face", exc) from exc
 
 
+def base_model_of(repo_id: str, api=None) -> tuple[str, str] | None:
+    """(relation, parent) déclarés par les balises `base_model` d'un repo : relation
+    « quantized », « finetune », « merge », « adapter », ou « » sans relation. None si
+    le repo ne déclare aucun parent (modèle d'origine, ou balises absentes)."""
+    try:
+        info = _api(api).model_info(repo_id, expand=["tags"])
+    except Exception as exc:  # noqa: BLE001
+        raise _err(f"filiation de « {repo_id} »", exc) from exc
+    found = {}
+    for tag in info.tags or []:
+        parts = tag.split(":")
+        if parts[0] == "base_model" and len(parts) in (2, 3):
+            relation = parts[1] if len(parts) == 3 else ""
+            if relation or parts[-1] not in found:
+                found[parts[-1]] = relation
+    if not found:
+        return None
+    parent, relation = max(found.items(), key=lambda kv: bool(kv[1]))
+    return relation, parent
+
+
 def list_gguf_files(repo_id: str, api=None) -> list[dict]:
     """Fichiers .gguf du repo (tailles réelles), multi-parties REGROUPÉES."""
     try:

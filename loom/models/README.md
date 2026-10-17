@@ -119,7 +119,11 @@ fixe le délai d'attente en secondes, à adapter à la durée de génération.
   Si aucun quant ne convient, les alternatives sont cherchées dans la même famille
   et, si elle est déclarée, celle du modèle de base. Sans évaluation comparable,
   les candidats sont ordonnés par nombre de paramètres décroissant : c'est une
-  heuristique de capacité, pas une preuve de qualité.
+  heuristique de capacité, pas une preuve de qualité. Une alternative publiée par un
+  tiers qui a modifié le modèle (affinage, distillation, abliteration, ternarisation) est
+  marquée **dérivé tiers de** son modèle officiel : filiation `base_model` déclarée sur
+  Hugging Face, ou nom de dépôt différent de celui du modèle qu'il dit quantifier. Une
+  simple quantification (unsloth, bartowski…) n'est pas marquée.
   L'interface distingue **candidat estimé** et **évalué dans Loom**. Les évaluations
   locales comparables classent d'abord la réussite des tâches, puis leur durée.
   Sans mesure, la qualité reste explicitement inconnue. La vitesse d'offload est

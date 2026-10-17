@@ -8,6 +8,7 @@ from loom.runtime.model_install import (
     family_stem,
     recommend_quant,
     suggest_alternatives,
+    third_party_origin,
     vram_reserve_mb,
 )
 
@@ -248,3 +249,33 @@ def test_alternatives_non_mesurees_conservent_heuristique_capacite():
     ]
     # Dense : le quant qui tient entier en VRAM, pas le Q4_K_M qui déborde.
     assert alts[0]["active"] == 3e9 and alts[1]["pick"]["filename"] == "N-Q3_K_M.gguf"
+
+
+# Filiation réelle sur Hugging Face (2026-10-17) : balises base_model des dépôts.
+_PARENTS = {
+    "empero-ai/Qwen3.8-35B-A3B-Distill-GGUF": ("quantized", "empero-ai/Qwen3.8-35B-A3B-Distill"),
+    "empero-ai/Qwen3.8-35B-A3B-Distill": ("finetune", "Qwen/Qwen3.6-35B-A3B"),
+    "unsloth/Qwen3.6-35B-A3B-GGUF": ("quantized", "Qwen/Qwen3.6-35B-A3B"),
+    "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": ("quantized", "Qwen/Qwen3.6-35B-A3B"),
+    "bartowski/Qwen_Qwen3.8-27B-GGUF": ("quantized", "Qwen/Qwen3.8-27B"),
+    "mradermacher/Qwen3.8-27B-i1-GGUF": ("quantized", "Qwen/Qwen3.8-27B"),
+    "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF": ("quantized", "Qwen/Qwen3.8-27B"),
+    "prism-ml/Ternary-Bonsai-2-9B-gguf": ("quantized", "Qwen/Qwen3.5-9B"),
+    "Qwen/Qwen3.5-9B": ("finetune", "Qwen/Qwen3.5-9B-Base"),
+    "google/gemma-4-12B-it-qat-q4_0-gguf": ("quantized", "google/gemma-4-12B-it"),
+    "google/gemma-4-12B-it": ("finetune", "google/gemma-4-12B"),
+}  # fmt: skip
+
+
+def test_variante_tierce_signalee_quantification_officielle_non():
+    origin = lambda repo: third_party_origin(repo, _PARENTS.get)  # noqa: E731
+    # Affinage déclaré par un tiers : le « Qwen3.8-35B-A3B » qui n'existe pas chez Qwen.
+    assert origin("empero-ai/Qwen3.8-35B-A3B-Distill-GGUF") == "Qwen/Qwen3.6-35B-A3B"
+    # Variantes qui se déclarent « quantized » du modèle officiel : leur nom les trahit.
+    assert origin("huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF") == "Qwen/Qwen3.8-27B"
+    assert origin("prism-ml/Ternary-Bonsai-2-9B-gguf") == "Qwen/Qwen3.5-9B"
+    # Simples quantifications par un tiers, et GGUF de l'éditeur lui-même.
+    for repo in ("unsloth/Qwen3.6-35B-A3B-GGUF", "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+                 "bartowski/Qwen_Qwen3.8-27B-GGUF", "mradermacher/Qwen3.8-27B-i1-GGUF",
+                 "google/gemma-4-12B-it-qat-q4_0-gguf", "x/sans-filiation-GGUF"):  # fmt: skip
+        assert origin(repo) is None, repo
