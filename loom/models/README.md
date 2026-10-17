@@ -109,6 +109,13 @@ fixe le délai d'attente en secondes, à adapter à la durée de génération.
   Face, propose une quantification et télécharge les fichiers. Pour l'image et la
   vidéo, il demande un export ComfyUI au format API ; les poids restent à installer
   dans ComfyUI.
+  La recommandation lit à distance l'en-tête GGUF d'un quant du dépôt (dense ou MoE,
+  part des experts) et la liste des formats du llama.cpp installé (`llama-quantize`).
+  Elle n'en retient jamais un format inconnu de ce llama.cpp (quant d'un fork) ni la
+  pleine précision ; pour un modèle dense, elle vise le plus gros quant qui tient en
+  VRAM, sinon le moins lu en RAM (hors classe 1 bit) ; pour un MoE, le plus gros qui
+  tient, experts en RAM. Chaque quant affiche la part de ses octets lus par token qui
+  viendront de la RAM : c'est un placement, pas une mesure de vitesse.
 - **Manuellement** : créer le dossier correspondant au type de modèle. Pour le
   texte local, copier uniquement `_TEMPLATE/model.toml` ; pour un distant, copier
   `_TEMPLATE/remote-model.toml` sous le nom `model.toml`. Pour l'image ou la vidéo,

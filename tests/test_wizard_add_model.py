@@ -9,7 +9,7 @@ def deps(existing=(), hits=None, files=None, remote_models=None, removable=None)
         existing_ids=set(existing),
         search_models=lambda q: list(hits or []),
         list_gguf_files=lambda repo: list(files or []),
-        recommend=lambda fs: [
+        recommend=lambda fs, repo=None: [
             dict(f, fits=True, recommended=(i == len(fs) - 1)) for i, f in enumerate(fs)
         ],
         derive_id=lambda repo: "id-propose",

@@ -62,7 +62,9 @@ def _fake_deps(monkeypatch, hits=(), files=()):
         existing_ids={FAKE_MODEL},
         search_models=lambda q: list(hits),
         list_gguf_files=lambda repo: list(files),
-        recommend=lambda fs: [dict(f, fits=True, recommended=True) for f in fs],
+        recommend=lambda fs, repo=None: [
+            dict(f, fits=True, recommended=True) for f in fs
+        ],
         derive_id=lambda repo: "nouveau-modele",
         list_remote_models=lambda base_url, key: None,  # provider muet -> saisie libre
         removable_models=lambda: [
@@ -245,7 +247,7 @@ def _real_img_deps(monkeypatch):
             existing_ids=set(S.models),
             search_models=lambda q: [],
             list_gguf_files=lambda repo: [],
-            recommend=lambda fs: fs,
+            recommend=lambda fs, repo=None: fs,
             derive_id=lambda repo: "x",
             list_remote_models=lambda base_url, key: None,
             removable_models=lambda: routes._removable_models(S),

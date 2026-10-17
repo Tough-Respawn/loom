@@ -520,15 +520,33 @@ def _list_quants(repo, deps):
             {"step": "l_query"},
             f"[add-model] « {repo} » ne contient aucun GGUF de poids. Autre recherche ?",
         )
-    annotated = deps.recommend(weights)
+    annotated = deps.recommend(weights, repo)
     lines = []
     for i, f in enumerate(annotated):
-        tag = (
-            "  <- recommandé"
-            if f["recommended"]
-            else ("  (ne tiendra pas)" if not f["fits"] else "")
-        )
+        notes = []
+        if f.get("status") == "unsupported":
+            notes.append("format d'un fork : ton llama.cpp ne le chargera pas")
+        elif f.get("status") == "full":
+            notes.append("pleine précision, déconseillé")
+        if not f["fits"]:
+            notes.append("ne tiendra pas")
+        elif f.get("ram_share") is not None and f.get("status") == "ok":
+            share = f["ram_share"]
+            notes.append(
+                "tout en VRAM" if share == 0 else f"~{round(100 * share)} % lu en RAM"
+            )
+        tag = f"  ({', '.join(notes)})" if notes else ""
+        if f["recommended"]:
+            tag += "  <- recommandé"
         lines.append(f"  {i + 1}. {f['filename']}  {f['size_mb'] / 1024:.1f} Go{tag}")
+    note = annotated[0].get("repo_note") if annotated else None
+    if note:
+        lines.insert(0, f"  ({note})")
+    if annotated and not any(f["recommended"] for f in annotated):
+        lines.append(
+            "  (aucun quant recommandé ici : format non chargeable, pleine précision "
+            "ou trop gros pour cette machine)"
+        )
     mmprojs = sorted(f["filename"] for f in files if f["is_mmproj"])
     s = {
         "step": "l_quant",

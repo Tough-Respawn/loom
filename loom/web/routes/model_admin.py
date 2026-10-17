@@ -298,14 +298,19 @@ def _persist_wizard_exchange(S, sess, conv, save, message, reply):
     save()
 
 
-def _probe_install(gguf: Path) -> tuple[bool | None, str]:
-    """Test de chargement du GGUF par le binaire llama-server configuré (même
-    résolution que /rebench). (None, raison) si le binaire est introuvable."""
+def _configured_server_bin() -> Path | None:
+    """Binaire llama-server de [server] bin (même résolution que /rebench et le setup)."""
     from loom.setup.steps import read_raw_config, resolve_bin, server_bin_status
     from loom.web.__main__ import CONFIG_PATH, PERSONAL_CONFIG_PATH
 
     raw = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
-    server_bin = resolve_bin(server_bin_status(raw)[1])
+    return resolve_bin(server_bin_status(raw)[1])
+
+
+def _probe_install(gguf: Path) -> tuple[bool | None, str]:
+    """Test de chargement du GGUF par le binaire llama-server configuré (même
+    résolution que /rebench). (None, raison) si le binaire est introuvable."""
+    server_bin = _configured_server_bin()
     if server_bin is None:
         return None, "binaire llama-server introuvable"
     return model_install.probe_loadable(server_bin, gguf)

@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 
+from loom.runtime import gguf_remote
 from loom.runtime.gguf_meta import read_gguf_meta
 from loom.runtime.models_fetch import ModelUnavailable, ensure_model
 from loom.utils import atomic_write_text
@@ -27,7 +28,12 @@ def derive_model_id(repo_id: str) -> str:
 
 
 def recommend_quant(
-    files: list[dict], vram_budget_mb: int, ram_total_mb: int, margin_mb: int = 6144
+    files: list[dict],
+    vram_budget_mb: int,
+    ram_total_mb: int,
+    margin_mb: int = 6144,
+    analysis: dict | None = None,
+    supported=None,
 ) -> list[dict]:
     """Annote chaque quant : `fits` (tient dans le budget mémoire) et `recommended`
     (le plus gros qui tient). Heuristique SIMPLE : nos modèles tournent experts en
@@ -42,13 +48,89 @@ def recommend_quant(
     - `vram_budget_mb` = 0 sur mémoire UNIFIÉE (iGPU) : la VRAM y EST la RAM
       (même LPDDR5) — l'additionner double-compterait. Seul un GPU DISCRET ajoute
       sa VRAM propre (cf. HardwareProfile.vram_is_discrete côté appelant).
-    L'utilisateur reste roi (il peut choisir un quant marqué « ne tiendra pas »)."""
+    L'utilisateur reste roi (il peut choisir un quant marqué « ne tiendra pas »).
+
+    Avec `analysis` (en-tête GGUF lu à distance, cf. gguf_remote.analyze_repo) et
+    `supported` (formats du llama.cpp installé), la règle devient (2026-10-17 : l'ancienne
+    « le plus gros qui tient » recommandait le F16 de 50 Go d'un dense 27B) :
+    - jamais un format inconnu du llama.cpp installé (quant d'un fork), ni pleine
+      précision (F16/BF16/F32 : 2 à 4 fois plus d'octets par token pour un gain nul) ;
+    - DENSE (tous les poids relus à chaque token) : le plus gros quant entièrement en
+      VRAM ; sinon le moins lu en RAM parmi ceux d'au moins 2 bits par poids ;
+    - MoE (seuls les experts actifs relus) : le plus gros qui tient, experts en RAM.
+    Chaque quant reçoit `ram_share` : part des octets lus par token qui viennent de la
+    RAM (0 = tout en VRAM), un FAIT de placement et non une promesse de vitesse."""
     budget = max(0, vram_budget_mb + ram_total_mb - margin_mb)
-    out = [dict(f, fits=f["size_mb"] <= budget, recommended=False) for f in files]
-    fitting = [f for f in out if f["fits"]]
-    if fitting:
-        max(fitting, key=lambda f: f["size_mb"])["recommended"] = True
+    out = []
+    for f in files:
+        label = gguf_remote.quant_label(f["filename"])
+        if label in gguf_remote.FULL_PRECISION:
+            status = "full"
+        elif (
+            supported and label and not gguf_remote.label_supported(label, supported)
+        ) or (
+            analysis
+            and analysis.get("file") == f["filename"]
+            and analysis["unknown_types"]
+        ):
+            status = "unsupported"
+        else:
+            status = "ok"
+        out.append(
+            dict(f, fits=f["size_mb"] <= budget, recommended=False, label=label,
+                 status=status, ram_share=None, bpw=None)
+        )  # fmt: skip
+    eligible = [f for f in out if f["fits"] and f["status"] == "ok"]
+    if analysis and vram_budget_mb > 0:
+        gpu_mb = max(0, vram_budget_mb - VRAM_RESERVE_MB)
+        for f in out:
+            f["ram_share"] = _ram_share(f["size_mb"], analysis, gpu_mb)
+            if analysis["n_params"] and not analysis.get("split"):
+                f["bpw"] = f["size_mb"] * 1024 * 1024 * 8 / analysis["n_params"]
+        if analysis["moe"]:
+            pick = max(eligible, key=lambda f: f["size_mb"], default=None)
+        else:
+            in_vram = [f for f in eligible if f["ram_share"] == 0]
+            # Classe 1 bit sur un modèle classique : trop dégradé, même quand unsloth
+            # garde des tenseurs plus précis (UD-IQ1_M ≈ 2,0 bits effectifs). Les formats
+            # ternaires (Q2_0, TQ1_0), conçus pour ces débits, restent admis.
+            usable = [
+                f for f in eligible
+                if (f["bpw"] is None or f["bpw"] >= 2.0)
+                and not (f["label"] or "").startswith(("IQ1", "Q1_"))
+            ]  # fmt: skip
+            pick = (
+                max(in_vram, key=lambda f: f["size_mb"])
+                if in_vram
+                else min(usable, key=lambda f: f["ram_share"], default=None)
+            )
+    else:  # mémoire unifiée ou en-tête illisible : la taille seule
+        pick = max(eligible, key=lambda f: f["size_mb"], default=None)
+    if pick is not None:
+        pick["recommended"] = True
     return out
+
+
+# VRAM laissée au contexte (KV) et aux tampons de calcul ; le bench tranche ensuite.
+VRAM_RESERVE_MB = 1536
+
+
+def _ram_share(size_mb: int, a: dict, gpu_mb: int) -> float:
+    """Part des octets lus par token qui viennent de la RAM, pour un quant de `size_mb`
+    aux proportions de l'en-tête `a`. Dense : tout est relu, ce qui déborde de la VRAM
+    vient de la RAM. MoE : experts en RAM (--cpu-moe), seuls les actifs sont relus."""
+    if size_mb <= gpu_mb:
+        return 0.0
+    emb = size_mb * a["f_emb"]  # embedding d'entrée : une ligne par token, négligeable
+    if not a["moe"]:
+        read = size_mb - emb
+        return min(1.0, (size_mb - gpu_mb) / read) if read > 0 else 0.0
+    exp = size_mb * a["f_exp"]
+    common = size_mb - exp - emb
+    active = exp * a["expert_used"] / max(1, a["expert_count"])
+    common_ram = max(0.0, common - gpu_mb)
+    read = common + active
+    return min(1.0, (active + common_ram) / read) if read > 0 else 0.0
 
 
 def write_model_toml(
@@ -183,7 +265,7 @@ class DownloadJob:
         self._on_done = None
         self._thread: threading.Thread | None = None
 
-    def start(self, on_done=None) -> "DownloadJob":
+    def start(self, on_done=None) -> DownloadJob:
         self._on_done = on_done
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="loom-model-download"
