@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import sys
 import threading
 import time
@@ -56,6 +57,7 @@ from loom.setup.llama_release import (
 )
 from loom.setup.report import SetupReport
 from loom.setup.steps import (
+    _model_folders,
     first_model_file,
     incomplete_models,
     installed_model_ids,
@@ -315,7 +317,7 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
     con.say("[2/4] Binaire llama-server")
     present, bin_name = server_bin_status(raw_cfg)
     if present:
-        _propose_update(con, report, deps, plat, hw, bin_name)
+        _propose_update(con, report, deps, plat, hw, bin_name, raw_cfg)
         return
 
     con.say(
@@ -342,7 +344,9 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
     _install_release(con, report, deps, plat, hw, release)
 
 
-def _propose_update(con: Console, report: SetupReport, deps: Deps, plat, hw, bin_name):
+def _propose_update(
+    con: Console, report: SetupReport, deps: Deps, plat, hw, bin_name, raw_cfg
+):
     """Binaire déjà configuré : compare sa build à celle de la dernière release stable de
     llama.cpp (même source que le bandeau de veille) et propose la nouvelle, installée À
     CÔTÉ dans var/runtime/llama/<tag> ; l'ancien reste, revenir = remettre son chemin dans
@@ -372,23 +376,74 @@ def _propose_update(con: Console, report: SetupReport, deps: Deps, plat, hw, bin
         label = f"b{current}" if current is not None else "build illisible"
         con.say(f"  Trouvé : {bin_name} ({label}) → à jour, rien à faire.")
         report.add("binaire", "ok", f"déjà en place ({bin_name})")
+        _offer_cleanup(con, report, raw_cfg, current_bin)
         return
     con.say(
         f"  Trouvé : {bin_name} (b{current}). Mise à jour disponible : llama.cpp "
         f"{tag} ({latest - current} builds d'écart)."
     )
-    if _install_release(con, report, deps, plat, hw, release):
+    new_bin = _install_release(con, report, deps, plat, hw, release)
+    if new_bin is not None:
         con.say(
             f"  Ancien binaire conservé : {current_bin} (pour revenir : remets ce "
             "chemin dans [server] bin de config/local.toml)."
         )
+        _offer_cleanup(con, report, raw_cfg, new_bin)
+
+
+def _offer_cleanup(con: Console, report: SetupReport, raw_cfg, in_use: Path | None):
+    """Builds de var/runtime/llama/ devenues inutiles (~1,2 Go chacune) : garde celle en
+    service, la plus récente des autres (retour arrière) et toute build référencée par un
+    `server_bin` de model.toml ; propose de supprimer le reste. Destructif : jamais sous
+    --yes, défaut « non ». Ne touche QUE RUNTIME_DIR (ce que le setup installe lui-même)."""
+    if not RUNTIME_DIR.is_dir():
+        return
+    keep = [in_use] if in_use is not None else []
+    for _id, _folder, data in _model_folders(raw_cfg, PACKAGE_MODELS):
+        if data.get("server_bin"):
+            keep.append(Path(data["server_bin"]))
+    keep = [p.resolve() for p in keep]
+    builds = sorted(
+        (
+            d
+            for d in RUNTIME_DIR.iterdir()
+            if d.is_dir() and re.fullmatch(r"b\d+", d.name)
+        ),
+        key=lambda d: int(d.name[1:]),
+    )
+    unused = [d for d in builds if not any(p.is_relative_to(d.resolve()) for p in keep)]
+    stale = unused[:-1]  # la plus récente des inutilisées reste : retour arrière
+    if not stale:
+        return
+    sizes = {
+        d: sum(f.stat().st_size for f in d.rglob("*") if f.is_file()) for d in stale
+    }
+    total_mb = sum(sizes.values()) // (1024 * 1024)
+    con.say(
+        f"  Anciennes builds inutilisées ({total_mb} Mo) : "
+        + ", ".join(d.name for d in stale)
+        + f" (gardées : en service + {unused[-1].name} pour revenir en arrière)."
+    )
+    if con.assume_yes:
+        con.say(
+            "  [passé] Pas de suppression sous --yes : relance sans --yes pour nettoyer."
+        )
+        return
+    if not con.confirm("Les supprimer ?", default=False):
+        return
+    for d in stale:
+        shutil.rmtree(d, ignore_errors=True)
+    gone = [d.name for d in stale if not d.exists()]
+    con.say(f"  [ok] Supprimées : {', '.join(gone) or 'aucune'}.")
+    report.add("nettoyage", "fait", f"{len(gone)} ancienne(s) build(s), {total_mb} Mo")
 
 
 def _install_release(
     con: Console, report: SetupReport, deps: Deps, plat, hw, release: dict
-) -> bool:
+) -> Path | None:
     """Télécharge les assets de `release` adaptés à la machine dans RUNTIME_DIR/<tag>,
-    vérifie `--version` et écrit [server] bin dans config/local.toml. True si installé."""
+    vérifie `--version` et écrit [server] bin dans config/local.toml. Rend le binaire
+    installé, None sinon."""
     plan = select_assets(release, plat.key, local_arch(), hw.has_gpu)
     if plan is None:
         con.say("  Aucun asset précompilé ne convient à cette machine.")
@@ -400,7 +455,7 @@ def _install_release(
             'chemin dans config/local.toml : [server] bin = "…/llama-server".'
         )
         report.add("binaire", "manuel", "aucun asset compatible — guidage donné")
-        return False
+        return None
 
     con.say(
         f"  Proposition : release {plan.tag} de llama.cpp (ggml-org), {plan.reason} :"
@@ -412,7 +467,7 @@ def _install_release(
     if not con.confirm(f"Télécharger et installer ({plan.total_mb} Mo) ?"):
         con.say("  [passé] Ignoré — tu peux relancer loom-setup plus tard.")
         report.add("binaire", "ignore", "téléchargement refusé")
-        return False
+        return None
 
     def _cb(name, done_mb, total_mb):
         con.progress(f"{name} : {done_mb}/{total_mb or '?'} Mo")
@@ -423,7 +478,7 @@ def _install_release(
         con.progress_end()
         con.say(f"  [échec] Téléchargement/extraction : {exc}")
         report.add("binaire", "echec", f"téléchargement : {exc}")
-        return False
+        return None
     con.progress_end()
 
     binary = deps.find_llama_server(extracted)
@@ -434,14 +489,14 @@ def _install_release(
             "laissé intact. Vérifie l'archive ou installe à la main."
         )
         report.add("binaire", "echec", "binaire extrait mais --version muet")
-        return False
+        return None
     set_server_bin(PERSONAL_CONFIG_PATH, binary)
     con.say(f"  Vérification --version : OK ({version})")
     con.say(f"  [ok] config/local.toml : [server] bin = {binary}")
     report.add(
         "binaire", "fait", f"installé ({plan.tag}, {plan.backend}) → config/local.toml"
     )
-    return True
+    return binary
 
 
 def _refresh_gpu(con: Console, deps: Deps, hw, raw_cfg):
