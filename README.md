@@ -116,7 +116,7 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
   → preuve forte → réécrire-si-pourri, déclenchée quand un bug apparaît.
 - 💭 **Raisonnement** : le « thinking » s'affiche dans un bloc animé, désactivable d'un clic.
 - ⏹️ **Interruption** : soumettre un nouveau message stoppe net la génération en cours.
-- 🔀 **Multi-modèles** : modèles locaux découverts par dossier `loom/models/<id>/` + sélecteur
+- 🔀 **Multi-modèles** : modèles texte locaux découverts par dossier `<models_root>/local/text/<id>/` + sélecteur
   UI ; hot-swap via llama-swap. **Modèles distants** (API OpenAI-compatible) gérés depuis la
   console (onglet Modèles distants) : sélectionnables comme modèle principal, utilisables en
   rôles cheap/strong par la délégation, avec suivi des tokens et du coût.

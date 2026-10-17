@@ -57,7 +57,7 @@ def test_dense_trop_gros_offload_partiel_estime():
 
 
 def test_moe_qui_tient_experts_cpu_en_base_puis_tout_gpu():
-    # Ornith 1.0 Q8_0 sur la 860M : 35 Go dans 48 Go vus par Vulkan.
+    # Ornith 1.0 Q8_0 sur un GPU intégré Vulkan : 35 Go dans 48 Go vus par Vulkan.
     cands = _cands(moe=True, model_size_mb=35_193, uma=True)
     assert [c.label for c in cands] == ["experts_cpu", "gpu_total"]
     assert cands[0].cpu_moe and cands[0].ngl == 999
@@ -264,7 +264,7 @@ def test_set_model_placement_cpu_seul(tmp_path):
 
 
 def test_step_bench_mesure_le_placement_et_l_ecrit(monkeypatch, tmp_path):
-    """Le cas Ornith sur la 860M : MoE qui tient en mémoire unifiée. La sonde doit
+    """Le cas Ornith sur un GPU intégré Vulkan : MoE qui tient en mémoire unifiée. La sonde doit
     comparer experts-CPU et tout-GPU avec la vraie fabrique de sondes, élire tout-GPU
     (+19 %), l'écrire dans model.toml et tracer la mesure dans [bench]."""
     import tomllib
@@ -346,7 +346,7 @@ def test_step_bench_mesure_le_placement_et_l_ecrit(monkeypatch, tmp_path):
         make_probe=FakeProbe,
         detect_hardware=lambda server_bin=None: HardwareProfile(
             True,
-            "Radeon 860M",
+            "GPU intégré de test",
             46_350,
             16,
             vram_total_mb=48_789,
@@ -467,7 +467,7 @@ def test_step_bench_build_statique_sans_dll_garde_le_gpu(monkeypatch, tmp_path):
         ram_total_mb=lambda: 64_000,
         make_probe=FakeProbe,
         detect_hardware=lambda server_bin=None: HardwareProfile(
-            True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
+            True, "GPU intégré de test", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
         ),
     )
     assert cli.run(con, deps) == 0
@@ -739,7 +739,7 @@ def test_measure_placement_rebench_renvoie_un_verdict_serialisable_et_la_sonde_e
             return ProbeResult(ctx=ctx, mem_mb=100, tg_ts=tg, pp_ts=pp)
 
     hw = HardwareProfile(
-        True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, vram_is_discrete=False
+        True, "GPU intégré de test", 46_350, 16, vram_total_mb=48_789, vram_is_discrete=False
     )
     meta = {"n_layers": 40, "expert_count": 128, "head_count_kv": 4, "key_length": 256}
     statuts: list[str] = []
@@ -794,7 +794,7 @@ def test_measure_placement_rebench_regle_les_threads_des_finalistes():
             return ProbeResult(ctx=ctx, mem_mb=100, tg_ts=tg, pp_ts=200.0)
 
     hw = HardwareProfile(
-        True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, vram_is_discrete=False
+        True, "GPU intégré de test", 46_350, 16, vram_total_mb=48_789, vram_is_discrete=False
     )
     meta = {"n_layers": 40, "expert_count": 128, "head_count_kv": 4, "key_length": 256}
     verdict, probe = _measure_placement(

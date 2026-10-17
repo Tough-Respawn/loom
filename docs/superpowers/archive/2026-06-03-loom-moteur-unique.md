@@ -18,7 +18,7 @@ Le projet n'est **pas encore sous git** (`ETAT_PROJET.md`). Les étapes « Commi
 
 Run :
 ```bash
-cd "c:/Users/Amine/Documents/from-claude-to-local-haranessed-llm"
+cd "<chemin-du-depot>"
 git init && git add -A && git commit -m "chore: snapshot avant moteur unique"
 ```
 Expected : dépôt créé, 1ᵉʳ commit. Si déjà sous git, ignorer.

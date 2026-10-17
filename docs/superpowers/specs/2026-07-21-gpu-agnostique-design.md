@@ -5,7 +5,7 @@
 ## Problème
 
 `detect_hardware()` ne connaît que NVIDIA (`nvidia-smi`) : sur une machine AMD
-(Radeon 860M iGPU, vécu) ou Intel, le setup affiche « GPU : aucun », le budget
+(y compris un iGPU) ou Intel, le setup affiche « GPU : aucun », le budget
 ignore la VRAM, et surtout le profil runtime a `has_gpu=False` → la
 recommandation auto d'offload de `resolve_ngl` (priorité 4) ne s'applique
 jamais : le GPU présent n'est pas utilisé, sauf si le bench tourne ET gagne.
@@ -26,7 +26,7 @@ binding Vulkan Python (dépendance lourde).
 ### hardware.py
 
 - `parse_list_devices(output)` : parse les lignes
-  `Vulkan0: AMD Radeon(TM) 860M Graphics (36682 MiB, 34848 MiB free)` →
+  `Vulkan0: GPU de test (8192 MiB, 4096 MiB free)` (exemple fictif) →
   `{backend, index, name, total_mb, free_mb}`.
 - `detect_hardware(server_bin=None)` : avec `server_bin`, interroge
   `--list-devices` (1er device = profil ; sortie sans device = CPU-only, le
@@ -69,11 +69,11 @@ auto.
 
 ## Tests / preuve
 
-- `parse_list_devices` : ligne Vulkan réelle, ligne CUDA, multi-devices,
+- `parse_list_devices` : ligne Vulkan représentative, ligne CUDA, multi-devices,
   sortie vide/malformée.
 - `detect_hardware` : binaire répond → profil agnostique ; binaire répond sans
   device → CPU-only même si nvidia-smi existe ; pas de binaire → repli NVIDIA.
 - `budget_vram_mb` : discret vs unifié. `ngl_candidates` : sans GPU, offload
   total, offload partiel (candidat intermédiaire).
-- Preuve réelle : `loom-setup` sur la machine Radeon 860M doit afficher le GPU,
+- Preuve réelle : `loom-setup` sur une machine à GPU intégré compatible Vulkan doit afficher le GPU,
   et le serve doit lancer llama-server avec `-ngl > 0`.

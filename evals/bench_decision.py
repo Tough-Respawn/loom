@@ -7,8 +7,8 @@ résolu comme serve.py sur la VRAM libre du moment), puis, sur des tickets suppo
 Mesure : latence (froid = 1er ticket, chaud = suivants), accord champ à champ, justesse
 sur les champs annotés. Le serveur est tué à la fin.
 
-  uv run python evals/bench_decision.py E:/loom-models/local/text/gemma4-e4b-heretic
-  uv run python evals/bench_decision.py C:/loom-models/local/text/ornith-1.5-35b-a3b --no-op-offload
+  uv run python evals/bench_decision.py <racine-modeles>/local/text/<id>
+  uv run python evals/bench_decision.py <racine-modeles>/local/text/<id> --no-op-offload
 """
 
 from __future__ import annotations

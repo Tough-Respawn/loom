@@ -3,7 +3,7 @@
 Trois chemins lancent llama-server par le même `build_server_args` : serve.py
 (mono-modèle), swap.py (llama-swap) et la sonde de bench (topology.ServerProbe).
 Chacun dérivait seul threads / profil GPU / mémoire unifiée depuis le profil
-matériel, et ils divergeaient (constaté le 2026-10-09 sur la Radeon 860M) :
+matériel, et ils divergeaient (constaté le 2026-10-09 sur un GPU intégré Vulkan) :
 - llama-swap ignorait [override] threads que le bench venait d'écrire ;
 - la sonde tirait son profil GPU d'une topologie fondée sur nvidia-smi (absent
   sur AMD -> « ram ») et mesurait SANS -fa on / q8_0 / --prio 2, ni mémoire

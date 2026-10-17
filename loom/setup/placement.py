@@ -1,11 +1,10 @@
 # loom/setup/placement.py
 """Placement MESURÉ des poids d'un modèle : où vivent les couches denses et les experts.
 
-Jusqu'au 2026-10-09 une règle décidait (MoE + GPU -> experts en RAM, `cpu_moe = true`
-posé par /add-model, `discover_topology` imposant la topologie). Mesuré ce jour-là sur
-Ornith 35B-A3B Q8_0 (Radeon 860M, mémoire unifiée) : tout sur GPU = +21 % de prefill et
-+17-19 % de génération par rapport aux experts sur CPU. La règle venait d'une sonde du
-21/07 qui n'avait mesuré que le prefill, à une répétition, avec ±12 % de bruit.
+Le placement des experts MoE doit être mesuré : les garder en RAM ou les placer
+sur GPU peut produire des résultats différents selon le modèle et le matériel.
+Comparer la génération et le prefill sur plusieurs répétitions avant de retenir
+un placement ; une mesure isolée du prefill ne suffit pas.
 
 Objectif (revue du 2026-10-10) : MAXIMISER LA GÉNÉRATION AU CONTEXTE UTILE, sous
 contraintes de mémoire, de conservation du cache et, si souhaité, d'un délai maximal de

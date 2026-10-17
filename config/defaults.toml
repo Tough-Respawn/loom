@@ -67,8 +67,8 @@ swap_bin = "llama-swap"
 # config/local.toml. Chaîne ou LISTE (plusieurs disques) : ORDONNE du plus rapide
 # au plus lent — la PREMIÈRE racine gagne en cas d'id en double ET reçoit les
 # nouveaux modèles (/add-model propose le choix quand il y en a plusieurs), ex. :
-# models_root = "E:/loom-models"
-# models_root = ["C:/loom-models", "E:/loom-models"]
+# models_root = "<racine-des-modeles>"
+# models_root = ["<racine-prioritaire>", "<racine-secondaire>"]
 
 # ========================= Modèles distants (standard) ======================
 # Réglages appliqués à TOUS les distants (un dossier remote/<id>/model.toml par

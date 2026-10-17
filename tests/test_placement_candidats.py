@@ -73,7 +73,7 @@ def test_configuration_actuelle_resolue_comme_l_executant():
     from loom.setup.placement import current_placement
 
     large = HardwareProfile(
-        True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
+        True, "GPU intégré de test", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
     )
     petite = HardwareProfile(
         True,

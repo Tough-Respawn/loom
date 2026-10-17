@@ -1134,7 +1134,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - Couverture spec : store+JSON (T1), install 3 formes + local (T2), CLI (T3), catalogue +
   use_skill (T4), tools + permissions + registre (T5), câblage web + suppression manuel (T6),
-  nettoyage (T7). ✓
+  nettoyage (stockage externe). ✓
 - Cohérence des noms : `plugins_root` (fonction et param), `collect_skills(local, root)`,
   `make_use_skill(provider)`, `PLUGIN_TOOLS`, refs `<plugin>@<marketplace>` partout. ✓
 - Point à vérifier à l'exécution : `loom/config.py` lit-il une clé `plugins_root` sous

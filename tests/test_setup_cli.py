@@ -37,7 +37,7 @@ def _console(answers=None, assume_yes=False):
 
 
 _PLAT = SimpleNamespace(key="windows", label="Windows 11")
-_HW = HardwareProfile(True, "RTX 2060", 6000, 16)
+_HW = HardwareProfile(True, "GPU NVIDIA de test", 6000, 16)
 
 _RELEASE = {
     "tag_name": "b5321",

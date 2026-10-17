@@ -1,38 +1,38 @@
 # Gabarit de surcharge MACHINE. Copie-le en config/local.toml (gitignored) et adapte :
 #   cp config/local.example.toml config/local.toml
 # Surcharge defaults.toml avec ce qui est propre à TA machine (binaires, offload GPU, racine
-# des projets) + tes SECRETS. Valeurs ci-dessous : purement illustratives, à adapter.
+# des projets) + tes SECRETS. Décommenter les options utiles et remplacer les marqueurs <...>.
 
 # ============================ Serveur (llama.cpp) ============================
 [server]
 
 # Chemin absolu des binaires si absents du PATH
-bin = "C:/tools/llama/llama-server.exe"
-swap_bin = "C:/tools/llama/llama-swap.exe"
+# bin = "<chemin-du-binaire-llama-server>"
+# swap_bin = "<chemin-du-binaire-llama-swap>"
 
 # Binaire maison compilé avec des PR llama.cpp non mergées : la veille quotidienne affiche
 # un bandeau quand un build officiel plus récent sort (commande de recompilation tant
 # qu'une PR est ouverte, `uv run loom-setup` quand toutes sont mergées). N'installe rien.
-# track_prs = [26004]
-# rebuild_hint = "C:/tools/build-llama-loom.bat"
+# track_prs = [<numero-de-PR>]
+# rebuild_hint = "<commande-de-recompilation>"
 
 # ============================ Override GPU / CPU =============================
 [override]
 
-# Offload complet -ngl 99 si le modèle tient dans ta VRAM (sinon spill).
-n_gpu_layers = 99
+# Laisser la détection automatique ou utiliser la valeur issue de la calibration.
+# n_gpu_layers = <nombre-de-couches-GPU>
 
 # ================================= Outils ===================================
 [tools]
 
 # Racine des projets sur cette machine (périmètre des outils)
-workspace_dir = "C:/Users/<toi>/Documents"
+# workspace_dir = "<racine-des-projets>"
 
 # ============================== Chat / runtime ==============================
 [chat]
 
 # Modèle chargé au démarrage (id d'un modèle local ou distant ci-dessous)
-default_model = "glm-distant"
+# default_model = "<identifiant-du-modele>"
 
 # Serveur d'outils tiers local (décommente et adapte ; secrets dans ce fichier gitignoré).
 # [[mcp_servers]]

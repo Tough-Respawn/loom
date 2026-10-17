@@ -10,8 +10,8 @@ selon le besoin/contexte, et ciblable par du code (fondation du **multi-agent** 
 modèles par agent, lot suivant). Décisions actées :
 - **Mécanisme = `llama-swap`** (proxy OpenAI Go qui charge/décharge à la demande selon `model`).
 - **Multi-agent visé = différents modèles par agent** → on dimensionne pour le multi-modèle.
-- Sur 6 Go VRAM : **un seul modèle chargé à la fois** (swap manuel/à la demande) ; sur meilleure
-  infra le swap devient transparent. Limite assumée.
+- Lorsque la mémoire ne permet pas la cohabitation des modèles, **un seul modèle
+  est chargé à la fois** ; le changement passe par le chargement à la demande.
 
 ## 1. Objectif v4
 

@@ -1,73 +1,116 @@
 # Modèles Loom
 
-La ou LES racines des modèles sont **configurables** : `[storage] models_root` dans
-`config/local.toml` — chaîne ou liste. À défaut, c'est ce dossier du package
-(`loom/models/`). Avec plusieurs disques, **ordonne du plus rapide au plus lent**
-(ex. `["C:/loom-models", "E:/loom-models"]` : NVMe puis T7 USB) :
+Loom découvre les modèles dans des dossiers configurables. Aucun poids ni catalogue
+de modèles préinstallés n'est livré : le dépôt contient ce guide et les gabarits de
+[`_TEMPLATE/`](_TEMPLATE/). Les dossiers de modèles sous `loom/models/` sont ignorés
+par Git, à l'exception de ces gabarits.
 
-- la **première racine gagne** quand un même id existe sur plusieurs disques ;
-- les **nouveaux modèles s'installent sur la première** (`/add-model` propose le
-  choix du disque quand il y a plusieurs racines ; les distants — quelques lignes
-  de config — vont toujours sur la première, sans question).
+## Emplacement des modèles
 
-L'arborescence ci-dessous est LA convention, identique sous chaque racine. Le repo
-ne suit que `_TEMPLATE/` et ce README : les modèles sont personnels, jamais poussés.
+Dans `config/local.toml`, `[storage] models_root` accepte un chemin ou une liste :
 
-## Arborescence
-
+```toml
+[storage]
+models_root = "/chemin/vers/les/modeles"
+# Plusieurs emplacements, dans l'ordre de priorité :
+# models_root = ["/chemin/stockage-rapide/modeles", "/chemin/stockage-secondaire/modeles"]
 ```
-<models_root>/            (répétée sous chaque racine)
+
+Remplacer ces chemins par ceux de l'installation ; les chemins TOML peuvent utiliser
+`/`, y compris sous Windows. Sans ce réglage, Loom utilise
+`loom/models/`. Les chemins relatifs sont résolus depuis le répertoire de lancement.
+
+La première racine est prioritaire lorsqu'un même identifiant existe dans plusieurs
+racines. Elle reçoit aussi les nouveaux modèles par défaut ; `/add-model` permet de
+choisir une autre racine pour un modèle texte local. Les définitions distantes sont
+créées dans la première racine.
+
+Chaque racine utilise cette arborescence :
+
+```text
+<models_root>/
   local/
-    text/    <id>/model.toml (+ .gguf, profile.md)   -> LLM servis par llama.cpp
-    image/   <id>/model.toml + workflow.json         -> ComfyUI, un message = une image
-    video/   <id>/model.toml + workflow.json         -> ComfyUI, un message = un clip
-  remote/    <id>/model.toml (+ profile.md)          -> API distantes OpenAI-compatibles
-  _TEMPLATE/ gabarits : model.toml (texte) et remote-model.toml (distant)
+    text/<id>/model.toml     (+ poids GGUF et profile.md optionnel)
+    image/<id>/model.toml    (+ workflow.json obligatoire)
+    video/<id>/model.toml    (+ workflow.json obligatoire)
+  remote/<id>/model.toml     (+ profile.md optionnel)
 ```
 
-Partout, **l'`id` d'un modèle = le nom de son dossier** : il apparaît dans le
-sélecteur UI et sert à `default_model`. Un modèle = un dossier autoportant ; le
-`model.toml` du dossier **surcharge la config globale** (`config/defaults.toml`
-puis `config/local.toml`).
+Utiliser un identifiant unique par modèle et le nommer par son dossier, sans champ
+`id` dans le TOML. Cet identifiant apparaît dans le sélecteur et peut être choisi
+avec `[chat] default_model` dans `config/local.toml`.
 
-## Modèles TEXTE (`local/text/<id>/`)
-- `model.toml` — métadonnées (source GGUF, offload, contexte, vision). Voir `_TEMPLATE/model.toml`.
-- `profile.md` *(optionnel)* — consignes/quirks du modèle, injectés dans son contexte.
-- le `.gguf` (et un `*.mmproj-*.gguf` pour la vision) — téléchargé par Loom si absent.
+La configuration commune est lue depuis `config/defaults.toml`, puis surchargée par
+`config/local.toml`. Les réglages propres au modèle prennent ensuite priorité pour
+les champs pris en charge ; le `model.toml` n'est pas une copie de la config globale.
 
-## Modèles DISTANTS (`remote/<id>/`)
-- `model.toml` — `base_url`, `model`, clé (`api_key` en clair ou `api_key_env`),
-  `context`, prix, `vision`, `strong`… Voir `_TEMPLATE/remote-model.toml`. Les
-  réglages standard communs à tous les distants vivent dans la table `[remote]`
-  de `config/defaults.toml` (surchargeable par `config/local.toml`) ; ce fichier
-  surcharge tout.
-- `profile.md` *(optionnel)* — mêmes fixes déterministes que pour un local.
+## Modèles texte locaux
 
-Géré à chaud par l'UI (panneau engrenage : ajout/édition/test/suppression) et par
-`/add-model distant`. Supprimer le modèle = supprimer son dossier.
+Le dossier `local/text/<id>/` contient :
 
-## Modèles IMAGE / VIDÉO (`local/image/`, `local/video/`)
-Même format dans les deux : `model.toml` (label, taille, racine/port ComfyUI, `refiner`,
-`timeout`) + `workflow.json` (graphe ComfyUI **format API** avec `{PROMPT}`, `{SEED}`
-et, pour l'édition/i2v, `{IMAGE}`). Le moteur est ComfyUI (install séparée, venv privé) ;
-Loom le démarre et lui parle en HTTP. Les POIDS ComfyUI (unet/encodeurs/vae) vivent dans
-leur propre dossier (ex. `E:/comfyui-models`, référencé par `extra_model_paths.yaml`
-dans l'install ComfyUI).
+- `model.toml` : source des poids et réglages du serveur llama.cpp. Voir le
+  [gabarit texte](_TEMPLATE/model.toml).
+- Le GGUF indiqué par `filename` et, pour la vision, le projecteur indiqué par
+  `mmproj_filename`. Loom télécharge les fichiers absents depuis `repo`.
+- `profile.md`, facultatif : son frontmatter active des correctifs déjà implémentés
+  dans [`models_profile.py`](../runtime/models_profile.py), tels que la normalisation
+  des guillemets. Son texte n'est pas injecté comme consigne dans le contexte.
 
-`refiner = "<id d'un modèle Loom>"` *(optionnel)* : avant la diffusion, ce modèle réécrit
-ta demande — quelle que soit la langue — en UN prompt anglais propre (description, ou
-instruction d'édition si une photo est jointe), affiché sous le résultat. Recommandé :
-un petit local décensuré (ex. `gemma4-e4b-heretic`) — servi PUIS déchargé avant la
-diffusion, jamais deux résidents. `{IMAGE}` : mets le CHEMIN de ta photo dans le message
-(guillemets si espaces). `timeout` : budget d'attente (s), à monter pour la vidéo.
+`repo`, `filename`, `n_layers` et `size_mb` doivent être présents dans une définition
+manuelle. Les marqueurs du gabarit doivent être remplacés par les données du GGUF ;
+les zéros de `n_layers` et `size_mb` indiquent des valeurs à renseigner.
+Un fichier incomplet ou illisible est ignoré avec un message dans la console.
+
+Les réglages de performance dépendent du modèle **et de la machine** : contexte,
+couches GPU, placement des experts MoE, threads, batchs et isolation du cache.
+`loom-setup` et `/rebench` permettent de mesurer ces réglages ; ne pas reprendre les
+valeurs d'une autre installation comme référence. L'ajout d'un modèle extrait des
+métadonnées du GGUF, mais ne remplace pas cette calibration.
+
+## Modèles distants
+
+Le dossier `remote/<id>/` contient un `model.toml` avec `base_url` et `model`, ainsi
+que l'authentification et les options nécessaires au fournisseur. Voir le
+[gabarit distant](_TEMPLATE/remote-model.toml). `profile.md` est également facultatif.
+
+Les options communes peuvent être définies dans `[remote]` de la configuration
+globale ; le fichier du modèle les surcharge champ par champ. Les modèles distants
+sont gérés à chaud par le panneau des modèles de l'interface et par
+`/add-model distant`.
+
+## Modèles image et vidéo
+
+Les dossiers `local/image/<id>/` et `local/video/<id>/` contiennent un `model.toml`
+et un `workflow.json` exporté depuis ComfyUI au **format API**. ComfyUI doit être
+installé séparément avec les poids et les nœuds nécessaires au workflow ; Loom
+démarre le service et communique avec lui en HTTP.
+
+Le `model.toml` accepte notamment `label`, `description`, `width`, `height`,
+`comfy_dir`, `comfy_port`, `timeout`, `refiner` et `refine_hints`. `comfy_dir` désigne
+l'installation ComfyUI ; les poids restent dans les emplacements configurés par
+ComfyUI, éventuellement via son `extra_model_paths.yaml`.
+
+Dans le JSON du workflow, utiliser les chaînes `"{PROMPT}"`, `"{SEED}"` et, pour
+l'édition ou la vidéo à partir d'une image, `"{IMAGE}"` aux entrées correspondantes.
+Pour ce dernier cas, indiquer le chemin de l'image dans le message, entre guillemets
+s'il contient des espaces.
+
+`refiner` peut désigner un modèle texte disponible dans Loom pour reformuler la
+demande avant la génération. `refine_hints` apporte des indications propres au
+workflow. Les modèles texte locaux sont déchargés avant la diffusion. `timeout`
+fixe le délai d'attente en secondes, à adapter à la durée de génération.
 
 ## Ajouter un modèle
-- **La voie royale : tape `/add-model` dans le chat** — le wizard fait tout (local :
-  recherche Hugging Face, quant recommandé selon ta machine, choix du disque si
-  plusieurs racines, téléchargement, model.toml généré ; distant : URL + clé,
-  dossier `remote/<id>/` créé et monté à chaud).
-- À la main (toujours possible) :
-  - Texte : copie `_TEMPLATE/` vers `local/text/<ton-id>/`, édite `model.toml`.
-  - Distant : crée `remote/<ton-id>/` et copie `_TEMPLATE/remote-model.toml`
-    dedans sous le nom `model.toml`, puis édite.
-  - Image/vidéo : copie un dossier existant de `local/image/`, édite les deux fichiers.
+
+- **Première installation** : lancer `uv run loom-setup` depuis le dépôt pour être
+  guidé dans l'installation et la calibration d'un modèle texte local.
+- **Depuis le chat** : `/add-model` propose les modèles texte locaux, distants,
+  image et vidéo. Pour le texte local, l'assistant recherche les GGUF sur Hugging
+  Face, propose une quantification et télécharge les fichiers. Pour l'image et la
+  vidéo, il demande un export ComfyUI au format API ; les poids restent à installer
+  dans ComfyUI.
+- **Manuellement** : créer le dossier correspondant au type de modèle. Pour le
+  texte local, copier uniquement `_TEMPLATE/model.toml` ; pour un distant, copier
+  `_TEMPLATE/remote-model.toml` sous le nom `model.toml`. Pour l'image ou la vidéo,
+  fournir les deux fichiers décrits ci-dessus. Relancer Loom après une modification
+  manuelle pour recharger la configuration.

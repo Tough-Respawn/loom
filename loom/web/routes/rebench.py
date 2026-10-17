@@ -342,7 +342,7 @@ def _probe_settings(
 ) -> tuple[str, int, int, int]:
     """(topologie, VRAM totale, threads, ngl) de la sonde, avec la dérivation de
     l'EXÉCUTANT. La VRAM vient du profil `--list-devices` (Vulkan compris) et
-    nvidia-smi n'est qu'un repli : sans ça la 860M passait en topologie « ram » et
+    nvidia-smi n'est qu'un repli : sans ça le GPU intégré passait en topologie « ram » et
     la sonde mesurait sans profil GPU. Threads = effective.launch_flags (override
     machine, sinon cœurs physiques en GPU, tous en CPU). ngl = la configuration
     ACTUELLE résolue par le même résolveur que serve.py / swap.py

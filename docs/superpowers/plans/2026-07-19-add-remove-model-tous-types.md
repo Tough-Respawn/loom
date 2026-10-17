@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - wizard.py reste SANS I/O (ni disque ni réseau) — tout par `deps`/`action`.
-- Les poids ComfyUI (`E:/comfyui-models`) ne sont jamais touchés.
+- Les poids ComfyUI (`<racine-des-poids-ComfyUI>`) ne sont jamais touchés.
 - tomlkit pour local.toml (commentaires préservés) ; jamais d'écriture directe.
 - Messages wizard en français, préfixe d'étape `[add-model — image X/4]`.
 - Commits courts Conventional Commits (<10 lignes), pas de Co-Authored-By.
@@ -556,7 +556,7 @@ def _check_workflow(path: str) -> dict:
             if not (mdir / "model.toml").is_file():  # reprise : ne pas écraser l'existant
                 desc = a["description"].replace('"', "'")
                 tmpl = next(iter(S.image_by_id.values()), None)
-                comfy_dir = tmpl.comfy_dir if tmpl else "C:/tools/ComfyUI"
+                comfy_dir = tmpl.comfy_dir if tmpl else "<repertoire-outils>/ComfyUI"
                 comfy_port = tmpl.comfy_port if tmpl else 8188
                 refiner = tmpl.refiner if tmpl else ""
                 timeout = 3600 if a["model_kind"] == "video" else 600
@@ -636,7 +636,7 @@ Persistance du résultat — déplacer l'appel `_persist_wizard_exchange(S, sess
 **Files:** aucun (validation runtime).
 
 - [ ] **Step 1:** Redémarrer loom.web (changements backend — gotcha connu), recharger l'onglet.
-- [ ] **Step 2:** Dans une session de test : `/add-model image` → id `zz-e2e-image` → `ok` → description → chemin d'un `workflow_api.json` factice (JSON minimal avec `{PROMPT}`, créé dans le scratchpad) → vérifier : dossier créé sous `E:/loom-models/local/image/zz-e2e-image/`, entrée `image · zz-e2e-image` dans le sélecteur SANS reload.
+- [ ] **Step 2:** Dans une session de test : `/add-model image` → id `zz-e2e-image` → `ok` → description → chemin d'un `workflow_api.json` factice (JSON minimal avec `{PROMPT}`, créé dans le scratchpad) → vérifier : dossier créé sous `<racine-des-modeles>/local/image/zz-e2e-image/`, entrée `image · zz-e2e-image` dans le sélecteur SANS reload.
 - [ ] **Step 3:** `/remove-model` → vérifier que la liste montre locaux + glm-* (config) + image/vidéo → supprimer `zz-e2e-image` → sélecteur à jour sans reload, dossier disparu du disque.
 - [ ] **Step 4:** Recharger la page → le fil montre bien le `✅` persisté.
 - [ ] **Step 5:** Suppression d'un distant config : sur un local.toml de TEST uniquement (couvert par les tests unit Task 1/5) — ne PAS supprimer un vrai glm-*. En E2E, vérifier seulement que la liste les propose avec le bon libellé et que `/cancel` sort proprement.

@@ -6,7 +6,7 @@
 
 **Architecture:** Troisième type de modèle (après local/distant), déclaré par dossier `loom/models/_IMAGE/<id>/` (model.toml + workflow.json au format API ComfyUI). Une branche dédiée dans `/chat` court-circuite la boucle tool-use : unload du LLM, ComfyUI démarré/géré par Loom (Job Object kill-on-close), `POST /prompt` + poll `/history`, PNG servi par un endpoint et affiché en markdown.
 
-**Tech Stack:** Python (stdlib urllib/json), Flask (app existante), ComfyUI en processus externe (`C:\tools\ComfyUI`, venv privé). AUCUNE dépendance ajoutée à Loom.
+**Tech Stack:** Python (stdlib urllib/json), Flask (app existante), ComfyUI en processus externe (`<repertoire-outils>\ComfyUI`, venv privé). AUCUNE dépendance ajoutée à Loom.
 
 ## Global Constraints
 
@@ -83,7 +83,7 @@ def discover_image_models(models_dir: Path | None = None) -> list[ImageModel]:
                 dir=str(d),
                 width=int(data.get("width") or 1024),
                 height=int(data.get("height") or 1024),
-                comfy_dir=str(data.get("comfy_dir") or "C:/tools/ComfyUI"),
+                comfy_dir=str(data.get("comfy_dir") or "<repertoire-outils>/ComfyUI"),
                 comfy_port=int(data.get("comfy_port") or 8188),
                 workflow_path=str(wf_p),
             )
@@ -137,7 +137,7 @@ git commit -m "feat(image): decouverte des modeles image (models/_IMAGE/<id>/)"
 label = "Krea 2 Turbo (image)"
 width = 1024
 height = 1024
-comfy_dir = "C:/tools/ComfyUI"
+comfy_dir = "<repertoire-outils>/ComfyUI"
 comfy_port = 8188
 ```
 
@@ -201,7 +201,7 @@ git commit -m "docs(models): section modeles image (_IMAGE)"
 """Moteur ComfyUI géré par Loom : démarrage (Job Object kill-on-close), soumission
 d'un workflow API et récupération du PNG. HTTP uniquement (urllib), aucune dépendance.
 
-VRAM (6 Go) : UN modèle à la fois — l'appelant décharge le LLM (unload_local) AVANT
+Pour libérer la mémoire avant la diffusion, l'appelant décharge le LLM (unload_local) AVANT
 generate(), et appelle free() quand on rebascule sur un modèle texte."""
 
 from __future__ import annotations
@@ -367,7 +367,7 @@ class ComfyEngine:
 ```bash
 uv run python -c "
 from loom.runtime.comfy import ComfyEngine, ComfyError
-e = ComfyEngine('C:/tools/ComfyUI', port=8199)  # port vide
+e = ComfyEngine('<repertoire-outils>/ComfyUI', port=8199)  # port vide
 assert e.is_up() is False
 e.free()  # best-effort : ne lève pas
 try:

@@ -1,7 +1,10 @@
-# TEMPLATE de modèle LOCAL texte — copie ce dossier en `<racine>/local/text/<ton-id>/`
+# TEMPLATE de modèle LOCAL texte — copie ce fichier en `<racine>/local/text/<ton-id>/model.toml`
 # et adapte (distant : cf. remote-model.toml à côté).
 # L'`id` du modèle = le NOM DU DOSSIER (pas un champ ici). Il apparaît dans le sélecteur UI
-# et dans `default_model` (section [chat] de loom.config.toml).
+# et dans `default_model` (section [chat] de config/local.toml).
+# Renseigner les métadonnées du GGUF choisi avant utilisation : les zéros ne sont
+# pas des valeurs utilisables. Remplacer les marqueurs <...> avant de décommenter
+# une option. Aucun réglage de performance n'est préconisé par ce gabarit.
 #
 # Place le GGUF dans le même dossier (il est gitignoré, jamais distribué). Tu peux le
 # télécharger toi-même, ou laisser Loom le récupérer depuis `repo`/`filename` ci-dessous
@@ -9,22 +12,33 @@
 
 # --- Source du poids (pour le téléchargement auto ; sinon dépose le .gguf à la main) ---
 repo = "org/mon-modele-GGUF"                 # dépôt Hugging Face
-filename = "mon-modele.Q4_K_M.gguf"          # nom exact du fichier GGUF dans le dépôt
+filename = "<fichier-poids>.gguf"            # nom exact du fichier GGUF dans le dépôt
 
 # --- Métadonnées d'offload (servent à serve.py pour régler -ngl selon la VRAM) ---
-n_layers = 32                                # nb de couches du modèle (cf. la fiche du modèle)
-size_mb = 5000                               # taille approx. du GGUF en Mo (pour les logs/heuristiques)
+n_layers = 0                                 # à renseigner : nombre de couches du modèle
+size_mb = 0                                  # à renseigner : taille du GGUF en Mo
 
 # --- Binaire llama-server propre à ce modèle (optionnel ; sinon [server].bin) ---
-# server_bin = "C:/chemin/vers/un-autre-build/bin/llama-server.exe"
+# server_bin = "<chemin-du-binaire-llama-server>"
 
-# --- Contexte (optionnel ; sinon valeur de [server].context dans loom.config.toml) ---
-# context = 24576
+# --- Contexte (optionnel ; sinon [server].context dans defaults.toml puis local.toml) ---
+# context = <contexte_mesure>  # entier, en tokens ; mesuré par loom-setup ou /rebench
 
 # --- Vision (optionnel) : un projecteur multimodal à côté du GGUF ---
-# mmproj_filename = "mon-modele.mmproj-Q8_0.gguf"
+# mmproj_filename = "<fichier-projecteur>.gguf"
 
-# --- MoE : offload des experts en RAM pour faire tenir un gros modèle sur peu de VRAM ---
+# --- Placement : à calibrer sur la machine avec loom-setup ou /rebench ---
+# n_gpu_layers = <nombre>   # entier : nombre de couches GPU ; 0 = CPU hors options MoE
 # cpu_moe = true            # tous les experts routés en RAM (attention/dense restent GPU)
-# n_cpu_moe = 35            # variante fine : n premières couches d'experts en RAM, le reste GPU
-#                           # (monte n jusqu'à ~remplir la VRAM ; cf. qwen3.6-35b / ornith-1.0-35b)
+# n_cpu_moe = <nombre>      # entier ; alternative à cpu_moe : N couches d'experts en RAM
+# threads = <nombre>        # entier : threads CPU ; prioritaire sur [override].threads
+# ubatch = <taille>          # entier : taille physique du batch de prefill
+# batch = <taille>           # entier : taille logique du batch de prefill
+
+# --- Cache (optionnel ; dépend du modèle et des capacités du binaire) ---
+# cache_isolation = true    # isole les appels annexes dans un second slot
+# checkpoint_min_step = <intervalle>  # entier : intervalle minimal entre checkpoints
+# ctx_checkpoints = <nombre>          # entier : nombre maximal de checkpoints
+
+# --- Présentation (optionnel) ---
+# description = "Description du modèle pour le sélecteur"

@@ -29,17 +29,20 @@ Le bandeau de l'UI suit la même release et affiche cette commande. Un build mai
 celles de `var/runtime/llama/` devenues inutiles. Il garde toujours la build en service,
 la plus récente des autres (retour arrière) et toute build citée par un `server_bin` de
 model.toml. Réponse par défaut « non », jamais de suppression sous `--yes`. Les binaires
-installés à la main ailleurs (ex. `C:/tools/`) ne sont jamais touchés.
+installés à la main dans un autre répertoire ne sont jamais touchés.
 
 ## À la main (repli)
 
+Remplacer `<repertoire-outils>` par le dossier d'installation choisi dans les
+commandes et la configuration ci-dessous.
+
 1. Récupérer la release Windows CUDA de llama.cpp (`...-bin-win-cuda-x64.zip`
    **et** le zip `cudart-...` qui porte les DLL CUDA).
-2. Extraire les deux dans `C:\tools\llama\`.
-3. Vérifier : `& "C:\tools\llama\llama-server.exe" --version`.
+2. Extraire les deux dans `<repertoire-outils>\llama\`.
+3. Vérifier : `& "<repertoire-outils>\llama\llama-server.exe" --version`.
 4. Renseigner `config/local.toml` (à copier depuis `config/local.example.toml`) :
    ```toml
    [server]
-   bin = "C:/tools/llama/llama-server.exe"
+   bin = "<repertoire-outils>/llama/llama-server.exe"
    ```
 5. Lancer : `uv run loom/runtime/serve.py` (télécharge le GGUF au 1er run).

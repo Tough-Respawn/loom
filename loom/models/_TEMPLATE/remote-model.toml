@@ -2,31 +2,32 @@
 # `<racine>/remote/<ton-id>/model.toml` et adapte. L'`id` du modèle = le NOM DU
 # DOSSIER (pas un champ ici) : il apparaît dans le sélecteur UI et dans `default_model`.
 #
-# La voie royale reste `/add-model distant` dans le chat (ou le panneau engrenage) :
-# le fichier est généré ici pour toi. Un `profile.md` optionnel à côté active des
-# fixes déterministes (cf. loom/runtime/models_profile.py).
+# `/add-model distant` dans le chat (ou le panneau des modèles) génère ce fichier.
+# Un `profile.md` optionnel à côté active des correctifs déterministes
+# (cf. loom/runtime/models_profile.py).
+# Remplacer les marqueurs <...> avant utilisation ou décommentage d'une option.
 #
 # Les réglages standard communs à tous les distants peuvent vivre dans la table
 # [remote] de config/defaults.toml (surchargée par config/local.toml) ; ce fichier
 # surcharge tout, champ par champ.
 
 # --- Obligatoire ---
-base_url = "https://api.exemple.com/v1"      # base OpenAI-compatible (sans /chat/completions)
-model = "nom-du-modele-chez-le-provider"     # tel que listé par GET /models
+base_url = "https://api.example.com/v1"     # URL fictive à remplacer (sans /chat/completions)
+model = "<identifiant-du-modele>"            # tel que listé par GET /models
 
-# --- Clé API : en clair ICI (racine machine-owned, hors repo), OU via une variable d'env ---
-api_key = "sk-..."
-# api_key_env = "MA_CLE_API"                 # alternative : nom de la variable d'env
+# --- Authentification : renseigner l'une des options si le fournisseur l'exige ---
+# api_key_env = "<nom-de-variable-environnement>"
+# api_key = "<cle-api>"
 
 # --- Optionnel ---
-# context = 200000            # fenêtre du modèle (source : la DOC du provider, pas l'API)
-# max_tokens = 8192           # plafond de génération par tour
+# context = <nombre_de_tokens>     # entier : fenêtre documentée par le fournisseur
+# max_tokens = <nombre_de_tokens>  # entier : plafond de génération par tour
 # vision = true               # le modèle accepte les images
 # strong = false              # false = harnais complet (gardes actives), comme un local
-# enable_thinking_param = true  # provider à interrupteur thinking (ex. Qwen)
+# enable_thinking_param = true  # uniquement si l'API accepte le paramètre enable_thinking
 # description = "rôle en une ligne (infobulle du sélecteur)"
 
-# --- Prix ($/M tokens, pour le compteur de coût réel) ---
-# price_in = 1.40
-# price_out = 4.40
-# price_cached = 0.26
+# --- Prix ($/M tokens) : renseigner les tarifs du fournisseur ---
+# price_in = <tarif_entree>          # nombre décimal
+# price_out = <tarif_sortie>         # nombre décimal
+# price_cached = <tarif_cache>       # nombre décimal

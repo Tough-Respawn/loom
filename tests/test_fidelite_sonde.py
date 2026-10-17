@@ -3,7 +3,7 @@
 
 La sonde (loom-setup, /rebench) doit lancer llama-server avec EXACTEMENT les flags
 que llama-swap lancera ensuite, sinon elle mesure une autre configuration. Vécu le
-2026-10-09 sur la Radeon 860M (Vulkan, mémoire unifiée, pas de nvidia-smi) :
+2026-10-09 sur un GPU intégré Vulkan (Vulkan, mémoire unifiée, pas de nvidia-smi) :
 - la topologie venait de nvidia-smi -> « ram » -> sonde sans -fa on / q8_0 / --prio 2
   alors que l'exécutant (profil `--list-devices`) les pose ;
 - llama-swap ignorait [override] threads que le bench venait d'écrire ;
@@ -25,14 +25,14 @@ from loom.runtime.swap import _model_cmd, build_swap_config
 from loom.setup import topology as topo
 from loom.setup.topology import TOPO_GPU_DENSE, TOPO_MOE_HYBRIDE, TOPO_RAM, ServerProbe
 
-# Radeon 860M vue par `llama-server --list-devices` (Vulkan0, 48 Go partagés) ;
+# Profil de régression en mémoire unifiée pour `llama-server --list-devices` ;
 # nvidia-smi absent -> rien de discret.
 _UMA = HardwareProfile(
-    True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
+    True, "GPU intégré de test", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
 )
 _DGPU = HardwareProfile(
     True,
-    "RTX 2060",
+    "GPU NVIDIA de test",
     5_500,
     16,
     vram_total_mb=6_144,

@@ -5,8 +5,8 @@
 
 ## 0. Contexte & vision globale
 
-Objectif global du projet `from-claude-to-local-haranessed-llm` : **rester productif sur tous mes
-projets même sans internet**, en reproduisant mon usage agentique de Claude Code avec des
+Objectif global du projet `from-claude-to-local-haranessed-llm` : **travailler sur des
+projets même sans internet**, en proposant un assistant de développement avec des
 **modèles open-source locaux** (Mistral, Qwen, DeepSeek, Gemma…). Enjeu secondaire mais réel :
 **démontrer le savoir-faire d'« internaliser le harness »** sur des modèles autres que Claude.
 
@@ -48,7 +48,7 @@ A est une **fondation d'infrastructure** : un squelette reproductible, pas une a
 Runtime de référence retenu : **llama.cpp**, via son binaire `llama-server`.
 Décision à formaliser dans `docs/adr/0001-llamacpp-vs-ollama.md`. Rationale ci-dessous.
 
-### Comparaison llama.cpp vs Ollama (cible : RTX 2060 6 Go / Windows + VPS Linux CPU)
+### Comparaison llama.cpp vs Ollama (cible : Windows avec GPU et Linux sans GPU)
 
 | Critère | **llama.cpp** (`llama-server`) | Ollama |
 |---|---|---|
@@ -68,24 +68,20 @@ Décision à formaliser dans `docs/adr/0001-llamacpp-vs-ollama.md`. Rationale ci
 Coût accepté : ~15-20 min de setup en plus au départ. Bénéfice : contrôle total + GBNF (clé pour
 fiabiliser un petit modèle) + couche supérieure 100 % agnostique.
 
-> Note : **Kimi (K2)** envisagé initialement est un MoE ~1 000 Md de paramètres → **impossible**
-> en local sur ce hardware. Écarté.
+> Le choix des modèles dépend des ressources disponibles et doit être validé sur chaque installation.
 
 ## 4. Exigence transverse : reproductibilité multi-machines
 
-Cible double, **CPU/GPU-agnostique** :
-- **Laptop** : Windows 11, RTX 2060 **6 Go VRAM**, 32 Go RAM, i7-10750H.
-- **VPS** : Linux, **64 Go RAM, pas de GPU** (pour l'instant).
+Le runtime doit fonctionner sous Windows et Linux, avec ou sans GPU.
+Les ressources disponibles sont détectées sur chaque installation.
 
-Le squelette ne doit **jamais supposer un GPU**. Mieux : `serve.py` **auto-détecte** le hardware
-et choisit le meilleur profil (GPU si présent, sinon CPU) — donc la **même config versionnée
-tourne de façon optimale sur les deux machines sans aucune édition**. Le seul delta réel est le
-binaire `llama-server` (build CUDA sur le laptop vs build CPU sur le VPS), installé par machine.
+Le squelette ne doit **jamais supposer un GPU**. `serve.py` détecte le matériel
+et adapte le lancement aux ressources disponibles. Le binaire `llama-server`
+et les réglages propres à l'installation sont configurés séparément des valeurs communes.
 
 ## 5. Composants
 
-1. **`llama-server`** (binaire llama.cpp) — serveur d'inférence. **Spécifique plateforme** (build
-   CUDA sur le laptop, build CPU sur le VPS), installé hors-dépôt, version épinglée et documentée.
+1. **`llama-server`** (binaire llama.cpp) — serveur d'inférence. **Spécifique à la plateforme et au backend disponible**, installé hors-dépôt, version épinglée et documentée.
 2. **`runtime/serve.py`** — lanceur **cross-platform et auto-adaptatif** (exécuté via `uv run`) :
    - **auto-détecte les ressources de la machine** et choisit le meilleur réglage *tout seul* :
      - cherche un GPU NVIDIA (présence de `nvidia-smi` + VRAM libre) ;
@@ -117,8 +113,8 @@ runtime/
   models/                      # .gguf — gitignorés (trop lourds)
   serve.py                     # lanceur cross-platform (uv)
   benchmark.py                 # uv: tok/s, TTFT, validité GBNF/JSON
-  runtime.config.toml          # config versionnée (laptop GPU par défaut)
-  runtime.config.local.toml    # surcharge machine (gitignoré) — ex. VPS CPU
+  runtime.config.toml          # configuration commune
+  runtime.config.local.toml    # surcharge propre à l'installation (gitignorée)
 docs/
   adr/0001-llamacpp-vs-ollama.md
   install-windows.md
@@ -134,7 +130,7 @@ ETAT_PROJET.md                 # mis à jour
 client (curl / benchmark.py / futur harness B)
         │  HTTP localhost:<port>/v1/chat/completions
         ▼
-   llama-server  ──►  GGUF chargé sur GPU (≤6 Go) + CPU/RAM
+   llama-server  ──►  GGUF réparti entre GPU et CPU/RAM selon les ressources
         │
         ▼  réponse (streaming ou non)
    AUCUN appel réseau sortant
@@ -142,28 +138,24 @@ client (curl / benchmark.py / futur harness B)
 
 ## 7. Stratégie modèle
 
-Modèle par défaut : **Qwen2.5-Coder-7B-Instruct** (quant `Q4_K_M`, ~4.7 Go) — meilleur codeur
-open + bon tool-use dans cette taille, tient en VRAM 6 Go.
+Choisir un modèle GGUF adapté aux tâches visées et aux ressources disponibles.
+Comparer les candidats sur les mêmes tâches : qualité des réponses, appels d'outils,
+débit et délai avant le premier token.
 
-Comparants à benchmarker (mêmes critères) :
-- **DeepSeek-Coder-V2-Lite** (16B MoE, ~2.4B actifs) — offload partiel, rapide malgré la taille.
-- **Mistral-7B-Instruct** — baseline généraliste.
-- **Gemma 2 9B** — généraliste ; serré sur 6 Go (offload partiel).
-
-Stratégie VRAM (laptop) : 7B `Q4_K_M` → poids ~4.7 Go ; régler `n_gpu_layers` au max qui tient avec
-le cache KV, reste sur CPU. Le benchmark détermine le contexte max qui tient. **Sur le VPS :
-`n_gpu_layers = 0` (tout CPU), contexte plus large possible grâce aux 64 Go de RAM.**
+La calibration détermine le placement des poids et le contexte utilisable, en tenant
+compte du cache KV et des buffers. Sans GPU, utiliser l'exécution CPU et calibrer
+le contexte selon la RAM disponible.
 
 ## 8. Critères de succès (mesurables)
 
-- [ ] `curl` vers `/v1/chat/completions` répond correctement, **wifi coupé** (laptop).
-- [ ] **≥ ~15-20 tok/s** sur le 7B en GPU (assez fluide pour de l'interactif).
+- [ ] `curl` vers `/v1/chat/completions` répond correctement, **réseau coupé**.
+- [ ] Débit et délai avant le premier token mesurés pour le modèle choisi.
 - [ ] Une requête **GBNF** renvoie un JSON **garanti valide** (parse OK 10/10).
 - [ ] **Relance en une commande** : `uv run runtime/serve.py`.
 - [ ] `serve.py` **auto-détecte** le hardware et logue le profil retenu (GPU → `n_gpu_layers`
       estimé ; CPU → `threads`) sans intervention.
 - [ ] Le **même dépôt**, sans aucune édition, démarre **de façon optimale** sur une 2ᵉ machine
-      (cible : VPS CPU → bascule CPU automatique).
+      (inclure une installation sans GPU pour vérifier le repli CPU).
 - [ ] `benchmark.py` produit un rapport reproductible (tok/s, TTFT, validité JSON).
 - [ ] **ADR + guides d'install committés.**
 
@@ -180,13 +172,13 @@ le cache KV, reste sur CPU. Le benchmark détermine le contexte max qui tient. *
 - **Mémoire & gestion fine du contexte** → relève de **B/C** (noté ici pour ne pas l'oublier ;
   ce n'est *pas* une responsabilité du runtime A).
 - **Fine-tuning / entraînement** de modèles.
-- Support d'OS au-delà de Windows (laptop) et Linux (VPS).
+- Support d'OS au-delà de Windows et Linux.
 
 ## 11. Risques & points ouverts
 
-- **Vitesse CPU sur VPS** : sans GPU, un 7B en CPU peut être lent (quelques tok/s). Acceptable pour
+- **Vitesse en exécution CPU** : sans GPU, un 7B en CPU peut être lent (quelques tok/s). Acceptable pour
   A (objectif = squelette reproductible) ; à réévaluer pour B. Un MoE (DeepSeek-Coder-V2-Lite) ou
-  un modèle plus petit pourrait être préférable côté VPS.
+  un modèle plus petit pourrait être préférable sans GPU.
 - **Build `llama-server`** : disponibilité d'un binaire CUDA prébuildé adapté (sinon compilation).
 - **Épinglage GGUF** : enregistrer repo + nom de fichier + quant exacts (et idéalement un hash)
   pour une vraie reproductibilité.

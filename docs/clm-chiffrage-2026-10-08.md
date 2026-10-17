@@ -10,8 +10,11 @@ Loom, avant de bâtir un mode CLM dans Loom ?
 
 ## Protocole
 
-- Binaire : `C:/tools/llama-loom-b11507/llama-server.exe` (master c811cb8f0, PR #26004 fusionnée).
-- Modèle : ornith-1.5-35b-a3b Q8_0 (hybride récurrent, `--cpu-moe`, RTX 2060, flags de Loom via llama-swap).
+Les temps ci-dessous décrivent cette expérience. Ils doivent être mesurés à nouveau
+pour évaluer les performances d'une autre installation.
+
+- Binaire : `llama-server`, build b11507 (master c811cb8f0, PR #26004 fusionnée).
+- Modèle : ornith-1.5-35b-a3b Q8_0 (hybride récurrent, `--cpu-moe`, backend CUDA, flags de Loom via llama-swap).
 - Payload : une VRAIE requête Loom capturée (`LOOM_DUMP_REQUESTS`, hook ajouté dans `loom/agent/calltrace.py`)
   au cours d'une session à outils : 43 messages, 19 résultats d'outils, 27 schémas d'outils, system prompt de
   17,8k caractères, 22 311 tokens au total. Préfixe stable (system + schémas) : 10 374 tokens.
@@ -51,13 +54,13 @@ tokens à refaire. Passer `checkpoint_min_step` de 8 192 à 2 048 n'a rien chang
 
 `--cache-reuse` (réutilisation par décalage de KV après une divergence) n'aide pas non plus : il est désactivé
 par le serveur quand un mmproj est chargé (ornith, qwen) et sur les contextes qui ne savent pas décaler
-(SWA et hybrides : gemma4, ornith, qwen). Sur le parc de Loom, une édition au milieu = re-prefill de tout ce
+(SWA et hybrides : gemma4, ornith, qwen). Dans les essais rapportés ici, une édition au milieu = re-prefill de tout ce
 qui suit le checkpoint précédent, environ une minute par édition à 22k de contexte.
 
 ## Conséquences pour un mode CLM dans Loom
 
 - Les éditions proposées par le papier (vider de vieux résultats, réécrire un tableau de bord en place)
-  tombent presque toutes « au milieu » d'une boucle d'outils. Chez nous, chacune coûte ~1 min sur ornith.
+  tombent presque toutes « au milieu » d'une boucle d'outils. Dans ces essais, chacune coûte ~1 min sur ornith.
   Le papier compte 1,4 à 2,6 éditions par tâche : 1 à 3 minutes par tâche longue.
 - Deux éditions restent bon marché : à la fin du contexte (après le dernier résultat d'outil) et au début
   d'un tour utilisateur (un checkpoint y existe toujours). Une stratégie « compacter au début du tour,
