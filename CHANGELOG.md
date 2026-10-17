@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-17 : fetch_url passe les anti-bots courants et explique les refus
+
+- 7 échecs sur 10 de `fetch_url` dans les sessions étaient des 403 anti-bot : par défaut,
+  httpx se présentait en Chrome 125 avec l'empreinte TLS d'un client Python. Le modèle
+  ne relançait pas toujours avec `impersonate`.
+- Désormais : User-Agent honnête `Loom/1.0 (local assistant)` (sur 24 sites mesurés, il
+  ne perd aucun site que le faux Chrome passait, et gagne songlyrics et amazon), repli
+  automatique sur l'empreinte navigateur curl_cffi après un 403 (discogs, allmusic,
+  medium, leboncoin), en-têtes de curl_cffi laissés intacts.
+- 401 (captcha ou authentification), 403 persistant et 429 disent au modèle de chercher
+  une autre source au lieu de relancer la même URL.
+
 ## 2026-10-17 : /add-model ne recommande plus un modèle dense qui déborde de la VRAM
 
 - Un dense relit tous ses poids à chaque token : ce qui déborde passe par le CPU. L'IQ2_XXS

@@ -110,3 +110,58 @@ def test_categorize_ip_nat64_depaquette_ipv4_embarquee():
     assert categorize_ip(ip("64:ff9b::7f00:1")) == "loopback"  # 127.0.0.1
     assert categorize_ip(ip("64:ff9b::c0a8:101")) == "private"  # 192.168.1.1
     assert categorize_ip(ip("64:ff9b::a9fe:a9fe")) == "link-local"  # 169.254.169.254
+
+
+# Vécu 2026-10-17 : 7 échecs sur 10 de fetch_url étaient des 403 anti-bot (discogs,
+# allmusic, songlyrics). Mesure sur 24 sites : l'empreinte TLS de httpx déguisée en
+# Chrome passe moins que curl_cffi (allmusic, discogs, medium, leboncoin, seloger) et
+# qu'un User-Agent honnête (songlyrics, amazon). Le modèle ne relançait pas toujours
+# avec impersonate : le repli est désormais automatique.
+def _pages(monkeypatch, by_client):
+    calls = []
+
+    def fake_get(url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None):
+        calls.append(impersonate)
+        return by_client[impersonate]
+
+    monkeypatch.setattr(web, "_resolve_validated", lambda u: (None, "1.2.3.4"))
+    monkeypatch.setattr(web, "_http_get", fake_get)
+    return calls
+
+
+def test_403_repli_automatique_sur_l_empreinte_navigateur(monkeypatch):
+    calls = _pages(monkeypatch, {None: _Resp(403), "chrome": _Resp(200, "<html><body><p>discographie complète</p></body></html>")})
+    monkeypatch.setattr(web, "_extract", lambda html: "discographie complète")
+    out = web.make_fetch_url(web.WebSearchConfig()).run({"url": "https://www.discogs.com/artist/1"})
+    assert "discographie complète" in out and calls == [None, "chrome"]
+
+
+def test_403_des_deux_clients_message_sans_conseil_inutile(monkeypatch):
+    _pages(monkeypatch, {None: _Resp(403), "chrome": _Resp(403)})
+    with pytest.raises(ToolError) as e:
+        web.make_fetch_url(web.WebSearchConfig()).run({"url": "https://www.fnac.com/"})
+    assert "navigateur" in str(e.value) and "réessaye" not in str(e.value)
+
+
+def test_401_captcha_explique_sans_relance(monkeypatch):
+    calls = _pages(monkeypatch, {None: _Resp(401, headers={"www-authenticate": "reCaptcha"})})
+    with pytest.raises(ToolError) as e:
+        web.make_fetch_url(web.WebSearchConfig()).run({"url": "https://www.1001tracklists.com/a"})
+    assert "captcha" in str(e.value).lower() and calls == [None]
+
+
+def test_429_dit_que_le_site_limite(monkeypatch):
+    _pages(monkeypatch, {None: _Resp(429)})
+    with pytest.raises(ToolError) as e:
+        web.make_fetch_url(web.WebSearchConfig()).run({"url": "https://en.wikipedia.org/wiki/X"})
+    assert "limite" in str(e.value)
+
+
+def test_user_agent_honnete_par_defaut_et_natif_en_impersonate(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(web, "_impersonate_get", lambda url, pin, headers, t, imp: seen.setdefault("imp", headers))
+    monkeypatch.setattr(web, "_httpx_get", lambda url, params=None, headers=None, timeout=None, pin_ip=None: seen.setdefault("httpx", web._with_ua(headers)))
+    web._http_get("https://x/y", impersonate="chrome")
+    web._http_get("https://x/y")
+    assert "User-Agent" not in (seen["imp"] or {})  # curl_cffi garde ses en-têtes Chrome
+    assert seen["httpx"]["User-Agent"].startswith("Loom/")
