@@ -182,11 +182,12 @@ def test_relance_idempotente(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    def boom():
-        raise AssertionError("aucun réseau ne doit être touché en relance")
+    def offline():
+        raise RuntimeError("GitHub injoignable (ConnectError)")
 
+    # Relance hors ligne : la vérification de mise à jour échoue sans bloquer.
     con, printed = _console(assume_yes=True)
-    code = run(con, _deps(tmp_path, fetch_release=boom))
+    code = run(con, _deps(tmp_path, fetch_release=offline))
     assert code == 0
     out = "\n".join(printed)
     assert "rien à faire" in out and "deja-la" in out
@@ -2299,3 +2300,112 @@ def test_step_tooling_installe_playwright(tmp_path):
     out = "\n".join(printed)
     assert "[ok] navigateur Playwright installé" in out
     assert report.outcomes[-1].status == "fait"
+
+
+# -- mise à jour du binaire llama.cpp déjà configuré ------------------------------
+def _bin_present(tmp_path):
+    exe = tmp_path / "old" / "llama-server.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"")
+    return exe, {"server": {"bin": str(exe)}}
+
+
+def _versions(old_exe, old_build):
+    """--version : l'ancien binaire en b<old_build>, tout autre (le neuf) en b5321."""
+
+    def verify(p):
+        if p is None:
+            return None
+        build = old_build if p == old_exe else 5321
+        return f"version: 0.6.0-dev (build {build}, commit abc)"
+
+    return verify
+
+
+def test_maj_proposee_installe_a_cote_et_garde_l_ancien(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+    exe, raw = _bin_present(tmp_path)
+    con, printed = _console(answers=["o"])
+    report = cli.SetupReport()
+    deps = _deps(tmp_path, verify_binary=_versions(exe, 5000))
+    cli.step_binary(con, report, deps, _PLAT, _HW, raw)
+    out = "\n".join(printed)
+    assert "b5000" in out and "b5321" in out and "321 builds" in out
+    assert "Ancien binaire conservé" in out and str(exe) in out
+    local = tomllib.loads(
+        (tmp_path / "config" / "local.toml").read_text(encoding="utf-8")
+    )
+    assert local["server"]["bin"].endswith("b5321/llama-server.exe")
+    assert exe.is_file()  # l'ancien n'est pas touché
+    assert report.outcomes[-1].status == "fait"
+
+
+def test_maj_refusee_ne_touche_rien(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+    exe, raw = _bin_present(tmp_path)
+    con, printed = _console(answers=["n"])
+    cli.step_binary(
+        con,
+        cli.SetupReport(),
+        _deps(tmp_path, verify_binary=_versions(exe, 5000)),
+        _PLAT,
+        _HW,
+        raw,
+    )
+    assert not (tmp_path / "config" / "local.toml").exists()
+
+
+def test_binaire_a_jour_rien_a_faire(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+    exe, raw = _bin_present(tmp_path)
+    con, printed = _console()
+    report = cli.SetupReport()
+    cli.step_binary(
+        con,
+        report,
+        _deps(tmp_path, verify_binary=_versions(exe, 5321)),
+        _PLAT,
+        _HW,
+        raw,
+    )
+    out = "\n".join(printed)
+    assert "à jour" in out and "rien à faire" in out
+    assert report.outcomes[-1].status == "ok"
+    assert not (tmp_path / "config" / "local.toml").exists()
+
+
+def test_maj_hors_ligne_non_bloquante(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+    exe, raw = _bin_present(tmp_path)
+
+    def offline():
+        raise RuntimeError("GitHub injoignable (ConnectError)")
+
+    con, printed = _console()
+    report = cli.SetupReport()
+    cli.step_binary(
+        con,
+        report,
+        _deps(tmp_path, fetch_release=offline, verify_binary=_versions(exe, 5000)),
+        _PLAT,
+        _HW,
+        raw,
+    )
+    out = "\n".join(printed)
+    assert "rien à faire" in out and "non vérifiée" in out
+    assert report.outcomes[-1].status == "ok"
+
+
+def test_build_maison_pas_de_maj_officielle(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+    exe, raw = _bin_present(tmp_path)
+    (exe.parent / "BUILD.txt").write_text("upstream_build=5000\n", encoding="utf-8")
+
+    def boom():
+        raise AssertionError("un build maison ne doit pas déclencher de téléchargement")
+
+    con, printed = _console()
+    cli.step_binary(
+        con, cli.SetupReport(), _deps(tmp_path, fetch_release=boom), _PLAT, _HW, raw
+    )
+    assert "build maison" in "\n".join(printed)

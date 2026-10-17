@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-17 : loom-setup propose la mise à jour de llama.cpp
+
+- `loom-setup` sortait dès que le binaire configuré existait (« rien à faire ») : il ne
+  proposait jamais de mise à jour, alors que le bandeau de l'UI recommandait justement
+  `uv run loom-setup`. Il compare maintenant la build installée à celle de la dernière
+  release stable de llama.cpp et propose la nouvelle, installée À CÔTÉ dans
+  `var/runtime/llama/<tag>/` (l'ancien binaire reste, chemin affiché pour revenir).
+  Hors ligne : non bloquant. Build maison (`BUILD.txt`) : renvoyé vers la recompilation.
+- Bandeau de veille : même source que le setup (release stable, plus le dernier nightly
+  qui sort plusieurs fois par jour) ; ce qu'il annonce est ce que le setup installe.
+  « Plus besoin de recompiler » n'apparaît plus que pour une sortie de build maison.
+
 ## 2026-10-11 : règle de choix des modèles révisée (ternaire admis)
 
 - La règle « seulement MoE 24B+ avec experts en RAM » (2026-06-09) devient : **critère = octets

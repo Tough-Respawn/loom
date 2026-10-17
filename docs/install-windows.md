@@ -18,6 +18,13 @@ et écrit les meilleurs réglages. Chaque action est confirmée avant d'être
 faite ; bilan dans `var/logs/setup.log`. Relançable : ne refait que ce qui
 manque (bench re-mesurable en supprimant la table `[bench]` de local.toml).
 
+**Mettre à jour llama.cpp** : relancer `uv run loom-setup`. Si la dernière release
+stable de llama.cpp désigne une build plus récente que le binaire configuré, le setup
+la propose, l'installe à côté dans `var/runtime/llama/<tag>/` et repointe `[server] bin` ;
+l'ancien binaire reste en place (revenir = remettre son chemin dans `[server] bin`).
+Le bandeau de l'UI suit la même release et affiche cette commande. Un build maison
+(`BUILD.txt` à côté du binaire) se met à jour en recompilant (`[server] rebuild_hint`).
+
 ## À la main (repli)
 
 1. Récupérer la release Windows CUDA de llama.cpp (`...-bin-win-cuda-x64.zip`

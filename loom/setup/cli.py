@@ -14,6 +14,7 @@ récapitule. Relançable : ne refait que ce qui manque."""
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import threading
 import time
@@ -22,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 
 from loom.runtime.hardware import detect_hardware, ram_available_mb, top_ram_processes
+from loom.runtime.llama_update import parse_build
 from loom.runtime.model_install import (
     derive_model_id,
     finalize_model_toml,
@@ -313,8 +315,7 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
     con.say("[2/4] Binaire llama-server")
     present, bin_name = server_bin_status(raw_cfg)
     if present:
-        con.say(f"  Trouvé : {bin_name} → rien à faire.")
-        report.add("binaire", "ok", f"déjà en place ({bin_name})")
+        _propose_update(con, report, deps, plat, hw, bin_name)
         return
 
     con.say(
@@ -338,7 +339,56 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
         con.say(f"  [échec] {exc}")
         report.add("binaire", "echec", str(exc))
         return
+    _install_release(con, report, deps, plat, hw, release)
 
+
+def _propose_update(con: Console, report: SetupReport, deps: Deps, plat, hw, bin_name):
+    """Binaire déjà configuré : compare sa build à celle de la dernière release stable de
+    llama.cpp (même source que le bandeau de veille) et propose la nouvelle, installée À
+    CÔTÉ dans var/runtime/llama/<tag> ; l'ancien reste, revenir = remettre son chemin dans
+    [server] bin. Hors ligne : rien à faire, jamais bloquant. Un build maison (BUILD.txt
+    écrit par le script de recompilation) se met à jour en recompilant, pas ici."""
+    current_bin = resolve_bin(bin_name)
+    if current_bin is not None and (current_bin.parent / "BUILD.txt").is_file():
+        con.say(
+            f"  Trouvé : {bin_name} (build maison) → rien à faire ici, mise à jour "
+            "par recompilation ([server] rebuild_hint)."
+        )
+        report.add("binaire", "ok", f"build maison ({bin_name})")
+        return
+    current = parse_build(deps.verify_binary(current_bin)) if current_bin else None
+    try:
+        release = deps.fetch_release()
+    except RuntimeError as exc:
+        why = str(exc).splitlines()[0]
+        con.say(
+            f"  Trouvé : {bin_name} → rien à faire (mise à jour non vérifiée : {why})"
+        )
+        report.add("binaire", "ok", f"déjà en place ({bin_name}), MAJ non vérifiée")
+        return
+    tag = release.get("tag_name") or ""
+    latest = int(tag[1:]) if re.fullmatch(r"b\d+", tag) else None
+    if current is None or latest is None or latest <= current:
+        label = f"b{current}" if current is not None else "build illisible"
+        con.say(f"  Trouvé : {bin_name} ({label}) → à jour, rien à faire.")
+        report.add("binaire", "ok", f"déjà en place ({bin_name})")
+        return
+    con.say(
+        f"  Trouvé : {bin_name} (b{current}). Mise à jour disponible : llama.cpp "
+        f"{tag} ({latest - current} builds d'écart)."
+    )
+    if _install_release(con, report, deps, plat, hw, release):
+        con.say(
+            f"  Ancien binaire conservé : {current_bin} (pour revenir : remets ce "
+            "chemin dans [server] bin de config/local.toml)."
+        )
+
+
+def _install_release(
+    con: Console, report: SetupReport, deps: Deps, plat, hw, release: dict
+) -> bool:
+    """Télécharge les assets de `release` adaptés à la machine dans RUNTIME_DIR/<tag>,
+    vérifie `--version` et écrit [server] bin dans config/local.toml. True si installé."""
     plan = select_assets(release, plat.key, local_arch(), hw.has_gpu)
     if plan is None:
         con.say("  Aucun asset précompilé ne convient à cette machine.")
@@ -350,7 +400,7 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
             'chemin dans config/local.toml : [server] bin = "…/llama-server".'
         )
         report.add("binaire", "manuel", "aucun asset compatible — guidage donné")
-        return
+        return False
 
     con.say(
         f"  Proposition : release {plan.tag} de llama.cpp (ggml-org), {plan.reason} :"
@@ -362,7 +412,7 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
     if not con.confirm(f"Télécharger et installer ({plan.total_mb} Mo) ?"):
         con.say("  [passé] Ignoré — tu peux relancer loom-setup plus tard.")
         report.add("binaire", "ignore", "téléchargement refusé")
-        return
+        return False
 
     def _cb(name, done_mb, total_mb):
         con.progress(f"{name} : {done_mb}/{total_mb or '?'} Mo")
@@ -373,7 +423,7 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
         con.progress_end()
         con.say(f"  [échec] Téléchargement/extraction : {exc}")
         report.add("binaire", "echec", f"téléchargement : {exc}")
-        return
+        return False
     con.progress_end()
 
     binary = deps.find_llama_server(extracted)
@@ -384,13 +434,14 @@ def step_binary(con: Console, report: SetupReport, deps: Deps, plat, hw, raw_cfg
             "laissé intact. Vérifie l'archive ou installe à la main."
         )
         report.add("binaire", "echec", "binaire extrait mais --version muet")
-        return
+        return False
     set_server_bin(PERSONAL_CONFIG_PATH, binary)
     con.say(f"  Vérification --version : OK ({version})")
     con.say(f"  [ok] config/local.toml : [server] bin = {binary}")
     report.add(
         "binaire", "fait", f"installé ({plan.tag}, {plan.backend}) → config/local.toml"
     )
+    return True
 
 
 def _refresh_gpu(con: Console, deps: Deps, hw, raw_cfg):

@@ -1,12 +1,13 @@
-"""Veille des mises à jour llama.cpp : compare la build du binaire configuré au dernier
-build nocturne officiel et suit l'état des PR dont dépend le binaire maison.
+"""Veille des mises à jour llama.cpp : compare la build du binaire configuré à la build
+désignée par la dernière release stable de llama.cpp (celle que `loom-setup` installe) et
+suit l'état des PR dont dépend le binaire maison.
 
 Rien n'est jamais installé : le résultat alimente un bandeau. Tant qu'une PR suivie est
 ouverte, une mise à jour veut dire RECOMPILER (commande `[server] rebuild_hint`) ; quand
 toutes sont mergées, le binaire officiel suffit (`uv run loom-setup`).
 
-Coût réseau : 1 + len(track_prs) requêtes GitHub anonymes par jour (quota 60/h), résultat
-mis en cache. Hors ligne : aucun bandeau, jamais d'exception."""
+Coût réseau : 1 à 3 + len(track_prs) requêtes GitHub anonymes par jour (quota 60/h),
+résultat mis en cache. Hors ligne : aucun bandeau, jamais d'exception."""
 
 from __future__ import annotations
 
@@ -15,9 +16,6 @@ import re
 import time
 from pathlib import Path
 
-RELEASES_LIST_URL = (
-    "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10"
-)
 PR_URL = "https://api.github.com/repos/ggml-org/llama.cpp/pulls/{n}"
 TTL_S = 24 * 3600
 _HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "loom-update-check"}
@@ -51,20 +49,18 @@ def binary_build(server_bin: str) -> int | None:
     return parse_build(llama_release.verify_binary(server_bin))
 
 
-def latest_nightly(client) -> dict | None:
-    """Dernier build `bNNNN` publié (les versions `v0.x` n'ont pas de binaire)."""
-    r = client.get(RELEASES_LIST_URL, headers=_HEADERS, follow_redirects=True)
-    if r.status_code != 200:
-        raise RuntimeError(f"GitHub releases : HTTP {r.status_code}")
-    for rel in r.json():
-        tag = rel.get("tag_name") or ""
-        if re.fullmatch(r"b\d+", tag):
-            return {
-                "tag": tag,
-                "build": int(tag[1:]),
-                "published_at": rel.get("published_at"),
-            }
-    return None
+def latest_release(client) -> dict | None:
+    """Build `bNNNN` désignée par la dernière release stable de llama.cpp : la MÊME source
+    que `loom-setup`, donc le bandeau annonce exactement ce que le setup installe. Les
+    nightlies sortent plusieurs fois par jour (bandeau permanent, assets parfois encore en
+    cours d'envoi) ; la stable pointe une build complète. Lève RuntimeError hors ligne."""
+    from loom.setup import llama_release
+
+    rel = llama_release.fetch_latest_release(client)
+    tag = rel.get("tag_name") or ""
+    if not re.fullmatch(r"b\d+", tag):
+        return None
+    return {"tag": tag, "build": int(tag[1:]), "published_at": rel.get("published_at")}
 
 
 def pr_states(client, prs: list[int]) -> list[dict]:
@@ -108,8 +104,11 @@ def build_notice(
         parts.append(f"PR #{p['number']} mergée ({p['title']}).")
     if not still_open:
         kind, command = "official", "uv run loom-setup"
+        # « Plus besoin de recompiler » n'a de sens qu'en sortie de build maison.
         parts.append(
             "Le binaire officiel suffit désormais : plus besoin de recompiler."
+            if merged
+            else "Mise à jour : uv run loom-setup (installe à côté, l'ancien reste)."
         )
     elif newer:
         kind, command = "rebuild", rebuild_hint or ""
@@ -165,7 +164,7 @@ def check(
 
             client = httpx.Client(timeout=20)
         try:
-            res["latest"] = latest_nightly(client)
+            res["latest"] = latest_release(client)
             res["prs"] = pr_states(client, track_prs)
         except Exception as exc:  # noqa: BLE001 - hors ligne, quota : pas de bandeau
             res["error"] = f"{type(exc).__name__}: {exc}"[:200]
