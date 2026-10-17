@@ -54,8 +54,9 @@ def recommend_quant(
       1 bit d'un modèle classique ;
     - le plus gros quant d'au moins 4 bits par poids qui tient ENTIER en VRAM avec son
       contexte, pleine précision comprise ;
-    - sinon le plus gros dont la génération estimée atteint TARGET_TPS, à défaut MIN_TPS
-      (dense : les couches qui débordent sont lues en RAM ; MoE : experts en RAM) ;
+    - sinon, DENSE : le plus gros qui y tient entier, même sous 4 bits ; MoE : le plus
+      gros, experts en RAM, dont la génération estimée atteint TARGET_TPS, à défaut
+      MIN_TPS ;
     - sinon rien : le dépôt ne convient pas à cette machine (cf. suggest_alternatives).
     Chaque quant reçoit `ram_share` (part des octets lus par token venant de la RAM) et,
     s'il en lit, `tps` : une ESTIMATION physique (débits de VRAM_GBPS/RAM_GBPS), que le
@@ -95,14 +96,18 @@ def recommend_quant(
             ):
                 f["status"] = "degraded"
         usable = [f for f in eligible if f["status"] == "ok"]
-        in_vram = [
-            f for f in usable
-            if f["ram_share"] == 0 and (f["bpw"] is None or f["bpw"] >= DECENT_BPW)
-        ]  # fmt: skip
-        fast = [f for f in usable if f["ram_share"] == 0 or f["tps"] >= TARGET_TPS] or [
-            f for f in usable if f["tps"] >= MIN_TPS
-        ]  # fmt: skip
-        pick = max(in_vram or fast, key=lambda f: f["size_mb"], default=None)
+        whole = [f for f in usable if f["ram_share"] == 0]
+        decent = [f for f in whole if f["bpw"] is None or f["bpw"] >= DECENT_BPW]
+        if analysis["moe"]:
+            fast = [f for f in usable if (f["tps"] or 1e9) >= TARGET_TPS] or [
+                f for f in usable if (f["tps"] or 0) >= MIN_TPS
+            ]  # fmt: skip
+        else:
+            # Dense : tout est relu à chaque token, ce qui déborde passe par le CPU. Un
+            # dense qui ne tient pas en VRAM ne tourne pas (vécu 2026-10-17 : IQ2_XXS d'un
+            # 27B « recommandé » sur 6 Go) : seul ce qui y tient entier est proposé.
+            fast = whole
+        pick = max(decent or fast, key=lambda f: f["size_mb"], default=None)
     else:
         # Mémoire unifiée ou en-tête illisible : aucune vitesse estimable, donc pas de pari
         # sur la pleine précision (2 à 4 fois plus d'octets par token) hors de la VRAM.
@@ -128,6 +133,9 @@ MIN_TPS = 8.0  # vitesse de lecture confortable, même seuil que le verdict de l
 # le plus gros quant tombait toujours à la limite des 8 t/s, dans la marge d'erreur.
 TARGET_TPS = 12.0
 DECENT_BPW = 4.0  # à partir du Q4, la perte de qualité devient faible
+# Formats ternaires : précision native d'un modèle entraîné en ternaire (Bonsai), pas une
+# dégradation, malgré ~2 bits par poids.
+TERNARY = ("Q2_0", "TQ1_0", "TQ2_0")
 # ponytail: débits fixes, calés sur ornith Q8 (i7-10750H, DDR4-2933, RTX 2060 : 15,1 t/s
 # mesurés pour 1,02 Gio lus en RAM et 2,02 Gio en VRAM par token). Une autre machine
 # s'en écarte : les dériver d'une génération mesurée par /rebench quand elle sera stockée.
@@ -177,12 +185,14 @@ def family_stem(repo_id: str | None) -> str | None:
 
 def _hit_size(hit: dict) -> tuple[float, float | None]:
     """(paramètres, paramètres actifs si MoE) d'un résultat de search_family. Hugging Face
-    lit parfois un GGUF auxiliaire du repo (drafter, projecteur) : le nom fait alors foi."""
+    lit parfois un GGUF auxiliaire du repo (drafter DFlash ou MTP, projecteur) : le nom
+    fait alors foi (vécu 2026-10-17 : un « Qwen3.8-27B » annoncé à 1,9 B)."""
     name = hit["repo_id"].split("/")[-1]
     params = hit.get("params") or 0
-    if hit.get("arch") in (None, "", "clip", "dflash") or params < 5e8:
-        m = _SIZE_RE.search(name)
-        params = float(m.group(1)) * 1e9 if m else 0.0
+    m = _SIZE_RE.search(name)
+    named = float(m.group(1)) * 1e9 if m else 0.0
+    if hit.get("arch") in (None, "", "clip", "dflash") or params < max(5e8, named / 2):
+        params = named
     a = _ACTIVE_RE.search(name)
     return params, float(a.group(1)) * 1e9 if a else None
 

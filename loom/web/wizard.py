@@ -542,17 +542,13 @@ def _list_quants(repo, deps):
     alts = (annotated[0].get("alternatives") if annotated else None) or []
     if annotated and not any(f["recommended"] for f in annotated):
         lines.append(
-            "  (aucun quant recommandé ici : format non chargeable, trop gros, ou sous "
-            "8 t/s estimés sur cette machine)"
+            "  (aucun quant recommandé ici : format non chargeable, modèle dense qui ne "
+            "tient pas entier en VRAM, ou MoE sous 8 t/s estimés)"
         )
     if alts:
-        what = (
-            "plus rapides"
-            if any(f["recommended"] for f in annotated)
-            else "qui tourneraient"
-        )
         lines.append(
-            f"  Alternatives {what} ici (réponds par la lettre pour voir leurs quants) :"
+            "  Alternatives de la même famille qui tournent ici (réponds par la lettre "
+            "pour voir leurs quants) :"
         )
         for letter, a in zip("abc", alts):
             p = a["pick"]
