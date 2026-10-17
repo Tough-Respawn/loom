@@ -454,7 +454,7 @@ def test_aucun_quant_ne_convient_alternatives_choisies_par_lettre():
     )
     r = wizard.step(r.state, "A", d)
     assert r.state["step"] == "l_quant" and r.state["repo"] == "e/Small-9B-GGUF"
-    assert "<- recommandé" in r.reply
+    assert "<- candidat estimé" in r.reply
 
 
 def test_local_parcours_complet():

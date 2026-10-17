@@ -20,6 +20,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from evals.recommendation_cases import cases as recommendation_cases
+
 
 @dataclass
 class EvalCase:
@@ -565,3 +567,6 @@ CASES: list[EvalCase] = [
         check=_check_search_recursive,
     ),
 ]
+
+
+CASES.extend(recommendation_cases(EvalCase))

@@ -28,7 +28,6 @@ from loom.runtime.llama_update import parse_build
 from loom.runtime.model_install import (
     derive_model_id,
     finalize_model_toml,
-    recommend_quant,
     start_download,
     write_model_toml,
 )
@@ -226,6 +225,7 @@ class Deps:
     find_llama_server: object = llama_release.find_llama_server
     verify_binary: object = llama_release.verify_binary
     probe_repo: object = probe_repo
+    recommend_repository: object = None
     search_models: object = None  # (query) -> [{repo_id,…}]
     start_download: object = start_download
     top_ram_processes: object = top_ram_processes
@@ -239,6 +239,9 @@ class Deps:
     ram_total_mb: object = None  # () -> int (RAM totale, Mo) ; défaut psutil
 
     def __post_init__(self):
+        if self.recommend_repository is None:
+            from loom.runtime.recommendation import recommend_repository
+            self.recommend_repository = recommend_repository
         if self.ram_total_mb is None:
             self.ram_total_mb = _real_ram_total_mb
         if self.fetch_release is None:
@@ -839,8 +842,21 @@ def step_model(con: Console, report: SetupReport, deps: Deps, hw, ram, raw_cfg):
         con.say(f"  [échec] Aucun GGUF exploitable dans {repo}.")
         report.add("modele", "ignore", f"aucun GGUF dans {repo}")
         return
-    annotated = recommend_quant(quants, hw.budget_vram_mb, ram)
-    rec = next((f for f in annotated if f["recommended"]), annotated[0])
+    _, server_bin = server_bin_status(raw_cfg)
+    server_settings = raw_cfg.get("server") or {}
+    annotated, _analysis = deps.recommend_repository(
+        repo, files, vram_mb=hw.budget_vram_mb, ram_mb=ram,
+        server_bin=server_bin,
+        context=max(16384, int(server_settings.get("context") or 16384)),
+        slots=int(server_settings.get("n_parallel") or 1),
+        gpu_tuning=hw.has_gpu, margin_mb=4096,
+        max_tokens=int((raw_cfg.get("chat") or {}).get("max_tokens", 8192)),
+    )
+    rec = next((f for f in annotated if f["recommended"]), None)
+    if rec is None:
+        con.say("Aucun fichier recommandé pour cette machine. Choisis un modèle plus petit.")
+        report.add("modele", "ignore", "aucun fichier compatible avec le budget")
+        return
     fit_txt = "tient dans le budget" if rec["fits"] else "NE TIENDRA PAS (trop gros)"
     if not con.confirm(
         f"Quant recommandé : {rec['filename']} ({rec['size_mb']} Mo) — {fit_txt}. "

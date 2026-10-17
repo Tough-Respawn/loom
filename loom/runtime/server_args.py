@@ -6,6 +6,11 @@ from __future__ import annotations
 import subprocess
 from functools import lru_cache
 
+# Shared with the memory estimator: keep launch and recommendation in agreement.
+GPU_KV_TYPE = "q8_0"
+GPU_KV_BYTES = 34 / 32
+MMPROJ_OFFLOAD = False
+
 
 @lru_cache(maxsize=16)
 def no_mmap_args(server_bin: str) -> list[str]:
@@ -115,9 +120,9 @@ def build_server_args(
             "-ub",
             str(ubatch or 512),
             "-ctk",
-            "q8_0",
+            GPU_KV_TYPE,
             "-ctv",
-            "q8_0",
+            GPU_KV_TYPE,
             "--prio",
             "2",
         ]
@@ -133,7 +138,9 @@ def build_server_args(
         if ubatch:
             args += ["-ub", str(ubatch)]
     if mmproj_path:
-        args += ["--mmproj", str(mmproj_path), "--no-mmproj-offload"]
+        args += ["--mmproj", str(mmproj_path)]
+        if not MMPROJ_OFFLOAD:
+            args.append("--no-mmproj-offload")
     # Les appels annexes écrasent le slot unique; sa sauvegarde évite un nouveau prefill.
     if slot_save_dir:
         args += ["--slot-save-path", str(slot_save_dir)]

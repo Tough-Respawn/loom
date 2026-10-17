@@ -18,7 +18,7 @@ def test_derive_model_id():
     assert derive_model_id("org/déjà!!") == "d-j"
 
 
-def test_recommend_quant_le_plus_gros_qui_tient():
+def test_sans_entete_pas_de_dense_debordant_en_ram():
     files = [
         {"filename": "q4.gguf", "size_mb": 10_000},
         {"filename": "q8.gguf", "size_mb": 20_000},
@@ -27,7 +27,7 @@ def test_recommend_quant_le_plus_gros_qui_tient():
     # budget = 6000 VRAM + 24000 RAM - 6144 marge = 23856 Mo -> q8 recommandé, f16 ne tient pas
     out = recommend_quant(files, vram_budget_mb=6000, ram_total_mb=24000)
     by = {f["filename"]: f for f in out}
-    assert by["q8.gguf"]["recommended"] is True
+    assert not any(f["recommended"] for f in out)
     assert {
         k: by["q4.gguf"][k] for k in ("filename", "size_mb", "fits", "recommended")
     } == dict(files[0], fits=True, recommended=False)

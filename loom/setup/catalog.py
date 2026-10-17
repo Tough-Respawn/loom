@@ -1,11 +1,7 @@
 # loom/setup/catalog.py
-"""Recommandation d'un premier modèle qui FIT la machine.
-
-Petit catalogue curaté (modèles du parc éprouvés sur l'offload MoE) filtré par
-le budget mémoire (VRAM libre + RAM − marge, même heuristique que
-recommend_quant). Le quant EXACT est ensuite choisi sur les tailles réelles du
-repo (list_gguf_files + recommend_quant). Un repo injoignable est simplement
-sauté : le catalogue dégrade proprement, offline compris."""
+"""Discovery seeds, filtered by memory before checking exact repository artifacts.
+Catalogue order is not a measured quality ranking; local task evaluations decide
+when comparable evidence is available."""
 
 from __future__ import annotations
 
@@ -13,38 +9,15 @@ import re
 
 from loom.runtime.hf_catalog import list_gguf_files
 
-# Shortlist par PALIER de budget, pensée pour qui ne sait pas quoi chercher :
-# des libellés lisibles, du plus gourmand au plus léger — chaque machine a
-# toujours au moins une proposition. `query` (pas de repo figé) : le repo réel
-# est résolu EN LIVE sur HF au moment du choix (top téléchargements qui fit),
-# donc la liste ne périme pas quand un repo est renommé/retiré. `min_budget_mb`
-# ≈ plus petit quant utilisable + marge : en dessous, l'entrée n'apparaît pas.
+# Search seeds, not a quality ranking. Exact artifacts are checked independently.
 CATALOG: list[dict] = [
-    {
-        "query": "qwen3.6 35b a3b instruct gguf",
-        "label": "Qwen3.6 35B A3B (MoE + vision) — machines larges, le parc",
-        "min_budget_mb": 18_000,
-    },
-    {
-        "query": "gemma4 26b a4b gguf",
-        "label": "Gemma4 26B A4B (MoE) — polyvalent",
-        "min_budget_mb": 14_000,
-    },
-    {
-        "query": "qwen3 8b instruct gguf",
-        "label": "~8B instruct — bon équilibre qualité/mémoire",
-        "min_budget_mb": 5_500,
-    },
-    {
-        "query": "qwen3 4b instruct gguf",
-        "label": "~4B instruct — machines modestes, tool-use correct",
-        "min_budget_mb": 2_600,
-    },
-    {
-        "query": "qwen2.5 1.5b instruct gguf",
-        "label": "~1.5B instruct — très léger (dépannage/découverte)",
-        "min_budget_mb": 900,
-    },
+    {"query": "qwen3.6 35b a3b instruct gguf", "label": "Qwen3.6 35B A3B (MoE + vision), à évaluer", "min_budget_mb": 18000},
+    {"query": "gemma4 26b a4b gguf", "label": "Gemma4 26B A4B (MoE), à évaluer", "min_budget_mb": 14000},
+    {"query": "Qwen2.5-1.5B-Instruct-GGUF", "label": "Qwen2.5 1.5B — petit budget, à évaluer", "min_budget_mb": 1000},
+    {"query": "Ternary-Bonsai-2-4B", "label": "Bonsai 2 4B — dense compact, à évaluer", "min_budget_mb": 1600},
+    {"query": "Qwen3.5-4B-GGUF", "label": "Qwen3.5 4B — dense, à évaluer", "min_budget_mb": 2600},
+    {"query": "Qwen3.5-9B-GGUF", "label": "Qwen3.5 9B — dense, à évaluer", "min_budget_mb": 5500},
+    {"query": "gemma-4-E4B", "label": "Gemma 4 E4B — à évaluer", "min_budget_mb": 5500},
 ]
 
 
@@ -55,11 +28,10 @@ def budget_mb(vram_free_mb: int, ram_mb: int, margin_mb: int = 4096) -> int:
 
 
 def fitting_entries(budget: int, catalog: list[dict] | None = None) -> list[dict]:
-    """Entrées du catalogue qui tiennent dans `budget`, plus gourmandes d'abord
-    (la 1re = la recommandation)."""
+    """Filtrer puis proposer les paliers de capacité décroissants, sans score de qualité."""
     cat = CATALOG if catalog is None else catalog
     fit = [e for e in cat if e["min_budget_mb"] <= budget]
-    return sorted(fit, key=lambda e: e["min_budget_mb"], reverse=True)
+    return sorted(fit, key=lambda entry: entry["min_budget_mb"], reverse=True)
 
 
 # URL HF (huggingface.co / hf.co, http(s) optionnel) -> les 2 premiers segments

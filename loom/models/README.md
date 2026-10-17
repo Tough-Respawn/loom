@@ -109,19 +109,21 @@ fixe le délai d'attente en secondes, à adapter à la durée de génération.
   Face, propose une quantification et télécharge les fichiers. Pour l'image et la
   vidéo, il demande un export ComfyUI au format API ; les poids restent à installer
   dans ComfyUI.
-  La recommandation lit à distance l'en-tête GGUF d'un quant du dépôt (dense ou MoE,
-  part des experts, cache KV par token, fenêtre glissante) et la liste des formats du
-  llama.cpp installé (`llama-quantize`). La VRAM passe d'abord : le plus gros quant d'au
-  moins 4 bits par poids qui y tient entier avec 16k de contexte, pleine précision
-  comprise. Sinon, pour un modèle dense, le plus gros qui y tient entier (un dense qui
-  déborde de la VRAM n'est jamais recommandé) ; pour un MoE, experts en RAM, le plus
-  gros dont la génération estimée atteint 12 t/s, à défaut 8 t/s.
-  Jamais un format inconnu de ce llama.cpp (quant d'un fork) ni la classe 1 bit. Chaque
-  quant affiche « tout en VRAM » ou sa part lue en RAM et sa vitesse ESTIMÉE (débits
-  fixes calés sur une RTX 2060 et de la DDR4, `/rebench` mesure ensuite la vraie).
-  Quand rien ne convient, que le recommandé reste sous 12 t/s ou sous 4 bits (hors
-  format ternaire natif), l'assistant cherche dans la même famille (nom du dépôt, puis
-  modèle de base) des dépôts qui tournent ici et les propose par lettre.
+  La recommandation vérifie les tailles des fichiers, les formats annoncés par le
+  moteur installé et les métadonnées GGUF. Le budget GPU suit le lancement de
+  llama.cpp : poids placés sur le GPU, cache `q8_0` au contexte configuré (au moins
+  16k), slots et état récurrent. Les embeddings d'entrée séparés et le projecteur
+  vision restent en RAM ; les embeddings partagés avec la sortie comptent en VRAM.
+  Un dense dont les couches débordent en RAM n'est pas proposé comme candidat GPU ;
+  sans métadonnées, le calcul reste conservateur.
+  Si aucun quant ne convient, les alternatives sont cherchées dans la même famille
+  et, si elle est déclarée, celle du modèle de base. Sans évaluation comparable,
+  les candidats sont ordonnés par nombre de paramètres décroissant : c'est une
+  heuristique de capacité, pas une preuve de qualité.
+  L'interface distingue **candidat estimé** et **évalué dans Loom**. Les évaluations
+  locales comparables classent d'abord la réussite des tâches, puis leur durée.
+  Sans mesure, la qualité reste explicitement inconnue. La vitesse d'offload est
+  une estimation à débits fixes ; `/rebench` mesure les performances réelles.
 - **Manuellement** : créer le dossier correspondant au type de modèle. Pour le
   texte local, copier uniquement `_TEMPLATE/model.toml` ; pour un distant, copier
   `_TEMPLATE/remote-model.toml` sous le nom `model.toml`. Pour l'image ou la vidéo,
@@ -146,3 +148,6 @@ En console :
 ```bash
 uv run python -m loom.agent.transcript var/sessions/<id>
 ```
+
+Pour mesurer la qualité agentique et alimenter la recommandation, voir le
+[harnais d'évaluation](../../evals/README.md).

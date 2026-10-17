@@ -179,6 +179,7 @@ def summarize(header: dict) -> dict:
         "kv_swa_per_token": kv_swa,
         "swa_window": window,
         "unknown_types": unknown,
+        "recurrent": any("ssm_" in t[0] for t in tensors),
     }
 
 
@@ -203,13 +204,14 @@ def label_supported(label: str, supported: set[str]) -> bool:
     if label in supported:
         return True
     base = re.sub(r"_(XXL|XL|L|M|S)$", "", label)  # Q6_K_M d'unsloth = types Q6_K
-    return base in supported
+    bases = {re.sub(r"_(XXL|XL|L|M|S)$", "", name) for name in supported}
+    return base in bases
 
 
 @functools.lru_cache(maxsize=4)
 def supported_formats(server_bin: str | None) -> frozenset[str] | None:
     """Formats que le llama.cpp INSTALLÉ connaît : ceux déclarés par son llama-quantize
-    (même dossier que llama-server), plus les noms de types ggml. None si introuvable :
+    (même dossier que llama-server). None si introuvable :
     on ne filtre alors pas (le test de chargement de fin d'installation reste)."""
     if not server_bin:
         return None
@@ -227,7 +229,9 @@ def supported_formats(server_bin: str | None) -> frozenset[str] | None:
         return None
     text = (out.stdout or "") + (out.stderr or "")
     names = set(re.findall(r"^\s*\d+\s+or\s+([A-Z0-9_]+)\s*:", text, re.MULTILINE))
-    return frozenset(names | set(GGML_TYPES.values())) if names else None
+    # Our enum describes GGUF files, not the installed executable's capabilities.
+    # Adding it here incorrectly advertised new types on old binaries.
+    return frozenset(names | FULL_PRECISION) if names else None
 
 
 def analyze_repo(
@@ -243,8 +247,9 @@ def analyze_repo(
     def score(f):
         label = quant_label(f["filename"]) or ""
         ok = not supported or not label or label_supported(label, supported)
-        return (len(f.get("part_files") or [f["filename"]]) > 1, not ok, f["size_mb"])
+        return (len(f.get("part_files") or [f["filename"]]) > 1, not ok, -f["size_mb"])
 
+    files = [f for f in files if not f.get("is_aux", f.get("is_mmproj", False))]
     if not files:
         return None
     pick = min(files, key=score)

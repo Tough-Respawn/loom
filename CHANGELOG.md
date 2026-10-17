@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-10-17 : recommandation alignée sur le lancement réel, évaluations locales
+
+- Recommandation partagée entre l'installation et le wizard : budget aligné sur
+  le lancement GPU (cache `q8_0`, projecteur vision en RAM, embeddings d'entrée
+  séparés en RAM), contexte configuré et slots. Les drafters auxiliaires sont
+  exclus ; un en-tête incompatible avec la taille annoncée n'est pas recommandé.
+- Les alternatives ne sont recherchées que si aucun quant ne convient, dans la
+  famille sélectionnée et celle du modèle de base déclaré. Le catalogue de première
+  installation conserve les MoE et propose d'abord les modèles adaptés au budget
+  le plus élevé. Sans évaluation comparable, le classement reste une estimation.
+- Les évaluations locales distinguent la réussite des tâches de la vitesse,
+  rattachent les résultats au fichier, au moteur et aux réglages exacts, et exigent
+  plusieurs répétitions. Les nouvelles tâches vérifient la complétude des sources
+  et la réponse face à un accès bloqué. Aucune campagne qualité n'est préremplie.
+
 ## 2026-10-17 : panneau « Gérer les modèles »
 
 - `/remove-model` ouvre « Gérer les modèles » sans envoyer de message au modèle ni

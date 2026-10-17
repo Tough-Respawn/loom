@@ -121,7 +121,10 @@ def _deps(tmp_path, **over):
         progress_cb(plan.assets[0]["name"], 1, 2)
         return dest
 
+    from loom.runtime.recommendation import recommend_repository
     base = dict(
+        recommend_repository=lambda repo, files, **kw: recommend_repository(
+            repo, files, analysis={}, supported=frozenset({"Q4_K_M", "F16"}), **kw),
         detect_platform=lambda: _PLAT,
         detect_hardware=lambda server_bin=None: _HW,
         ram_available_mb=lambda: 24_000,
@@ -245,7 +248,7 @@ def test_recherche_filtree_par_budget_petite_machine(monkeypatch, tmp_path):
     (tmp_path / "config" / "local.toml").write_text(
         f'[server]\nbin = "{str(exe).replace(chr(92), "/")}"\n', encoding="utf-8"
     )
-    con, printed = _console(answers=["n", "2", "qwen q4", "1", "o"])
+    con, printed = _console(answers=["n", "3", "qwen q4", "1", "o"])
     deps = _deps(
         tmp_path,
         detect_hardware=lambda server_bin=None: petite,
@@ -288,7 +291,7 @@ def test_liberer_ram_avant_le_choix(monkeypatch, tmp_path):
     out = "\n".join(printed)
     assert "chrome.exe" in out and "2310" in out  # les gourmands listés
     assert "budget : 7904 Mo" in out  # 12000 - 4096 après re-mesure
-    assert "~8B instruct" in out  # la shortlist a profité du nouveau budget
+    assert "Qwen3.5 9B" in out  # la shortlist a profité du nouveau budget
 
 
 def test_etape_bench_ecrit_les_reglages(monkeypatch, tmp_path):

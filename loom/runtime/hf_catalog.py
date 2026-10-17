@@ -15,7 +15,7 @@ _PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 # Fichiers qui ne sont pas un modèle à charger : projecteur vision, tête MTP, drafter
 # DFlash, matrice d'importance (vécu 2026-10-17 : imatrix_unsloth.gguf « recommandé »).
 _AUX_RE = re.compile(
-    r"(^|[/\-_.])(mmproj|mtp|imatrix|dflash\d*|draft)([\-_.]|$)", re.IGNORECASE
+    r"(^|[/\-_.])(mmproj|(?:fast)?mtp|imatrix|dflash\d*|dspark\d*|draft(?:er)?)([\-_.]|$)", re.IGNORECASE
 )
 
 
@@ -104,9 +104,11 @@ def list_gguf_files(repo_id: str, api=None) -> list[dict]:
             continue
         m = _PART_RE.search(fn)
         base = fn[: m.start()] if m else fn
-        g = groups.setdefault(base, {"part_files": [], "size": 0})
+        g = groups.setdefault(base, {"part_files": [], "size": 0, "sha256": None})
         g["part_files"].append(fn)
         g["size"] += int(s.size or 0)
+        lfs = getattr(s, "lfs", None)
+        g["sha256"] = (lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None))
     out = []
     for g in groups.values():
         parts = sorted(g["part_files"])
@@ -117,6 +119,7 @@ def list_gguf_files(repo_id: str, api=None) -> list[dict]:
                 "size_mb": max(1, g["size"] // (1024 * 1024)),
                 "is_mmproj": "mmproj" in parts[0].lower(),
                 "is_aux": bool(_AUX_RE.search(parts[0])),
+                "sha256": g["sha256"] if len(parts) == 1 else None,
             }
         )
     return sorted(out, key=lambda f: f["size_mb"])
