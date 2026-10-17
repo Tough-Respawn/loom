@@ -69,6 +69,27 @@ def _wizard_deps(S):
     vram_budget = hw.vram_total_mb if hw.vram_is_discrete else 0
     supported = gguf_remote.supported_formats(str(server_bin) if server_bin else None)
 
+    def alternatives(repo, analysis, faster_than):
+        """Même famille : celle du nom du repo, puis celle de son modèle de base (Bonsai 2
+        -> Qwen3.8). Deux recherches HF au plus, puis l'inventaire de quelques repos."""
+        found = []
+        try:
+            stem = model_install.family_stem(repo)
+            found = hf_catalog.search_family(stem) if stem else []
+            base = next((h["base"] for h in found if h["repo_id"] == repo), None)
+            base_stem = model_install.family_stem(base)
+            if base_stem and base_stem != stem:
+                found += hf_catalog.search_family(base_stem)
+        except hf_catalog.HfCatalogError:
+            pass  # hors ligne : la liste des quants reste, sans alternative
+        hits = list(
+            {h["repo_id"]: h for h in found}.values()
+        )  # ordre de 1re apparition
+        return model_install.suggest_alternatives(
+            repo, analysis, hits, hf_catalog.list_gguf_files, vram_budget, ram_total,
+            supported, faster_than=faster_than,
+        )  # fmt: skip
+
     def recommend(files, repo=None):
         analysis = gguf_remote.analyze_repo(repo, files, supported) if repo else None
         out = model_install.recommend_quant(
@@ -76,6 +97,12 @@ def _wizard_deps(S):
         )
         if analysis and out:
             out[0]["repo_note"] = _repo_note(analysis, vram_budget)
+        # Alternatives si rien ne convient, ou si le recommandé reste sous la vitesse visée
+        # (près du seuil, l'estimation est trop incertaine pour s'en contenter).
+        rec = next((f for f in out if f["recommended"]), None)
+        tps = rec and rec.get("tps")
+        if repo and out and (rec is None or (tps and tps < model_install.TARGET_TPS)):
+            out[0]["alternatives"] = alternatives(repo, analysis, tps or 0.0)
         return out
 
     return SimpleNamespace(

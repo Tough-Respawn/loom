@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-17 : /add-model met la VRAM d'abord, estime la vitesse et propose des alternatives
+
+- La règle précédente bannissait la pleine précision même quand elle tenait en VRAM, et
+  recommandait pour un dense qui déborde le quant le moins lu en RAM sans se demander
+  s'il tournait assez vite.
+- Désormais : le plus gros quant d'au moins 4 bits qui tient entier en VRAM avec 16k de
+  contexte (KV lu dans l'en-tête, couches à fenêtre glissante bornées), F16/BF16
+  compris ; sinon le plus gros estimé à 12 t/s, à défaut 8 t/s. Vitesse estimée par
+  quant (débits fixes calés sur ornith Q8 mesuré à 15,1 t/s, non vérifiée sur un dense).
+- Rien ne convient, ou recommandé sous 12 t/s : alternatives de la même famille
+  cherchées sur Hugging Face, choisies par lettre dans le wizard.
+
 ## 2026-10-17 : /add-model recommande selon le modèle et le llama.cpp installé
 
 - L'ancienne règle (« le plus gros quant qui tient en VRAM + RAM ») recommandait le F16 de

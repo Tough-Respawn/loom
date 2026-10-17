@@ -526,15 +526,12 @@ def _list_quants(repo, deps):
         notes = []
         if f.get("status") == "unsupported":
             notes.append("format d'un fork : ton llama.cpp ne le chargera pas")
-        elif f.get("status") == "full":
-            notes.append("pleine précision, déconseillé")
+        elif f.get("status") == "degraded":
+            notes.append("classe 1 bit : trop dégradé")
         if not f["fits"]:
             notes.append("ne tiendra pas")
         elif f.get("ram_share") is not None and f.get("status") == "ok":
-            share = f["ram_share"]
-            notes.append(
-                "tout en VRAM" if share == 0 else f"~{round(100 * share)} % lu en RAM"
-            )
+            notes.append(_placement_text(f))
         tag = f"  ({', '.join(notes)})" if notes else ""
         if f["recommended"]:
             tag += "  <- recommandé"
@@ -542,17 +539,39 @@ def _list_quants(repo, deps):
     note = annotated[0].get("repo_note") if annotated else None
     if note:
         lines.insert(0, f"  ({note})")
+    alts = (annotated[0].get("alternatives") if annotated else None) or []
     if annotated and not any(f["recommended"] for f in annotated):
         lines.append(
-            "  (aucun quant recommandé ici : format non chargeable, pleine précision "
-            "ou trop gros pour cette machine)"
+            "  (aucun quant recommandé ici : format non chargeable, trop gros, ou sous "
+            "8 t/s estimés sur cette machine)"
         )
+    if alts:
+        what = (
+            "plus rapides"
+            if any(f["recommended"] for f in annotated)
+            else "qui tourneraient"
+        )
+        lines.append(
+            f"  Alternatives {what} ici (réponds par la lettre pour voir leurs quants) :"
+        )
+        for letter, a in zip("abc", alts):
+            p = a["pick"]
+            kind = (
+                f"MoE {a['params'] / 1e9:.1f}B ({a['active'] / 1e9:g}B actifs)"
+                if a["active"]
+                else f"dense {a['params'] / 1e9:.1f}B"
+            )
+            lines.append(
+                f"  {letter}. {a['repo_id']} : {kind}, {p['label'] or p['filename']} "
+                f"{p['size_mb'] / 1024:.1f} Go, {_placement_text(p)}"
+            )
     mmprojs = sorted(f["filename"] for f in files if f["is_mmproj"])
     s = {
         "step": "l_quant",
         "repo": repo,
         "files": annotated,
         "mmproj": mmprojs[0] if mmprojs else None,
+        "alts": [a["repo_id"] for a in alts],
     }
     extra = f"\n(vision : « {s['mmproj']} » sera installé avec)" if s["mmproj"] else ""
     return WizardResult(
@@ -571,8 +590,19 @@ def _step_l_repo(state, t, deps):
     return _list_quants(hits[int(t) - 1]["repo_id"], deps)
 
 
+def _placement_text(f):
+    """« tout en VRAM », ou la part lue en RAM et la vitesse ESTIMÉE (pas mesurée)."""
+    if not f.get("ram_share"):
+        return "tout en VRAM"
+    share = max(1, round(100 * f["ram_share"]))
+    return f"~{share} % lu en RAM, ~{f['tps']:.1f} t/s estimés"
+
+
 def _step_l_quant(state, t, deps):
     files = state["files"]
+    alts = state.get("alts") or []
+    if len(t) == 1 and "a" <= t.lower() < chr(ord("a") + len(alts)):
+        return _list_quants(alts[ord(t.lower()) - ord("a")], deps)
     if not (t.isdigit() and 1 <= int(t) <= len(files)):
         return WizardResult(
             state, "Réponds par le numéro du quant choisi (ou /cancel)."

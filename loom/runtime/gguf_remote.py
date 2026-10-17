@@ -31,6 +31,8 @@ FULL_PRECISION = {"F32", "F16", "BF16", "F64"}
 _HF_URL = "https://huggingface.co/{repo}/resolve/main/{filename}"
 _CHUNK = 4 << 20
 _SCALAR = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+_INT_FMT = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 7: "B", 10: "Q", 11: "q"}
+_KV_RE = re.compile(r"^blk\.(\d+)\.attn_[kv]\.weight$")
 
 
 def _http_fetch(url: str):
@@ -80,9 +82,13 @@ class _Reader:
             if it in (8, 9):  # chaînes ou tableaux imbriqués : longueur variable
                 for _ in range(n):
                     self.value(it)
-            else:
-                self.read(_SCALAR[it] * n)
-            return None  # tableaux (tokenizer) : sautés, inutiles ici
+                return None
+            raw = self.read(_SCALAR[it] * n)
+            # Tableaux courts d'entiers (motif de fenêtre glissante par couche) gardés ;
+            # les longs (tokenizer) sont sautés.
+            if n <= 4096 and it in _INT_FMT:
+                return list(struct.unpack(f"<{n}{_INT_FMT[it]}", raw))
+            return None
         raw = self.read(_SCALAR[t])
         if t in (4, 5):
             return struct.unpack("<I" if t == 4 else "<i", raw)[0]
@@ -125,6 +131,9 @@ def read_header(fetch) -> dict:
         "arch": arch,
         "expert_count": meta.get(f"{arch}.expert_count") or 0,
         "expert_used": meta.get(f"{arch}.expert_used_count") or 0,
+        "n_embd": meta.get(f"{arch}.embedding_length") or 0,
+        "swa_window": meta.get(f"{arch}.attention.sliding_window") or 0,
+        "swa_pattern": meta.get(f"{arch}.attention.sliding_window_pattern"),
         "tensors": tensors,
     }
 
@@ -139,6 +148,26 @@ def summarize(header: dict) -> dict:
     has_output = any(t[0] == "output.weight" for t in tensors)
     emb = sum(t[3] for t in tensors if t[0] == "token_embd.weight") if has_output else 0
     unknown = sorted({t[1] for t in tensors if t[1] not in GGML_TYPES})
+    # Cache KV par token : les lignes de K et de V (n_elem / n_embd) des couches qui ont
+    # ces tenseurs (pas les récurrentes d'un hybride, ni celles qui partagent leur KV).
+    # Les couches à fenêtre glissante sont comptées à part, bornées à `swa_window`.
+    # 0 si l'en-tête ne permet pas de le dire (qkv fusionnés, MLA).
+    n_embd = header.get("n_embd") or 0
+    window, pattern = header.get("swa_window") or 0, header.get("swa_pattern")
+    kv_full = kv_swa = 0
+    for name, _ty, n_elem, _nb in tensors:
+        m = _KV_RE.match(name)
+        if not (n_embd and m):
+            continue
+        i = int(m.group(1))
+        if isinstance(pattern, list):  # Gemma 4 : un booléen par couche
+            swa = i < len(pattern) and bool(pattern[i])
+        else:  # Gemma 3 : une couche pleine toutes les `pattern`
+            swa = isinstance(pattern, int) and pattern > 0 and (i + 1) % pattern != 0
+        if window and swa:
+            kv_swa += n_elem // n_embd
+        else:
+            kv_full += n_elem // n_embd
     return {
         "moe": header["expert_count"] > 1 and exp > 0,
         "expert_count": header["expert_count"],
@@ -146,6 +175,9 @@ def summarize(header: dict) -> dict:
         "f_exp": exp / total,
         "f_emb": emb / total,
         "n_params": sum(t[2] for t in tensors),
+        "kv_per_token": kv_full,
+        "kv_swa_per_token": kv_swa,
+        "swa_window": window,
         "unknown_types": unknown,
     }
 
