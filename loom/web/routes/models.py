@@ -39,23 +39,49 @@ from loom.web.routes.model_admin import (
 from loom.web.routes.rebench import _REBENCH, _rebench_worker
 
 
+def _repo_note(analysis: dict, vram_mb: int) -> str:
+    """Une ligne sur ce qui gouverne la vitesse du modèle sur CETTE machine."""
+    if analysis["moe"]:
+        kind = (
+            f"MoE : {analysis['expert_used']} experts actifs sur "
+            f"{analysis['expert_count']}, seuls les actifs sont relus à chaque token"
+        )
+    else:
+        kind = "modèle dense : tous les poids sont relus à chaque token"
+    vram = f"{vram_mb / 1024:.1f} Go de VRAM" if vram_mb else "mémoire unifiée"
+    return f"{kind} ({vram})"
+
+
 def _wizard_deps(S):
     """Dépendances du wizard (INJECTÉES : la machine à états reste pure et testable).
     Point de patch des tests — garder la construction ici, jamais dans wizard.py."""
     from types import SimpleNamespace
 
-    from loom.runtime import hardware, hf_catalog
+    from loom.runtime import gguf_remote, hardware, hf_catalog
+    from loom.web.routes.model_admin import _configured_server_bin
 
-    hw = hardware.detect_hardware()
+    # Sans le binaire, la détection ne voit pas la VRAM totale (vécu 2026-10-17 : 0 Mo
+    # au lieu de 6 143 sur une RTX 2060, donc aucun quant jugé « en VRAM »).
+    server_bin = _configured_server_bin()
+    hw = hardware.detect_hardware(server_bin)
     # Compter la VRAM seulement si elle est discrète pour ne pas doubler la mémoire unifiée.
     ram_total = hardware.ram_total_mb()
     vram_budget = hw.vram_total_mb if hw.vram_is_discrete else 0
+    supported = gguf_remote.supported_formats(str(server_bin) if server_bin else None)
+
+    def recommend(files, repo=None):
+        analysis = gguf_remote.analyze_repo(repo, files, supported) if repo else None
+        out = model_install.recommend_quant(
+            files, vram_budget, ram_total, analysis=analysis, supported=supported
+        )
+        if analysis and out:
+            out[0]["repo_note"] = _repo_note(analysis, vram_budget)
+        return out
+
     return SimpleNamespace(
         search_models=hf_catalog.search_models,
         list_gguf_files=hf_catalog.list_gguf_files,
-        recommend=lambda files: model_install.recommend_quant(
-            files, vram_budget, ram_total
-        ),
+        recommend=recommend,
         derive_id=model_install.derive_model_id,
         existing_ids=set(S.models),
         list_remote_models=_list_remote_models,

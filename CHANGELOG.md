@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-10-17 : /add-model recommande selon le modèle et le llama.cpp installé
+
+- L'ancienne règle (« le plus gros quant qui tient en VRAM + RAM ») recommandait le F16 de
+  50 Go d'un dense 27B, comptait 0 Mo de VRAM sur une RTX 2060 (détection sans le
+  binaire) et pouvait proposer un format de fork que llama.cpp refuse.
+- Nouveau : en-tête GGUF lu à distance (`loom/runtime/gguf_remote.py`, ~11 Mio, ~3 s, un
+  seul par dépôt), formats déclarés par le `llama-quantize` installé, règle dense / MoE,
+  pleine précision et classe 1 bit écartées, part lue en RAM affichée par quant.
+- Le catalogue écarte aussi les fichiers auxiliaires `imatrix` et drafters `DFlash`.
+
 ## 2026-10-17 : informations personnelles retirées de la doc, des gabarits et des tests
 
 - Chemins de la machine de développement, noms de GPU et détails personnels remplacés par

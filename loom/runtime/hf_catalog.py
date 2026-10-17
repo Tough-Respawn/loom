@@ -12,7 +12,11 @@ from loom.utils import explain_network_error
 # llama-server charge la première partie; la taille affichée doit couvrir tout le modèle.
 _PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 # Exclure les projecteurs et têtes annexes des quantifications installables.
-_AUX_RE = re.compile(r"(^|[/\-_.])(mmproj|mtp)([\-_.]|$)", re.IGNORECASE)
+# Fichiers qui ne sont pas un modèle à charger : projecteur vision, tête MTP, drafter
+# DFlash, matrice d'importance (vécu 2026-10-17 : imatrix_unsloth.gguf « recommandé »).
+_AUX_RE = re.compile(
+    r"(^|[/\-_.])(mmproj|mtp|imatrix|dflash\d*|draft)([\-_.]|$)", re.IGNORECASE
+)
 
 
 class HfCatalogError(Exception):
