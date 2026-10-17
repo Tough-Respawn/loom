@@ -78,6 +78,8 @@ def test_list_gguf_marque_les_auxiliaires():
             _sib("m.Q4_K.gguf", 4900 * mb),  # vrai quant
             _sib("imatrix_unsloth.gguf", 1 * mb),  # matrice d'importance
             _sib("m-DFlash2-Q8_0.gguf", 1500 * mb),  # drafter spéculatif
+            _sib("Ternary-Bonsai-27B-dspark-Q4_1.gguf", 1856 * mb),
+            _sib("Ternary-Bonsai-27B-dspark-bf16.gguf", 7000 * mb),
             _sib("empty-model.gguf", mb),  # « mtp »/« mmproj » absents -> poids
         ]
     )
@@ -88,4 +90,6 @@ def test_list_gguf_marque_les_auxiliaires():
     assert by_name["m.Q4_K.gguf"]["is_aux"] is False
     assert by_name["imatrix_unsloth.gguf"]["is_aux"] is True
     assert by_name["m-DFlash2-Q8_0.gguf"]["is_aux"] is True
+    assert by_name["Ternary-Bonsai-27B-dspark-Q4_1.gguf"]["is_aux"] is True
+    assert by_name["Ternary-Bonsai-27B-dspark-bf16.gguf"]["is_aux"] is True
     assert by_name["empty-model.gguf"]["is_aux"] is False

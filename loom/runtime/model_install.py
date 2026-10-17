@@ -14,6 +14,7 @@ from pathlib import Path
 from loom.runtime import gguf_remote
 from loom.runtime.gguf_meta import read_gguf_meta
 from loom.runtime.models_fetch import ModelUnavailable, ensure_model
+from loom.runtime.server_args import GPU_KV_BYTES
 from loom.utils import atomic_write_text
 
 _STRIP_SUFFIX = re.compile(r"[-_.](gguf)$", re.IGNORECASE)
@@ -34,6 +35,10 @@ def recommend_quant(
     margin_mb: int = 6144,
     analysis: dict | None = None,
     supported=None,
+    context: int = 16384,
+    slots: int = 1,
+    cache_bytes: float = GPU_KV_BYTES,
+    extra_mb: int = 0,
 ) -> list[dict]:
     """Annote chaque quant : `fits` (tient dans le budget mémoire) et `recommended`.
 
@@ -66,7 +71,7 @@ def recommend_quant(
     for f in files:
         label = gguf_remote.quant_label(f["filename"])
         unsupported = (
-            supported and label and not gguf_remote.label_supported(label, supported)
+            supported is not None and label and not gguf_remote.label_supported(label, supported)
         ) or (
             analysis
             and analysis.get("file") == f["filename"]
@@ -75,12 +80,17 @@ def recommend_quant(
         out.append(
             dict(f, fits=f["size_mb"] <= budget, recommended=False, label=label,
                  status="unsupported" if unsupported else "ok", ram_share=None,
-                 bpw=None, tps=None)
+                 bpw=None, tps=None, full_gpu=False, evidence="estimated")
         )  # fmt: skip
     eligible = [f for f in out if f["fits"] and f["status"] == "ok"]
     if analysis and vram_budget_mb > 0:
-        gpu_mb = max(0, vram_budget_mb - vram_reserve_mb(analysis))
+        gpu_mb = max(0, vram_budget_mb - vram_reserve_mb(
+            analysis, context=context, slots=slots, cache_bytes=cache_bytes, extra_mb=extra_mb
+        ))
         for f in out:
+            # f_emb only counts a separate input embedding (host-resident).
+            # Tied input/output embeddings stay in the GPU footprint.
+            f["full_gpu"] = f["size_mb"] * (1 - analysis["f_emb"]) <= gpu_mb
             ram, vram = _reads_mb(f["size_mb"], analysis, gpu_mb)
             f["ram_share"] = ram / (ram + vram) if ram + vram else 0.0
             if ram:
@@ -91,12 +101,12 @@ def recommend_quant(
             # garde des tenseurs plus précis (UD-IQ1_M ≈ 2,0 bits effectifs). Les formats
             # ternaires (Q2_0, TQ1_0), conçus pour ces débits, restent admis.
             if f["status"] == "ok" and (
-                (f["bpw"] is not None and f["bpw"] < 2.0)
+                (f["bpw"] is not None and f["bpw"] < 2.0 and f["label"] not in TERNARY)
                 or (f["label"] or "").startswith(("IQ1", "Q1_"))
             ):
                 f["status"] = "degraded"
         usable = [f for f in eligible if f["status"] == "ok"]
-        whole = [f for f in usable if f["ram_share"] == 0]
+        whole = [f for f in usable if f["full_gpu"]]
         decent = [f for f in whole if f["bpw"] is None or f["bpw"] >= DECENT_BPW]
         if analysis["moe"]:
             fast = [f for f in usable if (f["tps"] or 1e9) >= TARGET_TPS] or [
@@ -113,12 +123,16 @@ def recommend_quant(
         # sur la pleine précision (2 à 4 fois plus d'octets par token) hors de la VRAM.
         in_vram = [
             f for f in eligible
-            if f["size_mb"] + VRAM_OVERHEAD_MB + KV_UNKNOWN_MB <= vram_budget_mb
+            if f["size_mb"] + vram_reserve_mb({}, context=context, slots=slots,
+                                              cache_bytes=cache_bytes, extra_mb=extra_mb) <= vram_budget_mb
         ]  # fmt: skip
         quant = [f for f in eligible if f["label"] not in gguf_remote.FULL_PRECISION]
         pick = max(
-            in_vram or quant or eligible, key=lambda f: f["size_mb"], default=None
+            in_vram if vram_budget_mb > 0 else quant or eligible,
+            key=lambda f: f["size_mb"], default=None
         )
+        for f in in_vram:
+            f["full_gpu"] = True
     if pick is not None:
         pick["recommended"] = True
     return out
@@ -136,33 +150,38 @@ DECENT_BPW = 4.0  # à partir du Q4, la perte de qualité devient faible
 # Formats ternaires : précision native d'un modèle entraîné en ternaire (Bonsai), pas une
 # dégradation, malgré ~2 bits par poids.
 TERNARY = ("Q2_0", "TQ1_0", "TQ2_0")
-# ponytail: débits fixes, calés sur ornith Q8 (i7-10750H, DDR4-2933, RTX 2060 : 15,1 t/s
-# mesurés pour 1,02 Gio lus en RAM et 2,02 Gio en VRAM par token). Une autre machine
-# s'en écarte : les dériver d'une génération mesurée par /rebench quand elle sera stockée.
+# Hypothèses de débit fixes : estimation d'offload seulement. La calibration
+# réelle doit être mesurée sur la machine cible avec /rebench.
 RAM_GBPS = 18.0
 VRAM_GBPS = 250.0
 
 
-def vram_reserve_mb(a: dict) -> float:
+def vram_reserve_mb(a: dict, *, context: int = RESERVE_CTX, slots: int = 1,
+                    cache_bytes: float = GPU_KV_BYTES, extra_mb: int = 0) -> float:
     """VRAM à laisser hors des poids : tampons + cache KV (q8_0, 1,0625 octet par
-    élément) de RESERVE_CTX tokens, les couches à fenêtre glissante bornées à leur
+    élément) au contexte demandé, les couches à fenêtre glissante bornées à leur
     fenêtre."""
     full, swa = a.get("kv_per_token") or 0, a.get("kv_swa_per_token") or 0
     if not (full or swa):
-        return VRAM_OVERHEAD_MB + KV_UNKNOWN_MB
-    elems = full * RESERVE_CTX + swa * min(RESERVE_CTX, a.get("swa_window") or 0)
-    return VRAM_OVERHEAD_MB + elems * 1.0625 / 2**20
+        kv = KV_UNKNOWN_MB * max(1, context / RESERVE_CTX) * max(1, slots)
+    else:
+        elems = full * context + swa * min(context, a.get("swa_window") or context)
+        kv = elems * cache_bytes * max(1, slots) / 2**20
+    # Recurrent state is separate from the attention cache. Reserve conservatively
+    # when remote metadata cannot size it; the installation probe must verify it.
+    recurrent = a.get("recurrent_mb", 256 if a.get("recurrent") else 0)
+    return VRAM_OVERHEAD_MB + kv + recurrent * max(1, slots) + extra_mb
 
 
 def _reads_mb(size_mb: int, a: dict, gpu_mb: float) -> tuple[float, float]:
     """(RAM, VRAM) en Mo lus par token pour un quant de `size_mb` aux proportions de
     l'en-tête `a`. Ce qui déborde de la VRAM est lu en RAM ; un MoE qui ne tient pas
     entier garde ses experts en RAM (--cpu-moe) et n'en relit que les actifs.
-    L'embedding d'entrée (une ligne par token) est négligé."""
+    L'embedding d'entrée séparé reste côté hôte ; un embedding lié est inclus."""
     exp = size_mb * a["f_exp"]
     common = size_mb - exp - size_mb * a["f_emb"]
     active = exp * a["expert_used"] / max(1, a["expert_count"])
-    if size_mb <= gpu_mb:
+    if size_mb * (1 - a["f_emb"]) <= gpu_mb:
         return 0.0, common + active
     vram = min(common, gpu_mb)
     return common - vram + active, vram
@@ -221,15 +240,16 @@ def suggest_alternatives(
     supported=None,
     limit: int = 3,
     faster_than: float = 0.0,
+    analyzer=None,
+    recommender=None,
 ) -> list[dict]:
-    """Repos de `hits` (search_family, par téléchargements décroissants) dont un quant
-    passe recommend_quant sur cette machine (tout en VRAM, ou estimé à plus de
-    `faster_than` t/s), les plus gros modèles d'abord.
+    """Évalue au plus huit dépôts distincts, puis classe les mesures comparables.
 
-    Même taille que le modèle analysé : même modèle chez un autre publieur, ses
-    proportions lues s'appliquent (un format chargeable, un quant plus petit). Sinon
-    elles sont supposées d'après le nombre de paramètres et le nom. Au plus 8 repos
-    inventoriés (en parallèle), un par taille (deux pour celle du modèle analysé)."""
+    Le recommandateur partagé analyse chaque dépôt indépendamment. Sans cette
+    dépendance, le repli utilise des proportions supposées et reste une estimation.
+    Les familles de même taille restent distinctes ; leur nombre de paramètres
+    ne constitue pas un classement de qualité.
+    """
     from concurrent.futures import ThreadPoolExecutor
 
     counts: dict = {}
@@ -242,7 +262,7 @@ def suggest_alternatives(
             abs(params - analysis["n_params"]) <= 0.05 * analysis["n_params"]
             and bool(active) == analysis["moe"]
         )
-        key = (round(params / 1e9), active)
+        key = (h.get("base") or family_stem(h["repo_id"]), round(params / 1e9), active)
         if counts.get(key, 0) >= (2 if same else 1):
             continue
         counts[key] = counts.get(key, 0) + 1
@@ -254,12 +274,19 @@ def suggest_alternatives(
     def evaluate(c):
         repo_id, params, active, a = c
         try:
-            files = [f for f in list_files(repo_id) if not f.get("is_aux")]
+            files = list_files(repo_id)
+            if not recommender:
+                files = [f for f in files if not f.get("is_aux", f.get("is_mmproj", False))]
         except Exception:  # noqa: BLE001 - un repo illisible n'est juste pas proposé
             return None
-        out = recommend_quant(
-            files, vram_budget_mb, ram_total_mb, analysis=a, supported=supported
-        )
+        if recommender:
+            out = recommender(repo_id, files)
+        else:
+            if analyzer:
+                a = analyzer(repo_id, files, supported)
+            out = recommend_quant(
+                files, vram_budget_mb, ram_total_mb, analysis=a, supported=supported
+            )
         pick = next((f for f in out if f["recommended"]), None)
         if pick and pick["tps"] is not None and pick["tps"] <= faster_than:
             return None
@@ -268,11 +295,13 @@ def suggest_alternatives(
             "params": params,
             "active": active,
             "pick": pick,
+            "quality": pick.get("quality"),
         }
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         found = [r for r in ex.map(evaluate, cands) if r]
-    return sorted(found, key=lambda r: -r["params"])[:limit]
+    from loom.runtime.model_evidence import rank_candidates
+    return rank_candidates(found)[:limit]
 
 
 def write_model_toml(

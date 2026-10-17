@@ -520,12 +520,15 @@ def _list_quants(repo, deps):
             {"step": "l_query"},
             f"[add-model] « {repo} » ne contient aucun GGUF de poids. Autre recherche ?",
         )
-    annotated = deps.recommend(weights, repo)
+    annotated = deps.recommend(files, repo)
+    annotated = [f for f in annotated if not f.get("is_aux", f.get("is_mmproj", False))]
     lines = []
     for i, f in enumerate(annotated):
         notes = []
         if f.get("status") == "unsupported":
-            notes.append("format d'un fork : ton llama.cpp ne le chargera pas")
+            notes.append("format non annoncé par le moteur installé")
+        elif f.get("status") == "mismatch":
+            notes.append("en-tête incohérent avec le modèle annoncé")
         elif f.get("status") == "degraded":
             notes.append("classe 1 bit : trop dégradé")
         if not f["fits"]:
@@ -534,7 +537,14 @@ def _list_quants(repo, deps):
             notes.append(_placement_text(f))
         tag = f"  ({', '.join(notes)})" if notes else ""
         if f["recommended"]:
-            tag += "  <- recommandé"
+            tag += "  <- évalué dans Loom" if f.get("evidence") == "evaluated" else "  <- candidat estimé"
+        quality = f.get("quality")
+        if quality:
+            tag += f" · tâches {quality['passed']}/{quality['total']}, médiane {quality['median_seconds']:.1f} s"
+        elif f.get("evidence"):
+            tag += " · qualité non mesurée"
+        if f.get("compatibility") == "unknown":
+            tag += " · compatibilité à vérifier"
         lines.append(f"  {i + 1}. {f['filename']}  {f['size_mb'] / 1024:.1f} Go{tag}")
     note = annotated[0].get("repo_note") if annotated else None
     if note:
@@ -547,7 +557,7 @@ def _list_quants(repo, deps):
         )
     if alts:
         lines.append(
-            "  Alternatives de la même famille qui tournent ici (réponds par la lettre "
+            "  Autres candidats à comparer sur cette machine (réponds par la lettre "
             "pour voir leurs quants) :"
         )
         for letter, a in zip("abc", alts):
@@ -588,8 +598,10 @@ def _step_l_repo(state, t, deps):
 
 def _placement_text(f):
     """« tout en VRAM », ou la part lue en RAM et la vitesse ESTIMÉE (pas mesurée)."""
-    if not f.get("ram_share"):
+    if f.get("full_gpu", f.get("ram_share") == 0):
         return "tout en VRAM"
+    if f.get("ram_share") is None or not f.get("tps"):
+        return "placement à vérifier"
     share = max(1, round(100 * f["ram_share"]))
     return f"~{share} % lu en RAM, ~{f['tps']:.1f} t/s estimés"
 

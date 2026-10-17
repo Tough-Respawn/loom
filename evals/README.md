@@ -39,7 +39,7 @@ uv run python -m evals.run_eval --runs 3
 uv run python -m evals.run_eval --runs 5 --variant new
 uv run python -m evals.run_eval --runs 3 --no-judge        # graders code seuls
 uv run python -m evals.run_eval --cases edit_block,html_counter
-uv run python -m evals.run_eval --model qwen3.6-35b-a3b-abliterated
+uv run python -m evals.run_eval --model <id-local>
 # A/B spécifique MCP : old sans serveur, new avec le fixture stdio hermétique
 uv run python -m evals.run_eval --runs 3 --no-judge --mcp-fixture
 ```
@@ -49,7 +49,7 @@ uv run python -m evals.run_eval --runs 3 --no-judge --mcp-fixture
 Tableau comparatif (runs réussis / total par cas, ancien vs nouveau) + **coût par cas**
 (tours modèle, appels outils, tokens in/out, durée, raison d'arrêt) : « ce cas passe,
 mais coûte 11 tours et 38 appels » se voit, pas seulement le pass/fail. Détail dans
-`evals/out/report.json` et un transcript Markdown par run sous `evals/out/<variante>/`.
+`evals/out/runs/<commit>_<date>/report.json` et les transcripts par variante dans ce même dossier.
 
 - **stop_reason** (event `done` de la boucle) : `natural`, `repeat_stop`,
   `loop_degenerate`, `max_iters`, `context_irreducible`, `output_overflow`,
@@ -81,3 +81,26 @@ chemins ne se testent pas en E2E, on ne force pas un modèle à produire un appe
 Dans `cases.py`, ajoute un `EvalCase(id, prompt, rubric, setup, check)`. `setup(ws)` sème
 le workspace temporaire ; `check(traj, ws)` renvoie `{nom: bool}` (préfixe `_` = check
 informatif non bloquant). Garde les cas **bénins** (pas de shell destructeur).
+
+## Alimenter la recommandation locale
+
+```bash
+uv run python -m evals.run_eval --variant new --runs 3 --no-judge --model <id-local> --publish-recommendation
+```
+
+Le serveur doit exécuter la configuration locale du modèle indiqué. Cette commande
+publie une campagne complète dans `var/model-evaluations/` : au moins trois répétitions
+par cas, fichier GGUF identifié par SHA-256, moteur et harnais identifiés, réglages
+et lien vers les transcripts conservés. Les GGUF découpés ne sont pas publiables.
+Les résultats filtrés (`--cases`) et les campagnes avec fixture MCP sont exclus.
+La recommandation ne reprend que les mesures du même fichier, moteur, machine,
+harnais, contexte et nombre de slots, datant de moins de 90 jours. Elle compare
+les mêmes cas, privilégie la borne basse du taux de réussite, puis la durée médiane.
+Le juge LLM n'entre pas dans ce score. Sans mesure correspondante, elle affiche
+« qualité non mesurée » ; `/rebench` seul mesure la vitesse, pas la réussite des tâches.
+
+`source_completeness` vérifie la livraison exhaustive de titres et de leurs sources.
+`source_blocked` vérifie qu'une erreur d'accès ne devient pas un abonnement inventé.
+Ces cas utilisent des fichiers locaux figés pour éviter la variabilité du Web.
+Ils font partie de la suite par défaut : les scores globaux antérieurs à leur ajout
+ne sont pas directement comparables. Relancer la même suite pour comparer deux modèles.

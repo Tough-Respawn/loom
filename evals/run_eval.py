@@ -269,7 +269,14 @@ def run_one(
                 traj.stop_reason = payload.get("reason") or ""
             elif kind == "tool_result":
                 # Reconstruire les arguments depuis `tool_result`, seul événement qui les expose.
-                args = {}
+                args = payload.get("in_full") or {}
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except ValueError:
+                        args = {}
+                if not isinstance(args, dict):
+                    args = {}
                 if payload.get("path") is not None:
                     args["path"] = payload["path"]
                 if payload.get("cmd") is not None:
@@ -280,6 +287,7 @@ def run_one(
                         "name": payload.get("name"),
                         "ok": payload.get("ok"),
                         "preview": str(payload.get("preview", ""))[:300],
+                        "output": payload.get("out_full", payload.get("detail", payload.get("preview", ""))),
                     }
                 )
     except Exception as e:  # un run qui plante = donnée, pas un crash du harnais
@@ -528,6 +536,12 @@ def _save_transcript(
     if traj.error:
         lines.append(f"\n## ERREUR\n{traj.error}")
     (d / f"{case_id}_run{k + 1}.md").write_text("\n".join(lines), encoding="utf-8")
+    (d / f"{case_id}_run{k + 1}.json").write_text(
+        json.dumps({"tool_calls": traj.tool_calls, "tool_results": traj.tool_results,
+                    "final": traj.final_text, "error": traj.error,
+                    "checks": checks, "model": model}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def report(all_results: dict, runs: int, run_dir: Path | None = None):
@@ -877,6 +891,8 @@ def self_test():
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--publish-recommendation", action="store_true",
+                    help="Enregistre une campagne complète (new, >=3 runs) pour la recommandation locale")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--variant", choices=["old", "new", "both"], default="both")
     ap.add_argument("--model", default=None)
@@ -906,6 +922,15 @@ def main():
 
     cfg = load_eval_config()
     model = args.model or cfg.default_model
+    evidence_identity = None
+    if args.publish_recommendation:
+        if args.variant != "new" or args.runs < 3 or args.cases or args.mcp_fixture:
+            ap.error("publication : --variant new --runs 3 minimum, sans --cases ni --mcp-fixture")
+        from loom.runtime.model_evidence import campaign_identity
+        try:
+            evidence_identity = campaign_identity(cfg, model)
+        except (ValueError, OSError) as exc:
+            ap.error(str(exc))
     client, base_url = make_client(cfg, model)
     perm = make_perm(cfg)
     only = set(args.cases.split(",")) if args.cases else None
@@ -981,6 +1006,12 @@ def main():
         if mcp_hub is not None:
             mcp_hub.close()
     report(all_results, args.runs, run_dir)
+    if evidence_identity:
+        from loom.runtime.model_evidence import campaign_identity, publish
+        if campaign_identity(cfg, model) != evidence_identity:
+            raise RuntimeError("Le modèle ou le moteur a changé pendant la campagne : résultats non publiés")
+        path = publish(**evidence_identity, results=all_results["new"], source=run_dir)
+        print(f"Évaluation locale pour la recommandation : {path}")
     # Ne jamais remplacer une baseline complète par un sous-ensemble filtré.
     if only:
         print("(baseline non épinglée : run partiel via --cases)")

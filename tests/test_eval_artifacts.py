@@ -59,6 +59,16 @@ def test_deux_campagnes_successives_conservent_leurs_transcripts(out):
     assert "[ ]" in t2.read_text(encoding="utf-8")
 
 
+def test_transcript_json_conserve_sortie_entiere(out):
+    import json
+    run = new_campaign_dir(sha="abc1234", stamp="20260809-120000")
+    traj = _traj()
+    traj.tool_results[0]["output"] = "x" * 2000 + "FIN-DE-PREUVE"
+    _save_transcript(run, "new", "proof", 0, traj, {"pass": True}, None)
+    raw = json.loads((run / "new" / "proof_run1.json").read_text(encoding="utf-8"))
+    assert raw["tool_results"][0]["output"].endswith("FIN-DE-PREUVE")
+
+
 def test_campaign_json_porte_les_conditions_du_run(out):
     import json
 

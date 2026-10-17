@@ -69,50 +69,50 @@ def _wizard_deps(S):
     vram_budget = hw.vram_total_mb if hw.vram_is_discrete else 0
     supported = gguf_remote.supported_formats(str(server_bin) if server_bin else None)
 
-    def alternatives(repo, analysis, faster_than):
-        """Même famille : celle du nom du repo, puis celle de son modèle de base (Bonsai 2
-        -> Qwen3.8). Deux recherches HF au plus, puis l'inventaire de quelques repos."""
-        found = []
+    from loom.runtime.recommendation import recommend_repository
+
+    import tomllib
+
+    server_settings = {}
+    for path in (S.config_defaults_path, S.config_local_path):
+        if path and Path(path).exists():
+            server_settings.update(tomllib.loads(Path(path).read_text(encoding="utf-8")).get("server", {}))
+
+    def evaluate(repo, files):
+        # Match the configured working context; never advertise architectural max context.
+        context = max(16384, int(server_settings.get("context", 16384)))
+        return recommend_repository(
+            repo, files, vram_mb=vram_budget, ram_mb=ram_total,
+            server_bin=server_bin, supported=supported, context=context,
+            slots=int(server_settings.get("n_parallel", 1)),
+            gpu_tuning=hw.has_gpu,
+            max_tokens=int(S.settings.get("max_tokens", 8192)),
+        )
+
+    def alternatives(repo, analysis):
+        # Stay within the selected family, then its declared base model.
+        hits = []
         try:
             stem = model_install.family_stem(repo)
-            found = hf_catalog.search_family(stem) if stem else []
-            base = next((h["base"] for h in found if h["repo_id"] == repo), None)
+            hits = hf_catalog.search_family(stem) if stem else []
+            base = next((h.get("base") for h in hits if h["repo_id"] == repo), None)
             base_stem = model_install.family_stem(base)
             if base_stem and base_stem != stem:
-                found += hf_catalog.search_family(base_stem)
+                hits += hf_catalog.search_family(base_stem)
         except hf_catalog.HfCatalogError:
-            pass  # hors ligne : la liste des quants reste, sans alternative
-        hits = list(
-            {h["repo_id"]: h for h in found}.values()
-        )  # ordre de 1re apparition
+            pass
         return model_install.suggest_alternatives(
             repo, analysis, hits, hf_catalog.list_gguf_files, vram_budget, ram_total,
-            supported, faster_than=faster_than,
-        )  # fmt: skip
+            supported, recommender=lambda candidate, files: evaluate(candidate, files)[0],
+        )
 
     def recommend(files, repo=None):
-        analysis = gguf_remote.analyze_repo(repo, files, supported) if repo else None
-        out = model_install.recommend_quant(
-            files, vram_budget, ram_total, analysis=analysis, supported=supported
-        )
-        if analysis and out:
-            out[0]["repo_note"] = _repo_note(analysis, vram_budget)
-        # Alternatives si rien ne convient, si le recommandé reste sous la vitesse visée
-        # (près du seuil, l'estimation est trop incertaine pour s'en contenter) ou sous
-        # 4 bits par poids hors format ternaire natif (il tient, mais dégradé).
-        rec = next((f for f in out if f["recommended"]), None)
-        tps = rec and rec.get("tps")
-        weak = (
-            rec
-            and (rec.get("bpw") or 99) < model_install.DECENT_BPW
-            and rec.get("label") not in model_install.TERNARY
-        )
-        if (
-            repo
-            and out
-            and (rec is None or weak or (tps and tps < model_install.TARGET_TPS))
-        ):
-            out[0]["alternatives"] = alternatives(repo, analysis, tps or 0.0)
+        out, analysis = evaluate(repo, files)
+        if out:
+            if analysis:
+                out[0]["repo_note"] = _repo_note(analysis, vram_budget)
+            if repo and not any(f["recommended"] for f in out):
+                out[0]["alternatives"] = alternatives(repo, analysis)
         return out
 
     return SimpleNamespace(

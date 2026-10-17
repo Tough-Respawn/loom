@@ -207,7 +207,7 @@ def test_famille_d_un_modele():
     assert family_stem("org/Flash-Next-GGUF") is None and family_stem(None) is None
 
 
-def test_alternatives_qui_tournent_ici_les_plus_gros_d_abord():
+def test_alternatives_non_mesurees_conservent_heuristique_capacite():
     hits = [
         {"repo_id": "u/Qwen3.8-27B-GGUF", "params": 27_000_000_000, "arch": "qwen35"},
         {"repo_id": "x/Qwen3.8-27B-Abliterated-GGUF", "params": 27_000_000_000, "arch": "qwen35"},
@@ -242,7 +242,7 @@ def test_alternatives_qui_tournent_ici_les_plus_gros_d_abord():
     alts = suggest_alternatives("u/Qwen3.8-27B-GGUF", _DENSE, hits, list_files, 6143,
                                 65297, _SUP | {"Q3_K_M", "Q4_K_M"})  # fmt: skip
     assert [a["repo_id"] for a in alts] == [
-        "e/Qwen3.8-35B-A3B-Distill-GGUF",  # MoE : experts en RAM, assez rapide
+        "e/Qwen3.8-35B-A3B-Distill-GGUF",  # heuristique de capacité, pas un score mesuré
         "e/Qwen3.8-9B-Distill-GGUF",
         "p/Qwen3.8-4B-gguf",
     ]
