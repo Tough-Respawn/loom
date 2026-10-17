@@ -53,3 +53,12 @@ def test_modele_valide_toujours_lu_normalement(tmp_path):
     (m,) = _discover_models(tmp_path)
     assert (m.id, m.n_layers, m.cpu_moe) == ("ornith-q5", 40, True)
     assert m.dir == str(tmp_path / "ornith-q5")
+
+
+def test_modele_marque_non_chargeable_ignore(tmp_path, capsys):
+    # /add-model a téléchargé un GGUF que llama-server refuse (quant d'un fork) : le
+    # marqueur l'écarte au démarrage, sinon il entrerait au sélecteur et planterait.
+    _mk_model(tmp_path, "bon", _SAIN)
+    _mk_model(tmp_path, "fork", _SAIN + 'unloadable = "invalid ggml type 142"\n')
+    assert [m.id for m in _discover_models(tmp_path)] == ["bon"]
+    assert "fork" in capsys.readouterr().err

@@ -78,6 +78,8 @@ def _model_folders(raw_cfg: dict, package_models: Path) -> list[tuple[str, Path,
                 data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
             except (OSError, tomllib.TOMLDecodeError):
                 continue
+            if data.get("unloadable"):  # refusé par llama-server à l'installation
+                continue
             out.append((folder.name, folder, data))
     return out
 

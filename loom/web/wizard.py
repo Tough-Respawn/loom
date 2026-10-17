@@ -284,11 +284,12 @@ def _step_d_confirm(state, t, deps):
     if t.lower() not in ("oui", "o", "yes"):
         return WizardResult(None, "Suppression annulée — rien n'a été touché.")
     it = state["item"]
-    return WizardResult(
-        None,
-        f"Suppression de « {it['id']} »…",
-        {"kind": "remove", "id": it["id"], "model_kind": it["kind"]},
-    )
+    action = {"kind": "remove", "id": it["id"], "model_kind": it["kind"]}
+    if it.get(
+        "dir"
+    ):  # local non monté : la route n'a pas de spec pour trouver le dossier
+        action["dir"] = it["dir"]
+    return WizardResult(None, f"Suppression de « {it['id']} »…", action)
 
 
 # Ce module porte seulement le dialogue; les routes exécutent la mesure.

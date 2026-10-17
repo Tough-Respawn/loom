@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import shutil
 from pathlib import Path
+
 from loom.runtime import model_install
 from loom.web.routes.config import _regen_swap_yaml
 
@@ -23,6 +25,57 @@ def _list_remote_models(base_url: str, api_key: str) -> list[str] | None:
         return None
 
 
+def _dir_gb(d) -> float:
+    return sum(f.stat().st_size for f in Path(d).rglob("*") if f.is_file()) / 1024**3
+
+
+def _mark_unloadable(mdir, cause: str) -> None:
+    """Marque dans model.toml un modèle que llama-server refuse : la découverte
+    l'ignore au démarrage (sinon il entre au sélecteur et plante au premier message)."""
+    import json
+
+    first = (cause or "refusé").strip().splitlines()[0][:300]
+    with open(Path(mdir) / "model.toml", "a", encoding="utf-8") as fh:
+        fh.write(
+            "\n# Refusé par le llama-server installé : ignoré au démarrage. À retirer si\n"
+            "# un `server_bin` (ex. build du fork) le charge.\n"
+            f"unloadable = {json.dumps(first)}\n"
+        )
+
+
+def _unmounted_local(S) -> list[dict]:
+    """Dossiers de modèles texte présents sur disque mais NON montés (refusés à
+    l'installation, téléchargement interrompu, model.toml illisible) : sans eux,
+    /remove-model ne pouvait pas libérer leur place (vécu : 8 Go orphelins)."""
+    import tomllib
+
+    mounted = {m.get("id") for m in S.local_model_specs}
+    out = []
+    for root in _models_roots(S):
+        base = Path(root) / "local" / "text"
+        if not base.is_dir():
+            continue
+        for d in sorted(p for p in base.iterdir() if p.is_dir()):
+            if d.name.startswith("_") or d.name in mounted:
+                continue
+            if not (d / "model.toml").is_file():
+                continue
+            try:
+                data = tomllib.loads((d / "model.toml").read_text(encoding="utf-8"))
+                why = "non chargeable" if data.get("unloadable") else "non monté"
+            except (OSError, tomllib.TOMLDecodeError):
+                why = "model.toml illisible"
+            out.append(
+                {
+                    "id": d.name,
+                    "kind": "local",
+                    "dir": str(d),
+                    "label": f"{d.name} — local {why}, {_dir_gb(d):.1f} Go sur disque",
+                }
+            )
+    return out
+
+
 def _removable_models(S) -> list[dict]:
     """Modèles supprimables via /remove-model : TOUT ce que le sélecteur affiche.
     kind ∈ {local, remote (dossier remote/<id>/), image, video} — le wizard adapte
@@ -39,6 +92,7 @@ def _removable_models(S) -> list[dict]:
                 "label": f"{m['id']} — local, {size:.1f} Go sur disque",
             }
         )
+    items.extend(_unmounted_local(S))
     # Avertir avant de supprimer le modèle distant par défaut.
     default_model = ""
     if S.config_local_path and Path(S.config_local_path).exists():
@@ -93,7 +147,7 @@ def _models_roots(S) -> list[str]:
     if roots:
         return [str(r) for r in roots]
     # Ne remonter depuis models_dir que s'il suit la convention attendue.
-    if S.models_dir:
+    if getattr(S, "models_dir", None):
         p = Path(S.models_dir)
         if p.name == "text" and p.parent.name == "local":
             return [str(p.parent.parent)]
@@ -275,12 +329,14 @@ def _finish_install(S, sess, chat_lock, mid, mdir, job):
         # llama-server au premier message.
         loadable, cause = _probe_install(gguf)
         if loadable is False:
+            _mark_unloadable(mdir, cause)
             msg = (
                 f"« {mid} » est téléchargé, mais le llama.cpp installé ne sait pas "
                 f"le charger :\n{cause}\n"
-                "Il n'est pas ajouté au sélecteur. C'est en général un format de "
-                "quantification récent ou propre à un fork : choisis un autre quant, "
-                "ou un build de llama.cpp qui le supporte."
+                "Il n'est pas ajouté au sélecteur (marqué non chargeable). C'est en "
+                "général un format de quantification récent ou propre à un fork : "
+                "choisis un autre quant, ou un build de llama.cpp qui le supporte. "
+                f"Pour libérer la place : /remove-model ({_dir_gb(mdir):.1f} Go)."
             )
         else:
             msg = None

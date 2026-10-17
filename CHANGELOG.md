@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-10-17 : modèle refusé à l'installation, supprimable et jamais remonté
+
+- Un GGUF que llama-server refuse (vécu : Bonsai Heretic en PQ2_0, format du fork Prism)
+  restait sur le disque (~8 Go) sans apparaître dans `/remove-model`, et rien n'empêchait
+  sa découverte au démarrage suivant : il serait entré au sélecteur et aurait planté au
+  premier message. `/add-model` le marque maintenant `unloadable` dans son model.toml,
+  la découverte (runtime et setup) l'ignore, et `/remove-model` liste aussi les dossiers
+  présents sur disque mais non montés (non chargeable, interrompu, illisible).
+
 ## 2026-10-17 : loom-setup fait le ménage des anciennes builds llama.cpp
 
 - Chaque mise à jour ajoute ~1,2 Go dans `var/runtime/llama/<tag>/` et rien ne les

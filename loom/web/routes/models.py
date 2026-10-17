@@ -9,13 +9,13 @@ from flask import Response, render_template, request
 
 from loom.runtime import model_install, model_store
 from loom.runtime.comfy import ComfyError
+from loom.utils import atomic_write_text
 from loom.web import wizard as _wizard
 from loom.web.app import (
     _sse,
 )
 from loom.web.routes.config import _regen_swap_yaml
 from loom.web.routes.helpers import _client_mark_all_cold, _ctx, _engine_for, _session
-
 from loom.web.routes.model_admin import (
     _LOCAL_EDITABLE,
     _check_workflow,
@@ -37,7 +37,6 @@ from loom.web.routes.model_admin import (
     _removable_models,
 )
 from loom.web.routes.rebench import _REBENCH, _rebench_worker
-from loom.utils import atomic_write_text
 
 
 def _wizard_deps(S):
@@ -255,9 +254,11 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             spec = next(
                 (m for m in S.local_model_specs if m.get("id") == a["id"]), None
             )
+            # Un modèle non monté (refusé, interrompu) n'a pas de spec : dossier de l'item.
+            mdir = (spec or {}).get("dir") or a.get("dir")
             try:
-                if spec and spec.get("dir"):
-                    shutil.rmtree(spec["dir"])
+                if mdir:
+                    shutil.rmtree(mdir)
                 S.local_model_specs[:] = [
                     m for m in S.local_model_specs if m.get("id") != a["id"]
                 ]
