@@ -26,6 +26,9 @@ from .test_mcp_client import _pid_alive
 class _MultiTurnClient:
     """Sous-boucle scriptée multi-événements (2 « tours » puis stop naturel)."""
 
+    def annex_slot(self, model):
+        return 0
+
     def is_remote(self, model):
         return False
 
@@ -164,6 +167,9 @@ class _PairClient:
 
     def __init__(self):
         self.go_a = threading.Event()
+
+    def annex_slot(self, model):
+        return 0
 
     def is_remote(self, model):
         return True  # parallélisme réel côté workflow

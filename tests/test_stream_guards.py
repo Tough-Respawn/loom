@@ -60,6 +60,19 @@ def test_claim_execution_sans_executer_relance():
     assert len(fake.calls) == 2
 
 
+def test_sortie_album_ne_declenche_pas_audit_execution():
+    client, fake = make_client([turn_text("Album : Circuit. Sortie : 2019.")])
+    _, done = run(client, registry=_reg())
+    assert done["reason"] == "natural"
+    assert len(fake.calls) == 1
+
+
+def test_resultat_sans_execution_reste_detecte():
+    from loom.agent.guards import _claims_execution
+    assert _claims_execution("Résultat : 42 fichiers traités.")
+    assert not _claims_execution("Album : Circuit. Sortie : 2019.")
+
+
 def test_verbes_de_parole_exemptes():
     # Une intention purement conversationnelle ne requiert aucun outil.
     client, fake = make_client([turn_text("Je vais résumer la situation pour toi.")])

@@ -6,6 +6,13 @@
 
 ---
 
+## 2026-10-17 : garde-fou d'exécution sans faux positif sur « Sortie : »
+
+- Le garde-fou d'affirmation d'exécution conserve « Résultat : » et écarte « sortie : »,
+  ambigu pour les dates de sortie d'albums (« Sortie : 2019 » relançait le tour).
+- Tests d'annulation des sous-agents : leurs faux clients implémentent `annex_slot`
+  (3 échecs préexistants sur master).
+
 ## 2026-10-17 : fetch_url passe les anti-bots courants et explique les refus
 
 - 7 échecs sur 10 de `fetch_url` dans les sessions étaient des 403 anti-bot : par défaut,
