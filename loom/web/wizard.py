@@ -3,9 +3,9 @@
 Les effets (recherche HF, download, montage) sont exécutés par routes.py : soit via
 `deps` (fonctions injectées, appelées pendant une transition), soit via `action`
 (effet à exécuter APRÈS la transition finale). L'état est un dict JSON-sérialisable
-persisté sur la Conversation -> le parcours survit au refresh. Chaque transition
-renvoie un `reply` TOUJOURS affiché dans le chat (exigence spec : étapes visibles),
-préfixé d'un indicateur d'étape."""
+conservé par le panneau d'ajout (indépendant de la conversation). Chaque transition
+renvoie un `reply` affiché dans ce panneau, préfixé d'un indicateur d'étape.
+La recalibration conserve son parcours historique dans la conversation."""
 
 from __future__ import annotations
 

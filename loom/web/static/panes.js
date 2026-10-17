@@ -378,12 +378,25 @@ export function submitPane(pane) {
   if (!text || !sid) return;
   // Un clear programmatique n'émet pas `input`; fermer la palette explicitement.
   hidePal(pane);
-  if (text.split(/\s+/, 1)[0] === "/remove-model") {
+  const command = text.split(/\s+/, 1)[0];
+  if (["/remove-model", "/add-model", "/cancel"].includes(command)) {
     pane.input.value = "";
     const current = tab(sid);
     if (current) current.draft = "";
     autosize(pane);
-    document.dispatchEvent(new CustomEvent("loom:manage-models"));
+    if (command === "/cancel") {
+      postForm("/models/add", {session_id: sid, message: "/cancel"})
+        .then((r) => r.json())
+        .then((d) => {
+          showToast(d.error || d.message);
+          document.dispatchEvent(new CustomEvent("loom:add-model-cancelled", {detail: {sid}}));
+        })
+        .catch(() => showToast("Annulation impossible : serveur injoignable"));
+    } else {
+      document.dispatchEvent(new CustomEvent("loom:manage-models", {
+        detail: {sid, add: command === "/add-model", argument: text.slice(command.length).trim()},
+      }));
+    }
     return;
   }
   const t = tab(sid);

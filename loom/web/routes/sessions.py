@@ -162,7 +162,17 @@ def _register_session_routes(app, S):
             return {"error": "note vide"}, 400
         if text.split(maxsplit=1)[0] == "/remove-model":
             return {"ui_action": "manage_models"}
-        if text.split(maxsplit=1)[0] in {"/add-model", "/rebench", "/cancel"}:
+        if text.split(maxsplit=1)[0] == "/add-model":
+            return {"ui_action": "add_model", "argument": text[len("/add-model"):].strip()}
+        if text.split(maxsplit=1)[0] == "/cancel":
+            from loom.web.routes.models import _cancel_interface_command
+
+            sid = request.form.get("session_id", "").strip()
+            sess = _get_session(S, sid) if sid else S.cur["session"]
+            if sess is None:
+                return {"error": "session inconnue"}, 404
+            return _cancel_interface_command(S, sess)
+        if text.split(maxsplit=1)[0] in {"/rebench"}:
             return {"error": "Commande d’interface : attends la fin du tour pour cette opération."}, 409
         if len(text) > _NOTE_MAX_CHARS:
             return {
@@ -287,6 +297,12 @@ def _register_session_routes(app, S):
             _lk = S.sess_locks.get(meta.id)
             if _lk is not None and _lk.locked():
                 continue
+            add_flow = S.model_add_flows.get(meta.id)
+            if add_flow and (
+                add_flow.wizard or add_flow.lock.locked()
+                or (add_flow.job and not add_flow.job.done)
+            ):
+                continue  # An open installation panel still owns this session.
             ghost = _get_session(S, meta.id)
             # Le journal compte aussi : une session qui n'a vu que /add-model n'a
             # aucun message de conversation mais n'est pas vierge.
@@ -300,6 +316,7 @@ def _register_session_routes(app, S):
                 S.session_store.delete(meta.id)
                 with S.gen_guard:
                     S.sessions_cache.pop(meta.id, None)
+                    S.model_add_flows.pop(meta.id, None)
                 if S.cur["session"] is not None and S.cur["session"].id == meta.id:
                     S.cur["session"] = None
 
@@ -435,6 +452,7 @@ def _register_session_routes(app, S):
             # Purger l'objet en mémoire empêche sa réapparition lors d'une sauvegarde.
             with S.gen_guard:
                 S.sessions_cache.pop(sid, None)
+                S.model_add_flows.pop(sid, None)
                 S.sess_cancel.pop(sid, None)
 
             if S.cur["session"] is not None and S.cur["session"].id == sid:
