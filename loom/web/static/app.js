@@ -570,6 +570,7 @@ window.addEventListener("keydown", (e) => {
   // DEUX blocs (machine vs distant), EN PHASE avec le rendu serveur (_models.html) :
   // la couleur par type (classe opt-<type>) distingue texte/image/vidéo DANS le bloc
   // machine ; re-teinte du select fermé après reconstruction.
+  document.addEventListener("loom:models-changed", () => load());
   function rebuildModelSelect(payload) {
     const sel = document.getElementById("model-select");
     if (!sel || !payload) return;
@@ -1130,6 +1131,10 @@ window.addEventListener("keydown", (e) => {
     modal.hidden = false;
     loadCfg();
   }
+  document.addEventListener("loom:manage-models", () => {
+    open();
+    showTab("gestion");
+  });
   function close() {
     modal.hidden = true;
   }
@@ -1260,6 +1265,8 @@ window.addEventListener("keydown", (e) => {
     } catch {}
   }
 
+  document.addEventListener("loom:models-changed", load);
+
   async function save(item, ctl) {
     const value = ctl.type === "checkbox" ? ctl.checked : ctl.value;
     const r = await fetch("/models/local/set", {
@@ -1329,6 +1336,70 @@ async function llamaUpdateTick() {
 llamaUpdateTick();
 setTimeout(llamaUpdateTick, 45000); // première passe serveur ~30 s après le boot
 setInterval(llamaUpdateTick, 3600000);
+
+// Management actions never enter a conversation or replace its streaming request.
+(function () {
+  const list = document.getElementById("model-management-list");
+  if (!list) return;
+  async function load() {
+    list.textContent = "Chargement…";
+    try {
+      const response = await fetch("/models/removable");
+      if (!response.ok) throw new Error("Liste indisponible");
+      const data = await response.json();
+      list.replaceChildren();
+      for (const model of data.models) {
+        const row = document.createElement("div");
+        row.className = "lm-item";
+        const label = document.createElement("span");
+        label.textContent = model.label;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "rm-btn";
+        button.textContent = model.busy ? "En cours d’utilisation" : "Supprimer…";
+        button.disabled = model.busy;
+        button.addEventListener("click", () => {
+          const impact = (model.is_default ? "C’est le modèle distant par défaut. " : "") + (["image", "video"].includes(model.kind)
+            ? "Supprimer la définition de " + model.id + " ? Les poids partagés seront conservés."
+            : "Supprimer " + model.id + (model.kind === "local" ? " et ses fichiers du disque ?" : " de Loom ?"));
+          const confirmation = document.createElement("div");
+          confirmation.className = "model-remove-confirm";
+          const message = document.createElement("span");
+          message.textContent = impact;
+          const yes = document.createElement("button");
+          yes.type = "button";
+          yes.className = "rm-btn";
+          yes.textContent = "Confirmer la suppression";
+          const no = document.createElement("button");
+          no.type = "button";
+          no.className = "rm-btn";
+          no.textContent = "Annuler";
+          no.onclick = () => { confirmation.remove(); button.hidden = false; button.focus(); };
+          yes.onclick = async () => {
+            button.disabled = true;
+            yes.disabled = no.disabled = true;
+            try {
+              const r = await fetch("/models/installed/" + encodeURIComponent(model.id), {method: "DELETE"});
+              const result = await r.json();
+              showToast(result.error || result.message || (r.ok ? "Modèle supprimé" : "Suppression refusée"));
+              if (r.ok) document.dispatchEvent(new CustomEvent("loom:models-changed"));
+            } catch { showToast("Suppression impossible : serveur injoignable"); }
+            await load();
+          };
+          confirmation.append(message, yes, no);
+          row.append(confirmation);
+          button.hidden = true;
+          no.focus();
+        });
+        row.append(label, button);
+        list.append(row);
+      }
+      if (!data.models.length) list.textContent = "Aucun modèle à supprimer.";
+    } catch (e) { list.textContent = e.message; }
+  }
+  document.addEventListener("loom:manage-models", load);
+  document.querySelector('[data-tab="gestion"].cfg-tab')?.addEventListener("click", load);
+})();
 
 paintModelSelect();
 initKbdCheatsheet();

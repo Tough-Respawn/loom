@@ -658,6 +658,10 @@
     .cfg-tab:hover { color: var(--text); }
     .cfg-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .cfg-panel[hidden], .cfg-group[hidden] { display: none; }
+    #model-management-list .lm-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
+    #model-management-list .lm-item > span { min-width: 0; overflow-wrap: anywhere; }
+    .model-remove-confirm { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; }
+    .model-remove-confirm > span { flex-basis: 100%; }
     .cfg-scroll { overflow-y: auto; padding: 8px 18px 18px; }
     .cfg-body { padding: 0; }
     .cfg-group { margin-top: 20px; }
@@ -1310,8 +1314,13 @@
         <button type="button" class="cfg-tab" data-tab="locaux">Modèles locaux</button>
         <button type="button" class="cfg-tab" data-tab="modeles">Modèles distants</button>
         <button type="button" class="cfg-tab" data-tab="ame">Sessions</button>
+        <button type="button" class="cfg-tab" data-tab="gestion">Gérer les modèles</button>
       </div>
       <div class="cfg-scroll">
+        <div class="cfg-panel" data-tab="gestion" hidden>
+          <p>Supprime un modèle inutilisé. Les conversations en cours continuent.</p>
+          <div id="model-management-list" class="rm-list" aria-live="polite"></div>
+        </div>
         <!-- Onglet Modèles locaux (servis sur cette machine). Tuning d'offload GPU éditable. -->
         <div id="cfg-local" class="cfg-panel" data-tab="locaux" hidden>
           <div class="cfg-group-sub">Servis sur cette machine. La définition (dépôt, fichier) est commune ; le réglage d'offload GPU est propre à cette machine et prend effet au rechargement du modèle.</div>

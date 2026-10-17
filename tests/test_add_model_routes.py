@@ -37,7 +37,7 @@ def env(tmp_path):
         known_models=[FAKE_MODEL],
     )
     app = create_app(
-        client=None,
+        client=SimpleNamespace(add_remote_route=lambda *a: None, remove_remote_route=lambda *a: None),
         skills_dir=str(tmp_path / "skills"),
         session_store=store,
         models=[FAKE_MODEL],
@@ -120,16 +120,57 @@ def test_add_model_distant_persiste_le_dossier_remote(env, monkeypatch):
     assert not (env.tmp / "local.toml").exists()
 
 
-def test_remove_model_confirmation_porte_des_boutons(env, monkeypatch):
+def test_remove_model_ouvre_interface_sans_ecrire_dans_session(env, monkeypatch):
     _fake_deps(monkeypatch)
-    env.web.post("/chat", data={"message": "/remove-model"})
-    r = env.web.post("/chat", data={"message": "1"})
-    events = [
-        json.loads(line[6:])
-        for line in r.data.decode("utf-8").splitlines()
-        if line.startswith("data: ")
-    ]
-    assert {"type": "choices", "options": ["oui", "annuler"]} in events
+    before = {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+    for endpoint, key in (("/chat", "message"), ("/note", "text")):
+        r = env.web.post(endpoint, data={key: "/remove-model"})
+        assert r.get_json() == {"ui_action": "manage_models"}
+    assert before == {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+
+
+def test_remove_model_pendant_generation_ne_note_ni_annule(env):
+    from loom.web.routes.helpers import _lock_for, _cancel_for
+    S = env.web.application.S
+    sess = S.cur["session"]
+    lock = _lock_for(S, sess.id)
+    lock.acquire()
+    try:
+        for endpoint, key in (("/chat", "message"), ("/note", "text")):
+            r = env.web.post(endpoint, data={key: "/remove-model", "session_id": sess.id})
+            assert r.get_json() == {"ui_action": "manage_models"}
+        assert not _cancel_for(S, sess.id).is_set()
+        assert S.notes.drain(sess.id) == []
+        assert lock.locked()
+    finally:
+        lock.release()
+
+
+def test_model_occupe_non_supprimable_et_autre_modele_independant(env):
+    from loom.web.routes.helpers import _lock_for
+    S = env.web.application.S
+    for mid in (FAKE_MODEL, "unused"):
+        folder = env.root / "local" / "text" / mid
+        folder.mkdir()
+        (folder / "weights.gguf").write_bytes(b"test")
+        S.local_model_specs.append({"id": mid, "dir": str(folder)})
+    sess = S.cur["session"]
+    lock = _lock_for(S, sess.id)
+    lock.acquire()
+    try:
+        assert env.web.delete("/models/installed/" + FAKE_MODEL).status_code == 409
+        assert (env.root / "local" / "text" / FAKE_MODEL / "weights.gguf").exists()
+        assert env.web.delete("/models/installed/unused").status_code == 200
+        assert lock.locked()
+    finally:
+        lock.release()
+
+
+def test_suppression_refuse_dossier_parent(env):
+    S = env.web.application.S
+    S.local_model_specs.append({"id": "bad", "dir": str(env.root / "local" / "text")})
+    assert env.web.delete("/models/installed/bad").status_code == 409
+    assert (env.root / "local" / "text").is_dir()
 
 
 def test_remove_model_distant_supprime_le_dossier(env, monkeypatch):
@@ -146,10 +187,9 @@ def test_remove_model_distant_supprime_le_dossier(env, monkeypatch):
     ]:
         env.web.post("/chat", data={"message": msg})
     assert (env.root / "remote" / "glm-test").is_dir()
-    env.web.post("/chat", data={"message": "/remove-model"})
-    env.web.post("/chat", data={"message": "1"})
-    r = env.web.post("/chat", data={"message": "oui"})
-    assert "retiré" in _sse_texts(r.data)
+    r = env.web.delete("/models/installed/glm-test")
+    assert r.status_code == 200
+    assert "retiré" in r.get_json()["message"]
     assert not (env.root / "remote" / "glm-test").exists()
 
 
@@ -312,11 +352,9 @@ def test_remove_image_rmtree_dossier_et_demonte(env_img, monkeypatch):
     _real_img_deps(monkeypatch)
     _install_image(env_img)
     mdir = env_img.root / "local" / "image" / "zz-img"
-    env_img.web.post("/chat", data={"message": "/remove-model"})
-    # liste : 1. cfg-distant (remote_config), 2. zz-img (image)
-    env_img.web.post("/chat", data={"message": "2"})
-    r = env_img.web.post("/chat", data={"message": "oui"})
-    assert "PAS touchés" in _sse_texts(r.data)
+    r = env_img.web.delete("/models/installed/zz-img")
+    assert r.status_code == 200
+    assert "PAS touchés" in r.get_json()["message"]
     assert not mdir.exists()
     payload = env_img.web.get("/models/config").get_json()
     assert not any(m["id"] == "zz-img" for m in payload["models"])
@@ -326,12 +364,11 @@ def test_remove_remote_config_edite_local_toml_et_demonte(env_img, monkeypatch):
     # Distant hérité encore déclaré en [[remote_models]] (pas migré : pas de boot
     # load_config dans ce fixture) : /remove-model doit le purger du fichier AUSSI.
     _real_img_deps(monkeypatch)
-    env_img.web.post("/chat", data={"message": "/remove-model"})
-    r = env_img.web.post("/chat", data={"message": "1"})  # cfg-distant
-    body = _sse_texts(r.data)
-    assert "remote/" in body and "défaut" in body  # avertissement default_model
-    r = env_img.web.post("/chat", data={"message": "oui"})
-    assert "retiré" in _sse_texts(r.data)
+    items = env_img.web.get("/models/removable").get_json()["models"]
+    assert next(m for m in items if m["id"] == "cfg-distant")["is_default"]
+    r = env_img.web.delete("/models/installed/cfg-distant")
+    assert r.status_code == 200
+    assert "retiré" in r.get_json()["message"]
     assert "cfg-distant" not in env_img.cfg.read_text(encoding="utf-8").replace(
         'default_model = "cfg-distant"', ""
     )
@@ -339,20 +376,22 @@ def test_remove_remote_config_edite_local_toml_et_demonte(env_img, monkeypatch):
     assert not any(m["id"] == "cfg-distant" for m in payload["models"])
 
 
-def test_extra_reply_persistee_dans_le_journal(env_img, monkeypatch):
+def test_remote_delete_preserves_remaining_editor_list(env_img):
+    S = env_img.web.application.S
+    S.remote_model_ids.add("remaining")
+    S.models.append("remaining")
+    response = env_img.web.delete("/models/remote/cfg-distant")
+    assert response.status_code == 200
+    assert [m["id"] for m in response.get_json()["remotes"]] == ["remaining"]
+
+
+def test_suppression_ne_pollue_pas_le_journal_conversation(env_img, monkeypatch):
     _real_img_deps(monkeypatch)
     _install_image(env_img)
-    env_img.web.post("/chat", data={"message": "/remove-model"})
-    env_img.web.post("/chat", data={"message": "2"})
-    env_img.web.post("/chat", data={"message": "oui"})
-    timelines = list((env_img.tmp / "sessions").rglob("timeline.jsonl"))
-    assert timelines
-    events = [
-        json.loads(line)
-        for line in timelines[0].read_text(encoding="utf-8").splitlines()
-    ]
-    texts = [e["data"].get("text", "") for e in events if e["event"] == "text"]
-    assert any("✅" in t for t in texts)  # le résultat survit au rechargement du fil
+    files = list((env_img.tmp / "sessions").rglob("timeline.jsonl"))
+    before = {p: p.read_bytes() for p in files}
+    assert env_img.web.delete("/models/installed/zz-img").status_code == 200
+    assert before == {p: p.read_bytes() for p in files}
 
 
 def _install_local(env, monkeypatch, probe):
@@ -436,10 +475,9 @@ def test_modele_refuse_marque_liste_et_supprimable(env, monkeypatch):
         )
 
     monkeypatch.setattr(routes.models, "_wizard_deps", deps_reels)
-    r = env.web.post("/chat", data={"message": "/remove-model"})
-    body = _sse_texts(r.data)
-    assert "nouveau-modele" in body and "non chargeable" in body
-    env.web.post("/chat", data={"message": "1"})
-    r = env.web.post("/chat", data={"message": "oui"})
-    assert "supprimé" in _sse_texts(r.data)
+    items = env.web.get("/models/removable").get_json()["models"]
+    assert any(m["id"] == "nouveau-modele" and "non chargeable" in m["label"] for m in items)
+    r = env.web.delete("/models/installed/nouveau-modele")
+    assert r.status_code == 200
+    assert "supprimé" in r.get_json()["message"]
     assert not mdir.exists()

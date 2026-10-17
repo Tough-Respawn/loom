@@ -60,8 +60,7 @@ CHAT_COMMANDS = [
     {
         "name": "/remove-model",
         "usage": "/remove-model",
-        "description": "Supprimer un modèle : local (dossier et GGUF effacés du "
-        "disque) ou distant géré par l'UI — liste numérotée + confirmation.",
+        "description": "Ouvrir la gestion des modèles, hors conversation, sans interrompre la génération.",
     },
     {
         "name": "/rebench",
@@ -182,6 +181,9 @@ def _register_chat_routes(app, S):
         if not is_handoff:
             S.cur["session"] = sess  # focus (défaut de l'index)
         sid = sess.id
+        # UI commands must be intercepted BEFORE acquiring/queuing a generation.
+        if not is_handoff and (message.split(maxsplit=1) or [""])[0] == "/remove-model":
+            return {"ui_action": "manage_models"}
         chat_lock = _lock_for(S, sid)
         cancel_event = _cancel_for(S, sid)
 
@@ -211,7 +213,11 @@ def _register_chat_routes(app, S):
                 status=202,
             )
 
-        if not chat_lock.acquire(blocking=False):
+        with S.model_admin_lock:
+            acquired = chat_lock.acquire(blocking=False)
+        if not acquired:
+            if not is_handoff and (message.split(maxsplit=1) or [""])[0] in {"/add-model", "/rebench", "/cancel"}:
+                return {"error": "Commande d’interface : attends la fin du tour pour cette opération."}, 409
             # Après STOP, attendre le verrou; sinon mettre en file pour la génération active.
             if not (
                 cancel_event.is_set() and chat_lock.acquire(timeout=S.interrupt_wait)
@@ -242,6 +248,9 @@ def _register_chat_routes(app, S):
             return Response("session supprimée", status=404)
 
         conv = sess.conversation
+
+        if conv.model and conv.model not in S.models:
+            conv.set_model(S.models[0] if S.models else "")
 
         def save():
             return S.session_store.save(sess)
@@ -737,7 +746,7 @@ def _register_chat_routes(app, S):
             # Les modèles distants forts gardent seulement les garde-fous indispensables.
 
             # `/cancel` ferme le flux distant courant pour libérer rapidement le verrou de session.
-            stream_holder: dict = {}
+            stream_holder: dict = {"model": conv.model}
             S.active_streams[sess.id] = stream_holder
 
             def _make_source():

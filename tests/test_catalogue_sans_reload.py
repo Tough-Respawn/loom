@@ -135,13 +135,9 @@ def env(tmp_path, monkeypatch):
 
 
 def _remove(env, mid):
-    r = env.web.post("/chat", data={"message": "/remove-model"})
-    listing = _sse_texts(r.data)
-    line = next(ln for ln in listing.splitlines() if f". {mid} " in ln)
-    idx = line.strip().split(".")[0]
-    env.web.post("/chat", data={"message": idx})
-    r = env.web.post("/chat", data={"message": "oui"})
-    assert "supprimé" in _sse_texts(r.data)
+    r = env.web.delete("/models/installed/" + mid)
+    assert r.status_code == 200
+    assert "supprimé" in r.get_json()["message"]
 
 
 def test_supprimer_un_autre_modele_ne_recharge_pas_llama_swap(env):
