@@ -293,7 +293,21 @@ def _search_searxng(query: str, cfg: WebSearchConfig) -> list[dict]:
                 "snippet": r.get("content", ""),
             }
         )
+    blocked = data.get("unresponsive_engines") or []
+    if not out and blocked:
+        # Vécu 2026-10-17 : HTTP 200, zéro résultat, tous les moteurs en CAPTCHA ou 429.
+        # Ce n'est pas « aucun résultat » : la recherche n'a pas eu lieu.
+        raise _EnginesFailed(", ".join(f"{e[0]} : {e[1]}" for e in blocked))
     return out
+
+
+class _EnginesFailed(Exception):
+    """SearXNG a répondu, mais aucun de ses moteurs n'a pu chercher."""
+
+
+class SearchUnavailable(RuntimeError):
+    """La recherche n'a pas pu avoir lieu (réseau, moteurs bloqués) : ce n'est PAS
+    « aucun résultat ». Le message nomme la cause, pour le modèle."""
 
 
 def _search_tavily(query: str, cfg: WebSearchConfig) -> list[dict]:
@@ -358,38 +372,62 @@ def _pick_backend(cfg: WebSearchConfig) -> str:
     return "ddgs"
 
 
-def web_search(query: str, cfg: WebSearchConfig) -> list[dict]:
-    """Recherche en ligne ; renvoie une liste {title,url,snippet}.
+def _searxng_or_restart(query: str, cfg: WebSearchConfig) -> list[dict]:
+    """SearXNG ; injoignable, l'instance gérée est relancée une fois."""
+    try:
+        return _search_searxng(query, cfg)
+    except (httpx.ConnectError, httpx.TimeoutException):
+        from loom.runtime.searxng import ensure_running
 
-    Dégrade en liste vide si le réseau est absent (connexion/timeout). Une erreur de
-    service (statut HTTP, limitation ddgs) remonte à l'appelant, qui la rapporte au
-    modèle ; en mode auto, searxng en erreur se rabat d'abord sur ddgs.
+        if not ensure_running(cfg.searxng_url):
+            raise
+        return _search_searxng(query, cfg)
+
+
+def web_search(
+    query: str, cfg: WebSearchConfig, notes: list | None = None
+) -> list[dict]:
+    """Recherche en ligne ; renvoie une liste {title,url,snippet}, vide seulement si les
+    moteurs ont cherché sans rien trouver.
+
+    Si la recherche n'a pas pu avoir lieu (réseau, moteurs de SearXNG tous en échec),
+    lève SearchUnavailable. En mode auto, un SearXNG en échec (injoignable même après
+    relance, statut HTTP, moteurs bloqués) passe la main à ddgs ; `notes` reçoit alors
+    ce qui a échoué, pour le dire au modèle. En backend forcé, l'erreur HTTP remonte.
     """
     backend = _pick_backend(cfg)
     try:
         if backend == "searxng":
             try:
-                return _search_searxng(query, cfg)
-            except (httpx.ConnectError, httpx.TimeoutException):
-                # Relancer une instance gérée une fois, puis laisser `auto` se rabattre sur DDGS.
-                from loom.runtime.searxng import ensure_running
-
-                if ensure_running(cfg.searxng_url):
-                    return _search_searxng(query, cfg)
-                if cfg.backend == "auto":
-                    return _search_ddgs(query, cfg)
-                raise
-            except httpx.HTTPStatusError:
-                # Instance joignable mais en erreur (429 de limitation, 5xx) : même
-                # repli qu'une instance injoignable en mode auto.
-                if cfg.backend == "auto":
-                    return _search_ddgs(query, cfg)
-                raise
+                return _searxng_or_restart(query, cfg)
+            except (httpx.HTTPError, _EnginesFailed) as exc:
+                if cfg.backend != "auto":
+                    if isinstance(exc, _EnginesFailed):
+                        raise SearchUnavailable(
+                            f"aucun moteur de SearXNG n'a pu chercher ({exc})"
+                        ) from exc
+                    raise
+                failure = (
+                    f"moteurs de SearXNG en échec ({exc})"
+                    if isinstance(exc, _EnginesFailed)
+                    else f"SearXNG en échec ({type(exc).__name__})"
+                )
+            try:
+                results = _search_ddgs(query, cfg)
+            except Exception as exc:  # noqa: BLE001 - repli : toute erreur devient un diagnostic
+                raise SearchUnavailable(
+                    f"{failure} ; repli DDGS en échec ({exc})"
+                ) from exc
+            if not results:
+                raise SearchUnavailable(f"{failure} ; repli DDGS sans résultat")
+            if notes is not None:
+                notes.append(f"(résultats du repli DDGS : {failure})")
+            return results
         if backend == "tavily":
             return _search_tavily(query, cfg)
         return _search_ddgs(query, cfg)
-    except (httpx.ConnectError, httpx.TimeoutException):
-        return []
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        raise SearchUnavailable(f"réseau injoignable ({type(exc).__name__})") from exc
 
 
 def _network_errors() -> tuple:
@@ -419,6 +457,24 @@ def _status_hint(code: int, headers) -> str:
     if code == 429:
         return " : le site limite le nombre de requêtes ; réessaie plus tard ou cherche une autre source"
     return ""
+
+
+# Pages servies en HTTP 200 qui ne sont pas le contenu demandé (vécu 2026-10-17 : last.fm
+# « JavaScript is disabled… » rendu comme un succès). Seulement sur un texte court : un
+# article qui cite ces mots ne doit pas être pris pour un blocage.
+_BLOCK_MARKERS = (
+    "javascript is disabled", "enable javascript", "activez javascript",
+    "javascript est désactivé", "verify you are human", "are you a robot",
+    "unusual traffic", "checking your browser", "captcha", "access denied",
+)  # fmt: skip
+_BLOCK_MAX_CHARS = 1500
+
+
+def _block_marker(text: str) -> str | None:
+    if len(text) > _BLOCK_MAX_CHARS:
+        return None
+    low = text.lower()
+    return next((m for m in _BLOCK_MARKERS if m in low), None)
 
 
 def fetch_page(
@@ -479,6 +535,15 @@ def fetch_page(
             text = _extract(body)
             if not text:
                 return snippet
+            marker = _block_marker(text)
+            if marker:
+                if raise_status:
+                    raise ToolError(
+                        f"page de blocage sur {url} (« {marker} ») : le site exige un vrai "
+                        "navigateur ou une vérification, contenu inaccessible à un outil ; "
+                        "cherche une autre source"
+                    )
+                return snippet
             return _truncate(text, cfg.max_chars_per_page)
         return snippet  # trop de redirections
     except _network_errors() as exc:
@@ -512,19 +577,26 @@ def make_web_search(cfg: WebSearchConfig) -> ToolSpec:
         query = (args.get("query") or "").strip()
         if not query:
             raise ToolError("argument 'query' manquant")
-        results = web_search(query, cfg)
+        notes: list = []
+        try:
+            results = web_search(query, cfg, notes)
+        except SearchUnavailable as exc:
+            raise ToolError(
+                f"recherche impossible : {exc}. Ce n'est pas « aucun résultat » : "
+                "réessaie plus tard, ou lis directement une source connue avec fetch_url"
+            ) from exc
         if not results:
-            return "recherche indisponible (hors-ligne) ou aucun résultat"
-        return untrusted(
-            _format_results(query, results, cfg), f"recherche web : {query}"
-        )
+            return f"aucun résultat pour : {query}"
+        text = _format_results(query, results, cfg)
+        return untrusted("\n".join([*notes, text]), f"recherche web : {query}")
 
     return ToolSpec(
         name="web_search",
         description=(
             "Searches the web for up-to-date information and returns the top "
-            "results (title, URL, snippet). Returns an explicit message if the "
-            "network is unavailable."
+            "results (title, URL, snippet). An error means the search itself "
+            "failed (network, every engine blocked): that is NOT an absence of "
+            "results, so do not conclude the information does not exist."
         ),
         parameters={
             "type": "object",
@@ -602,7 +674,13 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
 
             with ThreadPoolExecutor(max_workers=len(urls)) as ex:
                 results = list(ex.map(_one, urls))
-            return "\n\n".join(f"===== {u} =====\n{r}" for u, r in zip(urls, results))
+            text = "\n\n".join(f"===== {u} =====\n{r}" for u, r in zip(urls, results))
+            if all(r.startswith("erreur:") for r in results):
+                # Un lot entièrement en échec n'est pas un succès (l'agent lit `ok`).
+                raise ToolError(
+                    f"aucune des {len(urls)} pages n'a pu être lue :\n{text}"
+                )
+            return text
         return _fetch_one(args.get("url"), args.get("params"), impersonate)
 
     return ToolSpec(
