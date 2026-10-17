@@ -17,6 +17,8 @@ pas toujours de build CUDA — le setup guide alors vers la compilation.
 
 **Mettre à jour llama.cpp** : relancer `uv run loom-setup`, qui propose la build de la
 dernière release stable si elle est plus récente, l'installe à côté et garde l'ancienne.
+Il propose aussi de supprimer les builds plus anciennes de `var/runtime/llama/` (garde la
+build en service, la précédente et celles citées par un `server_bin` ; défaut « non »).
 
 ## À la main (repli)
 

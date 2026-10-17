@@ -2409,3 +2409,70 @@ def test_build_maison_pas_de_maj_officielle(monkeypatch, tmp_path):
         con, cli.SetupReport(), _deps(tmp_path, fetch_release=boom), _PLAT, _HW, raw
     )
     assert "build maison" in "\n".join(printed)
+
+
+# -- ménage des anciennes builds de var/runtime/llama ------------------------------
+def _old_builds(*tags):
+    for tag in tags:
+        d = cli.RUNTIME_DIR / tag
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "llama-server.exe").write_bytes(b"x" * 1024)
+
+
+def test_maj_propose_de_supprimer_les_builds_inutiles(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+    _old_builds("b3000", "b4000", "b5000")
+    exe = cli.RUNTIME_DIR / "b5000" / "llama-server.exe"  # en service avant la MAJ
+    con, printed = _console(answers=["o", "o"])  # installer, puis nettoyer
+    cli.step_binary(
+        con,
+        cli.SetupReport(),
+        _deps(tmp_path, verify_binary=_versions(exe, 5000)),
+        _PLAT,
+        _HW,
+        {"server": {"bin": str(exe)}},
+    )
+    out = "\n".join(printed)
+    assert "b3000" in out and "b4000" in out
+    left = sorted(p.name for p in cli.RUNTIME_DIR.iterdir())
+    # La nouvelle (b5321) et la précédente (b5000, retour arrière) restent.
+    assert left == ["b5000", "b5321"]
+
+
+def test_menage_garde_une_build_referencee_par_un_model_toml(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+    _old_builds("b3000", "b4000", "b5000", "b5321")
+    pinned = cli.RUNTIME_DIR / "b3000" / "llama-server.exe"
+    mdir = tmp_path / "models" / "local" / "text" / "bonsai"
+    mdir.mkdir(parents=True)
+    (mdir / "model.toml").write_text(
+        f'server_bin = "{str(pinned).replace(chr(92), "/")}"\n', encoding="utf-8"
+    )
+    exe = cli.RUNTIME_DIR / "b5321" / "llama-server.exe"
+    con, printed = _console(answers=["o"])
+    cli.step_binary(
+        con,
+        cli.SetupReport(),
+        _deps(tmp_path, verify_binary=_versions(exe, 5321)),
+        _PLAT,
+        _HW,
+        {"server": {"bin": str(exe)}},
+    )
+    left = sorted(p.name for p in cli.RUNTIME_DIR.iterdir())
+    assert left == ["b3000", "b5000", "b5321"]  # b4000 seule part
+
+
+def test_menage_jamais_sous_yes_ni_par_defaut(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+    exe = cli.RUNTIME_DIR / "b5321" / "llama-server.exe"
+    for con, _ in (_console(assume_yes=True), _console(answers=[""])):
+        _old_builds("b3000", "b4000", "b5321")
+        cli.step_binary(
+            con,
+            cli.SetupReport(),
+            _deps(tmp_path, verify_binary=_versions(exe, 5321)),
+            _PLAT,
+            _HW,
+            {"server": {"bin": str(exe)}},
+        )
+        assert (cli.RUNTIME_DIR / "b3000").is_dir()  # destructif : jamais implicite

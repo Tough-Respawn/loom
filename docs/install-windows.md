@@ -25,6 +25,12 @@ l'ancien binaire reste en place (revenir = remettre son chemin dans `[server] bi
 Le bandeau de l'UI suit la même release et affiche cette commande. Un build maison
 (`BUILD.txt` à côté du binaire) se met à jour en recompilant (`[server] rebuild_hint`).
 
+**Anciennes builds** (~1,2 Go chacune) : à chaque passage, le setup propose de supprimer
+celles de `var/runtime/llama/` devenues inutiles. Il garde toujours la build en service,
+la plus récente des autres (retour arrière) et toute build citée par un `server_bin` de
+model.toml. Réponse par défaut « non », jamais de suppression sous `--yes`. Les binaires
+installés à la main ailleurs (ex. `C:/tools/`) ne sont jamais touchés.
+
 ## À la main (repli)
 
 1. Récupérer la release Windows CUDA de llama.cpp (`...-bin-win-cuda-x64.zip`

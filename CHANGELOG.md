@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-10-17 : loom-setup fait le ménage des anciennes builds llama.cpp
+
+- Chaque mise à jour ajoute ~1,2 Go dans `var/runtime/llama/<tag>/` et rien ne les
+  supprimait. Le setup propose maintenant de supprimer les builds inutiles : il garde la
+  build en service, la plus récente des autres (retour arrière) et toute build citée par
+  un `server_bin` de model.toml. Défaut « non », jamais sous `--yes`, ne touche que
+  `var/runtime/llama/`.
+
 ## 2026-10-17 : loom-setup propose la mise à jour de llama.cpp
 
 - `loom-setup` sortait dès que le binaire configuré existait (« rien à faire ») : il ne
