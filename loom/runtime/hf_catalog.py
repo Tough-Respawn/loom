@@ -62,6 +62,35 @@ def search_models(query: str, limit: int = 8, api=None) -> list[dict]:
         raise _err("recherche Hugging Face", exc) from exc
 
 
+def search_family(query: str, limit: int = 40, api=None) -> list[dict]:
+    """Repos GGUF pour `query` avec leur nombre de paramètres et leur architecture (lus
+    par Hugging Face dans un GGUF du repo, parfois un auxiliaire : clip, dflash) et leur
+    modèle de base. Un seul appel, pour proposer des alternatives à un modèle."""
+    try:
+        hits = _api(api).list_models(
+            search=query, filter="gguf", sort="downloads", limit=limit,
+            expand=["gguf", "downloads", "tags"],
+        )  # fmt: skip
+        out = []
+        for m in hits:
+            g = m.gguf or {}
+            base = [
+                t.rsplit(":", 1)[1] for t in m.tags or [] if t.startswith("base_model:")
+            ]
+            out.append(
+                {
+                    "repo_id": m.id,
+                    "downloads": int(m.downloads or 0),
+                    "params": int(g.get("total") or 0),
+                    "arch": g.get("architecture"),
+                    "base": base[0] if base else None,
+                }
+            )
+        return out
+    except Exception as exc:  # noqa: BLE001
+        raise _err("recherche Hugging Face", exc) from exc
+
+
 def list_gguf_files(repo_id: str, api=None) -> list[dict]:
     """Fichiers .gguf du repo (tailles réelles), multi-parties REGROUPÉES."""
     try:

@@ -433,6 +433,30 @@ def test_les_fichiers_auxiliaires_ne_sont_pas_des_quants():
     assert "m.Q4_K.gguf" in r.reply
 
 
+def test_aucun_quant_ne_convient_alternatives_choisies_par_lettre():
+    big = {"filename": "B-IQ2_XXS.gguf", "part_files": ["B-IQ2_XXS.gguf"],
+           "size_mb": 7168, "is_mmproj": False, "is_aux": False}  # fmt: skip
+    pick = {"filename": "S-Q4_K_M.gguf", "label": "Q4_K_M", "size_mb": 5734,
+            "ram_share": 0.18, "tps": 13.7}  # fmt: skip
+    alt = {"repo_id": "e/Small-9B-GGUF", "params": 9.2e9, "active": None, "pick": pick}
+    d = deps(files=[big])
+    d.recommend = lambda fs, repo=None: [
+        dict(f, fits=True, recommended=repo != "org/big", status="ok", ram_share=0.32,
+             tps=7.3, alternatives=[alt] if repo == "org/big" else None)
+        for f in fs
+    ]  # fmt: skip
+    r = wizard.step({"step": "l_query"}, "org/big", d)
+    assert "~32 % lu en RAM, ~7.3 t/s estimés" in r.reply
+    assert "sous 8 t/s estimés" in r.reply
+    assert (
+        "a. e/Small-9B-GGUF : dense 9.2B, Q4_K_M 5.6 Go, ~18 % lu en RAM, "
+        "~13.7 t/s estimés" in r.reply
+    )
+    r = wizard.step(r.state, "A", d)
+    assert r.state["step"] == "l_quant" and r.state["repo"] == "e/Small-9B-GGUF"
+    assert "<- recommandé" in r.reply
+
+
 def test_local_parcours_complet():
     d = deps(hits=HITS, files=FILES)
     r = wizard.start("qwen3 30b", d)  # /add-model <recherche> : direct à la shortlist

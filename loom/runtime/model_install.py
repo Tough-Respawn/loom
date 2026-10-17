@@ -35,9 +35,7 @@ def recommend_quant(
     analysis: dict | None = None,
     supported=None,
 ) -> list[dict]:
-    """Annote chaque quant : `fits` (tient dans le budget mémoire) et `recommended`
-    (le plus gros qui tient). Heuristique SIMPLE : nos modèles tournent experts en
-    RAM (--cpu-moe).
+    """Annote chaque quant : `fits` (tient dans le budget mémoire) et `recommended`.
 
     Budget = `vram_budget_mb` + `ram_total_mb` − marge. DEUX invariants, appris à
     la dure (2026-07-23) :
@@ -51,86 +49,220 @@ def recommend_quant(
     L'utilisateur reste roi (il peut choisir un quant marqué « ne tiendra pas »).
 
     Avec `analysis` (en-tête GGUF lu à distance, cf. gguf_remote.analyze_repo) et
-    `supported` (formats du llama.cpp installé), la règle devient (2026-10-17 : l'ancienne
-    « le plus gros qui tient » recommandait le F16 de 50 Go d'un dense 27B) :
-    - jamais un format inconnu du llama.cpp installé (quant d'un fork), ni pleine
-      précision (F16/BF16/F32 : 2 à 4 fois plus d'octets par token pour un gain nul) ;
-    - DENSE (tous les poids relus à chaque token) : le plus gros quant entièrement en
-      VRAM ; sinon le moins lu en RAM parmi ceux d'au moins 2 bits par poids ;
-    - MoE (seuls les experts actifs relus) : le plus gros qui tient, experts en RAM.
-    Chaque quant reçoit `ram_share` : part des octets lus par token qui viennent de la
-    RAM (0 = tout en VRAM), un FAIT de placement et non une promesse de vitesse."""
+    `supported` (formats du llama.cpp installé), la VRAM passe d'abord (2026-10-17) :
+    - jamais un format inconnu du llama.cpp installé (quant d'un fork), ni la classe
+      1 bit d'un modèle classique ;
+    - le plus gros quant d'au moins 4 bits par poids qui tient ENTIER en VRAM avec son
+      contexte, pleine précision comprise ;
+    - sinon le plus gros dont la génération estimée atteint TARGET_TPS, à défaut MIN_TPS
+      (dense : les couches qui débordent sont lues en RAM ; MoE : experts en RAM) ;
+    - sinon rien : le dépôt ne convient pas à cette machine (cf. suggest_alternatives).
+    Chaque quant reçoit `ram_share` (part des octets lus par token venant de la RAM) et,
+    s'il en lit, `tps` : une ESTIMATION physique (débits de VRAM_GBPS/RAM_GBPS), que le
+    bench remplace par une mesure après l'installation."""
     budget = max(0, vram_budget_mb + ram_total_mb - margin_mb)
     out = []
     for f in files:
         label = gguf_remote.quant_label(f["filename"])
-        if label in gguf_remote.FULL_PRECISION:
-            status = "full"
-        elif (
+        unsupported = (
             supported and label and not gguf_remote.label_supported(label, supported)
         ) or (
             analysis
             and analysis.get("file") == f["filename"]
             and analysis["unknown_types"]
-        ):
-            status = "unsupported"
-        else:
-            status = "ok"
+        )
         out.append(
             dict(f, fits=f["size_mb"] <= budget, recommended=False, label=label,
-                 status=status, ram_share=None, bpw=None)
+                 status="unsupported" if unsupported else "ok", ram_share=None,
+                 bpw=None, tps=None)
         )  # fmt: skip
     eligible = [f for f in out if f["fits"] and f["status"] == "ok"]
     if analysis and vram_budget_mb > 0:
-        gpu_mb = max(0, vram_budget_mb - VRAM_RESERVE_MB)
+        gpu_mb = max(0, vram_budget_mb - vram_reserve_mb(analysis))
         for f in out:
-            f["ram_share"] = _ram_share(f["size_mb"], analysis, gpu_mb)
+            ram, vram = _reads_mb(f["size_mb"], analysis, gpu_mb)
+            f["ram_share"] = ram / (ram + vram) if ram + vram else 0.0
+            if ram:
+                f["tps"] = 1 / (ram / 1024 / RAM_GBPS + vram / 1024 / VRAM_GBPS)
             if analysis["n_params"] and not analysis.get("split"):
                 f["bpw"] = f["size_mb"] * 1024 * 1024 * 8 / analysis["n_params"]
-        if analysis["moe"]:
-            pick = max(eligible, key=lambda f: f["size_mb"], default=None)
-        else:
-            in_vram = [f for f in eligible if f["ram_share"] == 0]
             # Classe 1 bit sur un modèle classique : trop dégradé, même quand unsloth
             # garde des tenseurs plus précis (UD-IQ1_M ≈ 2,0 bits effectifs). Les formats
             # ternaires (Q2_0, TQ1_0), conçus pour ces débits, restent admis.
-            usable = [
-                f for f in eligible
-                if (f["bpw"] is None or f["bpw"] >= 2.0)
-                and not (f["label"] or "").startswith(("IQ1", "Q1_"))
-            ]  # fmt: skip
-            pick = (
-                max(in_vram, key=lambda f: f["size_mb"])
-                if in_vram
-                else min(usable, key=lambda f: f["ram_share"], default=None)
-            )
-    else:  # mémoire unifiée ou en-tête illisible : la taille seule
-        pick = max(eligible, key=lambda f: f["size_mb"], default=None)
+            if f["status"] == "ok" and (
+                (f["bpw"] is not None and f["bpw"] < 2.0)
+                or (f["label"] or "").startswith(("IQ1", "Q1_"))
+            ):
+                f["status"] = "degraded"
+        usable = [f for f in eligible if f["status"] == "ok"]
+        in_vram = [
+            f for f in usable
+            if f["ram_share"] == 0 and (f["bpw"] is None or f["bpw"] >= DECENT_BPW)
+        ]  # fmt: skip
+        fast = [f for f in usable if f["ram_share"] == 0 or f["tps"] >= TARGET_TPS] or [
+            f for f in usable if f["tps"] >= MIN_TPS
+        ]  # fmt: skip
+        pick = max(in_vram or fast, key=lambda f: f["size_mb"], default=None)
+    else:
+        # Mémoire unifiée ou en-tête illisible : aucune vitesse estimable, donc pas de pari
+        # sur la pleine précision (2 à 4 fois plus d'octets par token) hors de la VRAM.
+        in_vram = [
+            f for f in eligible
+            if f["size_mb"] + VRAM_OVERHEAD_MB + KV_UNKNOWN_MB <= vram_budget_mb
+        ]  # fmt: skip
+        quant = [f for f in eligible if f["label"] not in gguf_remote.FULL_PRECISION]
+        pick = max(
+            in_vram or quant or eligible, key=lambda f: f["size_mb"], default=None
+        )
     if pick is not None:
         pick["recommended"] = True
     return out
 
 
-# VRAM laissée au contexte (KV) et aux tampons de calcul ; le bench tranche ensuite.
-VRAM_RESERVE_MB = 1536
+# Hypothèses de placement et de vitesse ; /rebench mesure ensuite le vrai réglage.
+VRAM_OVERHEAD_MB = 1024  # contexte CUDA et tampons de calcul
+RESERVE_CTX = 16384  # contexte de travail minimal dont le KV doit tenir en VRAM
+KV_UNKNOWN_MB = 512  # KV réservé quand l'en-tête ne permet pas de l'estimer
+MIN_TPS = 8.0  # vitesse de lecture confortable, même seuil que le verdict de loom-setup
+# Visée : au-dessus, plus de bits coûtent de la vitesse pour peu de qualité ; sans palier,
+# le plus gros quant tombait toujours à la limite des 8 t/s, dans la marge d'erreur.
+TARGET_TPS = 12.0
+DECENT_BPW = 4.0  # à partir du Q4, la perte de qualité devient faible
+# ponytail: débits fixes, calés sur ornith Q8 (i7-10750H, DDR4-2933, RTX 2060 : 15,1 t/s
+# mesurés pour 1,02 Gio lus en RAM et 2,02 Gio en VRAM par token). Une autre machine
+# s'en écarte : les dériver d'une génération mesurée par /rebench quand elle sera stockée.
+RAM_GBPS = 18.0
+VRAM_GBPS = 250.0
 
 
-def _ram_share(size_mb: int, a: dict, gpu_mb: int) -> float:
-    """Part des octets lus par token qui viennent de la RAM, pour un quant de `size_mb`
-    aux proportions de l'en-tête `a`. Dense : tout est relu, ce qui déborde de la VRAM
-    vient de la RAM. MoE : experts en RAM (--cpu-moe), seuls les actifs sont relus."""
-    if size_mb <= gpu_mb:
-        return 0.0
-    emb = size_mb * a["f_emb"]  # embedding d'entrée : une ligne par token, négligeable
-    if not a["moe"]:
-        read = size_mb - emb
-        return min(1.0, (size_mb - gpu_mb) / read) if read > 0 else 0.0
+def vram_reserve_mb(a: dict) -> float:
+    """VRAM à laisser hors des poids : tampons + cache KV (q8_0, 1,0625 octet par
+    élément) de RESERVE_CTX tokens, les couches à fenêtre glissante bornées à leur
+    fenêtre."""
+    full, swa = a.get("kv_per_token") or 0, a.get("kv_swa_per_token") or 0
+    if not (full or swa):
+        return VRAM_OVERHEAD_MB + KV_UNKNOWN_MB
+    elems = full * RESERVE_CTX + swa * min(RESERVE_CTX, a.get("swa_window") or 0)
+    return VRAM_OVERHEAD_MB + elems * 1.0625 / 2**20
+
+
+def _reads_mb(size_mb: int, a: dict, gpu_mb: float) -> tuple[float, float]:
+    """(RAM, VRAM) en Mo lus par token pour un quant de `size_mb` aux proportions de
+    l'en-tête `a`. Ce qui déborde de la VRAM est lu en RAM ; un MoE qui ne tient pas
+    entier garde ses experts en RAM (--cpu-moe) et n'en relit que les actifs.
+    L'embedding d'entrée (une ligne par token) est négligé."""
     exp = size_mb * a["f_exp"]
-    common = size_mb - exp - emb
+    common = size_mb - exp - size_mb * a["f_emb"]
     active = exp * a["expert_used"] / max(1, a["expert_count"])
-    common_ram = max(0.0, common - gpu_mb)
-    read = common + active
-    return min(1.0, (active + common_ram) / read) if read > 0 else 0.0
+    if size_mb <= gpu_mb:
+        return 0.0, common + active
+    vram = min(common, gpu_mb)
+    return common - vram + active, vram
+
+
+# Taille annoncée dans un nom de repo (« -27B », « -E4B », « -0.6b ») et paramètres actifs
+# d'un MoE (« -A3B »).
+_SIZE_RE = re.compile(r"[-_.][Ee]?(\d+(?:\.\d+)?)[Bb](?![A-Za-z0-9])")
+_ACTIVE_RE = re.compile(r"[-_]A(\d+(?:\.\d+)?)B(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def family_stem(repo_id: str | None) -> str | None:
+    """Nom de famille d'un modèle : ce qui précède sa taille (« Qwen3.8-27B-GGUF » ->
+    « Qwen3.8 »). None si le nom n'annonce pas de taille."""
+    name = (repo_id or "").split("/")[-1]
+    m = _SIZE_RE.search(name)
+    stem = name[: m.start()] if m else ""
+    return stem if len(stem) >= 3 else None
+
+
+def _hit_size(hit: dict) -> tuple[float, float | None]:
+    """(paramètres, paramètres actifs si MoE) d'un résultat de search_family. Hugging Face
+    lit parfois un GGUF auxiliaire du repo (drafter, projecteur) : le nom fait alors foi."""
+    name = hit["repo_id"].split("/")[-1]
+    params = hit.get("params") or 0
+    if hit.get("arch") in (None, "", "clip", "dflash") or params < 5e8:
+        m = _SIZE_RE.search(name)
+        params = float(m.group(1)) * 1e9 if m else 0.0
+    a = _ACTIVE_RE.search(name)
+    return params, float(a.group(1)) * 1e9 if a else None
+
+
+def _assumed(params: float, active: float | None) -> dict:
+    """Proportions supposées d'un modèle dont on n'a pas lu l'en-tête. MoE : un tiers des
+    paramètres actifs sont des experts, le reste est relu à chaque token (mesuré sur
+    Qwen3.6-35B-A3B : 1,0 B d'experts actifs, 2,2 B communs)."""
+    a = {"moe": False, "expert_count": 0, "expert_used": 0, "f_exp": 0.0,
+         "f_emb": 0.02, "n_params": params, "kv_per_token": 0, "unknown_types": [],
+         "split": False, "file": None}  # fmt: skip
+    if active:
+        experts = params - 2 * active / 3
+        a.update(moe=True, expert_count=experts, expert_used=active / 3,
+                 f_exp=experts / params)  # fmt: skip
+    return a
+
+
+def suggest_alternatives(
+    repo: str,
+    analysis: dict | None,
+    hits: list[dict],
+    list_files,
+    vram_budget_mb: int,
+    ram_total_mb: int,
+    supported=None,
+    limit: int = 3,
+    faster_than: float = 0.0,
+) -> list[dict]:
+    """Repos de `hits` (search_family, par téléchargements décroissants) dont un quant
+    passe recommend_quant sur cette machine (tout en VRAM, ou estimé à plus de
+    `faster_than` t/s), les plus gros modèles d'abord.
+
+    Même taille que le modèle analysé : même modèle chez un autre publieur, ses
+    proportions lues s'appliquent (un format chargeable, un quant plus petit). Sinon
+    elles sont supposées d'après le nombre de paramètres et le nom. Au plus 8 repos
+    inventoriés (en parallèle), un par taille (deux pour celle du modèle analysé)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    counts: dict = {}
+    cands = []
+    for h in hits:
+        params, active = _hit_size(h)
+        if h["repo_id"] == repo or params < 5e8:
+            continue
+        same = bool(analysis) and (
+            abs(params - analysis["n_params"]) <= 0.05 * analysis["n_params"]
+            and bool(active) == analysis["moe"]
+        )
+        key = (round(params / 1e9), active)
+        if counts.get(key, 0) >= (2 if same else 1):
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        a = dict(analysis, file=None) if same else _assumed(params, active)
+        cands.append((h["repo_id"], params, active, a))
+        if len(cands) == 8:
+            break
+
+    def evaluate(c):
+        repo_id, params, active, a = c
+        try:
+            files = [f for f in list_files(repo_id) if not f.get("is_aux")]
+        except Exception:  # noqa: BLE001 - un repo illisible n'est juste pas proposé
+            return None
+        out = recommend_quant(
+            files, vram_budget_mb, ram_total_mb, analysis=a, supported=supported
+        )
+        pick = next((f for f in out if f["recommended"]), None)
+        if pick and pick["tps"] is not None and pick["tps"] <= faster_than:
+            return None
+        return pick and {
+            "repo_id": repo_id,
+            "params": params,
+            "active": active,
+            "pick": pick,
+        }
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        found = [r for r in ex.map(evaluate, cands) if r]
+    return sorted(found, key=lambda r: -r["params"])[:limit]
 
 
 def write_model_toml(
