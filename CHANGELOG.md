@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-10-17 : loom-setup propose la mise à jour de SearXNG
+
+- Le conteneur SearXNG géré n'était jamais mis à jour : celui de cette machine datait du
+  2026-07-10 et ne tirait plus rien de Yahoo, corrigé en amont depuis. Comme pour
+  llama.cpp, `uv run loom-setup` compare l'empreinte de l'image en service à celle de
+  `latest` sur Docker Hub et propose la mise à jour (aussi :
+  `uv run python -m loom.runtime.searxng update`). Le conteneur est recréé sur le même
+  port avec le même `settings.yml` ; si le téléchargement échoue, il n'est pas touché.
+  Hors ligne ou sans Docker : rien, jamais bloquant.
+
 ## 2026-10-17 : web_search et fetch_url distinguent l'échec de l'absence de résultat
 
 - SearXNG répondait HTTP 200 avec zéro résultat, ses moteurs en CAPTCHA ou en 429 :

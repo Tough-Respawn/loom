@@ -37,6 +37,7 @@ from loom.runtime.platform_info import detect as detect_platform
 from loom.runtime.term import colorize, supports_color
 from loom.setup import bench as bench_mod
 from loom.setup import llama_release
+from loom.runtime import searxng as searxng_mod
 from loom.setup import tooling as tooling_mod
 from loom.setup import topology as topo_mod
 from loom.setup.catalog import (
@@ -220,6 +221,9 @@ class Deps:
     fetch_release: object = None  # () -> dict (client httpx construit ici)
     fetch_swap_release: object = None  # () -> dict (release llama-swap)
     tool_checks: object = tooling_mod.tool_checks
+    searxng_installed: object = searxng_mod.installed_image  # () -> dict | None
+    searxng_latest: object = searxng_mod.latest_image  # () -> dict, RuntimeError hors ligne
+    searxng_update: object = searxng_mod.update  # () -> URL | None
     install_playwright: object = tooling_mod.install_playwright_browser
     download_and_extract: object = None  # (plan, dest_root, progress_cb) -> Path
     find_llama_server: object = llama_release.find_llama_server
@@ -605,6 +609,47 @@ def step_tooling(con: Console, report: SetupReport, deps: Deps):
         report.add("outillage", "manuel", f"manquant : {', '.join(still)}")
     else:
         report.add("outillage", "fait", "complété")
+
+
+def step_searxng(con: Console, report: SetupReport, deps: Deps):
+    """SearXNG géré (web_search) : propose la dernière image quand celle du conteneur est
+    dépassée, comme pour llama.cpp. Ses moteurs lisent des pages qui changent souvent
+    (vécu 2026-10-17 : l'image de juillet, jamais mise à jour, ne tirait plus rien de
+    Yahoo, corrigé en amont depuis). Pas de conteneur ou hors ligne : jamais bloquant."""
+    local = deps.searxng_installed()
+    if local is None:
+        return  # pas de SearXNG géré : web_search tourne sur ddgs
+    try:
+        latest = deps.searxng_latest()
+    except RuntimeError as exc:
+        con.say(f"  SearXNG (image du {local['date']}) → mise à jour non vérifiée : {exc}")
+        report.add("searxng", "ok", "mise à jour non vérifiée")
+        return
+    if latest["digest"] in local["digests"]:
+        con.say(f"  SearXNG (image du {local['date']}) → à jour, rien à faire.")
+        report.add("searxng", "ok", "à jour")
+        return
+    con.say(
+        f"  SearXNG : image du {local['date']} en service, version du "
+        f"{latest['date']} disponible."
+    )
+    if not con.confirm(
+        "Mettre à jour SearXNG (~200 Mo, conteneur recréé, réglages conservés) ?"
+    ):
+        report.add("searxng", "ignore", f"mise à jour refusée (image du {local['date']})")
+        return
+    con.progress("mise à jour de SearXNG…")
+    url = deps.searxng_update()
+    con.progress_end()
+    if url:
+        con.say(f"  [ok] SearXNG à jour ({url}).")
+        report.add("searxng", "fait", f"image du {latest['date']}")
+    else:
+        con.say(
+            "  [échec] mise à jour de SearXNG (détail ci-dessus) ; web_search passe sur "
+            "ddgs en attendant. Réessayer : uv run python -m loom.runtime.searxng update"
+        )
+        report.add("searxng", "manuel", "mise à jour en échec, à relancer")
 
 
 def _offer_free_ram(con: Console, deps: Deps, hw, ram: int) -> int:
@@ -2200,6 +2245,7 @@ def run(con: Console, deps: Deps) -> int:
         raw_cfg = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
         step_swap(con, report, deps, plat, raw_cfg)
         step_tooling(con, report, deps)
+        step_searxng(con, report, deps)
         raw_cfg = read_raw_config(CONFIG_PATH, PERSONAL_CONFIG_PATH)
         hw = _refresh_gpu(con, deps, hw, raw_cfg)
         step_model(con, report, deps, hw, ram, raw_cfg)
