@@ -1688,9 +1688,11 @@ class LoomClient:
                     return
                 continue
 
-            yield from _check_no_progress(tool_calls, strong, repeat_limit, st)
+            yield from _check_no_progress(tool_calls, strong, repeat_limit, st, convo)
             if st["action"] == "done":
                 return
+            if st["action"] == "continue":
+                continue
 
             assistant_message = {
                 "role": "assistant",

@@ -523,6 +523,45 @@ def test_repeat_stop_meme_appel_repete():
     assert done["reason"] == "repeat_stop"
 
 
+def test_repetition_relance_au_2e_appel_identique():
+    # Le 2e appel identique n'est pas réexécuté : une relance [LOOM] cite l'appel
+    # et le modèle peut corriger ses arguments au lieu d'être coupé.
+    ran = []
+    reg = FakeRegistry({"list_dir": lambda a: ran.append(a) or "racine"})
+    same = lambda: turn_tools([("call_1", "list_dir", "{}")])  # noqa: E731
+    client, fake = make_client(
+        [
+            same(),
+            same(),
+            turn_tools([("call_3", "list_dir", '{"path": "sous"}')]),
+            turn_text("fini."),
+        ]
+    )
+    events, done = run(client, registry=reg)
+    assert done["reason"] == "natural"
+    relances = [p for p in only(events, "harness") if p["kind"] == "répétition"]
+    assert len(relances) == 1 and "list_dir {}" in relances[0]["text"]
+    assert len(ran) == 2  # 1er appel + appel corrigé, pas le doublon
+    assert any(
+        m["role"] == "user"
+        and "[LOOM]" in m["content"]
+        and "list_dir {}" in m["content"]
+        for m in fake.calls[2]["messages"]
+    )
+
+
+def test_repetition_arret_au_3e_apres_une_relance():
+    ran = []
+    reg = FakeRegistry({"list_dir": lambda a: ran.append(a) or "racine"})
+    same = lambda: turn_tools([("call_1", "list_dir", "{}")])  # noqa: E731
+    client, _ = make_client([same(), same(), same(), same()])
+    events, done = run(client, registry=reg)
+    assert done["reason"] == "repeat_stop"
+    relances = [p for p in only(events, "harness") if p["kind"] == "répétition"]
+    assert len(relances) == 1
+    assert len(ran) == 1
+
+
 def test_boucle_degeneree_texte_repete():
     from .fakes import chunk, usage_chunk
 

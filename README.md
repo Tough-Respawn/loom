@@ -93,7 +93,9 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
   `tool_search` permet de charger le schéma complet d'un outil différé avant son premier appel.
 - 🧭 **Boucle agentic, pas déterministe** : l'arrêt suit le **stop naturel** du modèle (il
   répond sans appel d'outil → fini). Par-dessus, des **garde-fous** non-bloquants : plafond de
-  tours et détecteur de non-progrès (anti-boucle). *Pas de mur de temps* (retiré : il
+  tours et détecteur de non-progrès (anti-boucle : hors modèle « fort », le 2e appel identique
+  n'est pas réexécuté et une note `[LOOM]` cite l'appel répété ; le 3e arrête le tour).
+  *Pas de mur de temps* (retiré : il
   décapitait le raisonnement).
 - 🔒 **Mode permission** : en mode `ask`, confirmation interactive (Autoriser/Refuser) avant
   chaque écriture / commande shell ; en mode `allow`, l'agent agit sans demander. Par-dessus,
