@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-10-18 : /add-model ouvre un panneau d'ajout hors conversation
+
+- `/add-model`, tapé dans le chat ou en note, même pendant une génération, ouvre
+  « Gérer les modèles » → « Ajouter un modèle ». Les étapes (recherche Hugging Face,
+  quant recommandé, id, disque, clé d'un distant) s'y déroulent hors du fil et du
+  journal de la conversation ; la fin d'un téléchargement n'y écrit rien non plus.
+  `/cancel` annule sans appeler le modèle. Les anciens dialogues restés dans une
+  conversation sont effacés au message suivant ; `/rebench` reste dans la conversation.
+
 ## 2026-10-18 : un appel d'outil répété est signalé au modèle avant l'arrêt
 
 - Hors modèle « fort », le 2e appel identique d'affilée n'est plus réexécuté : son

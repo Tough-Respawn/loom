@@ -363,6 +363,8 @@ def _finish_install(S, sess, chat_lock, mid, mdir, job):
         if loadable is None:
             msg += f"\n(test de chargement non concluant : {cause})"
     job.final_message = msg
+    if sess is None:  # Management panel: completion stays out of every chat journal.
+        return
     # Attendre brièvement le verrou; le journal append-only borne le risque de repli.
     got = chat_lock.acquire(timeout=2)
     try:

@@ -104,8 +104,10 @@ fixe le délai d'attente en secondes, à adapter à la durée de génération.
 
 - **Première installation** : lancer `uv run loom-setup` depuis le dépôt pour être
   guidé dans l'installation et la calibration d'un modèle texte local.
-- **Depuis le chat** : `/add-model` propose les modèles texte locaux, distants,
-  image et vidéo. Pour le texte local, l'assistant recherche les GGUF sur Hugging
+- **Depuis l’interface** : configuration → **Gérer les modèles** → **Ajouter un modèle**.
+  `/add-model` ouvre ce même panneau, y compris pendant une génération. Les étapes
+  d’ajout et `/cancel` restent hors du fil du modèle. Le panneau propose les modèles
+  texte locaux, distants, image et vidéo. Pour le texte local, l'assistant recherche les GGUF sur Hugging
   Face, propose une quantification et télécharge les fichiers. Pour l'image et la
   vidéo, il demande un export ComfyUI au format API ; les poids restent à installer
   dans ComfyUI.

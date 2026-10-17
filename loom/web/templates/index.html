@@ -658,6 +658,23 @@
     .cfg-tab:hover { color: var(--text); }
     .cfg-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .cfg-panel[hidden], .cfg-group[hidden] { display: none; }
+    .model-management-intro { margin: 4px 0 14px; color: var(--text-dim); }
+    #model-add-panel { padding: 14px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg); }
+    .model-management-title { margin: 0 0 12px; font-size: 12.5px; font-weight: 600; }
+    .model-installed-title { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+    .model-add-reply { white-space: normal; overflow-wrap: anywhere; line-height: 1.65; font-weight: 400; }
+    .model-add-reply p { margin: 0 0 10px; }
+    .model-add-reply :last-child { margin-bottom: 0; }
+    .model-add-reply ol, .model-add-reply ul { margin: 10px 0; padding-left: 2em; }
+    .model-add-reply li { padding-left: 3px; margin: 6px 0; }
+    .model-add-reply pre { white-space: pre-wrap; }
+    #model-add-status:not(:empty) { margin-top: 12px; color: var(--text-dim); }
+    #model-add-choices { flex-wrap: wrap; }
+    #model-add-choices:not(:empty) { margin-top: 14px; }
+    #model-add-form:not([hidden]) { display: grid; gap: 8px; margin-top: 18px; }
+    #model-add-form label { font-size: 11px; color: var(--text-dim); }
+    .model-add-actions { justify-content: flex-end; margin-top: 4px; flex-wrap: wrap; }
+    .model-add-actions .rm-btn { flex: 0 1 auto; padding: 7px 12px; }
     #model-management-list .lm-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
     #model-management-list .lm-item > span { min-width: 0; overflow-wrap: anywhere; }
     .model-remove-confirm { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1318,7 +1335,23 @@
       </div>
       <div class="cfg-scroll">
         <div class="cfg-panel" data-tab="gestion" hidden>
-          <p>Supprime un modèle inutilisé. Les conversations en cours continuent.</p>
+          <p class="model-management-intro">Ajoute ou supprime un modèle. Les conversations en cours continuent.</p>
+          <button type="button" id="model-add-open" class="rm-add-btn">+ Ajouter un modèle</button>
+          <section id="model-add-panel" hidden aria-label="Ajouter un modèle">
+            <h3 class="model-management-title">Ajouter un modèle</h3>
+            <div id="model-add-reply" class="model-add-reply" aria-live="polite"></div>
+            <div id="model-add-status" role="status"></div>
+            <div id="model-add-choices" class="rm-actions"></div>
+            <form id="model-add-form" autocomplete="off">
+              <label for="model-add-input">Ta réponse</label>
+              <input id="model-add-input" class="rm-in" required autocomplete="off">
+              <div class="rm-actions model-add-actions">
+                <button type="submit" class="rm-btn primary">Continuer</button>
+                <button type="button" id="model-add-cancel" class="rm-btn">Annuler l’ajout</button>
+              </div>
+            </form>
+          </section>
+          <h3 class="model-management-title model-installed-title">Modèles installés</h3>
           <div id="model-management-list" class="rm-list" aria-live="polite"></div>
         </div>
         <!-- Onglet Modèles locaux (servis sur cette machine). Tuning d'offload GPU éditable. -->

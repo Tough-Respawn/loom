@@ -14,6 +14,9 @@ FAKE_MODEL = "fake-model"
 
 
 def _sse_texts(body: bytes) -> str:
+    if body.lstrip().startswith(b"{"):
+        data = json.loads(body)
+        return data.get("reply", data.get("message", ""))
     out = []
     for line in body.decode("utf-8").splitlines():
         if line.startswith("data: "):
@@ -77,20 +80,175 @@ def _fake_deps(monkeypatch, hits=(), files=()):
 
 def test_add_model_ack_et_etat_persiste(env, monkeypatch):
     _fake_deps(monkeypatch)
-    r = env.web.post("/chat", data={"message": "/add-model"})
+    r = env.web.post("/models/add", data={"message": "/add-model"})
     assert r.status_code == 200
-    assert r.content_type.startswith("text/event-stream")
+    assert r.is_json
     assert "1. local" in _sse_texts(r.data)
     # l'étape suivante est bien routée vers le wizard (état persisté sur la session)
-    r2 = env.web.post("/chat", data={"message": "2"})
+    r2 = env.web.post("/models/add", data={"message": "2"})
     assert "distant 1/5" in _sse_texts(r2.data)
 
 
 def test_add_model_cancel(env, monkeypatch):
     _fake_deps(monkeypatch)
-    env.web.post("/chat", data={"message": "/add-model"})
-    r = env.web.post("/chat", data={"message": "/cancel"})
+    env.web.post("/models/add", data={"message": "/add-model"})
+    r = env.web.post("/models/add", data={"message": "/cancel"})
     assert "annulé" in _sse_texts(r.data).lower()
+
+
+@pytest.mark.parametrize("command", ["/add-model", "/add-model distant", "/cancel"])
+@pytest.mark.parametrize("busy", [False, True])
+def test_commandes_interface_ne_generent_ni_note_ni_journal(env, command, busy, monkeypatch):
+    from loom.web.routes.helpers import _lock_for, _cancel_for
+    from loom.web.routes import models
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Une commande d’interface ne doit pas construire les dépendances du wizard")
+
+    monkeypatch.setattr(models, "_wizard_deps", forbidden)
+    S = env.web.application.S
+    sess = S.cur["session"]
+    lock = _lock_for(S, sess.id)
+    if busy:
+        lock.acquire()
+    before = {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+    try:
+        for endpoint, key in (("/chat", "message"), ("/note", "text")):
+            r = env.web.post(endpoint, data={key: command, "session_id": sess.id})
+            assert r.status_code == 200
+            assert r.get_json()["ui_action"] == ("cancel_interface" if command == "/cancel" else "add_model")
+        assert S.notes.drain(sess.id) == []
+        assert not _cancel_for(S, sess.id).is_set()
+        assert lock.locked() == busy
+        assert before == {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+    finally:
+        if busy:
+            lock.release()
+
+
+def test_panneau_ajout_independant_du_chat_et_annulation_sans_deps(env, monkeypatch):
+    from loom.web.routes.helpers import _lock_for
+    from loom.web.routes import models
+
+    _fake_deps(monkeypatch)
+    S = env.web.application.S
+    sess = S.cur["session"]
+    before = {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+    lock = _lock_for(S, sess.id)
+    lock.acquire()
+    try:
+        assert env.web.post("/models/add", data={"message": "/add-model"}).get_json()["active"]
+        assert env.web.post("/models/add", data={"message": "2"}).get_json()["active"]
+        assert "distant" in env.web.get("/models/add").get_json()["reply"]
+        assert sess.conversation.wizard is None
+        monkeypatch.setattr(models, "_wizard_deps", lambda S: (_ for _ in ()).throw(ImportError("GPU_KV_BYTES")))
+        assert env.web.post("/chat", data={"message": "/cancel"}).status_code == 200
+        assert not env.web.get("/models/add").get_json()["active"]
+        assert lock.locked()
+        assert before == {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+    finally:
+        lock.release()
+
+
+def test_import_echoue_puis_cancel_ne_lance_pas_le_modele(env, monkeypatch):
+    from loom.web.routes import models
+
+    def failed(S):
+        raise ImportError("cannot import name 'GPU_KV_BYTES'")
+
+    monkeypatch.setattr(models, "_wizard_deps", failed)
+    r = env.web.post("/models/add", data={"message": "/add-model"})
+    assert "Redémarre Loom" in r.get_json()["reply"]
+    assert not r.get_json()["active"]
+    assert env.web.post("/chat", data={"message": "/cancel"}).get_json()["ui_action"] == "cancel_interface"
+
+
+def test_cancel_efface_ancien_wizard_sans_dependances(env, monkeypatch):
+    from loom.web.routes import models
+
+    S = env.web.application.S
+    conv = S.cur["session"].conversation
+    conv.set_wizard({"step": "r_key", "id": "old"})
+    monkeypatch.setattr(models, "_wizard_deps", lambda S: pytest.fail("cancel doit être indépendant des imports"))
+    messages = list(conv.messages)
+    assert env.web.post("/chat", data={"message": "/cancel"}).status_code == 200
+    assert conv.wizard is None
+    assert conv.messages == messages
+
+
+def test_panneaux_ajout_isoles_entre_sessions(env, monkeypatch):
+    _fake_deps(monkeypatch)
+    S = env.web.application.S
+    first = S.cur["session"].id
+    env.web.post("/models/add", data={"message": "/add-model", "session_id": first})
+    env.web.post("/session/new", data={})
+    second = S.cur["session"].id
+    assert not env.web.get("/models/add", query_string={"session_id": second}).get_json()["active"]
+    env.web.post("/models/add", data={"message": "/cancel", "session_id": second})
+    assert env.web.get("/models/add", query_string={"session_id": first}).get_json()["active"]
+
+
+def test_navigateur_commandes_interface_preservent_generation(env, monkeypatch):
+    """Exercise actual keyboard routing and panel JS, with a fake provider."""
+    import threading
+    from pathlib import Path
+    from werkzeug.serving import make_server
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    _fake_deps(monkeypatch)
+    env.web.application.S.client = None  # no model or provider is ever invoked
+    with playwright.sync_playwright() as p:
+        if not Path(p.chromium.executable_path).exists():
+            pytest.skip("Chromium non installé")
+        server = make_server("127.0.0.1", 0, env.web.application, threaded=True)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        browser = None
+        try:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            chat_requests, errors = [], []
+            page.on("request", lambda r: chat_requests.append(r.url) if r.url.endswith(("/chat", "/note")) else None)
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(f"http://127.0.0.1:{server.server_port}")
+            assert not errors
+            composer = page.locator(".chat-form textarea").first
+            composer.wait_for()
+            page.evaluate("""async () => {
+              const {state, tab} = await import('/static/state.js');
+              const current = tab(state.active);
+              current.streaming = true;
+              window.originalAbort = current.abort = new AbortController();
+            }""")
+            composer.fill("/cancel")
+            composer.press("Enter")
+            playwright.expect(composer).to_have_value("")
+            composer.fill("/add-model distant")
+            composer.press("Enter")
+            playwright.expect(page.locator("#model-add-reply")).to_contain_text("distant 1/5")
+            page.locator("#model-add-input").fill("test-remote")
+            page.locator("#model-add-form button[type=submit]").click()
+            playwright.expect(page.locator("#model-add-reply")).to_contain_text("base_url")
+            page.locator("#model-add-input").fill("https://example.org/v1")
+            page.locator("#model-add-form button[type=submit]").click()
+            playwright.expect(page.locator("#model-add-input")).to_have_attribute("type", "password")
+            page.locator("#model-add-cancel").click()
+            playwright.expect(page.locator("#model-add-reply")).to_contain_text("annulé")
+            # Installation completion refreshes the actual selector, without switching
+            # the model of the running conversation or losing the remote panel.
+            selected = page.locator("#model-select").input_value()
+            env.web.application.S.models.append("installed-model")
+            page.evaluate("document.dispatchEvent(new CustomEvent('loom:models-changed'))")
+            playwright.expect(page.locator('#model-select option[value="installed-model"]')).to_have_count(1)
+            playwright.expect(page.locator("#model-select")).to_have_value(selected)
+            assert not page.evaluate("window.originalAbort.signal.aborted")
+            assert not chat_requests
+            assert not errors
+        finally:
+            if browser:
+                browser.close()
+            server.shutdown()
+            worker.join(timeout=5)
 
 
 def test_add_model_distant_persiste_le_dossier_remote(env, monkeypatch):
@@ -104,8 +262,8 @@ def test_add_model_distant_persiste_le_dossier_remote(env, monkeypatch):
         "aucune",
         "glm-test-model",
     ]:
-        env.web.post("/chat", data={"message": msg})
-    r = env.web.post("/chat", data={"message": "non"})
+        env.web.post("/models/add", data={"message": msg})
+    r = env.web.post("/models/add", data={"message": "non"})
     assert "ajouté" in _sse_texts(r.data)
     # Un distant = un dossier remote/<id>/model.toml sur la racine prioritaire —
     # ni store JSON, ni [[remote_models]] dans local.toml.
@@ -185,7 +343,7 @@ def test_remove_model_distant_supprime_le_dossier(env, monkeypatch):
         "glm-test-model",
         "non",
     ]:
-        env.web.post("/chat", data={"message": msg})
+        env.web.post("/models/add", data={"message": msg})
     assert (env.root / "remote" / "glm-test").is_dir()
     r = env.web.delete("/models/installed/glm-test")
     assert r.status_code == 200
@@ -302,8 +460,8 @@ def _install_image(env_img, mid="zz-img"):
     wf = env_img.tmp / "wf_api.json"
     wf.write_text('{"1": {"inputs": {"text": "{PROMPT}"}}}', encoding="utf-8")
     for msg in ["/add-model image", mid, "ok", "mon générateur"]:
-        env_img.web.post("/chat", data={"message": msg})
-    return env_img.web.post("/chat", data={"message": str(wf)})
+        env_img.web.post("/models/add", data={"message": msg})
+    return env_img.web.post("/models/add", data={"message": str(wf)})
 
 
 def test_install_image_scaffold_et_montage(env_img, monkeypatch):
@@ -323,8 +481,8 @@ def test_install_image_scaffold_et_montage(env_img, monkeypatch):
 def test_install_image_plus_tard_scaffold_sans_montage(env_img, monkeypatch):
     _real_img_deps(monkeypatch)
     for msg in ["/add-model image", "zz-later", "ok", "non"]:
-        env_img.web.post("/chat", data={"message": msg})
-    r = env_img.web.post("/chat", data={"message": "plus tard"})
+        env_img.web.post("/models/add", data={"message": msg})
+    r = env_img.web.post("/models/add", data={"message": "plus tard"})
     body = _sse_texts(r.data)
     assert "workflow.json" in body  # le chemin où déposer l'export est annoncé
     mdir = env_img.root / "local" / "image" / "zz-later"
@@ -338,11 +496,11 @@ def test_reprise_dossier_complete_monte_directement(env_img, monkeypatch):
     _real_img_deps(monkeypatch)
     # scaffold « plus tard », dépôt manuel de la recette, puis re-run /add-model image
     for msg in ["/add-model image", "zz-resume", "ok", "non", "plus tard"]:
-        env_img.web.post("/chat", data={"message": msg})
+        env_img.web.post("/models/add", data={"message": msg})
     mdir = env_img.root / "local" / "image" / "zz-resume"
     (mdir / "workflow.json").write_text('{"1": "{PROMPT}"}', encoding="utf-8")
-    env_img.web.post("/chat", data={"message": "/add-model image"})
-    r = env_img.web.post("/chat", data={"message": "zz-resume"})
+    env_img.web.post("/models/add", data={"message": "/add-model image"})
+    r = env_img.web.post("/models/add", data={"message": "zz-resume"})
     assert "montage direct" in _sse_texts(r.data)
     payload = env_img.web.get("/models/config").get_json()
     assert any(m["id"] == "zz-resume" for m in payload["models"])
@@ -425,8 +583,8 @@ def _install_local(env, monkeypatch, probe):
     monkeypatch.setattr(model_install, "start_download", fake_start)
 
     for msg in ["/add-model qwen", "1", "1"]:
-        env.web.post("/chat", data={"message": msg})
-    r = env.web.post("/chat", data={"message": "ok"})
+        env.web.post("/models/add", data={"message": msg})
+    r = env.web.post("/models/add", data={"message": "ok"})
     body = _sse_texts(r.data)
     assert "téléchargement" in body.lower()
 
@@ -440,6 +598,22 @@ def _install_local(env, monkeypatch, probe):
 def test_add_model_local_installe(env, monkeypatch):
     # monté à chaud : visible dans la liste des modèles sélectionnables
     assert _install_local(env, monkeypatch, probe=(True, ""))
+
+
+def test_installation_panneau_pendant_generation_sans_journal(env, monkeypatch):
+    from loom.web.routes.helpers import _lock_for
+
+    S = env.web.application.S
+    sess = S.cur["session"]
+    before = {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+    lock = _lock_for(S, sess.id)
+    lock.acquire()
+    try:
+        assert _install_local(env, monkeypatch, probe=(True, ""))
+        assert lock.locked()
+        assert before == {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+    finally:
+        lock.release()
 
 
 def test_add_model_local_illisible_non_monte(env, monkeypatch):

@@ -1,6 +1,7 @@
 // UI déclarative Preact: les événements SSE mutent `state.timeline`, puis la vue se rend.
 
 import { initKbdCheatsheet } from "./kbd.js";
+import { initModelAdd } from "./model-add.js";
 import { _phRaf, loomWorkdir, set_CMDS, set__phRaf, set_loomWorkdir, set_machineUnloaded, set_skGenBusy } from "./shared.js";
 import { addImages, clampRatio, createPane, renderLayout, savePanesLayout, updatePlaceholders } from "./panes.js";
 import { SM_POS_KEY, _multiSel, _typesetAll, clearMultiSel, closeDrawer, closeSkillDrawer, closeTabMenu, compactBtn, doDeleteSkill, drawer, drawerClose, drawerScrim, fmtTok, localOnlyCb, newSessionTab, openConfirmPop, openDeleteConfirm, openDrawer, openSkillCreator, openSkillEditor, paintModelSelect, pickFolderBtn, postForm, postSkillsToggle, reflectWorkdir, resetBtn, saveSkill, scheduleMachineRefresh, sessionNew, setMetrics, setSkillDrawerMode, settingsBtn, showToast, sidebarEl, sidebarToggle, singleView, skBody, skCurrent, skDraft, skDrawer, skGenDesc, skMode, skNameInput, skScrim, skStatus, smPlace, splitWith, syncSkillsMaster, thinkingCb, toggleMultiSel, updateUsageMeter, workdirChip } from "./panels.js";
@@ -570,7 +571,6 @@ window.addEventListener("keydown", (e) => {
   // DEUX blocs (machine vs distant), EN PHASE avec le rendu serveur (_models.html) :
   // la couleur par type (classe opt-<type>) distingue texte/image/vidéo DANS le bloc
   // machine ; re-teinte du select fermé après reconstruction.
-  document.addEventListener("loom:models-changed", () => load());
   function rebuildModelSelect(payload) {
     const sel = document.getElementById("model-select");
     if (!sel || !payload) return;
@@ -683,6 +683,7 @@ window.addEventListener("keydown", (e) => {
       rebuildModelSelect(d.models);
     } catch {}
   };
+  document.addEventListener("loom:models-changed", () => window.refreshModels());
 
   function bodyFromForm() {
     return {
@@ -1398,8 +1399,10 @@ setInterval(llamaUpdateTick, 3600000);
     } catch (e) { list.textContent = e.message; }
   }
   document.addEventListener("loom:manage-models", load);
+  document.addEventListener("loom:models-changed", load);
   document.querySelector('[data-tab="gestion"].cfg-tab')?.addEventListener("click", load);
 })();
 
 paintModelSelect();
+initModelAdd({ getSessionId: () => state.active, postForm, showToast });
 initKbdCheatsheet();

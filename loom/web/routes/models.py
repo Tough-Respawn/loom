@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from flask import Response, render_template, request
@@ -37,6 +38,60 @@ from loom.web.routes.model_admin import (
     _removable_models,
 )
 from loom.web.routes.rebench import _REBENCH, _rebench_worker
+
+
+@dataclass
+class _ModelAddFlow:
+    """UI state only: never stored in a conversation or its event journal."""
+
+    wizard: dict | None = None
+    reply: str = ""
+    choices: list = field(default_factory=list)
+    job: object = None
+    lock: object = field(default_factory=threading.Lock)
+
+    def set_wizard(self, state):
+        self.wizard = state
+
+    def snapshot(self):
+        job = self.job
+        busy = self.lock.locked() or bool(job and not job.done)
+        return {
+            "reply": self.reply + ("\n" + job.final_message if job and job.done and job.final_message else ""),
+            "choices": self.choices,
+            "active": bool(self.wizard),
+            "secret": (self.wizard or {}).get("step") == "r_key",
+            "busy": busy,
+            "status": f"Téléchargement… {job.progress_mb()}/{job.total_mb} Mo" if job and not job.done else "",
+        }
+
+
+def _cancel_interface_command(S, sess):
+    """Cancel a dialog, never generate or enqueue a chat message."""
+    flow = S.model_add_flows.get(sess.id)
+    if flow is not None:
+        if not flow.lock.acquire(blocking=False):
+            return {"error": "Une étape est en cours. Réessaie à sa fin."}, 409
+        try:
+            if flow.job and not flow.job.done:
+                return {"error": "Le téléchargement continue en arrière-plan ; tu peux fermer le panneau."}, 409
+            flow.set_wizard(None)
+            flow.reply, flow.choices = "Ajout annulé.", []
+            flow.job = None
+        finally:
+            flow.lock.release()
+    # Clear a legacy dialog only while its conversation is idle.
+    from loom.web.routes.helpers import _lock_for
+
+    lock = _lock_for(S, sess.id)
+    if lock.acquire(blocking=False):
+        try:
+            if sess.conversation.wizard:
+                sess.conversation.set_wizard(None)
+                S.session_store.save(sess)
+        finally:
+            lock.release()
+    return {"ui_action": "cancel_interface", "message": "Commande d’interface annulée."}
 
 
 def _repo_note(analysis: dict, vram_mb: int) -> str:
@@ -222,7 +277,7 @@ def _remove_model(S, a):
     return extra_reply.strip(), models_changed
 
 
-def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
+def _handle_add_model_command(S, message, conv, sess, save, chat_lock, *, interface=False):
     """Intercepte /add-model ET tout message d'une session au wizard actif.
     Même contrat que _handle_goal_command : (message, response) — response non None
     = ack SSE immédiat, le flux LLM n'est jamais sollicité (wizard déterministe)."""
@@ -237,19 +292,26 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
     prev_step = (conv.wizard or {}).get("step") if active and not is_cmd else None
 
     try:
-        deps = _wizard_deps(S)
-        if is_rb:
+        if message.strip().lower() in _wizard.CANCEL_WORDS:
+            res = _wizard.WizardResult(None, "Commande annulée.")
+        elif is_rb:
+            deps = _wizard_deps(S)
             res = _wizard.start_rebench(message[len("/rebench") :].strip(), deps)
         elif is_rm:
+            deps = _wizard_deps(S)
             res = _wizard.start_remove(deps)
         elif is_cmd:
+            deps = _wizard_deps(S)
             res = _wizard.start(message[len("/add-model") :].strip(), deps)
         else:
+            deps = _wizard_deps(S)
             res = _wizard.step(conv.wizard, message, deps)
     except Exception as exc:  # noqa: BLE001 - HfCatalogError & co : actionnable, jamais de stacktrace
         res = _wizard.WizardResult(
             conv.wizard,
-            f"{exc}\n(l'assistant reste à cette étape — réessaie, ou /cancel)",
+            ("Le serveur Loom utilise une ancienne version du code. Redémarre Loom pour charger les changements."
+             if isinstance(exc, ImportError) and "GPU_KV_BYTES" in str(exc)
+             else f"{exc}\nRéessaie ou annule cette opération."),
         )
 
     conv.set_wizard(res.state)
@@ -468,6 +530,9 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
             )
 
     # Persister après l'action pour conserver son verdict au rechargement.
+    if interface:
+        conv.reply, conv.choices, conv.job = res.reply + extra_reply, res.choices or [], job
+        return message, dict(conv.snapshot(), busy=bool(job and not job.done))
     _persist_wizard_exchange(S, sess, conv, save, shown, res.reply + extra_reply)
 
     chat_lock.release()
@@ -506,6 +571,43 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
 
 def _register_model_routes(app, S):
+    S.model_add_flows = {}
+    flows_lock = threading.Lock()
+
+    @app.route("/models/add", methods=["GET", "POST"])
+    def models_add():
+        from loom.web.routes.helpers import _get_session
+
+        sid = request.values.get("session_id", "").strip()
+        sess = _get_session(S, sid) if sid else _session(S)
+        if sess is None:
+            return {"error": "session introuvable"}, 404
+        with flows_lock:
+            flow = S.model_add_flows.setdefault(sess.id, _ModelAddFlow())
+        if request.method == "GET":
+            return flow.snapshot()
+        message = request.form.get("message", "").strip()
+        if message == "/cancel":
+            return _cancel_interface_command(S, sess)
+        if not message or message.split()[0] in {"/rebench", "/remove-model"}:
+            return {"error": "Réponse d’ajout invalide."}, 400
+        if message.split()[0] == "/add-model":
+            message = " ".join(message.split(maxsplit=1))
+        if not flow.lock.acquire(blocking=False):
+            return {"error": "Une étape est déjà en cours."}, 409
+        try:
+            if flow.job and not flow.job.done:
+                return {"error": "Un téléchargement est déjà en cours."}, 409
+            if not flow.wizard and message.split()[0] != "/add-model":
+                return {"error": "Ouvre d’abord l’assistant d’ajout."}, 409
+            # Existing installer and recommendations, with isolated UI state and lock.
+            _, response = _handle_add_model_command(
+                S, message, flow, None, lambda: None, flow.lock, interface=True
+            )
+            return response
+        finally:
+            flow.lock.release()
+
     @app.get("/models/removable")
     def models_removable():
         busy = {h.get("model") for h in list(S.active_streams.values()) if isinstance(h, dict)}

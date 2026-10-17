@@ -53,7 +53,7 @@ CHAT_COMMANDS = [
     {
         "name": "/add-model",
         "usage": "/add-model · /add-model <recherche HF> · /add-model distant [url]",
-        "description": "Ajouter un modèle : local (recherche Hugging Face, quant "
+        "description": "Ouvrir le panneau d’ajout hors conversation : local (recherche Hugging Face, quant "
         "recommandé selon ta machine) ou distant (API OpenAI-compatible — la clé "
         "se donne à une étape dédiée, jamais dans la commande).",
     },
@@ -84,7 +84,7 @@ CHAT_COMMANDS = [
     {
         "name": "/cancel",
         "usage": "/cancel",
-        "description": "Annuler le wizard en cours (ex. /add-model).",
+        "description": "Annuler un assistant d’interface (ex. ajout de modèle), sans appeler le modèle. Stop arrête une génération.",
     },
 ]
 
@@ -184,6 +184,12 @@ def _register_chat_routes(app, S):
         # UI commands must be intercepted BEFORE acquiring/queuing a generation.
         if not is_handoff and (message.split(maxsplit=1) or [""])[0] == "/remove-model":
             return {"ui_action": "manage_models"}
+        if not is_handoff and (message.split(maxsplit=1) or [""])[0] == "/add-model":
+            return {"ui_action": "add_model", "argument": message[len("/add-model"):].strip()}
+        if not is_handoff and (message.split(maxsplit=1) or [""])[0] == "/cancel":
+            from loom.web.routes.models import _cancel_interface_command
+
+            return _cancel_interface_command(S, sess)
         chat_lock = _lock_for(S, sid)
         cancel_event = _cancel_for(S, sid)
 
@@ -256,6 +262,10 @@ def _register_chat_routes(app, S):
             return S.session_store.save(sess)
 
         if not is_handoff:
+            # Old add/remove dialogs must no longer capture ordinary chat messages.
+            if conv.wizard and not conv.wizard.get("step", "").startswith("b_"):
+                conv.set_wizard(None)
+                save()
             # Un wizard actif capture tout le texte jusqu'à sa fin.
             message, _wiz_resp = _handle_add_model_command(
                 S, message, conv, sess, save, chat_lock
