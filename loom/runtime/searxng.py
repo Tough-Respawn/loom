@@ -7,7 +7,8 @@ SIMPLE POUR L'UTILISATEUR (exigence produit) :
   (Docker requis ; tire l'image officielle ~200 Mo, écrit la config Loom tout seul) ;
 - ensuite ZÉRO maintenance : conteneur en `--restart unless-stopped`, et si on le
   trouve arrêté au moment d'une recherche, `ensure_running` le relance (sans jamais
-  télécharger quoi que ce soit à l'insu de l'utilisateur : seul `install` tire l'image).
+  télécharger quoi que ce soit à l'insu de l'utilisateur : seuls `install` et `update`,
+  proposé par loom-setup quand l'image est dépassée, tirent l'image).
 
 Détail qui compte : l'API `format=json` (utilisée par web_search) est REFUSÉE par
 l'image officielle par défaut -> on fournit notre settings.yml (var/searxng/) qui
@@ -16,6 +17,8 @@ l'active, monté dans le conteneur.
 
 from __future__ import annotations
 
+import json
+import re
 import secrets
 import subprocess
 import sys
@@ -166,10 +169,73 @@ def install(port: int = DEFAULT_PORT) -> str | None:
     return url
 
 
+HUB_TAG_URL = "https://hub.docker.com/v2/repositories/searxng/searxng/tags/latest"
+
+
+def installed_image() -> dict | None:
+    """Image du conteneur géré : {"digests": [...], "date": "AAAA-MM-JJ"} ; None si Docker
+    ou le conteneur sont absents (web_search tourne alors sur ddgs)."""
+    if not docker_available() or container_state() == "absent":
+        return None
+    try:
+        image_id = _docker("inspect", "-f", "{{.Image}}", CONTAINER).stdout.strip()
+        r = _docker(
+            "image", "inspect", "-f", "{{json .RepoDigests}}|{{.Created}}", image_id
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0 or "|" not in r.stdout:
+        return None
+    digests, created = r.stdout.strip().split("|", 1)
+    return {
+        "digests": [d.split("@", 1)[-1] for d in json.loads(digests or "[]")],
+        "date": created[:10],
+    }
+
+
+def latest_image(timeout: float = 15.0) -> dict:
+    """Dernière image publiée (tag `latest` sur Docker Hub) : {"digest", "date"}.
+    RuntimeError si Docker Hub est injoignable."""
+    req = urllib.request.Request(HUB_TAG_URL, headers={"User-Agent": "loom"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except Exception as exc:  # noqa: BLE001 - hors ligne : vérification impossible
+        raise RuntimeError(f"Docker Hub injoignable ({type(exc).__name__})") from exc
+    if not data.get("digest"):
+        raise RuntimeError("Docker Hub n'a pas donné d'empreinte pour latest")
+    return {"digest": data["digest"], "date": (data.get("last_updated") or "")[:10]}
+
+
+def update() -> str | None:
+    """Tire la dernière image puis recrée le conteneur géré sur le même port ; settings.yml
+    (var/searxng/) est conservé. None en cas d'échec ; si le téléchargement échoue, le
+    conteneur en service n'est pas touché."""
+    port = DEFAULT_PORT
+    r = _docker("port", CONTAINER, "8080")
+    m = (
+        re.search(r":(\d+)\s*$", r.stdout.strip().splitlines()[0])
+        if r.stdout.strip()
+        else None
+    )
+    if r.returncode == 0 and m:
+        port = int(m.group(1))
+    pulled = _docker("pull", IMAGE, timeout=900.0)
+    if pulled.returncode != 0:
+        print(
+            f"[searxng] téléchargement de l'image en échec : {pulled.stderr.strip()[:300]}"
+        )
+        return None
+    _docker("rm", "-f", CONTAINER)
+    return install(port)
+
+
 def main() -> int:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "install"
     if cmd == "install":
         return 0 if install() else 1
+    if cmd == "update":
+        return 0 if update() else 1
     if cmd == "status":
         print(f"conteneur : {container_state()}")
         return 0
@@ -177,7 +243,7 @@ def main() -> int:
         _docker("stop", CONTAINER)
         print("arrêté.")
         return 0
-    print("usage : python -m loom.runtime.searxng [install|status|stop]")
+    print("usage : python -m loom.runtime.searxng [install|update|status|stop]")
     return 2
 
 

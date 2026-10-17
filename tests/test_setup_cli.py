@@ -123,6 +123,7 @@ def _deps(tmp_path, **over):
 
     from loom.runtime.recommendation import recommend_repository
     base = dict(
+        searxng_installed=lambda: None,  # jamais de Docker réel en test
         recommend_repository=lambda repo, files, **kw: recommend_repository(
             repo, files, analysis={}, supported=frozenset({"Q4_K_M", "F16"}), **kw),
         detect_platform=lambda: _PLAT,
@@ -2479,3 +2480,76 @@ def test_menage_jamais_sous_yes_ni_par_defaut(monkeypatch, tmp_path):
             {"server": {"bin": str(exe)}},
         )
         assert (cli.RUNTIME_DIR / "b3000").is_dir()  # destructif : jamais implicite
+
+
+# SearXNG géré : loom-setup propose la dernière image, comme pour llama.cpp (2026-10-17).
+_SX_OLD = {"digests": ["sha256:juillet"], "date": "2026-07-10"}
+_SX_NEW = {"digest": "sha256:octobre", "date": "2026-10-17"}
+
+
+def _sx_deps(installed=_SX_OLD, latest=_SX_NEW, updated=None):
+    def fetch():
+        if isinstance(latest, Exception):
+            raise latest
+        return latest
+
+    calls = []
+    deps = SimpleNamespace(
+        searxng_installed=lambda: installed,
+        searxng_latest=fetch,
+        searxng_update=lambda: calls.append("update") or updated,
+    )
+    return deps, calls
+
+
+def test_searxng_depasse_mise_a_jour_acceptee():
+    from loom.setup.cli import step_searxng
+    from loom.setup.report import SetupReport
+
+    con, printed = _console(answers=["o"])
+    deps, calls = _sx_deps(updated="http://127.0.0.1:8890")
+    report = SetupReport()
+    step_searxng(con, report, deps)
+    out = chr(10).join(printed)
+    assert "image du 2026-07-10" in out and "version du 2026-10-17" in out
+    assert calls == ["update"] and report.outcomes[-1].status == "fait"
+
+
+def test_searxng_mise_a_jour_refusee_ou_a_jour_ne_touche_rien():
+    from loom.setup.cli import step_searxng
+    from loom.setup.report import SetupReport
+
+    con, _ = _console(answers=["n"])
+    deps, calls = _sx_deps()
+    step_searxng(con, SetupReport(), deps)
+    assert calls == []
+    con, printed = _console()
+    deps, calls = _sx_deps(latest={"digest": "sha256:juillet", "date": "2026-07-10"})
+    step_searxng(con, SetupReport(), deps)
+    assert calls == [] and "à jour" in chr(10).join(printed)
+
+
+def test_searxng_hors_ligne_ou_absent_jamais_bloquant():
+    from loom.setup.cli import step_searxng
+    from loom.setup.report import SetupReport
+
+    con, printed = _console()
+    deps, calls = _sx_deps(latest=RuntimeError("Docker Hub injoignable (URLError)"))
+    report = SetupReport()
+    step_searxng(con, report, deps)
+    assert calls == [] and "non vérifiée" in chr(10).join(printed) and not report.failed
+    con, printed = _console()
+    deps, calls = _sx_deps(installed=None)
+    step_searxng(con, SetupReport(), deps)
+    assert calls == [] and printed == []
+
+
+def test_searxng_mise_a_jour_en_echec_ne_fait_pas_echouer_le_setup():
+    from loom.setup.cli import step_searxng
+    from loom.setup.report import SetupReport
+
+    con, printed = _console(answers=["o"])
+    deps, _ = _sx_deps(updated=None)
+    report = SetupReport()
+    step_searxng(con, report, deps)
+    assert not report.failed and "loom.runtime.searxng update" in chr(10).join(printed)

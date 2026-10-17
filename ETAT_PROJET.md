@@ -330,8 +330,10 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
    (validé live), sinon repli ddgs (désormais dans l'extra `web-search`, avec erreur
    actionnable s'il manque). Depuis le 2026-10-17, le repli ddgs vaut aussi quand
    SearXNG répond sans résultat parce que tous ses moteurs sont en échec (CAPTCHA, 429)
-   ou reste injoignable après relance ; l'image SearXNG n'est pas mise à jour toute
-   seule (`docker rm -f loom-searxng` puis `install` pour la dernière).
+   ou reste injoignable après relance. `uv run loom-setup` propose la dernière image
+   SearXNG quand celle du conteneur est dépassée (comparaison d'empreinte avec Docker Hub),
+   ou `uv run python -m loom.runtime.searxng update` ; conteneur recréé, port et
+   settings.yml conservés.
 4. **RAG** (skills volumineux) si le catalogue grossit ; **audio**.
 5. ~~Mémoire projet auto-injectée~~ : LIVRÉ le 2026-07-09 — si `<workspace>/loom.md` existe
    (fiche `/init`), elle est injectée au system prompt (les deux tiers), bornée par
