@@ -206,9 +206,9 @@ from runtime.hardware import recommend_gpu_layers, parse_nvidia_smi
 
 def test_parse_nvidia_smi_valid():
     # format CSV sans header : "name, memory.free [MiB]"
-    out = "NVIDIA GeForce RTX 2060, 5800\n"
+    out = "GPU NVIDIA de test, 5800\n"
     name, free_mb = parse_nvidia_smi(out)
-    assert name == "NVIDIA GeForce RTX 2060"
+    assert name == "GPU NVIDIA de test"
     assert free_mb == 5800
 
 
@@ -266,13 +266,13 @@ from runtime.hardware import detect_hardware, HardwareProfile
 
 
 def test_detect_hardware_with_gpu():
-    fake = "NVIDIA GeForce RTX 2060, 5800\n"
+    fake = "GPU NVIDIA de test, 5800\n"
     with patch("runtime.hardware._run_nvidia_smi", return_value=fake), \
          patch("runtime.hardware.os.cpu_count", return_value=12):
         prof = detect_hardware()
     assert isinstance(prof, HardwareProfile)
     assert prof.has_gpu is True
-    assert prof.gpu_name == "NVIDIA GeForce RTX 2060"
+    assert prof.gpu_name == "GPU NVIDIA de test"
     assert prof.vram_free_mb == 5800
     assert prof.cpu_threads == 12
 
@@ -346,7 +346,7 @@ Expected: PASS (7 tests verts).
 - [ ] **Step 5: Vérifier la détection réelle sur le laptop**
 
 Run: `uv run python -c "from runtime.hardware import detect_hardware; print(detect_hardware())"`
-Expected: affiche `HardwareProfile(has_gpu=True, gpu_name='NVIDIA GeForce RTX 2060', vram_free_mb=<~6000>, cpu_threads=12)`.
+Expected: affiche `HardwareProfile(has_gpu=True, gpu_name='GPU NVIDIA de test', vram_free_mb=<memoire_detectee>, cpu_threads=<threads_detectes>)`.
 
 - [ ] **Step 6: Commit**
 
@@ -436,10 +436,10 @@ def test_load_base_config(tmp_path):
 def test_local_override_merges(tmp_path):
     cfg_path = _write(tmp_path, "runtime.config.toml", BASE)
     local = _write(tmp_path, "runtime.config.local.toml",
-                   '[server]\nbin = "C:/tools/llama/llama-server.exe"\n'
+                   '[server]\nbin = "<repertoire-outils>/llama/llama-server.exe"\n'
                    '[override]\nn_gpu_layers = 12\n')
     cfg = load_config(cfg_path, local_path=local)
-    assert cfg.server_bin == "C:/tools/llama/llama-server.exe"
+    assert cfg.server_bin == "<repertoire-outils>/llama/llama-server.exe"
     assert cfg.override_n_gpu_layers == 12
 ```
 
@@ -838,11 +838,11 @@ git commit -m "feat(serve): orchestrateur auto-adaptatif (config+hw+modele+lance
 
 - [ ] **Step 1: Télécharger le binaire llama.cpp CUDA pour Windows**
 
-Aller sur les releases GitHub de llama.cpp et récupérer l'archive Windows CUDA (ex. `llama-<version>-bin-win-cuda-x64.zip`). L'extraire dans `C:\tools\llama\`.
+Aller sur les releases GitHub de llama.cpp et récupérer l'archive Windows CUDA (ex. `llama-<version>-bin-win-cuda-x64.zip`). L'extraire dans `<repertoire-outils>\llama\`.
 
 Run (vérif) :
 ```powershell
-& "C:\tools\llama\llama-server.exe" --version
+& "<repertoire-outils>\llama\llama-server.exe" --version
 ```
 Expected: une ligne de version llama.cpp s'affiche.
 
@@ -851,7 +851,7 @@ Expected: une ligne de version llama.cpp s'affiche.
 Créer `runtime/runtime.config.local.toml` (gitignoré) :
 ```toml
 [server]
-bin = "C:/tools/llama/llama-server.exe"
+bin = "<repertoire-outils>/llama/llama-server.exe"
 ```
 
 - [ ] **Step 3: Lancer le serveur (télécharge le GGUF au 1er run)**
@@ -994,7 +994,7 @@ git commit -m "feat(benchmark): debit + TTFT + validite JSON contraint"
 
 ## Contexte
 Besoin d'un runtime local servant un modèle GGUF via API OpenAI-compatible, sur
-laptop Windows (RTX 2060 6 Go) ET VPS Linux CPU 64 Go. Contraintes de l'utilisateur :
+poste Windows avec GPU et serveur Linux sans GPU. Contraintes du projet :
 agnosticisme (pas de techno « installe un modèle » type LM Studio), ne pas
 réinventer la roue.
 
@@ -1020,12 +1020,12 @@ petits modèles. L'abstraction API OpenAI-compatible garde Ollama swappable plus
 # Install llama-server (Windows, laptop GPU)
 
 1. Récupérer la release Windows CUDA de llama.cpp (`...-bin-win-cuda-x64.zip`).
-2. Extraire dans `C:\tools\llama\`.
-3. Vérifier : `& "C:\tools\llama\llama-server.exe" --version`.
+2. Extraire dans `<repertoire-outils>\llama\`.
+3. Vérifier : `& "<repertoire-outils>\llama\llama-server.exe" --version`.
 4. Créer `runtime/runtime.config.local.toml` :
    ```toml
    [server]
-   bin = "C:/tools/llama/llama-server.exe"
+   bin = "<repertoire-outils>/llama/llama-server.exe"
    ```
 5. Lancer : `uv run runtime/serve.py` (télécharge le GGUF au 1er run).
 ```

@@ -188,7 +188,7 @@ def test_parse_checkpoints_sans_ligne_dit_non_mesure():
 
 
 _UMA = HardwareProfile(
-    True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
+    True, "GPU intégré de test", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
 )
 
 

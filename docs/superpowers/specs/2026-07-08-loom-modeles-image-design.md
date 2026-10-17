@@ -48,7 +48,7 @@ en v1 (le LLM n'appelle rien) : le futur outil reste en roadmap.
 ## Premier modèle livré
 `loom/models/_IMAGE/krea2-turbo/` : Krea-2-Turbo GGUF Q4_K_M + LoRA Krea2-realism-V2
 (0.8) + text encoder qwen3vl fp8 + VAE qwen_image — la chaîne validée en réel ce jour
-(installée sous C:\tools\ComfyUI, chemins portés par la config, pas en dur dans le code).
+(installée sous <repertoire-outils>\ComfyUI, chemins portés par la config, pas en dur dans le code).
 
 ## Hors périmètre v1 (assumé)
 - Outil `generate_image` appelable par le LLM (roadmap).

@@ -16,7 +16,7 @@ from tests.test_topology import GOLDEN_BUDGET, GOLDEN_META, FakeProbe
 
 
 def test_budget_uma_compte_la_ram_une_fois():
-    # Radeon 860M : Vulkan annonce 48 789 Mo, la machine a 64 Go -> la VRAM borne.
+    # GPU intégré de test : Vulkan annonce 48 789 Mo, la machine a 64 Go -> la VRAM borne.
     assert memory_budget_mb(TOPO_MOE_HYBRIDE, 48_789, 64_000, 640, uma=True) == 48_149
     # Même iGPU sur 32 Go : la RAM moins la marge OS borne, pas l'annonce Vulkan.
     assert memory_budget_mb(TOPO_MOE_HYBRIDE, 48_789, 32_000, 640, uma=True) == (

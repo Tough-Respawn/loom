@@ -170,12 +170,12 @@ def test_pick_folder_returns_selected_path(client_app, monkeypatch):
 
     class _Proc:
         returncode = 0
-        stdout = "C:/Users/Amine/projet\n"
+        stdout = "/chemin/du/projet\n"
         stderr = ""
 
     monkeypatch.setattr(appmod.subprocess, "run", lambda *a, **k: _Proc())
     resp = client_app.post("/pick-folder")
-    assert resp.get_json()["path"] == "C:/Users/Amine/projet"
+    assert resp.get_json()["path"] == "/chemin/du/projet"
 
 
 def test_pick_folder_cancel_returns_empty(client_app, monkeypatch):

@@ -9,9 +9,9 @@ from loom.runtime.hardware import (
 )
 from loom.setup.bench import ngl_candidates
 
-# Sortie réelle observée (Radeon 860M, build Vulkan b10075).
+# Sortie Vulkan de régression ; nom du matériel anonymisé.
 _VULKAN_OUT = """Available devices:
-  Vulkan0: AMD Radeon(TM) 860M Graphics (36682 MiB, 34848 MiB free)
+  Vulkan0: AMD Radeon(TM) GPU de test (36682 MiB, 34848 MiB free)
 """
 _CUDA_OUT = """Available devices:
   CUDA0: NVIDIA GeForce RTX 3090 (24576 MiB, 24000 MiB free)
@@ -24,7 +24,7 @@ def test_parse_list_devices_vulkan_reel():
     assert devs == [
         {
             "backend": "Vulkan",
-            "name": "AMD Radeon(TM) 860M Graphics",
+            "name": "AMD Radeon(TM) GPU de test",
             "total_mb": 36682,
             "free_mb": 34848,
         }
@@ -50,7 +50,7 @@ def test_detect_hardware_via_binaire_est_agnostique(monkeypatch):
     monkeypatch.setattr(hardware, "_run_list_devices", lambda b: _VULKAN_OUT)
     hw = detect_hardware(server_bin="fake/llama-server")
     assert hw.has_gpu is True
-    assert hw.gpu_name == "AMD Radeon(TM) 860M Graphics"
+    assert hw.gpu_name == "AMD Radeon(TM) GPU de test"
     assert hw.vram_free_mb == 34848
     assert hw.vram_total_mb == 36682
     assert hw.backend == "Vulkan"
@@ -77,9 +77,9 @@ def test_detect_hardware_binaire_sans_device_fait_foi(monkeypatch):
 
 
 def test_detect_hardware_sans_binaire_replie_sur_nvidia(monkeypatch):
-    monkeypatch.setattr(hardware, "_run_nvidia_smi", lambda: "RTX 2060, 6000")
+    monkeypatch.setattr(hardware, "_run_nvidia_smi", lambda: "GPU NVIDIA de test, 6000")
     hw = detect_hardware()
-    assert hw.has_gpu is True and hw.gpu_name == "RTX 2060"
+    assert hw.has_gpu is True and hw.gpu_name == "GPU NVIDIA de test"
     assert hw.vram_is_discrete is True
 
 
@@ -87,10 +87,10 @@ def test_budget_vram_discrete_vs_unifiee():
     # iGPU Vulkan : sa « VRAM » est la RAM partagée -> ne JAMAIS l'additionner
     # à la RAM dans un budget (double-comptage).
     unified = HardwareProfile(
-        True, "Radeon 860M", 34848, 16, vram_total_mb=36682, backend="Vulkan"
+        True, "GPU intégré de test", 34848, 16, vram_total_mb=36682, backend="Vulkan"
     )
     assert unified.budget_vram_mb == 0
-    discrete = HardwareProfile(True, "RTX 2060", 6000, 16, vram_is_discrete=True)
+    discrete = HardwareProfile(True, "GPU NVIDIA de test", 6000, 16, vram_is_discrete=True)
     assert discrete.budget_vram_mb == 6000
 
 

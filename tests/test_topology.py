@@ -75,7 +75,7 @@ def test_capacity_bornee_par_le_modele():
     cap = capacity_ctx(slope, base, GOLDEN_BUDGET, model_limit=32768)
     assert cap == 32768
     cap2 = capacity_ctx(slope, base, GOLDEN_BUDGET, model_limit=262144)
-    assert cap2 % 2048 == 0 and cap2 > 65536  # la 2060 porte bien plus que l'ex-mur
+    assert cap2 % 2048 == 0 and cap2 > 65536  # le GPU discret porte bien plus que l'ex-mur
 
 
 def test_capacity_budget_trop_petit_retombe_au_plancher():

@@ -6,6 +6,13 @@
 
 ---
 
+## 2026-10-17 : informations personnelles retirées de la doc, des gabarits et des tests
+
+- Chemins de la machine de développement, noms de GPU et détails personnels remplacés par
+  des valeurs génériques (`<racine-des-modeles>`, « GPU intégré Vulkan »…) dans la doc,
+  les specs et plans, les gabarits `_TEMPLATE/`, `config/*.toml` et les fixtures de tests.
+  Aucun changement de comportement.
+
 ## 2026-10-17 : modèle refusé à l'installation, supprimable et jamais remonté
 
 - Un GGUF que llama-server refuse (vécu : Bonsai Heretic en PQ2_0, format du fork Prism)

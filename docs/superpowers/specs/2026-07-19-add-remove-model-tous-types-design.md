@@ -19,7 +19,7 @@ filtre par type à l'entrée du wizard.
 - Recette ComfyUI (`workflow.json`) : « les deux » — l'utilisateur colle un
   chemin vers son export ComfyUI (format API), OU répond « plus tard » et le
   wizard scaffolde le dossier à compléter.
-- Les poids ComfyUI (`E:/comfyui-models`) ne sont JAMAIS téléchargés ni
+- Les poids ComfyUI (`<racine-des-poids-ComfyUI>`) ne sont JAMAIS téléchargés ni
   supprimés par le wizard : seul le dossier Loom (model.toml + workflow.json)
   est géré.
 - Les distants de `config/local.toml` deviennent supprimables via tomlkit

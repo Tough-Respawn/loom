@@ -19,7 +19,7 @@ llama-server fait la vision via `-m model.gguf --mmproj mmproj.gguf` + l'API Ope
 
 - **Vision = native Gemma 4 via mmproj** (pas d'OCR séparé). Téléchargement du mmproj + flag
   `--mmproj` sur llama-server.
-- **VRAM 6 Go serrée** : par défaut, l'encodeur vision reste sur **CPU** (`--no-mmproj-offload`)
+- **Mémoire GPU limitée** : par défaut, l'encodeur vision reste sur **CPU** (`--no-mmproj-offload`)
   pour garder le LLM sur GPU ; le traitement image (une fois par message) y est un peu plus lent,
   acceptable. Réglable.
 - **Thinking = affiché** (grisé/repliable) + réponse finale.

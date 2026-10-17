@@ -200,27 +200,19 @@ Voir [README.md](README.md) pour le pitch et le démarrage.
 - **Agnostique machine** : les capacités locales (offload MoE, quants envisageables,
   cohabitation LLM + moteur image) dépendent de la VRAM/RAM du poste hôte — mesurées à la
   calibration, jamais supposées ; aucune spec de machine n'est une constante du projet.
-- **Plus de tout-petit modèle** (4B abandonnés) → on peut se fier aux schémas d'outils (le
-  modèle les lit), d'où la délégation prompt → schéma. EXCEPTION assumée : le **refiner
-  image** `gemma4-e4b-heretic` (E4B décensuré) — pas un cerveau d'agent, un traducteur
-  une-passe (demande toute-langue → prompt de diffusion anglais lossless, ou instruction
-  d'édition si photo jointe), servi puis déchargé avant la diffusion.
-- **Parc multimédia (2026-07-08)** : racine des modèles CONFIGURABLE (`[storage]
-  models_root` — depuis 2026-07-09 chaîne OU **liste de racines**, première gagnante
-  si id en double ; ici `["C:/loom-models", "E:/loom-models"]` : NVMe pour les gros
-  modèles rechargés souvent — ornith q8 ~15 s au lieu de 50 depuis le T7 USB à
-  0,71 Go/s — T7 pour le reste) avec l'arbo unique `local/{text,image,video}` +
-  `remote` + `_TEMPLATE` (replis legacy supprimés). ComfyUI garde ses poids à part
-  (`E:/comfyui-models` via `extra_model_paths.yaml`). Modèles servis : image =
-  krea2-turbo, **chroma1-hd** (8.9B décensuré par conception), **z-image-turbo** (6B
-  photoréaliste rapide), **flux-kontext** (édition de photo par instruction, `{IMAGE}` +
-  chemin dans le message) ; vidéo = **wan22-t2v / wan22-i2v** (TI2V-5B, webm ~3 s,
-  `timeout` par modèle). Sortie vidéo gérée (extension dynamique, lien cliquable).
-  **Chaîne VALIDÉE E2E le 2026-07-09** (UI réelle via Playwright, prompts français,
-  refiner actif partout) : z-image 93 s à froid ; chroma 5 min 39 (timeout monté à
-  1200) ; kontext 5 min 30 (pose/identité préservées) ; krea 2 min depuis E: ; wan
-  t2v et i2v ~6 min le clip (73 frames 832x480 webm, mouvement cohérent, photo
-  d'entrée = première frame) ; retour LLM local : Q4 chargé du T7 en ~40 s, pong OK.
+- **Refiner image** : un modèle texte configurable reformule la demande en prompt
+  de diffusion ou en instruction d'édition si une photo est jointe. Les modèles
+  texte locaux sont déchargés avant la diffusion.
+- **Multimédia (2026-07-08)** : racine des modèles configurable (`[storage]
+  models_root` — depuis 2026-07-09 chaîne ou **liste de racines**, première gagnante
+  si un identifiant est présent dans plusieurs racines), avec l'arborescence
+  `local/{text,image,video}` + `remote`. Les gabarits sont livrés dans
+  `loom/models/_TEMPLATE/`. ComfyUI garde ses poids dans ses propres emplacements,
+  configurables via `extra_model_paths.yaml`. Les workflows couvrent la génération
+  d'image, l'édition par instruction et la vidéo depuis du texte ou une image.
+  Le délai d'attente est configurable par modèle ; les sorties vidéo disposent
+  d'une extension adaptée et d'un lien cliquable. La chaîne a été validée en E2E
+  le 2026-07-09, y compris le retour à un modèle texte après génération.
 
 ## Déjà essayé, rejeté
 Décisions négatives **mesurées dans ce projet**. Toute piste qui recoupe une de ces lignes doit
@@ -243,9 +235,9 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 - **Sweeps `n_batch`/`ubatch`** : testés, aucun gain utile. Build llama.cpp b9888 : rejeté
   (régression). Les gains runtime retenus = `--no-mmap` et la calibration `n_cpu_moe`
   (chiffres propres à chaque machine : à re-mesurer, jamais recopier).
-- **Pousser le contexte local au-delà de la borne calibrée** : la limite vient de la VRAM
-  du poste, malgré KV q8_0 + flash-attn. Ce n'est pas de la prudence, c'est physique — la
-  borne se recalibre par machine (`loom-setup`), jamais par copie d'une valeur d'ailleurs.
+- **Contexte local** : la borne utilisable dépend de la mémoire disponible, du modèle
+  et des réglages du serveur. La recalibrer avec `loom-setup` après un changement
+  de configuration.
 - **Dé-emphaser les règles critiques du prompt** (ex. PowerShell) : régression mesurée
   (qwen 0/3 ; retour à 3/3 en rétablissant l'emphase). Un modèle local a besoin d'impératifs
   fermes, même si la doc frontière conseille l'inverse.
@@ -270,8 +262,8 @@ d'abord expliquer ce qui a changé depuis le rejet, sinon elle est déjà falsif
 - **`n_cpu_moe` mal réglé fait déborder la VRAM en mémoire partagée** (spill silencieux,
   perfs effondrées) : la valeur sûre dépend du quant et du poste — c'est la cible de la
   calibration auto (story n°7), jamais une constante à recopier.
-- **Le chargement GGUF (`--no-mmap`) est CPU-bound, pas disque** : déménager un GGUF sur
-  un disque plus rapide ne gagne presque rien.
+- **Chargement GGUF (`--no-mmap`)** : mesurer séparément le coût des accès disque
+  et du traitement CPU avant de choisir une optimisation.
 - **GOTCHA** : loom.web ne régénère PAS `var/cache/llama-swap.yaml` au démarrage — après
   édition d'un `model.toml`, forcer `regenerate_swap_yaml()` (ou passer par la console).
 - **Cache KV local = ressource UNIQUE, protégée depuis le 2026-07-10** : reflect/titre/ping

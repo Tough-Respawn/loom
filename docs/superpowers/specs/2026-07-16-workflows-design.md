@@ -10,9 +10,9 @@ Statut : validé (Python + exec, dégradation local/distant)
 sait pas faire, structurellement :
 
 1. **Sortir les résultats du contexte.** Chaque synthèse de sous-agent atterrit dans
-   la conversation du parent. Le contexte local est 24576 tokens (borné par 6 Go de
-   VRAM) : un audit de 100 fichiers est physiquement impossible aujourd'hui. C'est le
-   manque décisif, et il concerne le LOCAL autant que le distant.
+   la conversation du parent. Leur accumulation peut dépasser la fenêtre de contexte
+   disponible, notamment lors d'un audit portant sur de nombreux fichiers. Cette
+   limite concerne les modèles locaux comme les modèles distants.
 2. **Boucler jusqu'à convergence.** « Continue jusqu'à ce que deux tours d'affilée ne
    trouvent rien de neuf » demande au modèle de tenir un compteur à travers des tours
    qui, chacun, mangent son contexte.

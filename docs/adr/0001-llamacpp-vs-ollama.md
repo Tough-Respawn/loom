@@ -5,7 +5,7 @@
 
 ## Contexte
 Besoin d'un runtime local servant un modèle GGUF via API OpenAI-compatible, sur
-laptop Windows (RTX 2060 6 Go) ET VPS Linux CPU 64 Go. Contraintes de l'utilisateur :
+poste Windows avec GPU et serveur Linux sans GPU. Contraintes du projet :
 agnosticisme (pas de techno « installe un modèle » type LM Studio), ne pas
 réinventer la roue.
 

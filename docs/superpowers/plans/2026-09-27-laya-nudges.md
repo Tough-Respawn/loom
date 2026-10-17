@@ -179,7 +179,7 @@ début ou à la fin). Mesurer la part d'échantillons tronqués et la reporter.
    glm-zai ou deepseekv4) répond aux deux questions de §2 sur chaque état, en JSON
    `{"announces_instead_of_acting": p, "claims_unexecuted_result": p}` avec p dans [0, 1].
    Script `evals/nudges/annotate.py`, reprise possible, sortie `corpus.auto.jsonl`.
-2. **Relecture humaine** (Amine, ~1 h) : tous les désaccords entre regex et annotateur, plus
+2. **Relecture humaine** : tous les désaccords entre regex et annotateur, plus
    tous les cas où l'annotateur donne p entre 0,3 et 0,7, plus 50 accords tirés au sort
    (contrôle). Outil minimal : un CSV `id, texte, executed, q1_auto, q2_auto, q1_humain,
    q2_humain` rempli à la main, réimporté par `annotate.py --merge`.
@@ -231,8 +231,8 @@ Décision :
    `corpus.jsonl` (split train) à la place de `LocalLLaMA/typed-decisions` ;
    `torchrun --standalone --nproc_per_node=1`. Le préprocessing (cellule 6,
    `build_training_item`) prend les probabilités `gold` comme cibles molles : garder tel quel.
-3. Mémoire : 322M paramètres en fp32 avec Adam ≈ 5 Go, prévoir un petit batch ou bf16 sur
-   un GPU de 6 Go ; sinon CPU (lent mais faisable pour quelques centaines de cas).
+3. Mémoire : 322M paramètres en fp32 avec Adam ≈ 5 Go, adapter le batch et la précision
+   à la mémoire disponible ; sinon CPU (lent mais faisable pour quelques centaines de cas).
    Mesurer, ne pas supposer.
 4. Calibration : refit des températures sur une tranche tenue à part du split
    d'entraînement (10 %), comme dans la recette (`fit_one_temperature`). Reporter l'ECE

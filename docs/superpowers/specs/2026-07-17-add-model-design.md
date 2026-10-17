@@ -1,7 +1,7 @@
 # /add-model — ajout et paramétrage d'un modèle en une commande
 
 **Date** : 2026-07-17
-**Statut** : validé (brainstorm avec Amine)
+**Statut** : validé
 
 ## Besoin
 

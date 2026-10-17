@@ -50,7 +50,7 @@ def test_no_mmap_reserve_aux_gpu_discrets():
     # --no-mmap = tuning DMA mesuré sur les dGPU CUDA du parc. Sur Vulkan/iGPU
     # c'est un bug UPSTREAM connu (ggml-org/llama.cpp #18317 : « Cannot Run
     # Model with mmap = 0 », #14999 : erreurs mémoire --no-mmap + MoE) et vécu
-    # ici (Ornith 35B / Radeon 860M : ErrorOutOfDeviceMemory au chargement).
+    # ici (Ornith 35B / GPU intégré de test : ErrorOutOfDeviceMemory au chargement).
     # mmap (défaut officiel llama.cpp) conservé, le reste du profil GPU intact.
     a = _args(unified_memory=True)
     assert "--no-mmap" not in a

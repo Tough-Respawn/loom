@@ -19,7 +19,7 @@ def deps(existing=(), hits=None, files=None, remote_models=None, removable=None)
         check_workflow=lambda p: {"ok": True, "error": None, "warnings": []},
         rebenchable_models=list,
         model_kind=lambda mid: None,
-        install_roots=lambda: [{"path": "C:/loom-models", "free_gb": 100}],
+        install_roots=lambda: [{"path": "/modeles-prioritaires", "free_gb": 100}],
     )
 
 
@@ -473,22 +473,22 @@ def test_local_parcours_complet():
 def test_local_multi_racines_propose_le_choix_du_disque():
     d = deps(hits=HITS, files=FILES)
     d.install_roots = lambda: [
-        {"path": "C:/loom-models", "free_gb": 120},
-        {"path": "E:/loom-models", "free_gb": 800},
+        {"path": "/modeles-prioritaires", "free_gb": 120},
+        {"path": "/modeles-secondaires", "free_gb": 800},
     ]
     r = wizard.start("qwen", d)
     r = wizard.step(r.state, "1", d)
     r = wizard.step(r.state, "2", d)
     r = wizard.step(r.state, "ok", d)  # id -> étape disque (2 racines)
     assert r.state["step"] == "l_root"
-    assert "C:/loom-models" in r.reply and "défaut" in r.reply
+    assert "/modeles-prioritaires" in r.reply and "défaut" in r.reply
     ko = wizard.step(r.state, "disque Z", d)  # saisie invalide -> re-demande
     assert ko.state["step"] == "l_root"
     ok = wizard.step(r.state, "2", d)  # choix explicite du 2e disque
     assert ok.state is None
-    assert ok.action["root"] == "E:/loom-models"
+    assert ok.action["root"] == "/modeles-secondaires"
     ok2 = wizard.step(r.state, "ok", d)
-    assert ok2.action["root"] == "C:/loom-models"
+    assert ok2.action["root"] == "/modeles-prioritaires"
 
 
 def test_local_recherche_vide_redemande():

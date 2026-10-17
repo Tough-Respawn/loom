@@ -68,7 +68,7 @@ def _fake_deps(monkeypatch, hits=(), files=()):
         removable_models=lambda: [
             {"id": "glm-test", "kind": "remote", "label": "glm-test — distant"}
         ],
-        install_roots=lambda: [{"path": "C:/loom-models", "free_gb": 100}],
+        install_roots=lambda: [{"path": "/modeles-prioritaires", "free_gb": 100}],
     )
     monkeypatch.setattr(routes.models, "_wizard_deps", lambda S: deps)
 

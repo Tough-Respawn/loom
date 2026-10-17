@@ -1,7 +1,7 @@
 # tests/test_gpu_backend.py
 """« Y a-t-il un GPU exploitable ? » — la vérité est le binaire (`--list-devices`).
 
-Vécu 2026-10-10 sur la Radeon 860M : `has_gpu_backend` cherchait un ggml-vulkan.dll à
+Vécu 2026-10-10 sur un GPU intégré Vulkan : `has_gpu_backend` cherchait un ggml-vulkan.dll à
 côté de llama-server.exe, mais le build maison intègre Vulkan en statique (aucune DLL).
 loom-setup et /rebench faisaient `has_gpu_backend AND hw.has_gpu` : la machine passait
 pour sans GPU — candidats llama-bench ngl 0, topologie « ram », placement « CPU seul »
@@ -15,9 +15,9 @@ from loom.runtime.hardware import HardwareProfile
 from loom.setup.bench import gpu_backend_available
 
 _VULKAN = HardwareProfile(
-    True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
+    True, "GPU intégré de test", 46_350, 16, vram_total_mb=48_789, backend="Vulkan"
 )
-_NVSMI = HardwareProfile(True, "RTX 2060", 6_000, 16, vram_is_discrete=True)  # repli
+_NVSMI = HardwareProfile(True, "GPU NVIDIA de test", 6_000, 16, vram_is_discrete=True)  # repli
 _CPU = HardwareProfile(False, None, 0, 16)
 
 

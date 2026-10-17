@@ -16,7 +16,7 @@ from loom.runtime.hardware import HardwareProfile
 from loom.setup import topology as topo
 from loom.setup.topology import TOPO_MOE_HYBRIDE, ServerProbe, cache_reused
 
-_UMA = HardwareProfile(True, "Radeon 860M", 46_350, 16, vram_total_mb=48_789)
+_UMA = HardwareProfile(True, "GPU intégré de test", 46_350, 16, vram_total_mb=48_789)
 
 
 def _probe(n_parallel):
