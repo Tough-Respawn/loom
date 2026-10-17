@@ -79,11 +79,11 @@ class WebSearchConfig:
     max_chars_per_page: int = 4000
 
 
-# Un User-Agent de navigateur évite les refus réservés aux clients HTTP nus.
-_DEFAULT_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-)
+# User-Agent honnête. Mesure du 2026-10-17 sur 24 sites : le faux Chrome porté par httpx
+# (empreinte TLS d'un client Python) n'en passait aucun de plus, et songlyrics comme
+# amazon le refusaient alors qu'ils acceptent un client qui s'annonce. Les anti-bots qui
+# exigent un navigateur passent par le repli curl_cffi de fetch_page.
+_DEFAULT_UA = "Loom/1.0 (local assistant)"
 
 
 def _with_ua(headers):
@@ -246,7 +246,9 @@ def _http_get(
     """Primitif GET partagé (fetch_url ET web_search passent par ici). `impersonate`
     (ex. "chrome") route vers curl_cffi + empreinte navigateur ; sinon httpx."""
     if impersonate:
-        return _impersonate_get(url, pin_ip, _with_ua(headers), timeout, impersonate)
+        # Aucun User-Agent ajouté : curl_cffi envoie ceux du navigateur imité, cohérents
+        # avec son empreinte TLS.
+        return _impersonate_get(url, pin_ip, dict(headers or {}), timeout, impersonate)
     return _httpx_get(
         url, params=params, headers=headers, timeout=timeout, pin_ip=pin_ip
     )
@@ -403,6 +405,22 @@ def _network_errors() -> tuple:
     return tuple(errs)
 
 
+def _status_hint(code: int, headers) -> str:
+    """Ce que le modèle doit conclure d'un refus, pour ne pas relancer la même URL."""
+    if code == 401:
+        if "captcha" in (headers.get("www-authenticate") or "").lower():
+            return " : le site exige un captcha, page inaccessible à un outil ; cherche une autre source"
+        return " : authentification requise (clé ou compte), inaccessible sans identifiants"
+    if code == 403:
+        return (
+            " : refusé par un anti-bot, même avec l'empreinte d'un navigateur ; la page "
+            "exige un vrai navigateur (JavaScript), cherche une autre source"
+        )
+    if code == 429:
+        return " : le site limite le nombre de requêtes ; réessaie plus tard ou cherche une autre source"
+    return ""
+
+
 def fetch_page(
     url: str,
     cfg: WebSearchConfig,
@@ -428,6 +446,16 @@ def fetch_page(
             resp = _http_get(
                 url, timeout=cfg.http_timeout, pin_ip=pin_ip, impersonate=impersonate
             )
+            if resp.status_code == 403 and not impersonate:
+                # Anti-bot qui refuse un client HTTP : l'empreinte d'un vrai navigateur
+                # passe souvent (discogs, allmusic, leboncoin), gardée pour la suite.
+                impersonate = _IMPERSONATE_DEFAULT
+                resp = _http_get(
+                    url,
+                    timeout=cfg.http_timeout,
+                    pin_ip=pin_ip,
+                    impersonate=impersonate,
+                )
             code = resp.status_code
             if code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
                 url = urljoin(url, resp.headers["location"])
@@ -440,11 +468,7 @@ def fetch_page(
                         or getattr(resp, "reason", "")
                         or ""
                     )
-                    extra = (
-                        " — accès refusé (anti-bot) : réessaye avec impersonate='chrome'"
-                        if code == 403 and not impersonate
-                        else ""
-                    )
+                    extra = _status_hint(code, resp.headers)
                     raise ToolError(f"erreur HTTP {code} ({phrase}) sur {url}{extra}")
                 return snippet
             # Certaines API servent du JSON en text/plain; inspecter aussi le premier caractère.
@@ -588,10 +612,10 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
             "online doc, JSON API). Use it when you ALREADY have the URL. For an "
             "API with query parameters, pass them via `params` (the tool "
             "URL-encodes them; object/array values are JSON-serialized). Pass "
-            "`urls` (a list) to fetch many pages CONCURRENTLY in one call. Set "
-            '`impersonate="chrome"` to fetch with a real browser TLS fingerprint '
-            "when a site blocks the default client (HTTP 403 anti-bot, e.g. "
-            "SeLoger, Leboncoin)."
+            "`urls` (a list) to fetch many pages CONCURRENTLY in one call. An "
+            "HTTP 403 from an anti-bot is retried automatically with a real browser "
+            "TLS fingerprint; an error that remains means the page is unreachable "
+            "for a tool: look for another source instead of retrying it."
         ),
         parameters={
             "type": "object",
@@ -623,10 +647,10 @@ def make_fetch_url(cfg: WebSearchConfig) -> ToolSpec:
                 "impersonate": {
                     "type": "string",
                     "description": (
-                        'Optional: "chrome" to fetch with a browser TLS '
-                        "fingerprint (curl_cffi) — bypasses anti-bot 403s that "
-                        "block the default client. Use it only after a plain fetch "
-                        "returns 403."
+                        'Optional: "chrome" to use a browser TLS fingerprint '
+                        "(curl_cffi) from the first request, for a site known to "
+                        "block plain clients (SeLoger, Leboncoin). Otherwise a 403 "
+                        "already triggers it automatically."
                     ),
                 },
             },
