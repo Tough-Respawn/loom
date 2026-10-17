@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from __future__ import annotations
+import json
 import os
 import re
 import unicodedata
@@ -352,13 +353,27 @@ def _dispatch_no_tool_calls(
     st["action"] = "done"  # réponse finale déjà streamée (stop naturel du modèle)
 
 
+def _args_json_valides(arguments: object) -> bool:
+    if not isinstance(arguments, str) or not arguments.strip():
+        return True
+    try:
+        json.loads(arguments)
+    except ValueError:
+        return False
+    return True
+
+
 def _check_no_progress(
-    tool_calls: list[dict], strong: bool, repeat_limit: int, st: dict
+    tool_calls: list[dict],
+    strong: bool,
+    repeat_limit: int,
+    st: dict,
+    convo: list[dict],
 ) -> Iterator[tuple[str, object]]:
     """Détecteur de non-progrès (mêmes appels que le tour précédent). Issue via
-    st["action"] : "proceed" (on exécute les outils) ou "done" (repeat_stop,
-    l'event terminal a déjà été yieldé). Met à jour st["repeat_streak"] /
-    st["prev_sig_set"]."""
+    st["action"] : "proceed" (on exécute les outils), "continue" (doublon non
+    exécuté, relance [LOOM] injectée) ou "done" (repeat_stop, l'event terminal a
+    déjà été yieldé). Met à jour st["repeat_streak"] / st["prev_sig_set"]."""
     st["action"] = "proceed"
     # Exclure les outils de preuve du non-progrès ; les relectures et réécritures
     # identiques restent détectées, avec `max_iters` comme dernier filet.
@@ -385,3 +400,28 @@ def _check_no_progress(
         )
         yield ("done", {"reason": "repeat_stop"})
         st["action"] = "done"
+        return
+    # Avant-dernière répétition : ne pas réexécuter le doublon (son résultat est
+    # déjà dans la conversation) et dire au modèle quel appel il répète. Des
+    # arguments tronqués relèvent de la compaction sur troncature, pas d'ici.
+    if (
+        not strong
+        and st["repeat_streak"] >= 1
+        and st["repeat_streak"] == repeat_limit - 2
+        and all(_args_json_valides(tc["arguments"]) for tc in tool_calls)
+    ):
+        appels = ", ".join(
+            f"{tc['name']} {str(tc['arguments'])[:200]}"
+            for tc in tool_calls
+            if tc["name"] not in _VERIFY_TOOLS
+        )
+        nudge = (
+            f"Tu réémets exactement le même appel qu'au tour précédent ({appels}). "
+            "Son résultat est déjà ci-dessus et ne changera pas. Change d'arguments "
+            "(par exemple un chemin plus précis) ou passe à l'étape suivante. "
+            "Un appel identique de plus arrête le tour."
+        )
+        _debug("REPEAT_NUDGE", nudge)
+        log_event("guard", kind="repeat_nudge")
+        yield _loom_nudge(convo, "répétition", nudge)
+        st["action"] = "continue"

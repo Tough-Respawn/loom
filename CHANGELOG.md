@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-10-18 : un appel d'outil répété est signalé au modèle avant l'arrêt
+
+- Hors modèle « fort », le 2e appel identique d'affilée n'est plus réexécuté : son
+  résultat est déjà dans la conversation. Une note `[LOOM]` cite l'appel répété et
+  demande de changer d'arguments ou de passer à la suite ; le 3e arrête toujours le
+  tour (`repeat_stop`). Avant, le doublon était réexécuté puis le tour coupé sans
+  explication au modèle.
+
 ## 2026-10-17 : loom-setup propose la mise à jour de SearXNG
 
 - Le conteneur SearXNG géré n'était jamais mis à jour : celui de cette machine datait du
