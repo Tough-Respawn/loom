@@ -279,6 +279,16 @@ def _discover_models(models_root: Path) -> list[ModelConfig]:
                 file=sys.stderr,
             )
             continue
+        # /add-model a téléchargé un GGUF que llama-server refuse (quant d'un fork) :
+        # le monter le mettrait au sélecteur et planterait au premier message.
+        if d.get("unloadable"):
+            print(
+                f"[loom] modele ignore : {folder.name} — non chargeable par llama.cpp "
+                f"({d['unloadable']}). Supprime-le avec /remove-model, ou retire "
+                "`unloadable` de son model.toml s'il a un `server_bin` qui le charge.",
+                file=sys.stderr,
+            )
+            continue
         m.dir = str(folder)
         out.append(m)
     return out

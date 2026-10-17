@@ -410,3 +410,34 @@ def test_add_model_local_illisible_non_monte(env, monkeypatch):
 def test_add_model_local_test_non_concluant_monte(env, monkeypatch):
     # test impossible (binaire introuvable) : on ne bloque pas l'installation
     assert _install_local(env, monkeypatch, probe=(None, "binaire introuvable"))
+
+
+def test_modele_refuse_marque_liste_et_supprimable(env, monkeypatch):
+    # Vécu 2026-10-17 : Bonsai PQ2_0 refusé, 8 Go orphelins, absent de /remove-model.
+    from loom.config import _discover_models
+    from loom.web import routes
+    from loom.web.routes import model_admin
+
+    refus = (False, "tensor 'output.weight' has invalid ggml type 142")
+    assert not _install_local(env, monkeypatch, probe=refus)
+    mdir = env.root / "local" / "text" / "nouveau-modele"
+    assert "unloadable" in (mdir / "model.toml").read_text(encoding="utf-8")
+    # Pas remonté au prochain démarrage.
+    assert "nouveau-modele" not in [m.id for m in _discover_models(mdir.parent)]
+
+    real = {}
+
+    def deps_reels(S):
+        real["S"] = S
+        return SimpleNamespace(
+            removable_models=lambda: model_admin._removable_models(S)
+        )
+
+    monkeypatch.setattr(routes.models, "_wizard_deps", deps_reels)
+    r = env.web.post("/chat", data={"message": "/remove-model"})
+    body = _sse_texts(r.data)
+    assert "nouveau-modele" in body and "non chargeable" in body
+    env.web.post("/chat", data={"message": "1"})
+    r = env.web.post("/chat", data={"message": "oui"})
+    assert "supprimé" in _sse_texts(r.data)
+    assert not mdir.exists()
