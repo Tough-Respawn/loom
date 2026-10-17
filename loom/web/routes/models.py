@@ -131,6 +131,80 @@ def _wizard_deps(S):
     )
 
 
+def _checked_model_dir(S, directory):
+    target = Path(directory).resolve()
+    for root in _models_roots(S):
+        root = Path(root).resolve()
+        if target.is_relative_to(root):
+            parts = target.relative_to(root).parts
+            if len(parts) == 3 and parts[0] == "local" and parts[1] in {"text", "image", "video"}:
+                return target
+    raise OSError("dossier hors des racines de modèles configurées")
+
+
+def _remove_model(S, a):
+    """Removal shared by the management panel and legacy wizard; never calls the LLM."""
+    extra_reply, models_changed = "", False
+    if a["model_kind"] in ("remote", "remote_config"):
+        # Purger toutes les racines et les emplacements hérités sans les recréer.
+        with S.toml_lock:
+            model_store.delete_remote_dir(_models_roots(S), a["id"])
+            if S.config_local_path:
+                model_store.delete_remote_in_toml(S.config_local_path, a["id"])
+            if S.remote_store_path and Path(S.remote_store_path).exists():
+                model_store.delete(S.remote_store_path, a["id"])
+        _forget_remote(S, a["id"])
+        extra_reply = f"\n✅ « {a['id']} » retiré (dossier remote/ + sélecteur)."
+        models_changed = True
+    elif a["model_kind"] in ("image", "video"):
+        import shutil
+
+        im = S.image_by_id.get(a["id"])
+        try:
+            if im is not None:
+                shutil.rmtree(_checked_model_dir(S, im.dir))
+            _forget_image(S, a["id"])
+            extra_reply = (
+                f"\n✅ Définition de « {a['id']} » supprimée (sélecteur compris) ; "
+                "les poids ComfyUI partagés ne sont PAS touchés."
+            )
+            models_changed = True
+        except OSError as exc:
+            extra_reply = f"\n❌ Suppression impossible : {exc}"
+    else:
+        import shutil
+
+        spec = next(
+            (m for m in S.local_model_specs if m.get("id") == a["id"]), None
+        )
+        # Un modèle non monté (refusé, interrompu) n'a pas de spec : dossier de l'item.
+        mdir = (spec or {}).get("dir") or a.get("dir")
+        try:
+            if mdir:
+                shutil.rmtree(_checked_model_dir(S, mdir))
+            S.local_model_specs[:] = [
+                m for m in S.local_model_specs if m.get("id") != a["id"]
+            ]
+            if a["id"] in S.local_model_ids:
+                S.local_model_ids.remove(a["id"])
+            if a["id"] in S.models:
+                S.models.remove(a["id"])
+            S.vision_models.discard(a["id"])
+            _regen_swap_yaml(S)
+            extra_reply = f"\n✅ « {a['id']} » supprimé du disque et du sélecteur."
+            models_changed = True
+        except PermissionError:
+            # Sous Windows, refuser toute suppression partielle d'un GGUF encore mappé.
+            extra_reply = (
+                f"\n❌ Fichiers de « {a['id']} » verrouillés — le modèle est "
+                "probablement CHARGÉ. Éteins le serveur modèle (ou charge un "
+                "autre modèle), puis relance /remove-model."
+            )
+        except OSError as exc:
+            extra_reply = f"\n❌ Suppression impossible : {exc}"
+    return extra_reply.strip(), models_changed
+
+
 def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
     """Intercepte /add-model ET tout message d'une session au wizard actif.
     Même contrat que _handle_goal_command : (message, response) — response non None
@@ -284,64 +358,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
         else:
             extra_reply = "\n(racine des modèles indisponible : ajout NON persisté)"
     elif res.action and res.action["kind"] == "remove":
-        a = res.action
-        if a["model_kind"] in ("remote", "remote_config"):
-            # Purger toutes les racines et les emplacements hérités sans les recréer.
-            with S.toml_lock:
-                model_store.delete_remote_dir(_models_roots(S), a["id"])
-                if S.config_local_path:
-                    model_store.delete_remote_in_toml(S.config_local_path, a["id"])
-                if S.remote_store_path and Path(S.remote_store_path).exists():
-                    model_store.delete(S.remote_store_path, a["id"])
-            _forget_remote(S, a["id"])
-            extra_reply = f"\n✅ « {a['id']} » retiré (dossier remote/ + sélecteur)."
-            models_changed = True
-        elif a["model_kind"] in ("image", "video"):
-            import shutil
-
-            im = S.image_by_id.get(a["id"])
-            try:
-                if im is not None:
-                    shutil.rmtree(im.dir)
-                _forget_image(S, a["id"])
-                extra_reply = (
-                    f"\n✅ Définition de « {a['id']} » supprimée (sélecteur compris) ; "
-                    "les poids ComfyUI partagés ne sont PAS touchés."
-                )
-                models_changed = True
-            except OSError as exc:
-                extra_reply = f"\n❌ Suppression impossible : {exc}"
-        else:
-            import shutil
-
-            spec = next(
-                (m for m in S.local_model_specs if m.get("id") == a["id"]), None
-            )
-            # Un modèle non monté (refusé, interrompu) n'a pas de spec : dossier de l'item.
-            mdir = (spec or {}).get("dir") or a.get("dir")
-            try:
-                if mdir:
-                    shutil.rmtree(mdir)
-                S.local_model_specs[:] = [
-                    m for m in S.local_model_specs if m.get("id") != a["id"]
-                ]
-                if a["id"] in S.local_model_ids:
-                    S.local_model_ids.remove(a["id"])
-                if a["id"] in S.models:
-                    S.models.remove(a["id"])
-                S.vision_models.discard(a["id"])
-                _regen_swap_yaml(S)
-                extra_reply = f"\n✅ « {a['id']} » supprimé du disque et du sélecteur."
-                models_changed = True
-            except PermissionError:
-                # Sous Windows, refuser toute suppression partielle d'un GGUF encore mappé.
-                extra_reply = (
-                    f"\n❌ Fichiers de « {a['id']} » verrouillés — le modèle est "
-                    "probablement CHARGÉ. Éteins le serveur modèle (ou charge un "
-                    "autre modèle), puis relance /remove-model."
-                )
-            except OSError as exc:
-                extra_reply = f"\n❌ Suppression impossible : {exc}"
+        extra_reply, models_changed = _remove_model(S, res.action)
     elif res.action and res.action["kind"] == "mount_image":
         a = res.action
         im = _mount_image(S, a["model_kind"], a["id"])
@@ -472,6 +489,50 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock):
 
 
 def _register_model_routes(app, S):
+    @app.get("/models/removable")
+    def models_removable():
+        busy = {h.get("model") for h in list(S.active_streams.values()) if isinstance(h, dict)}
+        busy.update(sess.conversation.model for sid, sess in list(S.sessions_cache.items())
+                    if S.sess_locks.get(sid) and S.sess_locks[sid].locked())
+        return {"models": [dict(m, busy=m["id"] in busy) for m in _removable_models(S)]}
+
+    @app.delete("/models/installed/<mid>")
+    def models_installed_delete(mid):
+        from loom.web.routes.helpers import _lock_for
+
+        held = []
+        S.model_admin_lock.acquire()
+        try:
+            item = next((m for m in _removable_models(S) if m["id"] == mid), None)
+            if item is None:
+                return {"error": "modèle introuvable"}, 404
+            # Protect active and about-to-start turns without stopping other models.
+            for sess in list(S.sessions_cache.values()):
+                if sess.conversation.model != mid:
+                    continue
+                lock = _lock_for(S, sess.id)
+                if not lock.acquire(blocking=False):
+                    return {"error": "Ce modèle travaille encore. Attends la fin de sa génération."}, 409
+                held.append(lock)
+            if any(isinstance(h, dict) and h.get("model") == mid for h in list(S.active_streams.values())):
+                return {"error": "Ce modèle travaille encore."}, 409
+            message, ok = _remove_model(S, dict(item, model_kind=item["kind"]))
+            if ok:
+                fallback = S.models[0] if S.models else ""
+                if S.session_store.default_model == mid:
+                    S.session_store.set_default_model(fallback)
+                for sess in list(S.sessions_cache.values()):
+                    if sess.conversation.model == mid:
+                        sess.conversation.set_model(fallback)
+                        S.session_store.save(sess)
+            return {"ok": ok, "message": message, "models": _models_payload(S)}, 200 if ok else 409
+        except OSError as exc:
+            return {"error": f"Suppression impossible : {exc}"}, 409
+        finally:
+            for lock in reversed(held):
+                lock.release()
+            S.model_admin_lock.release()
+
     # Import tardif requis pour rompre le cycle avec les routes de chat.
     from loom.web.routes.chat import CHAT_COMMANDS
     from loom.web.routes.priming import _prime_async
@@ -592,20 +653,12 @@ def _register_model_routes(app, S):
 
     @app.delete("/models/remote/<mid>")
     def models_remote_delete(mid):
-        roots = _models_roots(S)
-        if not roots:
-            return {"error": "racine des modèles indisponible"}, 500
         if mid not in S.remote_model_ids:
-            return {"error": f"modèle distant '{mid}' inconnu"}, 404
-        with S.toml_lock:
-            model_store.delete_remote_dir(roots, mid)
-            # Nettoyer les emplacements hérités sans recréer de fichier vide.
-            if S.config_local_path:
-                model_store.delete_remote_in_toml(S.config_local_path, mid)
-            if S.remote_store_path and Path(S.remote_store_path).exists():
-                model_store.delete(S.remote_store_path, mid)
-        _forget_remote(S, mid)
-        return {"ok": True, "models": _models_payload(S), "remotes": _remote_list(S)}
+            return {"error": "modèle distant inconnu"}, 404
+        payload, status = models_installed_delete(mid)
+        if status == 200:
+            payload["remotes"] = _remote_list(S)
+        return payload, status
 
     @app.get("/models/local")
     def models_local():

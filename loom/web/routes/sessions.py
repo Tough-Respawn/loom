@@ -160,6 +160,10 @@ def _register_session_routes(app, S):
         text = (request.form.get("text") or "").strip()
         if not text:
             return {"error": "note vide"}, 400
+        if text.split(maxsplit=1)[0] == "/remove-model":
+            return {"ui_action": "manage_models"}
+        if text.split(maxsplit=1)[0] in {"/add-model", "/rebench", "/cancel"}:
+            return {"error": "Commande d’interface : attends la fin du tour pour cette opération."}, 409
         if len(text) > _NOTE_MAX_CHARS:
             return {
                 "error": f"note trop longue (max {_NOTE_MAX_CHARS} caractères)"

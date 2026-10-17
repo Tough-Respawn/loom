@@ -530,6 +530,7 @@ def create_app(
         remote_store_path=remote_store_path,
         toml_lock=_toml_lock,
         gen_guard=threading.Lock(),
+        model_admin_lock=threading.Lock(),
         sess_locks={},
         sess_cancel={},
         # Fermer ce stream permet à `/cancel` de débloquer une API distante figée.

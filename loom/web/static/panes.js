@@ -378,6 +378,14 @@ export function submitPane(pane) {
   if (!text || !sid) return;
   // Un clear programmatique n'émet pas `input`; fermer la palette explicitement.
   hidePal(pane);
+  if (text.split(/\s+/, 1)[0] === "/remove-model") {
+    pane.input.value = "";
+    const current = tab(sid);
+    if (current) current.draft = "";
+    autosize(pane);
+    document.dispatchEvent(new CustomEvent("loom:manage-models"));
+    return;
+  }
   const t = tab(sid);
   // Consommer les choix du wizard dès qu'une réponse part.
   if (t)

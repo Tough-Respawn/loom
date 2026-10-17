@@ -128,6 +128,14 @@ fixe le délai d'attente en secondes, à adapter à la durée de génération.
   fournir les deux fichiers décrits ci-dessus. Relancer Loom après une modification
   manuelle pour recharger la configuration.
 
+## Retirer un modèle
+
+Dans la configuration, ouvrir **Gérer les modèles** et confirmer la suppression.
+`/remove-model` ouvre ce même panneau : aucun message n'entre dans le fil du modèle,
+et la génération continue. Un modèle en cours d'utilisation ne peut pas être supprimé.
+Les modèles texte locaux sont effacés du disque ; pour les modèles image et vidéo,
+seule leur définition Loom est retirée, les poids ComfyUI partagés sont conservés.
+
 ## Vérifier le travail d'une session
 
 Le menu de l'onglet propose **Télécharger le journal des outils (.md)**. L'export ZIP contient

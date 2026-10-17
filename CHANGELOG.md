@@ -6,6 +6,13 @@
 
 ---
 
+## 2026-10-17 : panneau « Gérer les modèles »
+
+- `/remove-model` ouvre « Gérer les modèles » sans envoyer de message au modèle ni
+  interrompre sa génération. La suppression refuse les modèles utilisés et
+  conserve la liste des modèles distants restants. Les raccourcis restent initialisés.
+- La suppression n'efface que des dossiers `<racine>/local/{text,image,video}/<id>`.
+
 ## 2026-10-17 : journal des outils téléchargeable
 
 - Export du journal des outils en Markdown (menu de l'onglet, et `journal.md` dans l'export
