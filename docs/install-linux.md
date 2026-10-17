@@ -15,6 +15,9 @@ propose un premier modèle adapté à la RAM. Confirmations avant chaque action 
 bilan dans `var/logs/setup.log`. NVIDIA sous Linux : les releases n'embarquent
 pas toujours de build CUDA — le setup guide alors vers la compilation.
 
+**Mettre à jour llama.cpp** : relancer `uv run loom-setup`, qui propose la build de la
+dernière release stable si elle est plus récente, l'installe à côté et garde l'ancienne.
+
 ## À la main (repli)
 
 1. Build CPU ou release Linux de llama.cpp ; placer `llama-server` dans le PATH

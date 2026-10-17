@@ -7,6 +7,7 @@ import json
 import time
 
 from loom.runtime import llama_update as lu
+from loom.setup import llama_release as lr
 
 
 # -- build du binaire ------------------------------------------------------------
@@ -67,6 +68,7 @@ def test_pr_mergee_signalee_meme_sans_nouvelle_build():
 def test_sans_pr_suivie_nouvelle_build_propose_le_setup():
     n = lu.build_notice(11364, _LATEST, [], "")
     assert n["kind"] == "official" and n["command"] == "uv run loom-setup"
+    assert "recompiler" not in n["message"]  # aucun build maison à abandonner
 
 
 def test_build_inconnue_ou_reseau_absent_rien():
@@ -102,18 +104,22 @@ class _Client:
         return self.routes.get(url, _Resp(404))
 
 
-def test_latest_nightly_ignore_les_versions_v0x():
+def test_latest_release_suit_la_release_stable_comme_le_setup():
+    # Même source que loom-setup : ce que le bandeau annonce est ce que le setup installe.
     c = _Client(
         {
-            lu.RELEASES_LIST_URL: _Resp(
-                data=[
-                    {"tag_name": "v0.5.0", "published_at": "x"},
-                    {"tag_name": "b11400", "published_at": "2026-10-05T10:00:00Z"},
-                ]
+            lr.RELEASES_URL: _Resp(
+                data={"tag_name": "b11400", "published_at": "2026-10-05T10:00:00Z"}
             )
         }
     )
-    assert lu.latest_nightly(c) == _LATEST
+    assert lu.latest_release(c) == _LATEST
+    assert c.calls == [lr.RELEASES_URL]
+
+
+def test_latest_release_tag_non_build_rien():
+    c = _Client({lr.RELEASES_URL: _Resp(data={"tag_name": "v0.7.0", "assets": []})})
+    assert lu.latest_release(c) is None
 
 
 def test_pr_states():
@@ -138,8 +144,8 @@ def test_check_met_en_cache_et_ne_rappelle_pas_github_avant_24h(tmp_path, monkey
     monkeypatch.setattr(lu, "binary_build", lambda b: 11364)
     c = _Client(
         {
-            lu.RELEASES_LIST_URL: _Resp(
-                data=[{"tag_name": "b11400", "published_at": "2026-10-05T10:00:00Z"}]
+            lr.RELEASES_URL: _Resp(
+                data={"tag_name": "b11400", "published_at": "2026-10-05T10:00:00Z"}
             ),
             lu.PR_URL.format(n=26004): _Resp(
                 data={
@@ -175,7 +181,7 @@ def test_check_hors_ligne_ne_leve_jamais(tmp_path, monkeypatch):
             raise ConnectionError("hors ligne")
 
     r = lu.check("bin.exe", [26004], "x", tmp_path / "c.json", client=_Down())
-    assert r["notice"] is None and "hors ligne" in r["error"]
+    assert r["notice"] is None and "injoignable" in r["error"]
 
 
 def test_binaire_change_invalide_le_cache(tmp_path, monkeypatch):
@@ -183,8 +189,8 @@ def test_binaire_change_invalide_le_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(lu, "binary_build", lambda b: next(builds))
     c = _Client(
         {
-            lu.RELEASES_LIST_URL: _Resp(
-                data=[{"tag_name": "b11400", "published_at": "2026-10-05T10:00:00Z"}]
+            lr.RELEASES_URL: _Resp(
+                data={"tag_name": "b11400", "published_at": "2026-10-05T10:00:00Z"}
             )
         }
     )
