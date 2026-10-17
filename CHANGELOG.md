@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-10-17 : /add-model ne recommande plus un modèle dense qui déborde de la VRAM
+
+- Un dense relit tous ses poids à chaque token : ce qui déborde passe par le CPU. L'IQ2_XXS
+  de 6,8 Go d'un 27B était recommandé sur 6 Go de VRAM. Désormais seul un quant qui tient
+  entier en VRAM est recommandé ; sinon, alternatives de la famille. Les MoE gardent les
+  experts en RAM.
+- Alternatives aussi quand le recommandé est sous 4 bits (hors ternaire natif, Q2_0 de
+  Bonsai) ; taille d'un dépôt lue dans son nom quand Hugging Face a lu un drafter MTP.
+
 ## 2026-10-17 : /add-model met la VRAM d'abord, estime la vitesse et propose des alternatives
 
 - La règle précédente bannissait la pleine précision même quand elle tenait en VRAM, et

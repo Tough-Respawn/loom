@@ -81,8 +81,8 @@ def _f(name, gb):
 
 
 def test_dense_27b_sur_6_go_rien_ne_fait_le_taff():
-    # Vécu 2026-10-17 : la 1re règle recommandait le F16 de 50 Go, la 2e l'IQ2_XXS (le
-    # moins lu en RAM) sans se demander s'il tournait assez vite. Aucun ne passe 8 t/s.
+    # Vécu 2026-10-17 : les règles successives ont recommandé le F16 de 50 Go, puis
+    # l'IQ2_XXS qui déborde de la VRAM. Un dense qui n'y tient pas entier ne tourne pas.
     files = [
         _f("Q-IQ1_S.gguf", 5.8),
         _f("Q-UD-IQ1_M.gguf", 6.9),  # vécu : unsloth, ≈ 2,0 bits effectifs
@@ -102,8 +102,8 @@ def test_dense_27b_sur_6_go_rien_ne_fait_le_taff():
     assert by["Q-Q4_K_M.gguf"]["tps"] < by["Q-IQ2_XXS.gguf"]["tps"] < 8
 
 
-def test_dense_27b_sur_12_go_le_plus_gros_assez_rapide():
-    # Rien d'au moins 4 bits n'y tient : IQ3_XXS déborde à peine et reste rapide.
+def test_dense_27b_sur_12_go_le_plus_gros_qui_tient_entier():
+    # Rien d'au moins 4 bits n'y tient : le plus gros qui y tient entier, même sous 4 bits.
     files = [_f("Q-IQ2_XXS.gguf", 7.0), _f("Q-IQ3_XXS.gguf", 10.5),
              _f("Q-Q4_K_M.gguf", 15.3)]  # fmt: skip
     sup = _SUP | {"Q4_K_M", "IQ3_XXS"}
@@ -139,17 +139,24 @@ def test_la_vram_d_abord_plutot_qu_un_quant_a_peine_plus_gros_qui_deborde():
     assert by["M-Q5_K_M.gguf"]["recommended"]
 
 
-def test_debordement_le_plus_gros_a_12_t_s_sinon_a_8():
+def test_dense_qui_deborde_jamais_recommande_meme_estime_rapide():
     mid = dict(_DENSE, n_params=12_000_000_000)
-    sup = _SUP | {"Q3_K_M", "Q4_K_M"}
-    files = [_f("G-Q3_K_M.gguf", 5.5), _f("G-Q4_K_M.gguf", 6.3)]
-    by = {
-        f["filename"]: f
-        for f in recommend_quant(files, 6143, 65297, analysis=mid, supported=sup)
-    }
-    assert by["G-Q3_K_M.gguf"]["tps"] >= 12 > by["G-Q4_K_M.gguf"]["tps"] >= 8
-    assert by["G-Q3_K_M.gguf"]["recommended"]  # pas le Q4_K_M à la limite des 8 t/s
-    out = recommend_quant(files[1:], 6143, 65297, analysis=mid, supported=sup)
+    files = [_f("G-Q2_K.gguf", 4.0), _f("G-Q3_K_M.gguf", 5.5)]
+    out = recommend_quant(
+        files, 6143, 65297, analysis=mid, supported=_SUP | {"Q2_K", "Q3_K_M"}
+    )
+    by = {f["filename"]: f for f in out}
+    assert by["G-Q3_K_M.gguf"]["tps"] >= 12 and not by["G-Q3_K_M.gguf"]["recommended"]
+    assert by["G-Q2_K.gguf"]["recommended"] and by["G-Q2_K.gguf"]["ram_share"] == 0
+
+
+def test_moe_le_plus_gros_a_12_t_s_sinon_a_8():
+    moe = dict(_DENSE, moe=True, expert_count=256, expert_used=8, f_exp=0.9)
+    files = [_f("M-A.gguf", 40.0), _f("M-B.gguf", 60.0)]
+    by = {f["filename"]: f for f in recommend_quant(files, 6143, 65297, analysis=moe)}
+    assert by["M-A.gguf"]["tps"] >= 12 > by["M-B.gguf"]["tps"] >= 8
+    assert by["M-A.gguf"]["recommended"]  # pas le plus gros, à la limite des 8 t/s
+    out = recommend_quant(files[1:], 6143, 65297, analysis=moe)
     assert out[0]["recommended"]  # seul au-dessus de 8 t/s : il reste recommandé
 
 
@@ -208,13 +215,22 @@ def test_alternatives_qui_tournent_ici_les_plus_gros_d_abord():
         {"repo_id": "e/Qwen3.8-9B-Distill-GGUF", "params": 9_200_000_000, "arch": "qwen35"},
         {"repo_id": "p/Qwen3.8-4B-gguf", "params": 1_500_000_000, "arch": "dflash"},  # le nom fait foi
         {"repo_id": "z/Qwen3.8-2B-GGUF", "params": 1_900_000_000, "arch": "qwen35"},
+        # HF a lu le drafter MTP du repo : le nom (27B) fait foi, même modèle, rien n'y tient.
+        {"repo_id": "h/Qwen3.8-27B-MTP-GGUF", "params": 1_900_000_000, "arch": "qwen35"},
         {"repo_id": "k/Qwen3.8-14B-GGUF", "params": 14_000_000_000, "arch": "qwen35"},
     ]  # fmt: skip
     files = {
         "x/Qwen3.8-27B-Abliterated-GGUF": [_f("A-IQ2_XXS.gguf", 7.0)],
         "e/Qwen3.8-35B-A3B-Distill-GGUF": [_f("D-Q4_K_M.gguf", 20.0)],
-        "e/Qwen3.8-9B-Distill-GGUF": [_f("N-Q4_K_M.gguf", 5.6), _f("N-Q8_0.gguf", 9.5)],
+        "e/Qwen3.8-9B-Distill-GGUF": [
+            _f("N-Q3_K_M.gguf", 4.2),
+            _f("N-Q4_K_M.gguf", 5.6),
+        ],
         "p/Qwen3.8-4B-gguf": [_f("F-Q8_0.gguf", 4.3)],
+        "h/Qwen3.8-27B-MTP-GGUF": [
+            _f("H-FastMTP.gguf", 0.8),
+            _f("H-Q4_K_M.gguf", 16.0),
+        ],
         "z/Qwen3.8-2B-GGUF": [_f("T-Q8_0.gguf", 2.0)],
     }
 
@@ -224,10 +240,11 @@ def test_alternatives_qui_tournent_ici_les_plus_gros_d_abord():
         return files[repo]
 
     alts = suggest_alternatives("u/Qwen3.8-27B-GGUF", _DENSE, hits, list_files, 6143,
-                                65297, _SUP | {"Q4_K_M"})  # fmt: skip
+                                65297, _SUP | {"Q3_K_M", "Q4_K_M"})  # fmt: skip
     assert [a["repo_id"] for a in alts] == [
         "e/Qwen3.8-35B-A3B-Distill-GGUF",  # MoE : experts en RAM, assez rapide
         "e/Qwen3.8-9B-Distill-GGUF",
         "p/Qwen3.8-4B-gguf",
     ]
-    assert alts[0]["active"] == 3e9 and alts[1]["pick"]["filename"] == "N-Q4_K_M.gguf"
+    # Dense : le quant qui tient entier en VRAM, pas le Q4_K_M qui déborde.
+    assert alts[0]["active"] == 3e9 and alts[1]["pick"]["filename"] == "N-Q3_K_M.gguf"

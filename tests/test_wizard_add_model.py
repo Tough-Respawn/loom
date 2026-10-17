@@ -447,7 +447,7 @@ def test_aucun_quant_ne_convient_alternatives_choisies_par_lettre():
     ]  # fmt: skip
     r = wizard.step({"step": "l_query"}, "org/big", d)
     assert "~32 % lu en RAM, ~7.3 t/s estimés" in r.reply
-    assert "sous 8 t/s estimés" in r.reply
+    assert "ne tient pas entier en VRAM" in r.reply
     assert (
         "a. e/Small-9B-GGUF : dense 9.2B, Q4_K_M 5.6 Go, ~18 % lu en RAM, "
         "~13.7 t/s estimés" in r.reply

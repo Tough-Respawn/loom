@@ -113,14 +113,15 @@ fixe le délai d'attente en secondes, à adapter à la durée de génération.
   part des experts, cache KV par token, fenêtre glissante) et la liste des formats du
   llama.cpp installé (`llama-quantize`). La VRAM passe d'abord : le plus gros quant d'au
   moins 4 bits par poids qui y tient entier avec 16k de contexte, pleine précision
-  comprise. Sinon, le plus gros dont la génération estimée atteint 12 t/s, à défaut
-  8 t/s (dense : les couches qui débordent sont lues en RAM ; MoE : experts en RAM).
+  comprise. Sinon, pour un modèle dense, le plus gros qui y tient entier (un dense qui
+  déborde de la VRAM n'est jamais recommandé) ; pour un MoE, experts en RAM, le plus
+  gros dont la génération estimée atteint 12 t/s, à défaut 8 t/s.
   Jamais un format inconnu de ce llama.cpp (quant d'un fork) ni la classe 1 bit. Chaque
   quant affiche « tout en VRAM » ou sa part lue en RAM et sa vitesse ESTIMÉE (débits
   fixes calés sur une RTX 2060 et de la DDR4, `/rebench` mesure ensuite la vraie).
-  Quand rien ne convient, ou que le recommandé reste sous 12 t/s, l'assistant cherche
-  dans la même famille (nom du dépôt, puis modèle de base) des dépôts qui tourneraient
-  mieux et les propose par lettre.
+  Quand rien ne convient, que le recommandé reste sous 12 t/s ou sous 4 bits (hors
+  format ternaire natif), l'assistant cherche dans la même famille (nom du dépôt, puis
+  modèle de base) des dépôts qui tournent ici et les propose par lettre.
 - **Manuellement** : créer le dossier correspondant au type de modèle. Pour le
   texte local, copier uniquement `_TEMPLATE/model.toml` ; pour un distant, copier
   `_TEMPLATE/remote-model.toml` sous le nom `model.toml`. Pour l'image ou la vidéo,

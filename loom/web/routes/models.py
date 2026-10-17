@@ -97,11 +97,21 @@ def _wizard_deps(S):
         )
         if analysis and out:
             out[0]["repo_note"] = _repo_note(analysis, vram_budget)
-        # Alternatives si rien ne convient, ou si le recommandé reste sous la vitesse visée
-        # (près du seuil, l'estimation est trop incertaine pour s'en contenter).
+        # Alternatives si rien ne convient, si le recommandé reste sous la vitesse visée
+        # (près du seuil, l'estimation est trop incertaine pour s'en contenter) ou sous
+        # 4 bits par poids hors format ternaire natif (il tient, mais dégradé).
         rec = next((f for f in out if f["recommended"]), None)
         tps = rec and rec.get("tps")
-        if repo and out and (rec is None or (tps and tps < model_install.TARGET_TPS)):
+        weak = (
+            rec
+            and (rec.get("bpw") or 99) < model_install.DECENT_BPW
+            and rec.get("label") not in model_install.TERNARY
+        )
+        if (
+            repo
+            and out
+            and (rec is None or weak or (tps and tps < model_install.TARGET_TPS))
+        ):
             out[0]["alternatives"] = alternatives(repo, analysis, tps or 0.0)
         return out
 
