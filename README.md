@@ -73,7 +73,10 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
     (remplacement exact-unique), `format_code` (ruff Python / prettier web).
   - **Exécuter** : `run_shell` (PowerShell/bash, garde-fou deny-list, tue l'arbre au timeout).
     `monitor` suit une commande de fond et injecte ses événements dans la conversation.
-  - **Web** : `web_search`, `fetch_url` (dégradés proprement hors-ligne).
+  - **Web** : `web_search`, `fetch_url`. Une recherche ou une lecture qui échoue (réseau,
+    moteurs bloqués, page de blocage) est signalée comme un échec avec sa cause, jamais
+    comme « aucun résultat » ; quand les moteurs de SearXNG sont tous en échec, `ddgs`
+    prend le relais et le modèle en est prévenu.
   - **Vidéo** : `watch_video` lit ce qu'une vidéo **dit** (URL YouTube, Vimeo, TikTok… ou
     fichier local) : titre, chapitres et transcript horodaté. Sous-titres existants d'abord,
     sinon audio seul transcrit en local par faster-whisper sur CPU (la VRAM reste au LLM ;

@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-17 : web_search et fetch_url distinguent l'échec de l'absence de résultat
+
+- SearXNG répondait HTTP 200 avec zéro résultat, ses moteurs en CAPTCHA ou en 429 :
+  l'outil disait « hors-ligne ou aucun résultat », sans essayer ddgs, et le modèle
+  relançait en boucle. Désormais, en mode auto, ddgs prend le relais (aussi quand
+  SearXNG reste injoignable après relance) et le modèle reçoit la cause. Si tout échoue,
+  l'outil renvoie une erreur qui la nomme ; « aucun résultat » est réservé au cas où les
+  moteurs ont cherché.
+- `fetch_url` : un lot d'URL entièrement en échec est un échec ; une page courte de
+  blocage servie en HTTP 200 (« JavaScript is disabled », captcha…) devient une erreur
+  explicite au lieu d'un contenu.
+
 ## 2026-10-17 : /add-model signale les alternatives « dérivé tiers »
 
 - Le « Qwen3.8-35B-A3B » proposé en alternative était un affinage d'Empero sur
