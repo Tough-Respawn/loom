@@ -94,7 +94,6 @@ _EXEC_CLAIM = (
     "a affiche",
     "a retourne",
     "resultat :",
-    "sortie :",
     "exit=",
     "j'ai lance",
     "j'ai execute",
