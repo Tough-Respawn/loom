@@ -311,6 +311,16 @@ def _register_session_routes(app, S):
 
         return {"id": sess.id, "title": sess.title, "workspace": sess.workspace}
 
+    @app.get("/session/<sid>/journal")
+    def session_journal(sid):
+        from loom.agent.transcript import render_transcript
+        if S.session_store.load(sid) is None:
+            return {"error": "session inconnue"}, 404
+        return Response(render_transcript(S.session_store.read_timeline(sid)),
+                        mimetype="text/plain", headers={
+                            "Content-Disposition": f'attachment; filename="journal-{sid}.md"'
+                        })
+
     @app.get("/session/<sid>/export")
     def session_export(sid):
         data = S.session_store.export_zip(sid)

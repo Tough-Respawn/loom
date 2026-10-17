@@ -127,3 +127,14 @@ fixe le délai d'attente en secondes, à adapter à la durée de génération.
   `_TEMPLATE/remote-model.toml` sous le nom `model.toml`. Pour l'image ou la vidéo,
   fournir les deux fichiers décrits ci-dessus. Relancer Loom après une modification
   manuelle pour recharger la configuration.
+
+## Vérifier le travail d'une session
+
+Le menu de l'onglet propose **Télécharger le journal des outils (.md)**. L'export ZIP contient
+également `journal.md`, issu de `timeline.jsonl`, avec les entrées et sorties
+persistées des outils. Un appel réussi ne prouve pas que la tâche a été accomplie.
+En console :
+
+```bash
+uv run python -m loom.agent.transcript var/sessions/<id>
+```

@@ -40,7 +40,7 @@ def test_export_zip_contient_session_timeline_et_manifeste(tmp_path):
     sess = _fill(store)
     data = store.export_zip(sess.id)
     z = zipfile.ZipFile(io.BytesIO(data))
-    assert set(z.namelist()) == {"loom-session.json", "session.json", "timeline.jsonl"}
+    assert set(z.namelist()) == {"loom-session.json", "session.json", "timeline.jsonl", "journal.md"}
     manifest = json.loads(z.read("loom-session.json"))
     assert manifest["format"] == "loom-session" and manifest["version"] == 1
     payload = json.loads(z.read("session.json"))

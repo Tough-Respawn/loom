@@ -110,6 +110,9 @@ export function openTabMenu(e, sid) {
   add("Exporter la conversation (.zip)", () => {
     window.location = "/session/" + encodeURIComponent(sid) + "/export";
   });
+  add("Télécharger le journal des outils (.md)", () => {
+    window.location = "/session/" + encodeURIComponent(sid) + "/journal";
+  });
   document.body.appendChild(m);
   m.style.left = Math.min(e.clientX, window.innerWidth - m.offsetWidth - 6) + "px";
   m.style.top = Math.min(e.clientY, window.innerHeight - m.offsetHeight - 6) + "px";
