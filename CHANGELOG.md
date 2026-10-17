@@ -6,6 +6,12 @@
 
 ---
 
+## 2026-10-17 : journal des outils téléchargeable
+
+- Export du journal des outils en Markdown (menu de l'onglet, et `journal.md` dans l'export
+  ZIP), pour consulter les entrées et sorties enregistrées indépendamment des affirmations
+  du modèle. En console : `uv run python -m loom.agent.transcript var/sessions/<id>`.
+
 ## 2026-10-17 : garde-fou d'exécution sans faux positif sur « Sortie : »
 
 - Le garde-fou d'affirmation d'exécution conserve « Résultat : » et écarte « sortie : »,

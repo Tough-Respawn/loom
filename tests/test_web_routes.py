@@ -377,3 +377,17 @@ def test_models_remote_id_invalide_400(web):
         content_type="application/json",
     )
     assert r.status_code == 400
+
+
+def test_journal_telechargeable_contient_preuves_completes(web_sess):
+    S = web_sess.application.S
+    sid = S.cur["session"].id
+    S.session_store.append_event(sid, "tool_result", {
+        "name": "fetch_url", "ok": True, "in_full": '{"url":"https://example.test"}',
+        "out_full": "preuve " * 500 + "FIN", "preview": "aperçu",
+    })
+    result = web_sess.get(f"/session/{sid}/journal")
+    assert result.status_code == 200
+    assert "attachment" in result.headers["Content-Disposition"]
+    assert "https://example.test" in result.text and "FIN" in result.text
+    assert web_sess.get("/session/unknown/journal").status_code == 404

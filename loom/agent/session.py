@@ -243,6 +243,8 @@ class SessionStore:
             tl = self._timeline_file(sid)
             if tl.exists():
                 z.write(tl, "timeline.jsonl")
+            from loom.agent.transcript import render_transcript
+            z.writestr("journal.md", render_transcript(self.read_timeline(sid)))
         return buf.getvalue()
 
     def import_zip(self, data: bytes) -> Session:
