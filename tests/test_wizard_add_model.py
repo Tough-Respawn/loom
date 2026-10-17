@@ -438,7 +438,8 @@ def test_aucun_quant_ne_convient_alternatives_choisies_par_lettre():
            "size_mb": 7168, "is_mmproj": False, "is_aux": False}  # fmt: skip
     pick = {"filename": "S-Q4_K_M.gguf", "label": "Q4_K_M", "size_mb": 5734,
             "ram_share": 0.18, "tps": 13.7}  # fmt: skip
-    alt = {"repo_id": "e/Small-9B-GGUF", "params": 9.2e9, "active": None, "pick": pick}
+    alt = {"repo_id": "e/Small-9B-GGUF", "params": 9.2e9, "active": None, "pick": pick,
+           "derived_from": "Org/Small-9B"}  # fmt: skip
     d = deps(files=[big])
     d.recommend = lambda fs, repo=None: [
         dict(f, fits=True, recommended=repo != "org/big", status="ok", ram_share=0.32,
@@ -450,7 +451,7 @@ def test_aucun_quant_ne_convient_alternatives_choisies_par_lettre():
     assert "ne tient pas entier en VRAM" in r.reply
     assert (
         "a. e/Small-9B-GGUF : dense 9.2B, Q4_K_M 5.6 Go, ~18 % lu en RAM, "
-        "~13.7 t/s estimés" in r.reply
+        "~13.7 t/s estimés, dérivé tiers de Org/Small-9B" in r.reply
     )
     r = wizard.step(r.state, "A", d)
     assert r.state["step"] == "l_quant" and r.state["repo"] == "e/Small-9B-GGUF"

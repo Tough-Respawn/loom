@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-10-17 : /add-model signale les alternatives « dérivé tiers »
+
+- Le « Qwen3.8-35B-A3B » proposé en alternative était un affinage d'Empero sur
+  Qwen3.6-35B-A3B, pris pour une sortie officielle de Qwen. Chaque alternative affiche
+  désormais « dérivé tiers de <modèle officiel> » quand un tiers a modifié le modèle :
+  filiation `base_model` lue sur Hugging Face, ou nom de dépôt différent du modèle qu'il
+  dit quantifier (variantes abliterated, Bonsai). Les simples quantifications ne sont
+  pas marquées.
+
 ## 2026-10-17 : recommandation alignée sur le lancement réel, évaluations locales
 
 - Recommandation partagée entre l'installation et le wizard : budget aligné sur

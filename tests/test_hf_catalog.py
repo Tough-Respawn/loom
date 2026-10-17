@@ -93,3 +93,18 @@ def test_list_gguf_marque_les_auxiliaires():
     assert by_name["Ternary-Bonsai-27B-dspark-Q4_1.gguf"]["is_aux"] is True
     assert by_name["Ternary-Bonsai-27B-dspark-bf16.gguf"]["is_aux"] is True
     assert by_name["empty-model.gguf"]["is_aux"] is False
+
+
+def test_base_model_of_prefere_la_relation_declaree():
+    class Api:
+        def model_info(self, repo_id, expand=None):
+            tags = {
+                "e/D-GGUF": ["gguf", "base_model:e/D", "base_model:quantized:e/D"],
+                "Qwen/X": ["text-generation"],
+            }[repo_id]
+            return SimpleNamespace(tags=tags)
+
+    from loom.runtime.hf_catalog import base_model_of
+
+    assert base_model_of("e/D-GGUF", api=Api()) == ("quantized", "e/D")
+    assert base_model_of("Qwen/X", api=Api()) is None
