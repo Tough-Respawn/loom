@@ -877,8 +877,11 @@
     .tabbar {
       flex: none; display: flex; align-items: stretch; gap: 2px; padding: 4px 8px 0;
       background: var(--bg); border-bottom: 1px solid var(--border);
-      overflow-x: auto; scrollbar-width: thin;
+      /* Défilement horizontal seulement (onglets nombreux) : overflow-x: auto rendait
+         aussi l'axe vertical défilable, d'où une petite barre à flèches en haut à droite. */
+      overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
     }
+    .tabbar::-webkit-scrollbar { height: 4px; }
     .tabbar[hidden] { display: none; }
     .tab {
       display: flex; align-items: center; gap: 7px; max-width: 220px;

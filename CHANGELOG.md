@@ -34,6 +34,8 @@
   des raccourcis (« / », « ? », Entrée) à la place de la phrase seule.
 - Les blocs du fil (étapes, messages, sorties d'outils dépliées, chronologies d'agents)
   apparaissent en 150 ms (fondu + glissement) ; tout est coupé sous `prefers-reduced-motion`.
+- Barre d'onglets : plus de petite barre de défilement verticale à flèches en haut à droite
+  (défilement vertical coupé, horizontal conservé et discret).
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
