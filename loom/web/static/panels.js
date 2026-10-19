@@ -274,16 +274,24 @@ export function updateUsageMeter(t) {
   const outEl = document.getElementById("um-out");
   if (inEl) inEl.textContent = fmtTok(t.tokens_in);
   if (outEl) outEl.textContent = fmtTok(t.tokens_out);
+  const totalEl = document.getElementById("um-total");
+  if (totalEl) totalEl.textContent = fmtTok((t.tokens_in || 0) + (t.tokens_out || 0));
   // Le taux de cache mesure la part de l'entrée réellement servie depuis le préfixe.
   const cacheEl = document.getElementById("um-cache");
+  const cachePct = t.cache_pct || 0;
   if (cacheEl) {
-    const pct = t.cache_pct || 0;
-    cacheEl.textContent = t.tokens_in > 0 ? "· cache " + pct + "%" : "";
-    cacheEl.classList.toggle("miss", t.tokens_in > 0 && pct < 20);
+    cacheEl.textContent = t.tokens_in > 0 ? "· cache " + cachePct + "%" : "";
+    cacheEl.classList.toggle("miss", t.tokens_in > 0 && cachePct < 20);
   }
   // Le nombre d'appels multiplie le coût d'un contexte rejoué.
   const callsEl = document.getElementById("um-calls");
   if (callsEl) callsEl.textContent = t.api_calls > 0 ? "· " + t.api_calls + "×" : "";
+  // Une ligne courte à l'écran ; le détail dans l'infobulle.
+  usageMeter.title =
+    "Consommation réelle cumulée de la session : entrée " + fmtTok(t.tokens_in) +
+    " tokens (cache " + cachePct + "%), sortie " + fmtTok(t.tokens_out) +
+    ", " + (t.api_calls || 0) + " appel(s). L'API refacture tout le contexte en entrée " +
+    "à chaque appel d'outil : le coût suit ce total, pas les tokens qui défilent.";
   // La jauge compare le dernier prompt à la fenêtre du modèle.
   const ctxEl = document.getElementById("um-ctx");
   if (ctxEl) {
@@ -308,6 +316,9 @@ export function updateUsageMeter(t) {
         ". Au-delà de ~85%, la microcompaction élague les vieux résultats d'outils.";
       ctxEl.classList.toggle("warn", pct >= 70 && pct < 85);
       ctxEl.classList.toggle("crit", pct >= 85);
+      // « compacter » n'a de sens qu'à l'approche du seuil : sinon il encombre la ligne.
+      const compact = document.getElementById("um-compact");
+      if (compact) compact.hidden = pct < 70;
       ctxEl.hidden = false;
     } else {
       ctxEl.hidden = true;

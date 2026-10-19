@@ -838,19 +838,18 @@
     }
     .usage-meter[hidden] { display: none; }
     .usage-meter .um-lab { color: var(--text-faint); font-weight: 600; }
-    .usage-meter .um-unit { color: var(--text-faint); font-size: 9.5px; margin-left: -2px; }
-    .usage-meter #um-in { color: var(--warn); }
-    .usage-meter #um-out { color: var(--accent); }
-    .usage-meter .um-cache { color: var(--accent); }
-    .usage-meter .um-cache.miss { color: var(--err); }
-    .usage-meter .um-calls { color: var(--text-faint); }
+    .usage-meter .um-unit { color: var(--text-faint); font-size: 9.5px; margin-left: -1px; }
+    .usage-meter #um-total { color: var(--text); }
+    /* Le détail vit dans l'infobulle : une ligne courte, total + jauge de contexte. */
+    .usage-meter .um-detail { display: none; }
+    .usage-meter .um-compact[hidden] { display: none; }
     /* Jauge de remplissage de la fenêtre de contexte (occupation courante / fenêtre du modèle).
        Distinct des totaux cumulés : c'est « à quel point le contexte est plein MAINTENANT ». */
     .usage-meter .um-ctx { display: inline-flex; align-items: center; gap: 5px; color: var(--text-faint); }
     .usage-meter .um-ctx[hidden] { display: none; }
     .usage-meter .um-ctx-sep { color: var(--text-faint); }
     .usage-meter .um-ctx-bar {
-      width: 44px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden;
+      width: 64px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden;
     }
     .usage-meter .um-ctx-bar i {
       display: block; height: 100%; width: 0%; background: var(--accent); transition: width .25s ease;
@@ -1566,10 +1565,9 @@
       <span class="usage-meter" id="usage-meter" hidden
             title="Consommation RÉELLE cumulée de la session : l'API refacture TOUT le contexte en INPUT à chaque appel d'outil. Le coût suit ce total (surtout l'input), PAS les tokens qui défilent à l'écran (l'output seul).">
         <span class="um-lab">&Sigma;</span>
-        <span id="um-in">0</span><span class="um-unit">in</span>
-        <span class="um-cache" id="um-cache"></span>
-        <span id="um-out">0</span><span class="um-unit">out</span>
-        <span class="um-calls" id="um-calls"></span>
+        <span id="um-total">0</span><span class="um-unit">tok</span>
+        <!-- Détail (entrée, sortie, cache, appels) : tenu à jour pour l'infobulle, pas affiché. -->
+        <span class="um-detail"><span id="um-in">0</span><span class="um-cache" id="um-cache"></span><span id="um-out">0</span><span class="um-calls" id="um-calls"></span></span>
         <span class="um-ctx" id="um-ctx" hidden>
           <span class="um-ctx-sep">·</span> ctx
           <span class="um-ctx-bar"><i id="um-ctx-fill"></i></span>
