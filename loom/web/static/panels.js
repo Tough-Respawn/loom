@@ -171,14 +171,59 @@ export async function importSessionFile(file) {
   showToast("conversation importée" + (d.model ? " (modèle : " + d.model + ")" : ""));
 }
 
+/** Heure relative courte d'un horodatage ISO (« à l'instant », « il y a 3 min », « hier »). */
+export function relTime(iso) {
+  const t = Date.parse(iso || "");
+  if (Number.isNaN(t)) return "";
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return "à l'instant";
+  if (s < 3600) return "il y a " + Math.round(s / 60) + " min";
+  if (s < 86400) return "il y a " + Math.round(s / 3600) + " h";
+  const d = Math.round(s / 86400);
+  if (d === 1) return "hier";
+  if (d < 30) return "il y a " + d + " j";
+  return new Date(t).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
+}
+
+/** Repeint toutes les heures relatives de la liste des sessions (au chargement, puis chaque minute). */
+export function paintSessionTimes() {
+  document.querySelectorAll(".sess-time[datetime]").forEach((el) => {
+    el.textContent = relTime(el.getAttribute("datetime"));
+    const full = Date.parse(el.getAttribute("datetime") || "");
+    if (!Number.isNaN(full)) el.title = new Date(full).toLocaleString("fr-FR");
+  });
+}
+
+const _SESS_X =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg>';
+
 export function addSidebarSession(d) {
   const list = document.querySelector(".session-list");
   if (!list || list.querySelector(`.sess-pick[data-id="${d.id}"]`)) return;
   const li = document.createElement("li");
   li.className = "session-item";
-  li.innerHTML =
-    `<button type="button" class="sess-pick" data-id="${d.id}" title="${d.workspace || ""}">${d.title || "session"}</button>` +
-    `<button type="button" class="sess-del" data-id="${d.id}" title="Supprimer">✕</button>`;
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "sess-pick";
+  pick.dataset.id = d.id;
+  pick.title = (d.workspace || "") + (d.model ? " · " + d.model : "");
+  const dot = document.createElement("span");
+  dot.className = "sess-dot " + (d.kind || "local");
+  const title = document.createElement("span");
+  title.className = "sess-title";
+  title.textContent = d.title || "session";
+  const time = document.createElement("time");
+  time.className = "sess-time";
+  time.setAttribute("datetime", d.updated_at || new Date().toISOString());
+  time.textContent = relTime(time.getAttribute("datetime"));
+  pick.append(dot, title, time);
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "sess-del";
+  del.dataset.id = d.id;
+  del.title = "Supprimer";
+  del.innerHTML = _SESS_X; // SVG constant
+  li.append(pick, del);
   list.prepend(li);
 }
 

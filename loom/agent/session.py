@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from loom.agent.conversation import Conversation
-from loom.utils import now_iso as _now_iso, atomic_write_text
+from loom.utils import atomic_write_text
+from loom.utils import now_iso as _now_iso
 
 # Valider l'id avant tout accès disque pour confiner lecture et suppression sous `root`.
 _SID_RE = re.compile(r"[0-9a-f]{12}")
@@ -29,6 +30,7 @@ class SessionMeta:
     title: str
     workspace: str
     updated_at: str
+    model: str = ""  # modèle de la conversation (type et teinte dans la liste)
 
 
 @dataclass
@@ -244,6 +246,7 @@ class SessionStore:
             if tl.exists():
                 z.write(tl, "timeline.jsonl")
             from loom.agent.transcript import render_transcript
+
             z.writestr("journal.md", render_transcript(self.read_timeline(sid)))
         return buf.getvalue()
 
@@ -326,6 +329,7 @@ class SessionStore:
                     title=data.get("title", ""),
                     workspace=data.get("workspace", "."),
                     updated_at=data.get("updated_at", ""),
+                    model=str((data.get("conversation") or {}).get("model") or ""),
                 )
             )
         metas.sort(key=lambda m: m.updated_at, reverse=True)

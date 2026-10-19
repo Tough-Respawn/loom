@@ -15,6 +15,7 @@ from loom.web.routes.helpers import (
     _get_session,
     _lock_for,
     _session,
+    _session_row,
     _totals,
 )
 from loom.web.routes.priming import _prime_async
@@ -198,7 +199,7 @@ def _register_session_routes(app, S):
 
         return {
             "sessions": [
-                {"id": m.id, "title": m.title, "workspace": m.workspace}
+                _session_row(S, m.id, m.title, m.workspace, m.model, m.updated_at)
                 for m in S.session_store.list()
             ],
             "active": active,
@@ -334,7 +335,14 @@ def _register_session_routes(app, S):
         # Préremplir le préfixe en fond pendant que l'utilisateur tape.
         _prime_async(S, _ensure_model(S, sess), require_running=True)
 
-        return {"id": sess.id, "title": sess.title, "workspace": sess.workspace}
+        return _session_row(
+            S,
+            sess.id,
+            sess.title,
+            sess.workspace,
+            sess.conversation.model,
+            sess.updated_at,
+        )
 
     @app.get("/session/<sid>/journal")
     def session_journal(sid):
@@ -386,12 +394,14 @@ def _register_session_routes(app, S):
             S.sessions_cache[sess.id] = sess
         S.cur["session"] = sess
         _prime_async(S, _ensure_model(S, sess), require_running=True)
-        return {
-            "id": sess.id,
-            "title": sess.title,
-            "workspace": sess.workspace,
-            "model": sess.conversation.model,
-        }
+        return _session_row(
+            S,
+            sess.id,
+            sess.title,
+            sess.workspace,
+            sess.conversation.model,
+            sess.updated_at,
+        )
 
     @app.post("/session/activate")
     def session_activate():

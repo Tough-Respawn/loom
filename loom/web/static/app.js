@@ -4,7 +4,7 @@ import { initKbdCheatsheet } from "./kbd.js";
 import { initWizardPanel } from "./model-add.js";
 import { _phRaf, loomWorkdir, set_CMDS, set__phRaf, set_loomWorkdir, set_machineUnloaded, set_skGenBusy } from "./shared.js";
 import { addImages, clampRatio, createPane, renderLayout, savePanesLayout, updatePlaceholders } from "./panes.js";
-import { _multiSel, _typesetAll, clearMultiSel, closeDrawer, closeSkillDrawer, closeTabMenu, compactBtn, doDeleteSkill, drawer, drawerClose, drawerScrim, fmtTok, localOnlyCb, newSessionTab, openConfirmPop, openDeleteConfirm, openDrawer, openSkillCreator, openSkillEditor, paintModelSelect, pickFolderBtn, postForm, postSkillsToggle, reflectWorkdir, resetBtn, saveSkill, scheduleMachineRefresh, sessionNew, setMetrics, setSkillDrawerMode, settingsBtn, showToast, sidebarEl, sidebarToggle, singleView, skBody, skCurrent, skDraft, skDrawer, skGenDesc, skMode, skNameInput, skScrim, skStatus, splitWith, syncSkillsMaster, thinkingCb, toggleMultiSel, updateUsageMeter, workdirChip } from "./panels.js";
+import { _multiSel, _typesetAll, clearMultiSel, closeDrawer, closeSkillDrawer, closeTabMenu, compactBtn, doDeleteSkill, drawer, drawerClose, drawerScrim, fmtTok, localOnlyCb, newSessionTab, openConfirmPop, openDeleteConfirm, openDrawer, openSkillCreator, openSkillEditor, paintModelSelect, paintSessionTimes, pickFolderBtn, postForm, postSkillsToggle, reflectWorkdir, resetBtn, saveSkill, scheduleMachineRefresh, sessionNew, setMetrics, setSkillDrawerMode, settingsBtn, showToast, sidebarEl, sidebarToggle, singleView, skBody, skCurrent, skDraft, skDrawer, skGenDesc, skMode, skNameInput, skScrim, skStatus, splitWith, syncSkillsMaster, thinkingCb, toggleMultiSel, updateUsageMeter, workdirChip } from "./panels.js";
 import { activeTab, focusedPane, renderPane, scheduleRenderFor, state, tab } from "./state.js";
 import { _hydrateTimeline, _replayTimeline, _userTexts, ensureTab, focusPane, openTab, renderTabs, setPaneSid } from "./tabs.js";
 import { INIT } from "./render.js";
@@ -161,6 +161,10 @@ if (window.__mathjaxReady) _typesetAll();
 else document.addEventListener("mathjax-ready", _typesetAll);
 
 reflectWorkdir();
+
+// Heures relatives de la liste des sessions : au chargement, puis chaque minute.
+paintSessionTimes();
+setInterval(paintSessionTimes, 60000);
 
 updateUsageMeter(INIT.usage_totals);
 

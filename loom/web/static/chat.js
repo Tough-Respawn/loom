@@ -315,7 +315,7 @@ export async function sendChat(sid, text, images, options = {}) {
       case "session_title": {
         if (t) t.title = evt.title;
         const btn = document.querySelector(`.sess-pick[data-id="${evt.id}"]`);
-        if (btn) btn.textContent = evt.title;
+        if (btn) (btn.querySelector(".sess-title") || btn).textContent = evt.title;
         renderTabs();
         break;
       }

@@ -22,6 +22,9 @@
   SVG aligné à droite, même trait que le rail d'icônes.
 - Les glyphes texte du fil (carets ▸ ▾ des entrées/sorties et des sous-agents, ✓ ✕ d'état,
   caret des sections repliables) deviennent des SVG au même trait que les icônes.
+- Liste des sessions : un point de couleur par type de modèle (local, distant, image,
+  vidéo), l'heure relative de dernière activité à droite, la croix de suppression en SVG.
+  `/sessions`, la création et l'import renvoient désormais `model`, `kind` et `updated_at`.
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 

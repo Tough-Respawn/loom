@@ -1,22 +1,24 @@
 from __future__ import annotations
 
-from __future__ import annotations
 import json
 import re
 import shutil
 from pathlib import Path
+
 from flask import render_template, request
+
 from loom.extend.skills import (
     collect_skills,
     read_skill_source,
     write_skill_source,
 )
-
-from loom.web.routes.helpers import _ctx, _ensure_local_server, _session, _totals
-
-
-
-
+from loom.web.routes.helpers import (
+    _ctx,
+    _ensure_local_server,
+    _session,
+    _session_row,
+    _totals,
+)
 
 
 def _all_skills(S) -> list:
@@ -67,7 +69,7 @@ def _index_context(S) -> dict:
     ws = sess.workspace
 
     sessions = [
-        {"id": m.id, "title": m.title, "workspace": m.workspace}
+        _session_row(S, m.id, m.title, m.workspace, m.model, m.updated_at)
         for m in S.session_store.list()
     ]
 
@@ -110,8 +112,6 @@ def _index_context(S) -> dict:
             ensure_ascii=False,
         ).replace("<", "\\u003c"),
     }
-
-
 
 
 def _register_skill_routes(app, S):
