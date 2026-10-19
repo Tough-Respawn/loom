@@ -40,7 +40,9 @@ def env(tmp_path):
         known_models=[FAKE_MODEL],
     )
     app = create_app(
-        client=SimpleNamespace(add_remote_route=lambda *a: None, remove_remote_route=lambda *a: None),
+        client=SimpleNamespace(
+            add_remote_route=lambda *a: None, remove_remote_route=lambda *a: None
+        ),
         skills_dir=str(tmp_path / "skills"),
         session_store=store,
         models=[FAKE_MODEL],
@@ -96,14 +98,20 @@ def test_add_model_cancel(env, monkeypatch):
     assert "annulé" in _sse_texts(r.data).lower()
 
 
-@pytest.mark.parametrize("command", ["/add-model", "/add-model distant", "/cancel"])
+@pytest.mark.parametrize(
+    "command", ["/add-model", "/add-model distant", "/rebench", "/rebench x", "/cancel"]
+)
 @pytest.mark.parametrize("busy", [False, True])
-def test_commandes_interface_ne_generent_ni_note_ni_journal(env, command, busy, monkeypatch):
-    from loom.web.routes.helpers import _lock_for, _cancel_for
+def test_commandes_interface_ne_generent_ni_note_ni_journal(
+    env, command, busy, monkeypatch
+):
     from loom.web.routes import models
+    from loom.web.routes.helpers import _cancel_for, _lock_for
 
     def forbidden(*args, **kwargs):
-        pytest.fail("Une commande d’interface ne doit pas construire les dépendances du wizard")
+        pytest.fail(
+            "Une commande d’interface ne doit pas construire les dépendances du wizard"
+        )
 
     monkeypatch.setattr(models, "_wizard_deps", forbidden)
     S = env.web.application.S
@@ -116,19 +124,24 @@ def test_commandes_interface_ne_generent_ni_note_ni_journal(env, command, busy, 
         for endpoint, key in (("/chat", "message"), ("/note", "text")):
             r = env.web.post(endpoint, data={key: command, "session_id": sess.id})
             assert r.status_code == 200
-            assert r.get_json()["ui_action"] == ("cancel_interface" if command == "/cancel" else "add_model")
+            expected = {"/cancel": "cancel_interface", "/rebench": "rebench"}.get(
+                command.split()[0], "add_model"
+            )
+            assert r.get_json()["ui_action"] == expected
         assert S.notes.drain(sess.id) == []
         assert not _cancel_for(S, sess.id).is_set()
         assert lock.locked() == busy
-        assert before == {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+        assert before == {
+            p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")
+        }
     finally:
         if busy:
             lock.release()
 
 
 def test_panneau_ajout_independant_du_chat_et_annulation_sans_deps(env, monkeypatch):
-    from loom.web.routes.helpers import _lock_for
     from loom.web.routes import models
+    from loom.web.routes.helpers import _lock_for
 
     _fake_deps(monkeypatch)
     S = env.web.application.S
@@ -137,15 +150,23 @@ def test_panneau_ajout_independant_du_chat_et_annulation_sans_deps(env, monkeypa
     lock = _lock_for(S, sess.id)
     lock.acquire()
     try:
-        assert env.web.post("/models/add", data={"message": "/add-model"}).get_json()["active"]
+        assert env.web.post("/models/add", data={"message": "/add-model"}).get_json()[
+            "active"
+        ]
         assert env.web.post("/models/add", data={"message": "2"}).get_json()["active"]
         assert "distant" in env.web.get("/models/add").get_json()["reply"]
         assert sess.conversation.wizard is None
-        monkeypatch.setattr(models, "_wizard_deps", lambda S: (_ for _ in ()).throw(ImportError("GPU_KV_BYTES")))
+        monkeypatch.setattr(
+            models,
+            "_wizard_deps",
+            lambda S: (_ for _ in ()).throw(ImportError("GPU_KV_BYTES")),
+        )
         assert env.web.post("/chat", data={"message": "/cancel"}).status_code == 200
         assert not env.web.get("/models/add").get_json()["active"]
         assert lock.locked()
-        assert before == {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+        assert before == {
+            p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")
+        }
     finally:
         lock.release()
 
@@ -160,7 +181,10 @@ def test_import_echoue_puis_cancel_ne_lance_pas_le_modele(env, monkeypatch):
     r = env.web.post("/models/add", data={"message": "/add-model"})
     assert "Redémarre Loom" in r.get_json()["reply"]
     assert not r.get_json()["active"]
-    assert env.web.post("/chat", data={"message": "/cancel"}).get_json()["ui_action"] == "cancel_interface"
+    assert (
+        env.web.post("/chat", data={"message": "/cancel"}).get_json()["ui_action"]
+        == "cancel_interface"
+    )
 
 
 def test_cancel_efface_ancien_wizard_sans_dependances(env, monkeypatch):
@@ -169,7 +193,11 @@ def test_cancel_efface_ancien_wizard_sans_dependances(env, monkeypatch):
     S = env.web.application.S
     conv = S.cur["session"].conversation
     conv.set_wizard({"step": "r_key", "id": "old"})
-    monkeypatch.setattr(models, "_wizard_deps", lambda S: pytest.fail("cancel doit être indépendant des imports"))
+    monkeypatch.setattr(
+        models,
+        "_wizard_deps",
+        lambda S: pytest.fail("cancel doit être indépendant des imports"),
+    )
     messages = list(conv.messages)
     assert env.web.post("/chat", data={"message": "/cancel"}).status_code == 200
     assert conv.wizard is None
@@ -183,15 +211,20 @@ def test_panneaux_ajout_isoles_entre_sessions(env, monkeypatch):
     env.web.post("/models/add", data={"message": "/add-model", "session_id": first})
     env.web.post("/session/new", data={})
     second = S.cur["session"].id
-    assert not env.web.get("/models/add", query_string={"session_id": second}).get_json()["active"]
+    assert not env.web.get(
+        "/models/add", query_string={"session_id": second}
+    ).get_json()["active"]
     env.web.post("/models/add", data={"message": "/cancel", "session_id": second})
-    assert env.web.get("/models/add", query_string={"session_id": first}).get_json()["active"]
+    assert env.web.get("/models/add", query_string={"session_id": first}).get_json()[
+        "active"
+    ]
 
 
 def test_navigateur_commandes_interface_preservent_generation(env, monkeypatch):
     """Exercise actual keyboard routing and panel JS, with a fake provider."""
     import threading
     from pathlib import Path
+
     from werkzeug.serving import make_server
 
     playwright = pytest.importorskip("playwright.sync_api")
@@ -208,7 +241,14 @@ def test_navigateur_commandes_interface_preservent_generation(env, monkeypatch):
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             chat_requests, errors = [], []
-            page.on("request", lambda r: chat_requests.append(r.url) if r.url.endswith(("/chat", "/note")) else None)
+            page.on(
+                "request",
+                lambda r: (
+                    chat_requests.append(r.url)
+                    if r.url.endswith(("/chat", "/note"))
+                    else None
+                ),
+            )
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.goto(f"http://127.0.0.1:{server.server_port}")
             assert not errors
@@ -225,21 +265,33 @@ def test_navigateur_commandes_interface_preservent_generation(env, monkeypatch):
             playwright.expect(composer).to_have_value("")
             composer.fill("/add-model distant")
             composer.press("Enter")
-            playwright.expect(page.locator("#model-add-reply")).to_contain_text("distant 1/5")
+            playwright.expect(page.locator("#model-add-reply")).to_contain_text(
+                "distant 1/5"
+            )
             page.locator("#model-add-input").fill("test-remote")
             page.locator("#model-add-form button[type=submit]").click()
-            playwright.expect(page.locator("#model-add-reply")).to_contain_text("base_url")
+            playwright.expect(page.locator("#model-add-reply")).to_contain_text(
+                "base_url"
+            )
             page.locator("#model-add-input").fill("https://example.org/v1")
             page.locator("#model-add-form button[type=submit]").click()
-            playwright.expect(page.locator("#model-add-input")).to_have_attribute("type", "password")
+            playwright.expect(page.locator("#model-add-input")).to_have_attribute(
+                "type", "password"
+            )
             page.locator("#model-add-cancel").click()
-            playwright.expect(page.locator("#model-add-reply")).to_contain_text("annulé")
+            playwright.expect(page.locator("#model-add-reply")).to_contain_text(
+                "annulé"
+            )
             # Installation completion refreshes the actual selector, without switching
             # the model of the running conversation or losing the remote panel.
             selected = page.locator("#model-select").input_value()
             env.web.application.S.models.append("installed-model")
-            page.evaluate("document.dispatchEvent(new CustomEvent('loom:models-changed'))")
-            playwright.expect(page.locator('#model-select option[value="installed-model"]')).to_have_count(1)
+            page.evaluate(
+                "document.dispatchEvent(new CustomEvent('loom:models-changed'))"
+            )
+            playwright.expect(
+                page.locator('#model-select option[value="installed-model"]')
+            ).to_have_count(1)
             playwright.expect(page.locator("#model-select")).to_have_value(selected)
             assert not page.evaluate("window.originalAbort.signal.aborted")
             assert not chat_requests
@@ -284,18 +336,23 @@ def test_remove_model_ouvre_interface_sans_ecrire_dans_session(env, monkeypatch)
     for endpoint, key in (("/chat", "message"), ("/note", "text")):
         r = env.web.post(endpoint, data={key: "/remove-model"})
         assert r.get_json() == {"ui_action": "manage_models"}
-    assert before == {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+    assert before == {
+        p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")
+    }
 
 
 def test_remove_model_pendant_generation_ne_note_ni_annule(env):
-    from loom.web.routes.helpers import _lock_for, _cancel_for
+    from loom.web.routes.helpers import _cancel_for, _lock_for
+
     S = env.web.application.S
     sess = S.cur["session"]
     lock = _lock_for(S, sess.id)
     lock.acquire()
     try:
         for endpoint, key in (("/chat", "message"), ("/note", "text")):
-            r = env.web.post(endpoint, data={key: "/remove-model", "session_id": sess.id})
+            r = env.web.post(
+                endpoint, data={key: "/remove-model", "session_id": sess.id}
+            )
             assert r.get_json() == {"ui_action": "manage_models"}
         assert not _cancel_for(S, sess.id).is_set()
         assert S.notes.drain(sess.id) == []
@@ -306,6 +363,7 @@ def test_remove_model_pendant_generation_ne_note_ni_annule(env):
 
 def test_model_occupe_non_supprimable_et_autre_modele_independant(env):
     from loom.web.routes.helpers import _lock_for
+
     S = env.web.application.S
     for mid in (FAKE_MODEL, "unused"):
         folder = env.root / "local" / "text" / mid
@@ -611,7 +669,9 @@ def test_installation_panneau_pendant_generation_sans_journal(env, monkeypatch):
     try:
         assert _install_local(env, monkeypatch, probe=(True, ""))
         assert lock.locked()
-        assert before == {p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")}
+        assert before == {
+            p: p.read_bytes() for p in (env.tmp / "sessions").rglob("*.json*")
+        }
     finally:
         lock.release()
 
@@ -650,7 +710,9 @@ def test_modele_refuse_marque_liste_et_supprimable(env, monkeypatch):
 
     monkeypatch.setattr(routes.models, "_wizard_deps", deps_reels)
     items = env.web.get("/models/removable").get_json()["models"]
-    assert any(m["id"] == "nouveau-modele" and "non chargeable" in m["label"] for m in items)
+    assert any(
+        m["id"] == "nouveau-modele" and "non chargeable" in m["label"] for m in items
+    )
     r = env.web.delete("/models/installed/nouveau-modele")
     assert r.status_code == 200
     assert "supprimé" in r.get_json()["message"]

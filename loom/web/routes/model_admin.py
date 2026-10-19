@@ -288,16 +288,6 @@ def _rebenchable_models(S) -> list[dict]:
     ]
 
 
-def _persist_wizard_exchange(S, sess, conv, save, message, reply):
-    """Chaque étape du wizard reste visible dans le fil : persistée dans le JOURNAL
-    (ré-affichage au rechargement), mais PAS dans la conversation envoyée au modèle.
-    Vécu : les menus /add-model (liste Hugging Face, choix de quant…) partaient au
-    modèle au premier vrai message, qui les croyait écrits par lui."""
-    S.session_store.append_event(sess.id, "user", {"content": message})
-    S.session_store.append_event(sess.id, "text", {"text": reply})
-    save()
-
-
 def _configured_server_bin() -> Path | None:
     """Binaire llama-server de [server] bin (même résolution que /rebench et le setup)."""
     from loom.setup.steps import read_raw_config, resolve_bin, server_bin_status
@@ -368,7 +358,7 @@ def _finish_install(S, sess, chat_lock, mid, mdir, job):
     # Attendre brièvement le verrou; le journal append-only borne le risque de repli.
     got = chat_lock.acquire(timeout=2)
     try:
-        # Journal seulement, comme les étapes du wizard (cf. _persist_wizard_exchange).
+        # Journal seulement : pas un tour que le modèle doit relire.
         S.session_store.append_event(sess.id, "text", {"text": msg})
         S.session_store.save(sess)
     finally:

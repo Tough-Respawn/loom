@@ -2,19 +2,15 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from flask import Response, render_template, request
+from flask import render_template, request
 
 from loom.runtime import model_install, model_store
 from loom.runtime.comfy import ComfyError
 from loom.utils import atomic_write_text
 from loom.web import wizard as _wizard
-from loom.web.app import (
-    _sse,
-)
 from loom.web.routes.config import _regen_swap_yaml
 from loom.web.routes.helpers import _client_mark_all_cold, _ctx, _engine_for, _session
 from loom.web.routes.model_admin import (
@@ -32,7 +28,6 @@ from loom.web.routes.model_admin import (
     _models_roots,
     _mount_image,
     _mount_remote,
-    _persist_wizard_exchange,
     _rebenchable_models,
     _remote_list,
     _removable_models,
@@ -53,16 +48,51 @@ class _ModelAddFlow:
     def set_wizard(self, state):
         self.wizard = state
 
+    def busy_now(self):
+        """Travail de fond en cours (hors verrou de la requête qui répond)."""
+        return bool(self.job and not self.job.done)
+
     def snapshot(self):
         job = self.job
-        busy = self.lock.locked() or bool(job and not job.done)
+        busy = self.lock.locked() or self.busy_now()
         return {
-            "reply": self.reply + ("\n" + job.final_message if job and job.done and job.final_message else ""),
+            "reply": self.reply
+            + (
+                "\n" + job.final_message
+                if job and job.done and job.final_message
+                else ""
+            ),
             "choices": self.choices,
             "active": bool(self.wizard),
             "secret": (self.wizard or {}).get("step") == "r_key",
             "busy": busy,
-            "status": f"Téléchargement… {job.progress_mb()}/{job.total_mb} Mo" if job and not job.done else "",
+            "status": f"Téléchargement… {job.progress_mb()}/{job.total_mb} Mo"
+            if job and not job.done
+            else "",
+        }
+
+
+@dataclass
+class _RebenchFlow(_ModelAddFlow):
+    """Panneau « Recalibrer un modèle » : UN seul pour toute la machine (une calibration
+    à la fois, cf. _REBENCH), hors conversation comme l'ajout. Le job est le job
+    global ; son journal de progression est relu par le panneau."""
+
+    def busy_now(self):
+        job = _REBENCH["job"]
+        return bool(job and not job.done)
+
+    def snapshot(self):
+        job = _REBENCH["job"]
+        running = self.busy_now()
+        return {
+            "reply": self.reply,
+            "choices": self.choices,
+            "active": bool(self.wizard),
+            "secret": False,
+            "busy": self.lock.locked() or running,
+            "status": (job.label or "calibration en cours…") if running else "",
+            "log": list(getattr(job, "log", None) or ()) if job else [],
         }
 
 
@@ -74,12 +104,30 @@ def _cancel_interface_command(S, sess):
             return {"error": "Une étape est en cours. Réessaie à sa fin."}, 409
         try:
             if flow.job and not flow.job.done:
-                return {"error": "Le téléchargement continue en arrière-plan ; tu peux fermer le panneau."}, 409
+                return {
+                    "error": "Le téléchargement continue en arrière-plan ; tu peux fermer le panneau."
+                }, 409
             flow.set_wizard(None)
             flow.reply, flow.choices = "Ajout annulé.", []
             flow.job = None
         finally:
             flow.lock.release()
+    rb = getattr(S, "rebench_flow", None)
+    if rb is not None and rb.lock.acquire(blocking=False):
+        try:
+            job = _REBENCH["job"]
+            if job is not None and not job.done:
+                return {
+                    "error": "La calibration continue ; son verdict s'affichera dans le panneau."
+                }, 409
+            if rb.wizard:
+                rb.set_wizard(None)
+                rb.reply, rb.choices = (
+                    "Recalibration annulée — rien n'a été touché.",
+                    [],
+                )
+        finally:
+            rb.lock.release()
     # Clear a legacy dialog only while its conversation is idle.
     from loom.web.routes.helpers import _lock_for
 
@@ -124,21 +172,28 @@ def _wizard_deps(S):
     vram_budget = hw.vram_total_mb if hw.vram_is_discrete else 0
     supported = gguf_remote.supported_formats(str(server_bin) if server_bin else None)
 
-    from loom.runtime.recommendation import recommend_repository
-
     import tomllib
+
+    from loom.runtime.recommendation import recommend_repository
 
     server_settings = {}
     for path in (S.config_defaults_path, S.config_local_path):
         if path and Path(path).exists():
-            server_settings.update(tomllib.loads(Path(path).read_text(encoding="utf-8")).get("server", {}))
+            server_settings.update(
+                tomllib.loads(Path(path).read_text(encoding="utf-8")).get("server", {})
+            )
 
     def evaluate(repo, files):
         # Match the configured working context; never advertise architectural max context.
         context = max(16384, int(server_settings.get("context", 16384)))
         return recommend_repository(
-            repo, files, vram_mb=vram_budget, ram_mb=ram_total,
-            server_bin=server_bin, supported=supported, context=context,
+            repo,
+            files,
+            vram_mb=vram_budget,
+            ram_mb=ram_total,
+            server_bin=server_bin,
+            supported=supported,
+            context=context,
             slots=int(server_settings.get("n_parallel", 1)),
             gpu_tuning=hw.has_gpu,
             max_tokens=int(S.settings.get("max_tokens", 8192)),
@@ -157,8 +212,14 @@ def _wizard_deps(S):
         except hf_catalog.HfCatalogError:
             pass
         found = model_install.suggest_alternatives(
-            repo, analysis, hits, hf_catalog.list_gguf_files, vram_budget, ram_total,
-            supported, recommender=lambda candidate, files: evaluate(candidate, files)[0],
+            repo,
+            analysis,
+            hits,
+            hf_catalog.list_gguf_files,
+            vram_budget,
+            ram_total,
+            supported,
+            recommender=lambda candidate, files: evaluate(candidate, files)[0],
         )
         # Filiation lue sur Hugging Face, en parallèle : une variante tierce est signalée
         # (vécu : un « Qwen3.8-35B-A3B » d'Empero pris pour une sortie officielle).
@@ -209,7 +270,11 @@ def _checked_model_dir(S, directory):
         root = Path(root).resolve()
         if target.is_relative_to(root):
             parts = target.relative_to(root).parts
-            if len(parts) == 3 and parts[0] == "local" and parts[1] in {"text", "image", "video"}:
+            if (
+                len(parts) == 3
+                and parts[0] == "local"
+                and parts[1] in {"text", "image", "video"}
+            ):
                 return target
     raise OSError("dossier hors des racines de modèles configurées")
 
@@ -246,9 +311,7 @@ def _remove_model(S, a):
     else:
         import shutil
 
-        spec = next(
-            (m for m in S.local_model_specs if m.get("id") == a["id"]), None
-        )
+        spec = next((m for m in S.local_model_specs if m.get("id") == a["id"]), None)
         # Un modèle non monté (refusé, interrompu) n'a pas de spec : dossier de l'item.
         mdir = (spec or {}).get("dir") or a.get("dir")
         try:
@@ -277,19 +340,13 @@ def _remove_model(S, a):
     return extra_reply.strip(), models_changed
 
 
-def _handle_add_model_command(S, message, conv, sess, save, chat_lock, *, interface=False):
-    """Intercepte /add-model ET tout message d'une session au wizard actif.
-    Même contrat que _handle_goal_command : (message, response) — response non None
-    = ack SSE immédiat, le flux LLM n'est jamais sollicité (wizard déterministe)."""
-    active = bool(conv.wizard)
+def _handle_add_model_command(S, message, conv):
+    """Une étape d'un panneau (ajout `_ModelAddFlow`, recalibration `_RebenchFlow`) :
+    machine à états pure (wizard.py) + effets ici, jamais le modèle. Renvoie le
+    snapshot du panneau (dict JSON)."""
     is_cmd = message == "/add-model" or message.startswith("/add-model ")
     is_rm = message == "/remove-model" or message.startswith("/remove-model ")
     is_rb = message == "/rebench" or message.startswith("/rebench ")
-    if not (active or is_cmd or is_rm or is_rb):
-        return message, None
-
-    # Masquer une clé avant toute persistance ou journalisation.
-    prev_step = (conv.wizard or {}).get("step") if active and not is_cmd else None
 
     try:
         if message.strip().lower() in _wizard.CANCEL_WORDS:
@@ -309,18 +366,16 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock, *, interf
     except Exception as exc:  # noqa: BLE001 - HfCatalogError & co : actionnable, jamais de stacktrace
         res = _wizard.WizardResult(
             conv.wizard,
-            ("Le serveur Loom utilise une ancienne version du code. Redémarre Loom pour charger les changements."
-             if isinstance(exc, ImportError) and "GPU_KV_BYTES" in str(exc)
-             else f"{exc}\nRéessaie ou annule cette opération."),
+            (
+                "Le serveur Loom utilise une ancienne version du code. Redémarre Loom pour charger les changements."
+                if isinstance(exc, ImportError) and "GPU_KV_BYTES" in str(exc)
+                else f"{exc}\nRéessaie ou annule cette opération."
+            ),
         )
 
     conv.set_wizard(res.state)
-    shown = message
-    if prev_step == "r_key" and message.strip().lower() not in ("aucune", "none", "-"):
-        shown = "•••••••• (clé masquée)"
 
     job = None
-    rb_job = None
     extra_reply = ""
     models_changed = False
     if res.action and res.action["kind"] == "rebench":
@@ -328,7 +383,7 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock, *, interf
         if cur is not None and not cur.done:
             extra_reply = (
                 "\n⏳ Une calibration est déjà en cours — attends sa fin "
-                "(le verdict s'affichera dans son fil)."
+                "(le verdict s'affichera dans ce panneau)."
             )
         else:
             from types import SimpleNamespace
@@ -336,11 +391,11 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock, *, interf
             # Le banc doit récupérer la VRAM occupée par le serveur.
             S.server_manager.stop()
             _client_mark_all_cold(S)
-            rb_job = SimpleNamespace(done=False, label="", final=None)
+            rb_job = SimpleNamespace(done=False, label="", final=None, log=[])
             _REBENCH["job"] = rb_job
             threading.Thread(
                 target=_rebench_worker,
-                args=(S, sess, chat_lock, res.action["id"], rb_job),
+                args=(S, conv, res.action["id"], rb_job),
                 daemon=True,
                 name="loom-rebench",
             ).start()
@@ -525,53 +580,19 @@ def _handle_add_model_command(S, message, conv, sess, save, chat_lock, *, interf
                 mdir,
                 a["size_mb"],
                 on_done=lambda j: _finish_install(
-                    S, sess, chat_lock, a["model_id"], mdir, j
+                    S, None, conv.lock, a["model_id"], mdir, j
                 ),
             )
 
-    # Persister après l'action pour conserver son verdict au rechargement.
-    if interface:
-        conv.reply, conv.choices, conv.job = res.reply + extra_reply, res.choices or [], job
-        return message, dict(conv.snapshot(), busy=bool(job and not job.done))
-    _persist_wizard_exchange(S, sess, conv, save, shown, res.reply + extra_reply)
-
-    chat_lock.release()
-
-    def _stream():
-        yield _sse("text", text=res.reply + extra_reply)
-        if res.choices:
-            yield _sse("choices", options=res.choices)
-        # Recharger le sélecteur après un montage ou retrait à chaud.
-        if models_changed:
-            yield _sse("models")
-        if rb_job is not None:
-            # Le worker persiste le verdict même si le flux ou l'onglet disparaît.
-            while not rb_job.done:
-                yield _sse("status", label=rb_job.label or "calibration en cours…")
-                time.sleep(2)
-            yield _sse("status", label="")
-            if rb_job.final:
-                yield _sse("text", text="\n" + rb_job.final)
-            if getattr(rb_job, "choices", None):
-                yield _sse("choices", options=rb_job.choices)
-        if job is not None:
-            while not job.done:
-                yield _sse(
-                    "status",
-                    label=f"téléchargement… {job.progress_mb()}/{job.total_mb} Mo",
-                )
-                time.sleep(2)
-            yield _sse("status", label="")
-            if job.final_message:
-                yield _sse("text", text="\n" + job.final_message)
-            yield _sse("models")
-        yield _sse("done")
-
-    return message, Response(_stream(), mimetype="text/event-stream")
+    conv.reply, conv.choices, conv.job = res.reply + extra_reply, res.choices or [], job
+    # `busy` hors verrou de CETTE requête : seul un travail de fond (téléchargement,
+    # calibration) fait sonder le panneau.
+    return dict(conv.snapshot(), busy=conv.busy_now(), models_changed=models_changed)
 
 
 def _register_model_routes(app, S):
     S.model_add_flows = {}
+    S.rebench_flow = _RebenchFlow()
     flows_lock = threading.Lock()
 
     @app.route("/models/add", methods=["GET", "POST"])
@@ -601,18 +622,44 @@ def _register_model_routes(app, S):
             if not flow.wizard and message.split()[0] != "/add-model":
                 return {"error": "Ouvre d’abord l’assistant d’ajout."}, 409
             # Existing installer and recommendations, with isolated UI state and lock.
-            _, response = _handle_add_model_command(
-                S, message, flow, None, lambda: None, flow.lock, interface=True
-            )
-            return response
+            return _handle_add_model_command(S, message, flow)
+        finally:
+            flow.lock.release()
+
+    @app.route("/models/rebench", methods=["GET", "POST"])
+    def models_rebench():
+        # Panneau machine-wide : pas de session (le verdict ne va dans aucun journal).
+        flow = S.rebench_flow
+        if request.method == "GET":
+            return flow.snapshot()
+        message = request.form.get("message", "").strip()
+        if message == "/cancel":
+            return _cancel_interface_command(S, _session(S))
+        if not message or message.split()[0] in {"/add-model", "/remove-model"}:
+            return {"error": "Réponse de recalibration invalide."}, 400
+        if message.split()[0] == "/rebench":
+            message = " ".join(message.split(maxsplit=1))
+        if not flow.lock.acquire(blocking=False):
+            return {"error": "Une étape est déjà en cours."}, 409
+        try:
+            if not flow.wizard and message.split()[0] != "/rebench":
+                return {"error": "Ouvre d’abord le panneau de recalibration."}, 409
+            return _handle_add_model_command(S, message, flow)
         finally:
             flow.lock.release()
 
     @app.get("/models/removable")
     def models_removable():
-        busy = {h.get("model") for h in list(S.active_streams.values()) if isinstance(h, dict)}
-        busy.update(sess.conversation.model for sid, sess in list(S.sessions_cache.items())
-                    if S.sess_locks.get(sid) and S.sess_locks[sid].locked())
+        busy = {
+            h.get("model")
+            for h in list(S.active_streams.values())
+            if isinstance(h, dict)
+        }
+        busy.update(
+            sess.conversation.model
+            for sid, sess in list(S.sessions_cache.items())
+            if S.sess_locks.get(sid) and S.sess_locks[sid].locked()
+        )
         return {"models": [dict(m, busy=m["id"] in busy) for m in _removable_models(S)]}
 
     @app.delete("/models/installed/<mid>")
@@ -631,9 +678,14 @@ def _register_model_routes(app, S):
                     continue
                 lock = _lock_for(S, sess.id)
                 if not lock.acquire(blocking=False):
-                    return {"error": "Ce modèle travaille encore. Attends la fin de sa génération."}, 409
+                    return {
+                        "error": "Ce modèle travaille encore. Attends la fin de sa génération."
+                    }, 409
                 held.append(lock)
-            if any(isinstance(h, dict) and h.get("model") == mid for h in list(S.active_streams.values())):
+            if any(
+                isinstance(h, dict) and h.get("model") == mid
+                for h in list(S.active_streams.values())
+            ):
                 return {"error": "Ce modèle travaille encore."}, 409
             message, ok = _remove_model(S, dict(item, model_kind=item["kind"]))
             if ok:
@@ -644,7 +696,11 @@ def _register_model_routes(app, S):
                     if sess.conversation.model == mid:
                         sess.conversation.set_model(fallback)
                         S.session_store.save(sess)
-            return {"ok": ok, "message": message, "models": _models_payload(S)}, 200 if ok else 409
+            return {
+                "ok": ok,
+                "message": message,
+                "models": _models_payload(S),
+            }, 200 if ok else 409
         except OSError as exc:
             return {"error": f"Suppression impossible : {exc}"}, 409
         finally:

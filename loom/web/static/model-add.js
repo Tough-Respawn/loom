@@ -1,16 +1,19 @@
-// Model installation has its own state and requests; it never uses sendChat.
+// Panneaux « Ajouter un modèle » et « Recalibrer un modèle » : même mécanique (état
+// serveur relu par GET, étapes par POST), jamais sendChat. `prefix` nomme les ids du
+// DOM, `endpoint` la route, `command` la commande qui ouvre le parcours.
 import { md } from "./render.js";
 
-export function initModelAdd({ getSessionId, postForm, showToast }) {
-  const panel = document.getElementById("model-add-panel");
-  if (!panel) return;
-  const openButton = document.getElementById("model-add-open");
-  const reply = document.getElementById("model-add-reply");
-  const status = document.getElementById("model-add-status");
-  const choices = document.getElementById("model-add-choices");
-  const form = document.getElementById("model-add-form");
-  const input = document.getElementById("model-add-input");
-  const cancel = document.getElementById("model-add-cancel");
+export function initWizardPanel({ prefix, endpoint, command, eventKey, getSessionId, postForm, showToast }) {
+  const panel = document.getElementById(prefix + "-panel");
+  if (!panel) return null;
+  const openButton = document.getElementById(prefix + "-open");
+  const reply = document.getElementById(prefix + "-reply");
+  const status = document.getElementById(prefix + "-status");
+  const choices = document.getElementById(prefix + "-choices");
+  const form = document.getElementById(prefix + "-form");
+  const input = document.getElementById(prefix + "-input");
+  const cancel = document.getElementById(prefix + "-cancel");
+  const log = document.getElementById(prefix + "-log");
   let sid = null, timer = null, revision = 0, sending = false, wasBusy = false;
 
   function paint(data) {
@@ -20,6 +23,13 @@ export function initModelAdd({ getSessionId, postForm, showToast }) {
     if (wasBusy && !data.busy) document.dispatchEvent(new CustomEvent("loom:models-changed"));
     wasBusy = !!data.busy;
     status.textContent = data.status || (data.busy ? "Chargement…" : "");
+    if (log) {
+      // Journal de progression (recalibration) : chaque étape horodatée, défilé en bas.
+      const lines = data.log || [];
+      log.hidden = !lines.length;
+      log.textContent = lines.join("\n");
+      log.scrollTop = log.scrollHeight;
+    }
     input.type = data.secret ? "password" : "text";
     input.value = "";
     form.hidden = !data.active;
@@ -41,7 +51,7 @@ export function initModelAdd({ getSessionId, postForm, showToast }) {
   async function refresh() {
     const version = revision;
     try {
-      const response = await fetch("/models/add?session_id=" + encodeURIComponent(sid));
+      const response = await fetch(endpoint + "?session_id=" + encodeURIComponent(sid));
       const data = await response.json();
       if (version !== revision) return null;
       if (!response.ok) throw new Error(data.error);
@@ -60,7 +70,7 @@ export function initModelAdd({ getSessionId, postForm, showToast }) {
     for (const button of panel.querySelectorAll("button, input")) button.disabled = true;
     status.textContent = "Chargement…";
     try {
-      const response = await postForm("/models/add", {session_id: sid, message});
+      const response = await postForm(endpoint, {session_id: sid, message});
       const data = await response.json();
       if (version !== revision) return;
       if (!response.ok) throw new Error(data.error || "Opération impossible");
@@ -78,22 +88,23 @@ export function initModelAdd({ getSessionId, postForm, showToast }) {
   }
 
   async function open(sessionId, argument = "") {
-    if (sending) { showToast("Une étape d’ajout est déjà en cours."); return; }
+    if (sending) { showToast("Une étape est déjà en cours."); return; }
     sid = sessionId || getSessionId();
     if (!sid) return;
     revision++;
     wasBusy = false;
     panel.hidden = false;
     const data = await refresh();
-    if (data && !data.active && !data.busy) await send("/add-model" + (argument ? " " + argument : ""));
+    if (data && !data.active && !data.busy) await send(command + (argument ? " " + argument : ""));
   }
   openButton.onclick = () => open(getSessionId());
   document.addEventListener("loom:manage-models", (event) => {
-    if (event.detail?.add) open(event.detail.sid, event.detail.argument);
+    if (event.detail?.[eventKey]) open(event.detail.sid, event.detail.argument);
   });
-  document.addEventListener("loom:add-model-cancelled", (event) => {
-    if (event.detail.sid === sid) refresh();
+  document.addEventListener("loom:interface-cancelled", (event) => {
+    if (sid && event.detail.sid === sid) refresh();
   });
   form.onsubmit = (event) => { event.preventDefault(); if (input.value.trim()) send(input.value.trim()); };
   cancel.onclick = () => send("/cancel");
+  return { open };
 }

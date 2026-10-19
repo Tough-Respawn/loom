@@ -659,7 +659,11 @@
     .cfg-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .cfg-panel[hidden], .cfg-group[hidden] { display: none; }
     .model-management-intro { margin: 4px 0 14px; color: var(--text-dim); }
-    #model-add-panel { padding: 14px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg); }
+    #model-add-panel, #model-rebench-panel { padding: 14px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg); }
+    #model-rebench-open, #model-rebench-panel { margin-top: 10px; }
+    .model-add-log { margin: 12px 0 0; padding: 8px 10px; max-height: 220px; overflow: auto; font: 11px/1.55 ui-monospace, Consolas, monospace; color: var(--text-dim); background: var(--bg-panel); border: 1px solid var(--border-soft); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .model-manage-actions { justify-content: flex-end; flex-wrap: wrap; }
+    .model-manage-actions .rm-btn { flex: 0 1 auto; }
     .model-management-title { margin: 0 0 12px; font-size: 12.5px; font-weight: 600; }
     .model-installed-title { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
     .model-add-reply { white-space: normal; overflow-wrap: anywhere; line-height: 1.65; font-weight: 400; }
@@ -668,11 +672,11 @@
     .model-add-reply ol, .model-add-reply ul { margin: 10px 0; padding-left: 2em; }
     .model-add-reply li { padding-left: 3px; margin: 6px 0; }
     .model-add-reply pre { white-space: pre-wrap; }
-    #model-add-status:not(:empty) { margin-top: 12px; color: var(--text-dim); }
-    #model-add-choices { flex-wrap: wrap; }
-    #model-add-choices:not(:empty) { margin-top: 14px; }
-    #model-add-form:not([hidden]) { display: grid; gap: 8px; margin-top: 18px; }
-    #model-add-form label { font-size: 11px; color: var(--text-dim); }
+    #model-add-status:not(:empty), #model-rebench-status:not(:empty) { margin-top: 12px; color: var(--text-dim); }
+    #model-add-choices, #model-rebench-choices { flex-wrap: wrap; }
+    #model-add-choices:not(:empty), #model-rebench-choices:not(:empty) { margin-top: 14px; }
+    #model-add-form:not([hidden]), #model-rebench-form:not([hidden]) { display: grid; gap: 8px; margin-top: 18px; }
+    #model-add-form label, #model-rebench-form label { font-size: 11px; color: var(--text-dim); }
     .model-add-actions { justify-content: flex-end; margin-top: 4px; flex-wrap: wrap; }
     .model-add-actions .rm-btn { flex: 0 1 auto; padding: 7px 12px; }
     #model-management-list .lm-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
@@ -1335,8 +1339,24 @@
       </div>
       <div class="cfg-scroll">
         <div class="cfg-panel" data-tab="gestion" hidden>
-          <p class="model-management-intro">Ajoute ou supprime un modèle. Les conversations en cours continuent.</p>
+          <p class="model-management-intro">Ajoute, recalibre ou supprime un modèle. Les conversations en cours continuent.</p>
           <button type="button" id="model-add-open" class="rm-add-btn">+ Ajouter un modèle</button>
+          <button type="button" id="model-rebench-open" class="rm-add-btn">Recalibrer un modèle local…</button>
+          <section id="model-rebench-panel" hidden aria-label="Recalibrer un modèle">
+            <h3 class="model-management-title">Recalibrer un modèle</h3>
+            <div id="model-rebench-reply" class="model-add-reply" aria-live="polite"></div>
+            <div id="model-rebench-status" role="status"></div>
+            <pre id="model-rebench-log" class="model-add-log" hidden aria-label="Progression de la calibration"></pre>
+            <div id="model-rebench-choices" class="rm-actions"></div>
+            <form id="model-rebench-form" autocomplete="off">
+              <label for="model-rebench-input">Ta réponse</label>
+              <input id="model-rebench-input" class="rm-in" required autocomplete="off">
+              <div class="rm-actions model-add-actions">
+                <button type="submit" class="rm-btn primary">Continuer</button>
+                <button type="button" id="model-rebench-cancel" class="rm-btn">Annuler</button>
+              </div>
+            </form>
+          </section>
           <section id="model-add-panel" hidden aria-label="Ajouter un modèle">
             <h3 class="model-management-title">Ajouter un modèle</h3>
             <div id="model-add-reply" class="model-add-reply" aria-live="polite"></div>

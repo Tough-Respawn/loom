@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-10-19 : /rebench ouvre un panneau de recalibration, progression visible
+
+- `/rebench [id]`, tapé dans le chat ou en note, ouvre « Gérer les modèles » →
+  « Recalibrer un modèle » (aussi : bouton « Recalibrer… » sur chaque local installé).
+  Choix du modèle, confirmation, verdict comparé et application (« oui ») s'y déroulent
+  hors du fil et du journal de la conversation, comme l'ajout depuis le 2026-10-18 ;
+  plus aucun dialogue de commande ne vit dans une conversation. Route :
+  `GET/POST /models/rebench` (panneau unique pour la machine, une calibration à la fois).
+- Pendant la mesure, chaque étape (précontrôle, sonde d'isolation, placement, threads,
+  pente, vitesse, réglage final, cache) est horodatée dans un journal affiché par le
+  panneau ET imprimée sur la console de loom.web (`[rebench <id>] …`), verdict compris.
+  Avant : seul le dernier libellé apparaissait, en bas du chat, et la console ne disait
+  rien.
+
 ## 2026-10-18 : /add-model ouvre un panneau d'ajout hors conversation
 
 - `/add-model`, tapé dans le chat ou en note, même pendant une génération, ouvre
@@ -13,7 +27,7 @@
   quant recommandé, id, disque, clé d'un distant) s'y déroulent hors du fil et du
   journal de la conversation ; la fin d'un téléchargement n'y écrit rien non plus.
   `/cancel` annule sans appeler le modèle. Les anciens dialogues restés dans une
-  conversation sont effacés au message suivant ; `/rebench` reste dans la conversation.
+  conversation sont effacés au message suivant (`/rebench` a suivi le 2026-10-19).
 
 ## 2026-10-18 : un appel d'outil répété est signalé au modèle avant l'arrêt
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 # ---- /rebench : recalibration topologique d'un LOCAL TEXTE (loom.setup réutilisé) ----
 
 # Un seul rebench à la fois : la mesure sature CPU/GPU et exige la VRAM libre.
@@ -837,9 +836,37 @@ def _sections_from_calib(calib: dict, gguf) -> dict:
     }
 
 
-def _rebench_worker(S, sess, chat_lock, mid, job):
-    """Thread du job : mesure, verdict comparé, message PERSISTÉ + état b_apply si
-    une application a du sens. `job.done` posé EN DERNIER (le stream lit final)."""
+def _console(line: str) -> None:
+    """Ligne de console best-effort : une sortie redirigée en cp1252 ne doit jamais
+    tuer le job sur un « → » ou un « ✅ » du verdict."""
+    try:
+        print(line, flush=True)
+    except (UnicodeEncodeError, OSError):
+        try:
+            print(line.encode("ascii", "replace").decode("ascii"), flush=True)
+        except OSError:
+            pass
+
+
+def _progress(job, mid: str, msg: str) -> None:
+    """Chaque étape de la mesure : statut courant du panneau, journal horodaté
+    (relu par GET /models/rebench) et console de loom.web — avant, seul le dernier
+    libellé survivait, en bas de la fenêtre de chat, et la console ne disait rien."""
+    import time
+
+    job.label = f"calibration : {msg}"
+    log = getattr(job, "log", None)
+    if log is None:
+        log = job.log = []
+    log.append(f"{time.strftime('%H:%M:%S')} {msg}")
+    del log[:-400]
+    _console(f"[rebench {mid}] {msg}")
+
+
+def _rebench_worker(S, flow, mid, job):
+    """Thread du job : mesure, verdict comparé, verdict posé dans le PANNEAU (`flow`,
+    cf. models._RebenchFlow) + état b_apply si une application a du sens. `job.done`
+    posé EN DERNIER (le panneau lit le verdict quand busy retombe)."""
     from loom.setup import bench as bench_mod
     from loom.setup import topology as topo_mod
     from loom.setup.placement import (
@@ -856,11 +883,12 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
     # _run_calibration, archivé même si une étape lève.
     trace: dict = {"source": "/rebench"}
     erreur: str | None = None
+    _progress(job, mid, "lancement (serveur modèle arrêté pour libérer la VRAM)")
     try:
         calib, _gguf = _run_calibration(
             S,
             spec,
-            lambda m: setattr(job, "label", f"calibration : {m}"),
+            lambda m: _progress(job, mid, m),
             trace_out=trace,
         )
         current = int(spec.get("context") or S.context_window or 0)
@@ -1182,24 +1210,26 @@ def _rebench_worker(S, sess, chat_lock, mid, job):
             wiz["archive"] = str(arch)
     except Exception as exc:  # noqa: BLE001 - l'archive n'empêche jamais le verdict
         msg += f"\n⚠ archive non écrite : {exc}"
+    for line in msg.splitlines():
+        _console(f"[rebench {mid}] {line}")
     try:
-        got = chat_lock.acquire(timeout=2)
+        # Verdict dans le panneau (jamais dans une conversation ni son journal). La
+        # route qui a lancé le job tient encore le verrou du panneau le temps d'y
+        # écrire « lancée… » : attendre qu'elle le rende, sinon le verdict serait
+        # écrasé (job instantané des tests, machine chargée).
+        got = flow.lock.acquire(timeout=30)
         try:
-            conv = sess.conversation
-            # Journal seulement : un compte rendu de commande n'est pas un tour que le
-            # modèle doit relire (cf. model_admin._persist_wizard_exchange).
             if wiz is not None:
-                conv.set_wizard(wiz)
-            S.session_store.append_event(sess.id, "text", {"text": msg})
-            S.session_store.save(sess)
+                flow.set_wizard(wiz)
+            flow.reply = f"{flow.reply}\n\n{msg}".strip()
+            # Boutons du verdict (l'état b_apply attend oui/annuler).
+            flow.choices = ["oui", "annuler"] if wiz is not None else []
         finally:
             if got:
-                chat_lock.release()
+                flow.lock.release()
         job.final = msg
-        # Boutons du verdict (l'état b_apply attend oui/annuler) — lus par le stream.
-        job.choices = ["oui", "annuler"] if wiz is not None else None
     finally:
-        # TOUJOURS finaliser : le flux et le verrou anti-double attendent ce drapeau.
+        # TOUJOURS finaliser : le panneau et le verrou anti-double attendent ce drapeau.
         if getattr(job, "final", None) is None:
             job.final = msg
         job.done = True
