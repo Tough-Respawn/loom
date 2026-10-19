@@ -1339,10 +1339,20 @@ setTimeout(llamaUpdateTick, 45000); // première passe serveur ~30 s après le b
 setInterval(llamaUpdateTick, 3600000);
 
 // Management actions never enter a conversation or replace its streaming request.
+// Fin d'un travail de fond : toast persistant, le panneau peut être fermé depuis longtemps.
+const doneToast = (eventKey, text) =>
+  showToast(text, [
+    { label: "Voir", kind: "primary", onClick: () => document.dispatchEvent(new CustomEvent("loom:manage-models",
+      { detail: { sid: state.active, [eventKey]: true, show: true } })) },
+    { label: "Fermer" },
+  ], { timeout: 0 });
+const modelIn = (text) => { const m = /« ([^»]+) »/.exec(text || ""); return m ? "« " + m[1] + " »" : ""; };
 initWizardPanel({ prefix: "model-add", endpoint: "/models/add", command: "/add-model", eventKey: "add",
-  getSessionId: () => state.active, postForm, showToast });
+  getSessionId: () => state.active, postForm, showToast,
+  onDone: (d) => doneToast("add", `Téléchargement terminé ${modelIn(d.reply)} : détail dans Gérer les modèles.`.replace("  ", " ")) });
 const rebenchPanel = initWizardPanel({ prefix: "model-rebench", endpoint: "/models/rebench", command: "/rebench",
-  eventKey: "rebench", getSessionId: () => state.active, postForm, showToast });
+  eventKey: "rebench", getSessionId: () => state.active, postForm, showToast, watch: true,
+  onDone: (d) => doneToast("rebench", `Recalibration terminée ${modelIn(d.reply)} : verdict dans Gérer les modèles.`.replace("  ", " ")) });
 (function () {
   const list = document.getElementById("model-management-list");
   if (!list) return;
