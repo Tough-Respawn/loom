@@ -3,7 +3,15 @@ import { html, useEffect, useRef, useState } from "./preact-htm.js";
 import { opsFor, paneShowing, scheduleRenderFor, state, tab } from "./state.js";
 import { handoffMessage, renderPreviews, submitPane } from "./panes.js";
 import { md } from "./render.js";
-import { STEP_ICONS, toolIcon } from "./icons.js";
+import { GLYPHS, STEP_ICONS, toolIcon } from "./icons.js";
+
+export function Glyph({ name, open }) {
+  // Chevron (tourné quand `open`), coche, croix : SVG constants, couleur courante.
+  return html`<span
+    class=${"glyph glyph-" + name + (open ? " open" : "")}
+    dangerouslySetInnerHTML=${{ __html: GLYPHS[name] || "" }}
+  ></span>`;
+}
 
 export function Step({ icon, kind, cls, label, children }) {
   // Une étape du fil : pastille-icône à gauche (icons.js, constantes SVG), bloc à droite,
@@ -25,7 +33,7 @@ export function TerminalBlock({ it }) {
   return html`<div class=${"term-block" + (it.active ? " active" : "")}>
     <div class="tool-head">
       <span class="tool-name">serveur modèle</span>
-      <span class="tool-status">${it.active ? "…" : "✓"}</span>
+      <span class="tool-status">${it.active ? "…" : html`<${Glyph} name="check" />`}</span>
     </div>
     <pre class="term-log" ref=${ref}>${lines.join("\n")}</pre>
   </div>`;
@@ -59,7 +67,7 @@ export function IORow({ tag, text, force }) {
     <div class="tool-io-row" onClick=${() => multi && setOpen(!open)}>
       <span class=${"io-tag io-" + tag.toLowerCase()}>${tag}</span>
       <span class="io-line">${open ? "" : first}</span>
-      <span class="tool-caret">${multi ? (open ? "▾" : "▸") : ""}</span>
+      <span class="tool-caret">${multi ? html`<${Glyph} name="chevron" open=${open} />` : ""}</span>
     </div>
     ${open ? html`<pre class="tool-io-body">${full}</pre>` : null}
   </div>`;
@@ -70,7 +78,9 @@ export function ToolPill({ it }) {
   // sortie (OUT), chacune dépliable pour voir tout, bloc par bloc.
   const inText = it.in_full != null ? it.in_full : it.cmd || it.path || "";
   const outText = it.out_full != null ? it.out_full : it.preview || "";
-  const status = it.pending ? (it.chars ? it.chars + " car." : "…") : it.ok ? "✓" : "✕";
+  const status = it.pending
+    ? (it.chars ? it.chars + " car." : "…")
+    : html`<${Glyph} name=${it.ok ? "check" : "x"} />`;
   return html`<div class=${"tool-chip" + (it.pending ? "" : it.ok ? " ok" : " ko")}>
     <div class="tool-head">
       <span class="tool-name">${it.name || "outil"}</span>
@@ -97,7 +107,9 @@ export function _agentName(seed, i) {
 
 export function AgentLane({ it, name }) {
   const cls = it.pending ? " working" : it.ok ? " ok" : " ko";
-  const status = it.pending ? (it.chars ? it.chars + " car." : "…") : it.ok ? "✓" : "✕";
+  const status = it.pending
+    ? (it.chars ? it.chars + " car." : "…")
+    : html`<${Glyph} name=${it.ok ? "check" : "x"} />`;
   const initial = (name || "A").trim().charAt(0);
   const inText = it.in_full != null ? it.in_full : it.cmd || it.path || "";
   const outText = it.out_full != null ? it.out_full : it.preview || "";
@@ -135,10 +147,10 @@ export function SubagentCard({ it, sid }) {
           ? "→ " + it.currentTool
           : "en cours…"
     : it.state === "completed"
-      ? "✓" + (it.stop && it.stop !== "natural" ? " · " + it.stop : "")
+      ? html`<${Glyph} name="check" />${it.stop && it.stop !== "natural" ? " · " + it.stop : ""}`
       : it.state === "cancelled"
         ? "arrêté"
-        : "✕ · " + (it.stop || "échec");
+        : html`<${Glyph} name="x" /> · ${it.stop || "échec"}`;
   const stopWorker = async (e) => {
     e.stopPropagation();
     setAsk("pending");
@@ -193,7 +205,7 @@ export function SubagentCard({ it, sid }) {
             onClick=${stopWorker}
           >${ask === "failed" ? "réessayer" : "arrêter"}</button>`
         : null}
-      <span class="sub-caret">${open ? "▾" : "▸"}</span>
+      <span class="sub-caret"><${Glyph} name="chevron" open=${open} /></span>
     </div>
     ${open
       ? html`<div class="sub-log">
@@ -201,7 +213,7 @@ export function SubagentCard({ it, sid }) {
             e.t === "call"
               ? html`<div class="sub-log-line">→ ${e.name}</div>`
               : html`<div class=${"sub-log-line" + (e.ok ? "" : " ko")}>
-                  ${e.ok ? "✓" : "✕"} ${e.name}${e.preview ? " — " + e.preview : ""}
+                  <${Glyph} name=${e.ok ? "check" : "x"} /> ${e.name}${e.preview ? " — " + e.preview : ""}
                 </div>`,
           )}
           ${log.length > 50
@@ -462,7 +474,7 @@ export function enhance(el, raw) {
     btn.textContent = "copier";
     btn.onclick = () => {
       navigator.clipboard.writeText(code);
-      btn.textContent = "copié ✓";
+      btn.textContent = "copié";
       setTimeout(() => (btn.textContent = "copier"), 1200);
     };
     pre.appendChild(btn);
