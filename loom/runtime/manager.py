@@ -149,6 +149,17 @@ class ModelServerManager:
             self._starting = True
             return True
 
+    def attach(self, pid: int) -> bool:
+        """Attache un autre processus à NOTRE Job « kill-on-close » (la fenêtre
+        d'application) : il meurt avec loom.web, comme le serveur modèle. Windows
+        seulement ; False si l'API ou l'assignation échoue."""
+        if sys.platform != "win32":
+            return False
+        with self._lock:
+            if self._job is None:
+                self._job = _win_job_kill_on_close()
+            return self._job is not None and _assign_to_job(self._job, pid)
+
     def stop(self) -> bool:
         """Éteint l'arbre complet (serve.py + llama-swap + llama-server) et libère
         RAM/VRAM. Sans effet sur un serveur non géré (lancé hors Loom)."""
