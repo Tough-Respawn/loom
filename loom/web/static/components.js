@@ -5,11 +5,12 @@ import { handoffMessage, renderPreviews, submitPane } from "./panes.js";
 import { md } from "./render.js";
 import { STEP_ICONS, toolIcon } from "./icons.js";
 
-export function Step({ icon, kind, cls, children }) {
-  // Une étape du fil : pastille-icône à gauche (icons.js, constantes SVG), bloc à droite.
+export function Step({ icon, kind, cls, label, children }) {
+  // Une étape du fil : pastille-icône à gauche (icons.js, constantes SVG), bloc à droite,
+  // précédé d'un libellé discret quand le bloc n'en porte pas lui-même (réponse : modèle).
   return html`<div class=${"step step-" + kind + (cls ? " " + cls : "")}>
     <span class="step-ico" dangerouslySetInnerHTML=${{ __html: STEP_ICONS[icon] || STEP_ICONS.wrench }}></span>
-    <div class="step-body">${children}</div>
+    <div class="step-body">${label ? html`<div class="step-label">${label}</div>` : null}${children}</div>
   </div>`;
 }
 
@@ -491,7 +492,7 @@ export function Item({ it, userIndex, sid }) {
     case "user":
       return html`<${UserMsg} it=${it} userIndex=${userIndex} sid=${sid} />`;
     case "assistant":
-      return html`<${Step} icon="chat" kind="assistant" cls=${it.done ? "" : "step-pending"}><${Assistant} it=${it} sid=${sid} /><//>`;
+      return html`<${Step} icon="chat" kind="assistant" cls=${it.done ? "" : "step-pending"} label=${tab(sid)?.model || ""}><${Assistant} it=${it} sid=${sid} /><//>`;
     case "think":
       if (!it.text) return null;
       return html`<${Step} icon="think" kind="think" cls=${it.active ? "step-pending" : ""}><${Think} it=${it} /><//>`;
