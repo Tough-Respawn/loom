@@ -18,8 +18,8 @@ from loom.web.routes.helpers import (
     _totals,
 )
 from loom.web.routes.priming import _prime_async
-from loom.web.routes.system_prompt import strip_workspace_note
 from loom.web.routes.skills import _index_context
+from loom.web.routes.system_prompt import strip_workspace_note
 
 
 def _register_session_routes(app, S):
@@ -163,7 +163,10 @@ def _register_session_routes(app, S):
         if text.split(maxsplit=1)[0] == "/remove-model":
             return {"ui_action": "manage_models"}
         if text.split(maxsplit=1)[0] == "/add-model":
-            return {"ui_action": "add_model", "argument": text[len("/add-model"):].strip()}
+            return {
+                "ui_action": "add_model",
+                "argument": text[len("/add-model") :].strip(),
+            }
         if text.split(maxsplit=1)[0] == "/cancel":
             from loom.web.routes.models import _cancel_interface_command
 
@@ -172,8 +175,8 @@ def _register_session_routes(app, S):
             if sess is None:
                 return {"error": "session inconnue"}, 404
             return _cancel_interface_command(S, sess)
-        if text.split(maxsplit=1)[0] in {"/rebench"}:
-            return {"error": "Commande d’interface : attends la fin du tour pour cette opération."}, 409
+        if text.split(maxsplit=1)[0] == "/rebench":
+            return {"ui_action": "rebench", "argument": text[len("/rebench") :].strip()}
         if len(text) > _NOTE_MAX_CHARS:
             return {
                 "error": f"note trop longue (max {_NOTE_MAX_CHARS} caractères)"
@@ -299,7 +302,8 @@ def _register_session_routes(app, S):
                 continue
             add_flow = S.model_add_flows.get(meta.id)
             if add_flow and (
-                add_flow.wizard or add_flow.lock.locked()
+                add_flow.wizard
+                or add_flow.lock.locked()
                 or (add_flow.job and not add_flow.job.done)
             ):
                 continue  # An open installation panel still owns this session.
@@ -335,12 +339,14 @@ def _register_session_routes(app, S):
     @app.get("/session/<sid>/journal")
     def session_journal(sid):
         from loom.agent.transcript import render_transcript
+
         if S.session_store.load(sid) is None:
             return {"error": "session inconnue"}, 404
-        return Response(render_transcript(S.session_store.read_timeline(sid)),
-                        mimetype="text/plain", headers={
-                            "Content-Disposition": f'attachment; filename="journal-{sid}.md"'
-                        })
+        return Response(
+            render_transcript(S.session_store.read_timeline(sid)),
+            mimetype="text/plain",
+            headers={"Content-Disposition": f'attachment; filename="journal-{sid}.md"'},
+        )
 
     @app.get("/session/<sid>/export")
     def session_export(sid):

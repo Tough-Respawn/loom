@@ -63,8 +63,9 @@ Un fichier incomplet ou illisible est ignoré avec un message dans la console.
 
 Les réglages de performance dépendent du modèle **et de la machine** : contexte,
 couches GPU, placement des experts MoE, threads, batchs et isolation du cache.
-`loom-setup` et `/rebench` permettent de mesurer ces réglages ; ne pas reprendre les
-valeurs d'une autre installation comme référence. L'ajout d'un modèle extrait des
+`loom-setup` et `/rebench` (panneau « Gérer les modèles » → « Recalibrer un modèle »,
+progression dans le panneau et sur la console de loom.web) permettent de mesurer ces
+réglages ; ne pas reprendre les valeurs d'une autre installation comme référence. L'ajout d'un modèle extrait des
 métadonnées du GGUF, mais ne remplace pas cette calibration.
 
 ## Modèles distants

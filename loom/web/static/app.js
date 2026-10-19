@@ -1,7 +1,7 @@
 // UI déclarative Preact: les événements SSE mutent `state.timeline`, puis la vue se rend.
 
 import { initKbdCheatsheet } from "./kbd.js";
-import { initModelAdd } from "./model-add.js";
+import { initWizardPanel } from "./model-add.js";
 import { _phRaf, loomWorkdir, set_CMDS, set__phRaf, set_loomWorkdir, set_machineUnloaded, set_skGenBusy } from "./shared.js";
 import { addImages, clampRatio, createPane, renderLayout, savePanesLayout, updatePlaceholders } from "./panes.js";
 import { SM_POS_KEY, _multiSel, _typesetAll, clearMultiSel, closeDrawer, closeSkillDrawer, closeTabMenu, compactBtn, doDeleteSkill, drawer, drawerClose, drawerScrim, fmtTok, localOnlyCb, newSessionTab, openConfirmPop, openDeleteConfirm, openDrawer, openSkillCreator, openSkillEditor, paintModelSelect, pickFolderBtn, postForm, postSkillsToggle, reflectWorkdir, resetBtn, saveSkill, scheduleMachineRefresh, sessionNew, setMetrics, setSkillDrawerMode, settingsBtn, showToast, sidebarEl, sidebarToggle, singleView, skBody, skCurrent, skDraft, skDrawer, skGenDesc, skMode, skNameInput, skScrim, skStatus, smPlace, splitWith, syncSkillsMaster, thinkingCb, toggleMultiSel, updateUsageMeter, workdirChip } from "./panels.js";
@@ -1339,6 +1339,10 @@ setTimeout(llamaUpdateTick, 45000); // première passe serveur ~30 s après le b
 setInterval(llamaUpdateTick, 3600000);
 
 // Management actions never enter a conversation or replace its streaming request.
+initWizardPanel({ prefix: "model-add", endpoint: "/models/add", command: "/add-model", eventKey: "add",
+  getSessionId: () => state.active, postForm, showToast });
+const rebenchPanel = initWizardPanel({ prefix: "model-rebench", endpoint: "/models/rebench", command: "/rebench",
+  eventKey: "rebench", getSessionId: () => state.active, postForm, showToast });
 (function () {
   const list = document.getElementById("model-management-list");
   if (!list) return;
@@ -1392,7 +1396,19 @@ setInterval(llamaUpdateTick, 3600000);
           button.hidden = true;
           no.focus();
         });
-        row.append(label, button);
+        const actions = document.createElement("div");
+        actions.className = "rm-actions model-manage-actions";
+        if (model.kind === "local" && rebenchPanel) {
+          // Seuls les locaux texte se calibrent (image/vidéo = ComfyUI, distant = provider).
+          const bench = document.createElement("button");
+          bench.type = "button";
+          bench.className = "rm-btn";
+          bench.textContent = "Recalibrer…";
+          bench.addEventListener("click", () => rebenchPanel.open(state.active, model.id));
+          actions.append(bench);
+        }
+        actions.append(button);
+        row.append(label, actions);
         list.append(row);
       }
       if (!data.models.length) list.textContent = "Aucun modèle à supprimer.";
@@ -1404,5 +1420,4 @@ setInterval(llamaUpdateTick, 3600000);
 })();
 
 paintModelSelect();
-initModelAdd({ getSessionId: () => state.active, postForm, showToast });
 initKbdCheatsheet();

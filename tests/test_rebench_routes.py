@@ -1,5 +1,6 @@
-# /rebench côté routes : job de calibration STUBBÉ (routes._run_calibration),
-# verdict persisté, état b_apply, application au model.toml, verrou anti-double.
+# /rebench côté routes : panneau /models/rebench (hors conversation), job de
+# calibration STUBBÉ (routes._run_calibration), verdict dans le panneau, état b_apply,
+# application au model.toml, verrou anti-double.
 from __future__ import annotations
 
 import json
@@ -22,13 +23,9 @@ CALIB = {
 
 
 def _sse_texts(body: bytes) -> str:
-    out = []
-    for line in body.decode("utf-8").splitlines():
-        if line.startswith("data: "):
-            evt = json.loads(line[6:])
-            if evt["type"] == "text":
-                out.append(evt.get("text", ""))
-    return "\n".join(out)
+    """Texte du panneau (réponse JSON : reply, ou error/message d'une annulation)."""
+    data = json.loads(body)
+    return data.get("reply") or data.get("error") or data.get("message") or ""
 
 
 @pytest.fixture()
@@ -68,41 +65,33 @@ def env(tmp_path):
 
 
 def _wait_verdict(env, timeout=10.0):
-    """Attend que le worker ait posté le verdict dans le journal (thread réel)."""
+    """Attend la fin du job (thread réel) : le panneau n'est plus busy et porte le
+    verdict. Renvoie le texte du panneau."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for p in (env.tmp / "sessions").rglob("timeline.jsonl"):
-            txt = p.read_text(encoding="utf-8")
-            if (
-                "Verdict" in txt
-                or "déjà au top" in txt
-                or "mesures disponibles" in txt
-                or "échouée" in txt
-                or "aucun placement faisable" in txt
-                or "aucun placement validé" in txt
-                or "démarrage impossible" in txt
-                or "hors budget" in txt
-            ):
-                return txt
+        snap = env.web.get("/models/rebench").get_json()
+        if not snap["busy"] and snap["reply"]:
+            return snap["reply"]
         time.sleep(0.1)
     raise AssertionError("verdict jamais posté")
 
 
 def _sessions_text(env, needles=(), timeout=20.0) -> str:
-    """Contenu concaténé des session.json, lu avec TOLÉRANCE : le worker remplace le
-    fichier atomiquement (os.replace) et Windows refuse alors la lecture un instant
-    (PermissionError). Attend jusqu'à `timeout` que toutes les `needles` soient là."""
+    """État du panneau (verdict + état b_apply sérialisé) une fois le job fini, attendu
+    jusqu'à `timeout` que toutes les `needles` soient là. Aucune session n'est touchée
+    par /rebench : c'est le panneau qui porte l'état d'application."""
     deadline = time.time() + timeout
+    flow = env.web.application.S.rebench_flow
     txt = ""
     while True:
-        try:
-            txt = "".join(
-                p.read_text(encoding="utf-8")
-                for p in (env.tmp / "sessions").rglob("session.json")
+        snap = env.web.get("/models/rebench").get_json()
+        if not snap["busy"]:
+            txt = json.dumps(
+                {"wizard": flow.wizard, "reply": flow.reply},
+                ensure_ascii=False,
+                default=str,
             )
-        except OSError:
-            txt = ""
-        if all(n in txt for n in needles) and txt:
+        if txt and all(n in txt for n in needles):
             return txt
         if time.time() >= deadline:
             return txt
@@ -138,16 +127,8 @@ def _launch(env, monkeypatch, calib=CALIB, error=None, trace=TRACE, before_error
         return calib, env.mdir / "fake.gguf"
 
     monkeypatch.setattr(routes.rebench, "_run_calibration", fake_run)
-    env.web.post("/chat", data={"message": "/rebench loc-test"})
-    return env.web.post("/chat", data={"message": "oui"})
-
-
-def _sse_events(body: bytes) -> list[dict]:
-    return [
-        json.loads(line[6:])
-        for line in body.decode("utf-8").splitlines()
-        if line.startswith("data: ")
-    ]
+    env.web.post("/models/rebench", data={"message": "/rebench loc-test"})
+    return env.web.post("/models/rebench", data={"message": "oui"})
 
 
 def test_rebench_confirmation_et_verdict_portent_des_boutons(env, monkeypatch):
@@ -159,15 +140,144 @@ def test_rebench_confirmation_et_verdict_portent_des_boutons(env, monkeypatch):
         "_run_calibration",
         lambda S, spec, progress, trace_out=None: (CALIB, None),
     )
-    r = env.web.post("/chat", data={"message": "/rebench loc-test"})
-    assert {"type": "choices", "options": ["oui", "annuler"]} in _sse_events(r.data)
-    # le flux du lancement attend le job (stub instantané) et émet le verdict + boutons
-    r = env.web.post("/chat", data={"message": "oui"})
-    events = _sse_events(r.data)
-    assert any(
-        e["type"] == "choices" and e["options"] == ["oui", "annuler"] for e in events
+    r = env.web.post("/models/rebench", data={"message": "/rebench loc-test"})
+    assert r.get_json()["choices"] == ["oui", "annuler"]
+    assert r.get_json()["active"]
+    # « oui » lance le job (stub instantané) : le panneau porte le verdict + ses boutons
+    r = env.web.post("/models/rebench", data={"message": "oui"})
+    assert "lancée" in r.get_json()["reply"]
+    txt = _wait_verdict(env)
+    snap = env.web.get("/models/rebench").get_json()
+    assert "Verdict" in txt and snap["choices"] == ["oui", "annuler"]
+
+
+def test_rebench_panneau_journalise_la_progression_et_la_console(
+    env, monkeypatch, capsys
+):
+    """Avant : seul le dernier libellé de progression survivait, en bas du chat, et la
+    console de loom.web ne disait rien. Le panneau relit un journal horodaté et chaque
+    étape sort sur la console."""
+    _launch(env, monkeypatch)
+    _wait_verdict(env)
+    snap = env.web.get("/models/rebench").get_json()
+    assert any(line.endswith("sonde 4096") for line in snap["log"])
+    assert any("lancement" in line for line in snap["log"])
+    out = capsys.readouterr().out
+    assert "[rebench loc-test] sonde 4096" in out
+    assert "[rebench loc-test] Verdict" in out
+    # Aucune session n'a reçu le dialogue ni le verdict.
+    for p in (env.tmp / "sessions").rglob("timeline.jsonl"):
+        assert "rebench" not in p.read_text(encoding="utf-8")
+
+
+def test_rebench_commande_ouvre_le_panneau_depuis_chat_et_note(env):
+    for endpoint, key in (("/chat", "message"), ("/note", "text")):
+        r = env.web.post(endpoint, data={key: "/rebench loc-test"})
+        assert r.get_json() == {"ui_action": "rebench", "argument": "loc-test"}
+    assert not (env.tmp / "sessions").rglob("timeline.jsonl") or all(
+        "rebench" not in p.read_text(encoding="utf-8")
+        for p in (env.tmp / "sessions").rglob("timeline.jsonl")
     )
-    assert any("Verdict" in e.get("text", "") for e in events if e["type"] == "text")
+
+
+def test_rebench_panneau_refuse_une_reponse_sans_parcours(env):
+    r = env.web.post("/models/rebench", data={"message": "oui"})
+    assert r.status_code == 409
+    r = env.web.post("/models/rebench", data={"message": "/add-model"})
+    assert r.status_code == 400
+
+
+def test_rebench_cancel_vide_le_panneau_sauf_job_en_cours(env, monkeypatch):
+    from loom.web import routes
+
+    monkeypatch.setitem(routes._REBENCH, "job", None)
+    env.web.post("/models/rebench", data={"message": "/rebench loc-test"})
+    assert env.web.get("/models/rebench").get_json()["active"]
+    r = env.web.post("/models/rebench", data={"message": "/cancel"})
+    assert r.get_json()["ui_action"] == "cancel_interface"
+    snap = env.web.get("/models/rebench").get_json()
+    assert not snap["active"] and "annulée" in snap["reply"]
+    # Job en cours : rien à annuler, le panneau le dit.
+    monkeypatch.setitem(
+        routes._REBENCH, "job", SimpleNamespace(done=False, label="", final=None)
+    )
+    r = env.web.post("/models/rebench", data={"message": "/cancel"})
+    assert r.status_code == 409 and "continue" in r.get_json()["error"]
+
+
+def test_navigateur_rebench_panneau_progression_verdict_application(env, monkeypatch):
+    """UI réelle : `/rebench loc-test` tapé dans le composer ouvre le panneau (jamais
+    /chat), « oui » lance le job, le journal de progression se peint pendant la mesure,
+    le verdict et ses boutons arrivent dans le panneau, « oui » applique au model.toml."""
+    import threading
+    from pathlib import Path
+
+    from werkzeug.serving import make_server
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    from loom.web import routes
+
+    monkeypatch.setitem(routes._REBENCH, "job", None)
+
+    def slow_run(S, spec, progress, trace_out=None):
+        progress("précontrôle mémoire du démarrage (avant tout chargement)…")
+        time.sleep(1.2)
+        progress("vitesse : ctx=16384, profondeur ~13926 tokens…")
+        time.sleep(1.2)
+        if trace_out is not None:
+            trace_out.update(TRACE)
+        return dict(CALIB, final=_FINAL), env.mdir / "fake.gguf"
+
+    monkeypatch.setattr(routes.rebench, "_run_calibration", slow_run)
+    with playwright.sync_playwright() as p:
+        if not Path(p.chromium.executable_path).exists():
+            pytest.skip("Chromium non installé")
+        server = make_server("127.0.0.1", 0, env.web.application, threaded=True)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        browser = None
+        try:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            chat_requests, errors = [], []
+            page.on(
+                "request",
+                lambda r: (
+                    chat_requests.append(r.url)
+                    if r.url.endswith(("/chat", "/note"))
+                    else None
+                ),
+            )
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(f"http://127.0.0.1:{server.server_port}")
+            composer = page.locator(".chat-form textarea").first
+            composer.wait_for()
+            composer.fill("/rebench loc-test")
+            composer.press("Enter")
+            reply = page.locator("#model-rebench-reply")
+            playwright.expect(reply).to_contain_text("rebench 2/2")
+            page.locator("#model-rebench-choices button", has_text="oui").click()
+            playwright.expect(reply).to_contain_text("lancée")
+            log = page.locator("#model-rebench-log")
+            playwright.expect(log).to_contain_text("précontrôle mémoire", timeout=5_000)
+            playwright.expect(page.locator("#model-rebench-status")).to_contain_text(
+                "calibration :"
+            )
+            playwright.expect(log).to_contain_text("profondeur ~13926", timeout=5_000)
+            playwright.expect(reply).to_contain_text("Verdict", timeout=10_000)
+            playwright.expect(reply).to_contain_text("4096 → 8192")
+            page.locator("#model-rebench-choices button", has_text="oui").click()
+            playwright.expect(reply).to_contain_text("Application", timeout=5_000)
+            playwright.expect(reply).to_contain_text("écrit dans le model.toml")
+            assert "context = 8192" in (env.mdir / "model.toml").read_text(
+                encoding="utf-8"
+            )
+            assert not chat_requests and not errors
+        finally:
+            if browser:
+                browser.close()
+            server.shutdown()
+            worker.join(timeout=5)
 
 
 def test_rebench_job_poste_verdict_et_etat_apply(env, monkeypatch):
@@ -176,7 +286,7 @@ def test_rebench_job_poste_verdict_et_etat_apply(env, monkeypatch):
     txt = _wait_verdict(env)
     assert "4096 → 8192" in txt and "oui" in txt
     # l'état b_apply est actif : « oui » applique
-    r = env.web.post("/chat", data={"message": "oui"})
+    r = env.web.post("/models/rebench", data={"message": "oui"})
     assert "Application" in _sse_texts(r.data)
     toml = (env.mdir / "model.toml").read_text(encoding="utf-8")
     assert "context = 8192" in toml
@@ -218,7 +328,7 @@ def test_rebench_applique_le_verdict_isolation(env, monkeypatch):
     assert "lancée" in _sse_texts(r.data)
     txt = _wait_verdict(env)
     assert "cache_isolation → true" in txt and "cache PERDU" in txt
-    r = env.web.post("/chat", data={"message": "oui"})
+    r = env.web.post("/models/rebench", data={"message": "oui"})
     assert "Application" in _sse_texts(r.data)
     toml_txt = (env.mdir / "model.toml").read_text(encoding="utf-8")
     assert "cache_isolation = true" in toml_txt
@@ -263,7 +373,7 @@ def test_rebench_applique_le_placement_mesure(env, monkeypatch):
     assert "lancée" in _sse_texts(r.data)
     txt = _wait_verdict(env)
     assert "placement → gpu_total" in txt and "+19" in txt
-    r = env.web.post("/chat", data={"message": "oui"})
+    r = env.web.post("/models/rebench", data={"message": "oui"})
     assert "Application" in _sse_texts(r.data)
     toml_txt = (env.mdir / "model.toml").read_text(encoding="utf-8")
     assert "cpu_moe = false" in toml_txt and "n_gpu_layers = 999" in toml_txt
@@ -622,7 +732,7 @@ def test_rebench_reglage_final_en_echec_n_est_pas_applicable(env, monkeypatch):
     # …mais rien à appliquer : pas d'état b_apply, et « oui » ne touche à rien.
     sessions = _sessions_text(env, timeout=1.0)
     assert "b_apply" not in sessions
-    env.web.post("/chat", data={"message": "oui"})
+    env.web.post("/models/rebench", data={"message": "oui"})
     assert "context = 4096" in (env.mdir / "model.toml").read_text(encoding="utf-8")
 
 
@@ -656,7 +766,7 @@ def test_rebench_archive_le_verdict_puis_l_application(env, monkeypatch):
     assert arch["server_bin"].endswith("llama-server.exe")
     assert arch["flags"]["threads"] == 8 and arch["flags"]["slots"] == 2
     assert arch["profil"] and arch["plan"]["candidates"]
-    r = env.web.post("/chat", data={"message": "oui"})
+    r = env.web.post("/models/rebench", data={"message": "oui"})
     assert "Application" in _sse_texts(r.data)
     arch = json.loads(archives[0].read_text(encoding="utf-8"))
     assert arch["application"]["context"] == 8192
@@ -712,7 +822,7 @@ def test_rebench_erreur_d_entree_sortie_finalise_le_job_et_archive(env, monkeypa
         and "accès refusé" in arch["echec"]["erreur"]
     )
     # Le job est bien terminé : un nouveau /rebench n'est pas « déjà en cours ».
-    r = env.web.post("/chat", data={"message": "/rebench loc-test"})
+    r = env.web.post("/models/rebench", data={"message": "/rebench loc-test"})
     assert "déjà en cours" not in _sse_texts(r.data)
 
 
@@ -729,7 +839,7 @@ def test_rebench_apply_dit_quand_l_annotation_de_l_archive_echoue(env, monkeypat
         models_routes, "note_application", lambda *a, **k: False, raising=False
     )
     monkeypatch.setattr(_archive, "note_application", lambda *a, **k: False)
-    r = env.web.post("/chat", data={"message": "oui"})
+    r = env.web.post("/models/rebench", data={"message": "oui"})
     body = _sse_texts(r.data)
     assert "Application" in body
     assert "appliquée" in body and "annotation de l'archive échouée" in body
@@ -769,7 +879,7 @@ def test_rebench_applique_les_threads_mesures(env, monkeypatch):
     txt = _wait_verdict(env)
     assert "threads" in txt and "→ 5" in txt and "+20" in txt
     assert "b_apply" in _sessions_text(env, needles=("b_apply",))
-    r = env.web.post("/chat", data={"message": "oui"})
+    r = env.web.post("/models/rebench", data={"message": "oui"})
     assert "Application" in _sse_texts(r.data)
     toml_txt = (env.mdir / "model.toml").read_text(encoding="utf-8")
     assert "threads = 5" in toml_txt
@@ -873,7 +983,7 @@ def test_rebench_apply_ecrit_le_build_et_garde_les_echantillons(env, monkeypatch
     # le verdict de plusieurs secondes), puis seulement asserter.
     sessions = _sessions_text(env, needles=("b_apply", "echantillons", "b7000-abc1234"))
     assert "echantillons" in sessions and "b7000-abc1234" in sessions
-    r = env.web.post("/chat", data={"message": "oui"})
+    r = env.web.post("/models/rebench", data={"message": "oui"})
     assert "Application" in _sse_texts(r.data)
     toml_txt = (env.mdir / "model.toml").read_text(encoding="utf-8")
     assert "n_gpu_layers = 999" in toml_txt
@@ -888,7 +998,7 @@ def test_rebench_echec_calibration_message_persiste(env, monkeypatch):
 
 
 def test_rebench_refus_types_et_inconnu(env, monkeypatch):
-    r = env.web.post("/chat", data={"message": "/rebench nexiste-pas"})
+    r = env.web.post("/models/rebench", data={"message": "/rebench nexiste-pas"})
     assert "inconnu" in _sse_texts(r.data)
 
 
@@ -898,6 +1008,6 @@ def test_rebench_verrou_un_seul_job(env, monkeypatch):
     monkeypatch.setitem(
         routes._REBENCH, "job", SimpleNamespace(done=False, label="", final=None)
     )
-    env.web.post("/chat", data={"message": "/rebench loc-test"})
-    r = env.web.post("/chat", data={"message": "oui"})
+    env.web.post("/models/rebench", data={"message": "/rebench loc-test"})
+    r = env.web.post("/models/rebench", data={"message": "oui"})
     assert "déjà en cours" in _sse_texts(r.data)

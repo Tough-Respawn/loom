@@ -29,9 +29,9 @@ from loom.web.routes.commands import _handle_goal_command, _handle_init_command
 from loom.web.routes.helpers import (
     _abort_warm,
     _cancel_for,
+    _client_try_hot_resume,
     _confirm,
     _engine_for,
-    _client_try_hot_resume,
     _ensure_local_server,
     _free_image_engines,
     _get_session,
@@ -40,12 +40,11 @@ from loom.web.routes.helpers import (
     _lock_for,
     _model_limits,
     _price_of,
-    _title_in_background,
     _session,
+    _title_in_background,
     _totals,
 )
 from loom.web.routes.maintenance import _post_turn_maintenance
-from loom.web.routes.models import _handle_add_model_command
 from loom.web.routes.system_prompt import _build_system_prompt, _workspace_note
 
 # Source de vérité de la palette; garder ce catalogue aligné avec les handlers.
@@ -65,9 +64,9 @@ CHAT_COMMANDS = [
     {
         "name": "/rebench",
         "usage": "/rebench · /rebench <id modèle local>",
-        "description": "Recalibrer un modèle LOCAL texte tel que configuré "
-        "(contexte par pente mesurée + vitesse en profondeur) — verdict comparé "
-        "à l'actuel, application sur confirmation.",
+        "description": "Ouvrir le panneau de recalibration d'un modèle LOCAL texte tel que "
+        "configuré (contexte par pente mesurée + vitesse en profondeur) : progression, "
+        "verdict comparé à l'actuel et application sur confirmation, hors conversation.",
     },
     {
         "name": "/goal",
@@ -185,7 +184,15 @@ def _register_chat_routes(app, S):
         if not is_handoff and (message.split(maxsplit=1) or [""])[0] == "/remove-model":
             return {"ui_action": "manage_models"}
         if not is_handoff and (message.split(maxsplit=1) or [""])[0] == "/add-model":
-            return {"ui_action": "add_model", "argument": message[len("/add-model"):].strip()}
+            return {
+                "ui_action": "add_model",
+                "argument": message[len("/add-model") :].strip(),
+            }
+        if not is_handoff and (message.split(maxsplit=1) or [""])[0] == "/rebench":
+            return {
+                "ui_action": "rebench",
+                "argument": message[len("/rebench") :].strip(),
+            }
         if not is_handoff and (message.split(maxsplit=1) or [""])[0] == "/cancel":
             from loom.web.routes.models import _cancel_interface_command
 
@@ -222,8 +229,6 @@ def _register_chat_routes(app, S):
         with S.model_admin_lock:
             acquired = chat_lock.acquire(blocking=False)
         if not acquired:
-            if not is_handoff and (message.split(maxsplit=1) or [""])[0] in {"/add-model", "/rebench", "/cancel"}:
-                return {"error": "Commande d’interface : attends la fin du tour pour cette opération."}, 409
             # Après STOP, attendre le verrou; sinon mettre en file pour la génération active.
             if not (
                 cancel_event.is_set() and chat_lock.acquire(timeout=S.interrupt_wait)
@@ -262,16 +267,11 @@ def _register_chat_routes(app, S):
             return S.session_store.save(sess)
 
         if not is_handoff:
-            # Old add/remove dialogs must no longer capture ordinary chat messages.
-            if conv.wizard and not conv.wizard.get("step", "").startswith("b_"):
+            # Les dialogues d'ajout, de retrait et de recalibration vivent dans leurs
+            # panneaux : un état resté dans une conversation ne capture plus rien.
+            if conv.wizard:
                 conv.set_wizard(None)
                 save()
-            # Un wizard actif capture tout le texte jusqu'à sa fin.
-            message, _wiz_resp = _handle_add_model_command(
-                S, message, conv, sess, save, chat_lock
-            )
-            if _wiz_resp is not None:
-                return _wiz_resp
 
             message, _goal_resp = _handle_goal_command(
                 S, message, conv, save, chat_lock

@@ -3,9 +3,9 @@
 Les effets (recherche HF, download, montage) sont exécutés par routes.py : soit via
 `deps` (fonctions injectées, appelées pendant une transition), soit via `action`
 (effet à exécuter APRÈS la transition finale). L'état est un dict JSON-sérialisable
-conservé par le panneau d'ajout (indépendant de la conversation). Chaque transition
-renvoie un `reply` affiché dans ce panneau, préfixé d'un indicateur d'étape.
-La recalibration conserve son parcours historique dans la conversation."""
+conservé par le panneau d'ajout ou de recalibration (indépendants de la conversation).
+Chaque transition renvoie un `reply` affiché dans ce panneau, préfixé d'un indicateur
+d'étape."""
 
 from __future__ import annotations
 
@@ -332,7 +332,7 @@ def _rebench_confirm(it) -> WizardResult:
         f"[rebench 2/2] Recalibrer « {it['id']} » tel qu'il est configuré ? "
         "Durée ~5-20 min : le serveur modèle local sera éteint et les modèles "
         "locaux indisponibles pendant la mesure (les distants restent "
-        "utilisables). La progression s'affiche ici.\n"
+        "utilisables). La progression s'affiche ici et dans la console de loom.web.\n"
         "Tape « oui » pour lancer — toute autre réponse annule.",
         choices=["oui", "annuler"],
     )
@@ -537,7 +537,11 @@ def _list_quants(repo, deps):
             notes.append(_placement_text(f))
         tag = f"  ({', '.join(notes)})" if notes else ""
         if f["recommended"]:
-            tag += "  <- évalué dans Loom" if f.get("evidence") == "evaluated" else "  <- candidat estimé"
+            tag += (
+                "  <- évalué dans Loom"
+                if f.get("evidence") == "evaluated"
+                else "  <- candidat estimé"
+            )
         quality = f.get("quality")
         if quality:
             tag += f" · tâches {quality['passed']}/{quality['total']}, médiane {quality['median_seconds']:.1f} s"
@@ -570,7 +574,11 @@ def _list_quants(repo, deps):
             lines.append(
                 f"  {letter}. {a['repo_id']} : {kind}, {p['label'] or p['filename']} "
                 f"{p['size_mb'] / 1024:.1f} Go, {_placement_text(p)}"
-                + (f", dérivé tiers de {a['derived_from']}" if a.get("derived_from") else "")
+                + (
+                    f", dérivé tiers de {a['derived_from']}"
+                    if a.get("derived_from")
+                    else ""
+                )
             )
     mmprojs = sorted(f["filename"] for f in files if f["is_mmproj"])
     s = {

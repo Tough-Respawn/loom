@@ -379,22 +379,23 @@ export function submitPane(pane) {
   // Un clear programmatique n'émet pas `input`; fermer la palette explicitement.
   hidePal(pane);
   const command = text.split(/\s+/, 1)[0];
-  if (["/remove-model", "/add-model", "/cancel"].includes(command)) {
+  if (["/remove-model", "/add-model", "/rebench", "/cancel"].includes(command)) {
     pane.input.value = "";
     const current = tab(sid);
     if (current) current.draft = "";
     autosize(pane);
     if (command === "/cancel") {
+      // Annule les dialogues d'interface (ajout, recalibration) sans toucher au chat.
       postForm("/models/add", {session_id: sid, message: "/cancel"})
         .then((r) => r.json())
         .then((d) => {
           showToast(d.error || d.message);
-          document.dispatchEvent(new CustomEvent("loom:add-model-cancelled", {detail: {sid}}));
+          document.dispatchEvent(new CustomEvent("loom:interface-cancelled", {detail: {sid}}));
         })
         .catch(() => showToast("Annulation impossible : serveur injoignable"));
     } else {
       document.dispatchEvent(new CustomEvent("loom:manage-models", {
-        detail: {sid, add: command === "/add-model", argument: text.slice(command.length).trim()},
+        detail: {sid, add: command === "/add-model", rebench: command === "/rebench", argument: text.slice(command.length).trim()},
       }));
     }
     return;
