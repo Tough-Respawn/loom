@@ -33,6 +33,26 @@ def _workspace_text(S, ws: str) -> str:
     return f"{text}\n\n{_pm_blk}" if _pm_blk else text
 
 
+def _scratch_text(scratch: str) -> str:
+    """Consigne du bac à sable de la session : dossier jetable pour les essais, et
+    environnement Python éphémère (uv) quand une bibliothèque manque — le modèle
+    n'installe rien sur la machine et n'abandonne pas « faute de matplotlib »."""
+    return (
+        f"`{scratch}` est le bac à sable de CETTE session (scratchpad), supprimé avec "
+        "elle. Tout ce qui n'est pas un livrable demandé va là : scripts d'essai, fichiers "
+        "temporaires, sorties intermédiaires, images que tu produis pour les montrer. "
+        "Jamais dans le dossier de travail sans qu'on te l'ait demandé.\n"
+        "Bibliothèque Python manquante (ModuleNotFoundError) : n'installe rien sur la "
+        "machine et n'abandonne pas. Exécute dans un environnement jetable : "
+        "`uv run --with <paquet> python <script.py>` (plusieurs paquets : `--with a "
+        '--with b` ; version précise : `--with "matplotlib==3.9"`). uv le crée et le '
+        "met en cache seul ; la première fois demande le réseau.\n"
+        "Figure, schéma, graphique demandé : écris un SVG ou une page HTML dans le bac à "
+        "sable et vérifie-la avec check_page, ou produis un PNG (`uv run --with "
+        "matplotlib`) et relis-le avec read_image ; donne ensuite le chemin du fichier."
+    )
+
+
 def _explicit_key(S, conv) -> str:
     """Empreinte des choix EXPLICITES de l'utilisateur. Seuls eux refigent le prompt ;
     mémoire, skills appris, loom.md et dossier auto-adopté ne le réécrivent jamais."""
@@ -55,16 +75,23 @@ def _explicit_key(S, conv) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def _build_system_prompt(S, conv, workspace=None):
+def _build_system_prompt(S, conv, workspace=None, scratch=None):
     """System prompt FIGÉ pour la session : rendu une fois, puis réutilisé tel quel
     (append-only, préfixe KV stable). Rerendu seulement si un choix explicite change
-    (modèle, prompt de base, objectif, skills de la session). Retourne (texte, strong)."""
+    (modèle, prompt de base, objectif, skills de la session). `scratch` : bac à sable de
+    la session (créé ici, annoncé dans le prompt). Retourne (texte, strong)."""
     key = _explicit_key(S, conv)
     frozen = conv.frozen_prompt
     if frozen and frozen.get("key") == key and frozen.get("text"):
         return frozen["text"], bool(frozen.get("strong"))
     _ws = workspace if workspace is not None else _session(S).workspace
-    text, strong = _render_system_prompt(S, conv, workspace=_ws)
+    if scratch:
+        from pathlib import Path
+
+        Path(scratch).mkdir(parents=True, exist_ok=True)
+    text, strong = _render_system_prompt(
+        S, conv, workspace=_ws, **({"scratch": scratch} if scratch else {})
+    )
     log_event(
         "prompt.fige",
         raison="premier" if not frozen else "choix_explicite",
@@ -74,7 +101,7 @@ def _build_system_prompt(S, conv, workspace=None):
     return text, strong
 
 
-_NOTE_RE = re.compile(r"^\[Changement de dossier de travail : (.+?)\]$", re.M)
+_NOTE_RE = re.compile(r"^\[Changement de dossier de travail : (.+?)\]$", re.MULTILINE)
 _NOTE_END = "\n[Fin du changement de dossier]\n\n"
 
 
@@ -119,10 +146,10 @@ def _workspace_note(S, conv, workspace: str) -> str:
     )
 
 
-def _render_system_prompt(S, conv, workspace=None):
+def _render_system_prompt(S, conv, workspace=None, scratch=None):
     """Construit le system prompt complet : identité always-on + base (strong/local) +
     catalogue des skills + déclaration du moteur + conventions OS + dossier de travail +
-    objectif de session. Retourne (system_prompt, strong)."""
+    bac à sable + objectif de session. Retourne (system_prompt, strong)."""
 
     skills = effective_skills(
         _all_skills(S),
@@ -201,6 +228,9 @@ def _render_system_prompt(S, conv, workspace=None):
     _ws = workspace if workspace is not None else _session(S).workspace
 
     system_prompt += "\n\n# Dossier de travail courant\n" + _workspace_text(S, _ws)
+
+    if scratch:
+        system_prompt += "\n\n# Bac à sable de la session\n" + _scratch_text(scratch)
 
     # L'objectif guide la vérification sans ajouter un juge externe contradictoire.
     if conv.goal:

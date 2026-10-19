@@ -336,7 +336,10 @@ def _register_chat_routes(app, S):
             # Prompt figé d'abord : un changement de dossier s'annonce ensuite EN TÊTE
             # du message (fin de fil), jamais en réécrivant le system prompt.
             system_prompt, strong = _build_system_prompt(
-                S, conv, workspace=sess.workspace
+                S,
+                conv,
+                workspace=sess.workspace,
+                scratch=str(S.session_store.session_dir(sess.id) / "scratch"),
             )
             _ws_note = _workspace_note(S, conv, sess.workspace)
             content = _build_user_content(

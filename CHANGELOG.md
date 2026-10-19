@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-10-19 : bac à sable par session et environnement Python jetable
+
+- Chaque session a un bac à sable, `var/sessions/<id>/scratch/`, créé au premier tour et
+  supprimé avec la session. Le system prompt (section « Bac à sable de la session ») y
+  envoie les essais, fichiers temporaires et images produites pour être montrées, au lieu
+  du dossier de travail.
+- Bibliothèque Python manquante : le modèle ne doit plus répondre « je ne peux pas » ni
+  installer sur la machine ; il exécute dans un environnement jetable
+  `uv run --with <paquet> python script.py` (créé et mis en cache par uv). Vécu session
+  99c4225ceb05 : « montre-moi graphiquement Pythagore » a échoué sur matplotlib puis PIL
+  absents.
+- Séquence « figure, schéma, graphique » ajoutée au prompt : SVG ou page HTML dans le bac à
+  sable puis check_page, ou PNG via `uv run --with matplotlib` puis read_image.
+
 ## 2026-10-19 : passe esthétique sur le fil et la barre latérale
 
 - Les actions d'une réponse (envoyer, copier) forment une barre sous le texte, révélée au
