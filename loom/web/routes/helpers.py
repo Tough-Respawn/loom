@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from __future__ import annotations
 import threading
 import time
+
 from loom.runtime.comfy import ComfyEngine
 from loom.runtime.hardware import ram_available_mb
-
 
 # Marge RAM (Mo) gardée libre AU-DELÀ du LLM à charger : OS, cache KV, pics
 # transitoires. En dessous, on ne garde pas le cache image (jamais d'OOM pour
@@ -166,6 +165,32 @@ def _client_try_hot_resume(S, model: str | None, session_id: str) -> bool:
         return bool(fn(model, session_id))
     except Exception:  # noqa: BLE001 - best-effort, jamais bloquant
         return False
+
+
+def _model_kind_label(S, mid: str) -> str:
+    """Type d'un modèle pour l'interface (teinte) : remote, video, image, sinon local."""
+    if mid in getattr(S, "remote_model_ids", ()):
+        return "remote"
+    if mid in getattr(S, "video_model_ids", ()):
+        return "video"
+    if mid in getattr(S, "image_model_ids", ()):
+        return "image"
+    return "local"
+
+
+def _session_row(
+    S, sid: str, title: str, workspace: str, model: str = "", updated_at: str = ""
+) -> dict:
+    """Ligne de la liste des sessions (barre latérale, /sessions, création, import) :
+    titre, dossier, modèle et son type, dernière activité."""
+    return {
+        "id": sid,
+        "title": title,
+        "workspace": workspace,
+        "model": model or "",
+        "kind": _model_kind_label(S, model or ""),
+        "updated_at": updated_at or "",
+    }
 
 
 def _client_mark_all_cold(S) -> None:
