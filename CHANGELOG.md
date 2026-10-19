@@ -34,6 +34,9 @@
   des raccourcis (« / », « ? », Entrée) à la place de la phrase seule.
 - Les blocs du fil (étapes, messages, sorties d'outils dépliées, chronologies d'agents)
   apparaissent en 150 ms (fondu + glissement) ; tout est coupé sous `prefers-reduced-motion`.
+- Pendant la génération, la réponse est rendue en markdown à chaque mise à jour (gras,
+  listes, titres, code) et MathJax repasse toutes les 400 ms : plus de `**` ni de `\[ \]`
+  bruts qui ne se mettent en forme qu'à la fin. Le curseur suit le dernier bloc écrit.
 - Barre d'onglets : plus de petite barre de défilement verticale à flèches en haut à droite
   (défilement vertical coupé, horizontal conservé et discret).
 

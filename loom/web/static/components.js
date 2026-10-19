@@ -454,7 +454,10 @@ export function Assistant({ it, sid }) {
       </div></div>
     </div>`;
   }
-  return html`<div class="msg assistant streaming">${it.raw}</div>`;
+  // Flux en cours : même rendu markdown que la version finale, mis à jour à chaque jeton.
+  return html`<div class="msg assistant streaming" ref=${ref}>
+    <div class="assistant-content" dangerouslySetInnerHTML=${{ __html: md(it.raw) }}></div>
+  </div>`;
 }
 
 export function enhance(el, raw) {
