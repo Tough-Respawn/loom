@@ -32,6 +32,8 @@
   « compacter » n'apparaît qu'à partir de 70 % de la fenêtre.
 - Session vide : trois demandes d'exemple cliquables (remplissent le composer) et le rappel
   des raccourcis (« / », « ? », Entrée) à la place de la phrase seule.
+- Les blocs du fil (étapes, messages, sorties d'outils dépliées, chronologies d'agents)
+  apparaissent en 150 ms (fondu + glissement) ; tout est coupé sous `prefers-reduced-motion`.
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
