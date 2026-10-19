@@ -1108,6 +1108,15 @@
     /* ---- Rail d'étapes : une pastille-icône par bloc (réflexion, outil, agent, Loom,
        réponse), reliées par un filet — le run se lit en diagonale ---- */
     .step { display: grid; grid-template-columns: 26px minmax(0, 1fr); column-gap: 10px; align-items: start; position: relative; padding: 3px 0; }
+    /* Apparition des blocs du fil : 150 ms de fondu + léger glissement, une seule fois au
+       montage (les nœuds sont conservés par clé). Coupé si l'utilisateur préfère moins de
+       mouvement. */
+    @keyframes step-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .step, .msg.user, .tool-io-body, .sub-log, .harness-line, .notice-line { animation: step-in .15s ease-out both; }
+    @media (prefers-reduced-motion: reduce) {
+      .step, .msg.user, .tool-io-body, .sub-log, .harness-line, .notice-line { animation: none; }
+      .think.active, .step-pending .step-ico, .agent-arena.running .arena-tag::before { animation: none; }
+    }
     .step::before { content: ""; position: absolute; left: 12.5px; top: 32px; bottom: -4px; width: 1px; background: var(--border-soft); }
     .step:last-child::before { display: none; }
     .step-ico { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; margin-top: 1px; color: var(--text-dim); background: var(--bg-elev); border: 1px solid var(--border); position: relative; z-index: 1; }
