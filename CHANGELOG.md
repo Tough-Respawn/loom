@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-10-19 : le démarrage du serveur modèle s'affiche comme un terminal dans le fil
+
+- Les lignes « serveur modèle éteint… », « serveur modèle démarré », « chargement du
+  modèle en mémoire… » ne flottent plus dans le fil : elles ouvrent un bloc « serveur
+  modèle » (icône terminal) qui montre aussi ce que voit le terminal, c'est-à-dire le
+  journal de llama-server (chargement du GGUF, ajustement mémoire, avancement du prefill)
+  jusqu'au premier signe du modèle. Source : `GET /logs/stream/upstream` de llama-swap,
+  suivi en fond par `loom/runtime/upstream_log.py` (tampon de 2 000 lignes, rejeu
+  dédupliqué à la reconnexion) et servi au fil par `GET /server/log?since=N`.
+
 ## 2026-10-19 : texte en sans-serif, mono réservé au code et aux commandes
 
 - L'interface passe en sans-serif système (Segoe UI, Inter, system-ui ; aucune fonte
