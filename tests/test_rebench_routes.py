@@ -266,6 +266,16 @@ def test_navigateur_rebench_panneau_progression_verdict_application(env, monkeyp
             playwright.expect(log).to_contain_text("profondeur ~13926", timeout=5_000)
             playwright.expect(reply).to_contain_text("Verdict", timeout=10_000)
             playwright.expect(reply).to_contain_text("4096 → 8192")
+            # Fin du job : un toast persistant le signale, même panneau fermé.
+            toast = page.locator("#toast-host .toast").last
+            playwright.expect(toast).to_contain_text(
+                "Recalibration terminée « loc-test »"
+            )
+            # La modale de configuration couvre le toast : clic dispatché, pas pointé.
+            toast.locator("button", has_text="Fermer").dispatch_event("click")
+            playwright.expect(page.locator("#toast-host .toast")).to_have_count(
+                0, timeout=3_000
+            )
             page.locator("#model-rebench-choices button", has_text="oui").click()
             playwright.expect(reply).to_contain_text("Application", timeout=5_000)
             playwright.expect(reply).to_contain_text("écrit dans le model.toml")

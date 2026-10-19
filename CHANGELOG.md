@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
+
+- Le panneau « Gérer les modèles » peut être fermé pendant les 5 à 20 minutes d'un
+  `/rebench` : rien ne signalait la fin. Un toast persistant (« Recalibration terminée
+  « id » : verdict dans Gérer les modèles », boutons Voir / Fermer) apparaît à la fin du
+  job, idem pour un téléchargement d'ajout. Une page rechargée pendant une calibration
+  reprend le suivi et montre le panneau.
+
 ## 2026-10-19 : le démarrage du serveur modèle s'affiche comme un terminal dans le fil
 
 - Les lignes « serveur modèle éteint… », « serveur modèle démarré », « chargement du
