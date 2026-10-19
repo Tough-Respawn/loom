@@ -12,6 +12,8 @@
   survol ; elles ne recouvrent plus la première ligne.
 - Bloc d'outil : l'accent ne porte plus que le nom et l'état ; entrées, sorties et carets
   passent en gris texte, un échec en rouge ressort à nouveau.
+- Réflexion repliée : ses premières lignes restent lisibles en italique sous un fondu,
+  clic pour tout lire ; pendant la génération le texte défile en entier.
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
