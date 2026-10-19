@@ -855,7 +855,6 @@ export function setSysmonVisible(on) {
   if (!el) return;
   if (on) {
     el.hidden = false;
-    smRestorePos();
     if (!sysmonTimer) {
       sysmonTick();
       sysmonTimer = setInterval(sysmonTick, 1200);
@@ -866,27 +865,6 @@ export function setSysmonVisible(on) {
       clearInterval(sysmonTimer);
       sysmonTimer = null;
     }
-  }
-}
-
-export const SM_POS_KEY = "loomSysmonPos";
-
-export function smPlace(el, l, t) {
-  l = Math.max(0, Math.min(l, window.innerWidth - el.offsetWidth));
-  t = Math.max(0, Math.min(t, window.innerHeight - el.offsetHeight));
-  el.style.left = l + "px";
-  el.style.top = t + "px";
-  el.style.right = "auto";
-}
-
-export function smRestorePos() {
-  const el = document.getElementById("sysmon");
-  if (!el) return;
-  try {
-    const saved = JSON.parse(localStorage.getItem(SM_POS_KEY) || "null");
-    if (saved) smPlace(el, saved.l, saved.t);
-  } catch {
-    /* position corrompue : on garde le coin par défaut */
   }
 }
 

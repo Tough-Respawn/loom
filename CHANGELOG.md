@@ -16,6 +16,8 @@
   clic pour tout lire ; pendant la génération le texte défile en entier.
 - Titres markdown des réponses : trois tailles distinctes (h1 1,3 em, h2 1,15, h3 1,05) et
   marges nettes ; chaque réponse porte le nom du modèle en libellé discret au-dessus.
+- Le moniteur système n'est plus une boîte flottante déplaçable sur le fil : il est docké en
+  bas de la barre latérale, au-dessus du bouton Reset (position mémorisée supprimée).
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
