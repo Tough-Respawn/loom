@@ -80,6 +80,13 @@ def test_mise_a_jour_du_harnais_refige_et_rafraichit_le_prompt_de_base(S, monkey
     assert S.state.renders == 3 and conv2.system_prompt == "base"
 
 
+def test_chemin_du_bac_a_sable_en_barres_obliques(S, tmp_path):
+    """Avec des antislashs, Bonsai a réécrit le chemin en /var/sessions/<id>/scratch."""
+    S.session_store = NS(session_dir=lambda sid: tmp_path / "sessions" / sid)
+    path = sp._scratch_dir(S, "abc")
+    assert "\\" not in path and path.endswith("/sessions/abc/scratch")
+
+
 def test_choix_explicite_refige(S):
     conv = _conv()
     sp._build_system_prompt(S, conv, workspace="C:/a")

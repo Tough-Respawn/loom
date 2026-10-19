@@ -9,7 +9,7 @@ from loom.web.routes.helpers import (
     _ensure_local_server,
     _ensure_model,
 )
-from loom.web.routes.system_prompt import _build_system_prompt
+from loom.web.routes.system_prompt import _build_system_prompt, _scratch_dir
 
 # ---- Maintenance post-tour et keep-warm ------------------------------------------------
 
@@ -58,7 +58,7 @@ def _prime_slot(S, sess) -> bool:
             S,
             conv,
             workspace=sess.workspace,
-            scratch=str(S.session_store.session_dir(sess.id) / "scratch"),
+            scratch=_scratch_dir(S, sess.id),
         )
         registry = S.tool_factory(conv.active_tools, sess.workspace, conv)
         return S.client.warm_context(

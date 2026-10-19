@@ -472,6 +472,16 @@ def _resolve_in_root(root: Path, rel: str) -> Path:
     if len(rel) >= 2 and rel[0] == rel[-1] and rel[0] in ("'", '"'):
         rel = rel[1:-1].strip()
     rel = os.path.expanduser(rel)
+    # Sous Windows, « /var/x » n'est PAS absolu pour pathlib : joint au dossier de
+    # travail, il tombe à la racine du LECTEUR (C:\var\x). Vécu 2026-10-19 : le modèle a
+    # réécrit le bac à sable en /var/sessions/<id>/scratch, fichiers perdus dans C:\var.
+    # Refus explicite plutôt qu'un fichier écrit au mauvais endroit.
+    if os.name == "nt" and rel[:1] in ("/", "\\") and rel[:2] not in ("//", "\\\\"):
+        raise ToolError(
+            f"chemin unix absolu refusé ({rel}) : sur Windows il tomberait à la racine du "
+            "lecteur. Donne le chemin complet (C:/...) tel qu'il t'a été fourni, ou un "
+            "chemin relatif au dossier de travail."
+        )
     p = Path(rel)
     if p.is_absolute():
         return p.resolve()
