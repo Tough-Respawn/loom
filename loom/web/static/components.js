@@ -534,13 +534,33 @@ export function Item({ it, userIndex, sid }) {
   }
 }
 
+const SUGGESTIONS = [
+  "Lis le README de ce dossier et résume ce que fait le projet.",
+  "Lance les tests et corrige la première erreur que tu trouves.",
+  "Cherche sur le web la dernière version de llama.cpp et dis-moi ce qui change.",
+];
+
+export function EmptyState({ sid }) {
+  // Session vide : trois demandes cliquables qui remplissent le composer, et les raccourcis.
+  const fill = (text) => {
+    const pane = paneShowing(sid);
+    if (!pane || !pane.input) return;
+    pane.input.value = text;
+    pane.input.dispatchEvent(new Event("input", { bubbles: true }));
+    pane.input.focus();
+  };
+  return html`<div class="empty-state">
+    <div class="es-title">Écris une demande. Loom agit avec ses outils : lire, écrire, exécuter, chercher.</div>
+    <div class="es-suggestions">
+      ${SUGGESTIONS.map((s) => html`<button type="button" class="es-chip" onClick=${() => fill(s)}>${s}</button>`)}
+    </div>
+    <div class="es-hint"><kbd>/</kbd> commandes · <kbd>?</kbd> raccourcis clavier · <kbd>Entrée</kbd> envoyer</div>
+  </div>`;
+}
+
 export function App({ sid }) {
   const t = tab(sid);
-  if (!t || !t.timeline.length) {
-    return html`<div class="empty-state">
-      Écris une demande. Loom agit avec ses outils (lire, écrire, exécuter, chercher).
-    </div>`;
-  }
+  if (!t || !t.timeline.length) return html`<${EmptyState} sid=${sid} />`;
   let _ui = 0;
   const items = t.timeline;
   // PRÉ-PASSE : toute carte d'outil appartenant à un groupe parallèle est consommée par le bloc

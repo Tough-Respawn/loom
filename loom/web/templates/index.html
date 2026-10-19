@@ -998,9 +998,19 @@
     .tab[class*="mdl-"] { box-shadow: inset 0 2px 0 var(--accent); }
     .pane[class*="mdl-"] .pane-title { color: var(--accent); }
     .empty-state {
-      align-self: center; margin: auto; padding: 80px 20px; text-align: center;
-      color: var(--text-faint); font-size: 13px; line-height: 1.8;
+      align-self: center; margin: auto; padding: 60px 20px; text-align: center;
+      color: var(--text-faint); font-size: 13px; line-height: 1.8; max-width: 540px; width: 100%;
     }
+    .es-title { color: var(--text-dim); margin-bottom: 18px; }
+    .es-suggestions { display: flex; flex-direction: column; gap: 8px; }
+    .es-chip {
+      text-align: left; padding: 9px 12px; background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font: inherit; font-size: 12.5px; line-height: 1.5; cursor: pointer;
+      transition: border-color .12s, background .12s;
+    }
+    .es-chip:hover { border-color: var(--accent-dim); background: var(--bg-hover); }
+    .es-hint { margin-top: 18px; font-size: 11px; color: var(--text-faint); }
+    .es-hint kbd { font-family: var(--mono); font-size: 10px; padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-elev); color: var(--text-dim); }
     .msg.user {
       background: var(--bg-elev); border-left: 2px solid var(--accent-dim);
       border-radius: 0 var(--radius) var(--radius) 0; padding: 10px 14px;

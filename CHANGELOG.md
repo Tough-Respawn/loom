@@ -30,6 +30,8 @@
 - Compteur d'en-tête : une ligne courte (total de tokens, jauge de contexte et son
   pourcentage) ; entrée, sortie, taux de cache et nombre d'appels passent dans l'infobulle ;
   « compacter » n'apparaît qu'à partir de 70 % de la fenêtre.
+- Session vide : trois demandes d'exemple cliquables (remplissent le composer) et le rappel
+  des raccourcis (« / », « ? », Entrée) à la place de la phrase seule.
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
