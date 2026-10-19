@@ -6,6 +6,11 @@
 
 ---
 
+## 2026-10-19 : passe esthétique sur le fil et la barre latérale
+
+- Les actions d'une réponse (envoyer, copier) forment une barre sous le texte, révélée au
+  survol ; elles ne recouvrent plus la première ligne.
+
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
 - Le panneau « Gérer les modèles » peut être fermé pendant les 5 à 20 minutes d'un
