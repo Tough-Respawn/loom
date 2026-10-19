@@ -39,6 +39,20 @@ def test_session_new_fait_le_menage_des_fantomes(web):
     assert b["id"] in ids
 
 
+def test_session_new_prend_le_modele_affiche(web):
+    """Vécu 2026-10-19 : le sélecteur affichait bonsai, la session neuve est partie sur
+    glm-flash (dernier modèle choisi, var/last_model). Le modèle envoyé par le client
+    fait foi ; un id inconnu est ignoré."""
+    S = web.application.S
+    wanted = S.models[-1]
+    row = web.post("/session/new", data={"model": wanted}).get_json()
+    assert row["model"] == wanted
+    assert S.sessions_cache[row["id"]].conversation.model == wanted
+    assert S.session_store.default_model == wanted
+    other = web.post("/session/new", data={"model": "modele-inconnu"}).get_json()
+    assert other["model"] == wanted  # défaut courant conservé, rien de cassé
+
+
 def test_session_activate_delete(web):
     b = web.post("/session/new", data={}).get_json()
     assert web.post("/session/activate", data={"id": b["id"]}).status_code == 200
@@ -382,10 +396,17 @@ def test_models_remote_id_invalide_400(web):
 def test_journal_telechargeable_contient_preuves_completes(web_sess):
     S = web_sess.application.S
     sid = S.cur["session"].id
-    S.session_store.append_event(sid, "tool_result", {
-        "name": "fetch_url", "ok": True, "in_full": '{"url":"https://example.test"}',
-        "out_full": "preuve " * 500 + "FIN", "preview": "aperçu",
-    })
+    S.session_store.append_event(
+        sid,
+        "tool_result",
+        {
+            "name": "fetch_url",
+            "ok": True,
+            "in_full": '{"url":"https://example.test"}',
+            "out_full": "preuve " * 500 + "FIN",
+            "preview": "aperçu",
+        },
+    )
     result = web_sess.get(f"/session/{sid}/journal")
     assert result.status_code == 200
     assert "attachment" in result.headers["Content-Disposition"]

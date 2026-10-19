@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-10-19 : une session neuve prend le modèle affiché par le sélecteur
+
+- « + new » créait la session avec le dernier modèle choisi (`var/last_model`), qui
+  pouvait différer de celui que le sélecteur affichait encore (onglet précédent) : bonsai
+  à l'écran, glm-flash invoqué, et le sélecteur restait faux car la réponse de
+  `/session/activate` n'était pas répercutée. Le client envoie maintenant le modèle
+  affiché à `/session/new` (il devient aussi le défaut), et le sélecteur se recale sur le
+  modèle réel de la session dès la réponse d'activation.
+
 ## 2026-10-19 : une mise à jour du harnais atteint les sessions ouvertes
 
 - Le system prompt d'une session est figé (préfixe KV stable) et ne se refigeait que sur
