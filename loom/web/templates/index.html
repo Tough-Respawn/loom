@@ -1099,17 +1099,20 @@
     details.think.active summary::after { content: ' .'; animation: dots 1.4s steps(1) infinite; }
     @keyframes dots { 0%{content:' .'} 33%{content:' ..'} 66%{content:' ...'} }
     @keyframes thinkpulse { 0%,100%{ border-color:var(--border) } 50%{ border-color:var(--accent-dim) } }
+    /* Bloc d'outil : l'accent porte le NOM et l'ÉTAT, le reste reste gris texte — dix
+       appels réussis ne font pas un mur vert, et un échec rouge ressort. */
     .tool-chip {
-      max-width: 100%; font-size: 12px; color: var(--accent);
-      background: var(--accent-bg); border: 1px solid var(--accent-dim);
+      max-width: 100%; font-size: 12px; color: var(--text-dim);
+      background: var(--bg-panel); border: 1px solid var(--border-soft);
       border-left: 2px solid var(--accent-dim); border-radius: 0 var(--radius) var(--radius) 0;
       padding: 5px 10px; margin: 2px 0;
     }
-    .tool-chip.ko { color: #f0c2a8; background: var(--err-bg); border-color: #5a3a2a; border-left-color: #5a3a2a; }
-    .tool-chip.ok { color: var(--accent); }
+    .tool-chip.ko { background: var(--err-bg); border-color: #5a3a2a; }
     .tool-head { display: flex; align-items: center; gap: 8px; }
-    .tool-chip .tool-name { font-weight: 600; white-space: nowrap; font-size: 12px; font-family: var(--mono); }
-    .tool-chip .tool-status { margin-left: auto; opacity: 0.8; font-size: 11px; }
+    .tool-chip .tool-name { font-weight: 600; white-space: nowrap; font-size: 12px; font-family: var(--mono); color: var(--accent); }
+    .tool-chip .tool-status { margin-left: auto; font-size: 11px; color: var(--accent); }
+    .tool-chip:not(.ok):not(.ko) .tool-status { color: var(--text-faint); }
+    .tool-chip.ko .tool-name, .tool-chip.ko .tool-status { color: var(--err); }
     .tool-chip .tool-caret { color: var(--text-faint); }
     .term-block { max-width: 100%; font-size: 12px; color: var(--text-dim); background: var(--bg-panel); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 5px 10px; }
     .term-block.active { border-color: var(--accent-dim); }
@@ -1119,8 +1122,8 @@
     .tool-io { margin-top: 4px; }
     .tool-io-row { display: flex; align-items: center; gap: 8px; }
     .tool-io-row:hover .io-line { color: var(--text); }
-    .io-tag { font-weight: 700; font-size: 9px; letter-spacing: .5px; padding: 1px 5px; border-radius: 3px; background: var(--bg); border: 1px solid var(--accent-dim); color: var(--accent); cursor: pointer; }
-    .io-out { color: #9ab0d8; border-color: #2a3a5a; }
+    .io-tag { font-weight: 700; font-size: 9px; letter-spacing: .5px; padding: 1px 5px; border-radius: 3px; background: var(--bg); border: 1px solid var(--border); color: var(--text-faint); cursor: pointer; }
+    .io-out { color: var(--text-faint); }
     .io-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.7; font-family: var(--mono); cursor: pointer; font-size: 11px; }
     .tool-io-body { margin: 4px 0 1px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; max-height: 360px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
     .tool-stream { margin: 6px 0 1px; padding: 8px 10px; background: var(--bg); border: 1px dashed var(--accent-dim); border-radius: 6px; max-height: 200px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 11px; color: var(--text-dim); opacity: 0.8; }

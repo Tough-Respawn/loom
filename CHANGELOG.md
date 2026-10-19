@@ -10,6 +10,8 @@
 
 - Les actions d'une réponse (envoyer, copier) forment une barre sous le texte, révélée au
   survol ; elles ne recouvrent plus la première ligne.
+- Bloc d'outil : l'accent ne porte plus que le nom et l'état ; entrées, sorties et carets
+  passent en gris texte, un échec en rouge ressort à nouveau.
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
