@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-10-19 : rail d'icônes dans le fil (réflexion, outil, agent, Loom, réponse)
+
+- Chaque bloc du fil porte une pastille-icône à gauche, reliée par un filet, à la
+  manière d'une console d'agent : ampoule pour la réflexion, icône d'outil selon sa
+  famille (terminal, lecture, recherche, écriture, web, agent, mémoire, skill, cadran,
+  clé pour un outil inconnu), personne(s) pour les sous-agents et l'arène parallèle,
+  bouclier pour le garde-fou Loom, bulle pour la réponse, triangle pour une erreur. La
+  pastille pulse tant que l'étape est en cours. SVG monochromes locaux
+  (`static/icons.js`), teinte discrète par type ; aucune donnée ne change, seulement le
+  rendu (`components.js`, composant `Step`).
+
 ## 2026-10-19 : /rebench ouvre un panneau de recalibration, progression visible
 
 - `/rebench [id]`, tapé dans le chat ou en note, ouvre « Gérer les modèles » →

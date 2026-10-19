@@ -3,6 +3,15 @@ import { html, useEffect, useRef, useState } from "./preact-htm.js";
 import { opsFor, paneShowing, scheduleRenderFor, state, tab } from "./state.js";
 import { handoffMessage, renderPreviews, submitPane } from "./panes.js";
 import { md } from "./render.js";
+import { STEP_ICONS, toolIcon } from "./icons.js";
+
+export function Step({ icon, kind, cls, children }) {
+  // Une étape du fil : pastille-icône à gauche (icons.js, constantes SVG), bloc à droite.
+  return html`<div class=${"step step-" + kind + (cls ? " " + cls : "")}>
+    <span class="step-ico" dangerouslySetInnerHTML=${{ __html: STEP_ICONS[icon] || STEP_ICONS.wrench }}></span>
+    <div class="step-body">${children}</div>
+  </div>`;
+}
 
 export function Think({ it }) {
   if (!it.text) return null;
@@ -456,28 +465,29 @@ export function Item({ it, userIndex, sid }) {
     case "user":
       return html`<${UserMsg} it=${it} userIndex=${userIndex} sid=${sid} />`;
     case "assistant":
-      return html`<${Assistant} it=${it} sid=${sid} />`;
+      return html`<${Step} icon="chat" kind="assistant" cls=${it.done ? "" : "step-pending"}><${Assistant} it=${it} sid=${sid} /><//>`;
     case "think":
-      return html`<${Think} it=${it} />`;
+      if (!it.text) return null;
+      return html`<${Step} icon="think" kind="think" cls=${it.active ? "step-pending" : ""}><${Think} it=${it} /><//>`;
     case "tool":
-      return html`<${ToolPill} it=${it} />`;
+      return html`<${Step} icon=${toolIcon(it.name)} kind="tool" cls=${it.pending ? "step-pending" : it.ok ? "" : "ko"}><${ToolPill} it=${it} /><//>`;
     case "subagent":
-      return html`<${SubagentCard} it=${it} sid=${sid} />`;
+      return html`<${Step} icon="agent" kind="agent" cls=${it.state === "running" ? "step-pending" : ""}><${SubagentCard} it=${it} sid=${sid} /><//>`;
     case "perm":
       return html`<${PermAsk} it=${it} sid=${sid} />`;
     case "choices":
       return html`<${WizChoices} it=${it} sid=${sid} />`;
     case "error":
-      return html`<div class="msg assistant err">${it.message}</div>`;
+      return html`<${Step} icon="alert" kind="error"><div class="msg assistant err">${it.message}</div><//>`;
     case "phase":
       return html`<div class="phase-sep">&#9658; ${it.name}${it.detail ? " — " + it.detail : ""}</div>`;
     case "notice":
       return html`<div class="notice-line">${it.text}</div>`;
     case "harness":
       // 3e voix : le garde-fou Loom (ni toi ni le modèle). Identité visuelle propre.
-      return html`<div class="harness-line"><span class="harness-tag">Loom${it.hkind ? html` <span class="harness-kind">· ${it.hkind}</span>` : ""}</span><span class="harness-text">${it.text}</span></div>`;
+      return html`<${Step} icon="shield" kind="harness"><div class="harness-line"><span class="harness-tag">Loom${it.hkind ? html` <span class="harness-kind">· ${it.hkind}</span>` : ""}</span><span class="harness-text">${it.text}</span></div><//>`;
     case "monitor_event":
-      return html`<div class="harness-line"><span class="harness-tag">⏱ monitor · ${it.description || it.monitorId}</span><span class="harness-text">${it.text}</span></div>`;
+      return html`<${Step} icon="gauge" kind="harness"><div class="harness-line"><span class="harness-tag">monitor · ${it.description || it.monitorId}</span><span class="harness-text">${it.text}</span></div><//>`;
     default:
       return null;
   }
@@ -507,7 +517,7 @@ export function App({ sid }) {
       const lanes = (it.lanes || [])
         .map((lid) => items.find((x) => x.id === "tool:" + lid))
         .filter(Boolean);
-      out.push(html`<${ParallelArena} key=${it.id} lanes=${lanes} />`);
+      out.push(html`<${Step} key=${it.id} icon="agents" kind="agent" cls=${lanes.some((l) => l.pending) ? "step-pending" : ""}><${ParallelArena} lanes=${lanes} /><//>`);
       continue;
     }
     if (consumed.has(it.id)) continue; // carte d'agent : déjà dans son bloc
