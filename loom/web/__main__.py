@@ -318,7 +318,22 @@ def _warn_if_fallback_context(cfg) -> None:
     )
 
 
-def main() -> None:
+def _parse_args(argv=None):
+    import argparse
+
+    p = argparse.ArgumentParser(prog="python -m loom.web", description="Interface Loom")
+    p.add_argument(
+        "--app",
+        action="store_true",
+        help="ouvrir Loom dans une fenêtre d'application liée : la fermer arrête Loom "
+        "(serveur modèle déchargé) ; fermer la console la ferme aussi. Équivaut à "
+        "[chat] app_window = true.",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv=None) -> None:
+    args = _parse_args(argv)
     # Un modèle distant suffit au boot; sinon guider l'installation locale manquante.
     from loom.runtime.serve import maybe_bootstrap
 
@@ -333,9 +348,32 @@ def main() -> None:
     logging.getLogger("werkzeug").addFilter(
         lambda record: not any(p in record.getMessage() for p in _POLL_PATHS)
     )
-    print(
-        f"[loom-chat] http://127.0.0.1:{cfg.chat.web_port}  (modèle: http://127.0.0.1:{cfg.port}/v1)"
-    )
+    url = f"http://127.0.0.1:{cfg.chat.web_port}/"
+    print(f"[loom-chat] {url}  (modèle: http://127.0.0.1:{cfg.port}/v1)")
+    from loom.web.appwindow import console_title, open_app_window
+
+    console_title("Loom - fermer cette fenetre arrete Loom (modele decharge)")
+    if args.app or cfg.chat.app_window:
+        S = app.S
+
+        def _on_window_closed():
+            # Fenêtre fermée = Loom fermé : serveur modèle éteint (RAM/VRAM rendues), puis
+            # sortie immédiate — le serveur HTTP de développement n'a pas d'arrêt propre
+            # depuis un autre fil, et les sessions sont déjà sauvées à chaque tour.
+            print("[loom] fenêtre d'application fermée : arrêt de Loom", flush=True)
+            try:
+                S.server_manager.stop()
+            finally:
+                os._exit(0)
+
+        open_app_window(
+            url,
+            profile_dir=str(RUNTIME_DIR.parent / "var" / "browser-profile"),
+            on_close=_on_window_closed,
+            exe=cfg.chat.browser,
+            attach=S.server_manager.attach,
+            log=lambda m: print(m, flush=True),
+        )
     # Le mode threaded sert la nouvelle requête pendant la fermeture de l'ancien flux.
     app.run(host="127.0.0.1", port=cfg.chat.web_port, threaded=True)
 

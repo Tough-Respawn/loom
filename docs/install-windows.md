@@ -31,6 +31,20 @@ la plus récente des autres (retour arrière) et toute build citée par un `serv
 model.toml. Réponse par défaut « non », jamais de suppression sous `--yes`. Les binaires
 installés à la main dans un autre répertoire ne sont jamais touchés.
 
+## Lanceur du Bureau (fenêtre d'application liée)
+
+`python -m loom.web --app` (ou `[chat] app_window = true` dans `config/local.toml`) ouvre
+l'interface dans une fenêtre d'application d'un profil navigateur dédié
+(`var/browser-profile` ; Brave, Edge ou Chrome détectés, `[chat] browser` pour imposer un
+exécutable). La fenêtre est liée à loom.web : la fermer arrête Loom et décharge le modèle ;
+fermer la console ferme aussi la fenêtre (même Job Object « kill-on-close » que le serveur
+modèle).
+
+Raccourci : `docs/loom-launcher/start-loom.ps1` (à copier où l'on veut, le raccourci
+pointe dessus avec `powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File
+<chemin>`). Il lance la console minimisée avec `--app` ; si Loom tourne déjà, il rouvre
+seulement une fenêtre sur l'instance existante.
+
 ## À la main (repli)
 
 Remplacer `<repertoire-outils>` par le dossier d'installation choisi dans les

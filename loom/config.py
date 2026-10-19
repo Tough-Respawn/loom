@@ -31,6 +31,10 @@ class ChatConfig:
     max_retries: int = 6
     context_token_budget: int = 3000
     keep_recent_messages: int = 6
+    # Fenêtre d'application liée à loom.web (profil navigateur dédié) : la fermer arrête
+    # Loom. `browser` = exécutable Chromium imposé (sinon Brave, Edge, Chrome détectés).
+    app_window: bool = False
+    browser: str = ""
     # Une liste vide n'expose aucun outil.
     tools_enabled: list[str] = field(default_factory=list)
     # Schémas longue traîne via tool_search ; kill-switch off par défaut (à valider A/B).
@@ -406,6 +410,8 @@ def load_config(
         max_retries=int(ch.get("max_retries", 6)),
         context_token_budget=int(ch.get("context_token_budget", 3000)),
         keep_recent_messages=int(ch.get("keep_recent_messages", 6)),
+        app_window=bool(ch.get("app_window", False)),
+        browser=str(ch.get("browser", "") or ""),
         tools_enabled=list(tl.get("enabled", [])),
         deferred_tools=bool(ch.get("deferred_tools", False)),
         dispatch_models=list(ch.get("dispatch_models", [])),

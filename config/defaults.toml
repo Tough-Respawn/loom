@@ -90,6 +90,12 @@ history_path = "var/conversation.json"
 web_port = 8000
 skills_dir = "loom/skills"
 
+# Fenêtre d'application LIÉE (ou `python -m loom.web --app`) : loom.web ouvre l'UI dans
+# un profil navigateur dédié (var/browser-profile) ; fermer la fenêtre arrête Loom et
+# décharge le modèle, fermer la console ferme aussi la fenêtre. Choix machine : local.toml.
+# app_window = true
+# browser = "C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe"  # sinon Brave, Edge, Chrome
+
 # Store de plugins (contenu installé git-ignoré)
 plugins_root = "loom/plugins"
 
