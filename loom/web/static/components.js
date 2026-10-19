@@ -31,11 +31,19 @@ export function TerminalBlock({ it }) {
 }
 
 export function Think({ it }) {
+  // Repliée : les premières lignes en italique sous un fondu ; clic pour tout lire.
+  // En cours de génération : texte entier, comme avant.
+  const [open, setOpen] = useState(false);
   if (!it.text) return null;
-  return html`<details class=${"think" + (it.active ? " active" : "")} open=${it.active}>
-    <summary>réflexion${it.role ? " " + it.role : ""}</summary>
-    <div>${it.text}</div>
-  </details>`;
+  const full = it.active || open;
+  return html`<div
+    class=${"think" + (it.active ? " active" : "") + (full ? " open" : "")}
+    onClick=${() => setOpen(!open)}
+    title=${full ? "Replier" : "Lire toute la réflexion"}
+  >
+    <div class="think-head">réflexion${it.role ? " " + it.role : ""}</div>
+    <div class="think-text">${it.text}</div>
+  </div>`;
 }
 
 export function IORow({ tag, text, force }) {
