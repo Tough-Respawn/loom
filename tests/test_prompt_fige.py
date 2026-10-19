@@ -14,9 +14,12 @@ def S(monkeypatch):
     """Rendu simulé : il reflète une « mémoire » qui change pendant la session."""
     state = NS(memory="note 1", renders=0)
 
-    def fake_render(S, conv, workspace=None):
+    def fake_render(S, conv, workspace=None, scratch=None):
         state.renders += 1
-        return f"MEM:{state.memory}|GOAL:{conv.goal}|WS:{workspace}", False
+        return (
+            f"MEM:{state.memory}|GOAL:{conv.goal}|WS:{workspace}|SCR:{scratch}",
+            False,
+        )
 
     monkeypatch.setattr(sp, "_render_system_prompt", fake_render)
     monkeypatch.setattr(sp, "_workspace_text", lambda S, ws: f"consigne {ws}")
@@ -35,6 +38,21 @@ def test_memoire_modifiee_ne_reecrit_pas_le_prompt(S):
     again, _ = sp._build_system_prompt(S, conv, workspace="C:/b")
     assert again == first and "note 1" in again and "C:/a" in again
     assert S.state.renders == 1
+
+
+def test_bac_a_sable_cree_et_annonce(S, tmp_path):
+    """Le bac à sable de la session est créé et passé au rendu ; sans lui, rien ne
+    change (sous-agents, anciens appelants)."""
+    scratch = tmp_path / "sessions" / "abc" / "scratch"
+    conv = _conv()
+    text, _ = sp._build_system_prompt(S, conv, workspace="C:/a", scratch=str(scratch))
+    assert scratch.is_dir() and str(scratch) in text
+    assert "SCR:None" in sp._build_system_prompt(S, _conv(), workspace="C:/a")[0]
+    # Le texte réel dit le chemin, l'environnement jetable uv et la voie « figure ».
+    section = sp._scratch_text(str(scratch))
+    assert str(scratch) in section
+    assert "uv run --with" in section and "check_page" in section
+    assert "ModuleNotFoundError" in section
 
 
 def test_choix_explicite_refige(S):

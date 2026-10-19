@@ -53,7 +53,13 @@ def _prime_slot(S, sess) -> bool:
             # reste réutilisé tel quel, seul le contenu du placeholder diverge du
             # vrai premier message (quelques tokens re-préfillés, pas des milliers).
             msgs = [{"role": "user", "content": "."}]
-        system_prompt, _strong = _build_system_prompt(S, conv, workspace=sess.workspace)
+        # Même bac à sable que le tour réel : le préfixe amorcé doit être identique.
+        system_prompt, _strong = _build_system_prompt(
+            S,
+            conv,
+            workspace=sess.workspace,
+            scratch=str(S.session_store.session_dir(sess.id) / "scratch"),
+        )
         registry = S.tool_factory(conv.active_tools, sess.workspace, conv)
         return S.client.warm_context(
             msgs,
