@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-19 : une mise à jour du harnais atteint les sessions ouvertes
+
+- Le system prompt d'une session est figé (préfixe KV stable) et ne se refigeait que sur
+  un choix explicite : une session ouverte avant une mise à jour de Loom gardait l'ancien
+  prompt pour toujours (vécu : la règle « bibliothèque manquante → `uv run --with` »
+  livrée, invisible pour le modèle de la session 99c4225ceb05, qui a continué à répondre
+  « je ne peux pas générer d'images »). L'empreinte du harnais (gabarits de prompt,
+  consigne du bac à sable) entre dans la clé du prompt figé : au tour suivant une mise à
+  jour, le prompt est refigé et le prompt de base de la session est rafraîchi depuis le
+  gabarit livré (`prompt.fige raison=maj_harnais` dans le journal). Un seul re-prefill,
+  comme après tout redémarrage.
+
 ## 2026-10-19 : bac à sable par session et environnement Python jetable
 
 - Chaque session a un bac à sable, `var/sessions/<id>/scratch/`, créé au premier tour et
