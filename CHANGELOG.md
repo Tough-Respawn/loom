@@ -27,6 +27,9 @@
   `/sessions`, la création et l'import renvoient désormais `model`, `kind` et `updated_at`.
 - Sélecteur de modèle : les groupes s'appellent « sur cette machine » et « distant (API) »
   (au lieu de « home » et « distant · api »), template et reconstruction à chaud en phase.
+- Compteur d'en-tête : une ligne courte (total de tokens, jauge de contexte et son
+  pourcentage) ; entrée, sortie, taux de cache et nombre d'appels passent dans l'infobulle ;
+  « compacter » n'apparaît qu'à partir de 70 % de la fenêtre.
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
