@@ -327,6 +327,15 @@ def _register_session_routes(app, S):
 
         sess = S.session_store.create(workspace=ws, title=title)
 
+        # Le modèle AFFICHÉ par le sélecteur fait foi pour la session neuve : le dernier
+        # modèle choisi (var/last_model) peut différer de ce que l'onglet montrait
+        # (vécu 2026-10-19 : bonsai affiché, glm-flash invoqué).
+        wanted = (request.form.get("model") or "").strip()
+        if wanted and wanted in S.models and wanted != sess.conversation.model:
+            sess.conversation.set_model(wanted)
+            S.session_store.set_default_model(wanted)
+            S.session_store.save(sess)
+
         with S.gen_guard:
             S.sessions_cache[sess.id] = sess
 

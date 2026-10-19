@@ -124,8 +124,11 @@ export function openTabMenu(e, sid) {
 
 export async function newSessionTab() {
   const wd = document.getElementById("workdir-path");
+  const sel = document.getElementById("model-select");
+  // La session neuve prend le modèle que le sélecteur AFFICHE, pas un défaut invisible.
   const r = await postForm("/session/new", {
     workspace: wd ? wd.textContent.trim() : "",
+    model: sel ? sel.value : "",
   });
   openSessionTab(await r.json());
 }

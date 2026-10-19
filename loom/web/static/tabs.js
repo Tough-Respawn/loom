@@ -402,7 +402,16 @@ export function focusSingletonsFor(sid) {
         if (d && d.workspace !== undefined) {
           t.workspace = d.workspace;
           if (d.title) t.title = d.title;
-          if (d.model) t.model = d.model;
+          if (d.model) {
+            t.model = d.model;
+            // Le sélecteur suit le modèle RÉEL de la session (réponse asynchrone :
+            // la valeur posée plus bas partait d'un onglet encore sans modèle).
+            const selNow = document.getElementById("model-select");
+            if (selNow && state.active === sid && selNow.value !== d.model) {
+              selNow.value = d.model;
+              paintModelSelect();
+            }
+          }
           set_loomWorkdir(t.workspace);
           try {
             localStorage.loomWorkdir = t.workspace;
