@@ -405,7 +405,7 @@ export function Assistant({ it, sid }) {
       ref=${ref}
     >
       <div class="assistant-content" dangerouslySetInnerHTML=${{ __html: md(it.raw) }}></div>
-      <div class="msg-send" ref=${controlsRef}>
+      <div class="msg-actions"><div class="msg-send" ref=${controlsRef}>
         <button
           class="msg-transfer"
           type="button"
@@ -430,7 +430,7 @@ export function Assistant({ it, sid }) {
               })}
             </div>`
           : null}
-      </div>
+      </div></div>
     </div>`;
   }
   return html`<div class="msg assistant streaming">${it.raw}</div>`;
@@ -466,10 +466,11 @@ export function enhance(el, raw) {
     btn.title = "Copier la réponse";
     btn.onclick = () => {
       navigator.clipboard.writeText(raw);
-      btn.textContent = "✓";
+      btn.textContent = "copié";
       setTimeout(() => (btn.textContent = "copier"), 1200);
     };
-    el.appendChild(btn);
+    // Dans la barre d'actions sous le texte, à droite du bouton d'envoi.
+    (el.querySelector(".msg-actions") || el).appendChild(btn);
   }
   // Rend les formules LaTeX en SVG sur le DOM réel (MathJax tex-svg), après le markdown.
   if (window.MathJax && window.MathJax.typesetPromise) {

@@ -1018,25 +1018,23 @@
       animation: blink 1s steps(2, start) infinite;
     }
     @keyframes blink { 50% { opacity: 0; } }
-    .msg-copy {
-      position: absolute; top: 2px; right: 0; padding: 2px 7px; font-size: 10px;
-      background: var(--bg-elev); color: var(--accent); border: 1px solid var(--border);
-      border-radius: 4px; cursor: pointer; opacity: 0; transition: opacity .15s; font-family: inherit;
+    /* Actions d'une réponse (envoyer, copier) : barre SOUS le texte, révélée au survol —
+       jamais posée sur la première ligne. */
+    .msg-actions {
+      display: flex; justify-content: flex-end; align-items: center; gap: 6px;
+      margin-top: 6px; min-height: 18px; opacity: 0; transition: opacity .15s;
     }
-    .msg.assistant:hover .msg-copy { opacity: 0.8; }
-    .msg-send { position: absolute; top: 2px; right: 48px; z-index: 8; }
-    .msg-transfer {
-      padding: 2px 7px; font-size: 10px; font-family: inherit; white-space: nowrap;
-      color: var(--accent); background: var(--bg-elev); border: 1px solid var(--border);
-      border-radius: 4px; cursor: pointer; opacity: 0; transition: opacity .15s;
+    .msg.assistant:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+    .msg-copy, .msg-transfer {
+      padding: 2px 8px; font-size: 10px; font-family: inherit; white-space: nowrap;
+      color: var(--text-dim); background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: 4px; cursor: pointer; transition: .12s;
     }
-    .msg.assistant:hover .msg-transfer, .msg-transfer:focus-visible { opacity: .8; }
-    .msg-transfer:hover:not(:disabled) { opacity: 1; background: var(--accent-dim); color: #fff; }
-    .msg-transfer:disabled { color: var(--text-faint); cursor: default; }
-    /* Désactivé : visible au survol comme les autres, mais nettement plus pâle. */
-    .msg.assistant:hover .msg-transfer:disabled { opacity: .35; }
+    .msg-copy:hover, .msg-transfer:hover:not(:disabled) { color: var(--text); border-color: var(--text-faint); }
+    .msg-send { position: relative; }
+    .msg-transfer:disabled { color: var(--text-faint); cursor: default; opacity: .5; }
     .transfer-menu {
-      position: absolute; top: 25px; right: 0; z-index: 220; min-width: 220px;
+      position: absolute; bottom: 24px; right: 0; z-index: 220; min-width: 220px;
       padding: 4px; background: var(--bg-panel); border: 1px solid var(--border);
       border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.42);
     }
