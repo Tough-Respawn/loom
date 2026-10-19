@@ -37,6 +37,13 @@ export const STEP_ICONS = {
   alert: wrap('<path d="M12 4l9 16H3z"/><path d="M12 10v4"/><path d="M12 17v.01"/>'),
 };
 
+// Glyphes d'état et de repli (remplacent les caractères ▸ ▾ ✓ ✕) : même trait.
+export const GLYPHS = {
+  chevron: wrap('<path d="M9 6l6 6-6 6"/>'),
+  check: wrap('<path d="M5 12.5l4.5 4.5L19 7"/>'),
+  x: wrap('<path d="M6 6l12 12"/><path d="M18 6L6 18"/>'),
+};
+
 const BY_TOOL = {
   run_shell: "terminal",
   read_file: "file",

@@ -188,10 +188,19 @@
     }
     details.sb-fold > summary.sb-label::-webkit-details-marker { display: none; }
     details.sb-fold > summary.sb-label::before {
-      content: "▸"; margin-right: 6px; font-size: 9px; color: var(--text-faint);
-      transition: transform .12s ease;
+      content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px;
+      vertical-align: -1px; background: var(--text-faint); transition: transform .12s ease;
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6l6 6-6 6'/%3E%3C/svg%3E") center / contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6l6 6-6 6'/%3E%3C/svg%3E") center / contain no-repeat;
     }
-    details.sb-fold[open] > summary.sb-label::before { content: "▾"; }
+    details.sb-fold[open] > summary.sb-label::before { transform: rotate(90deg); }
+    /* Glyphes SVG du fil (chevron, coche, croix) : taille du texte, couleur courante. */
+    .glyph { display: inline-flex; width: 12px; height: 12px; vertical-align: -2px; flex: none; }
+    .glyph svg { width: 100%; height: 100%; }
+    .glyph-chevron { transition: transform .12s ease; color: var(--text-faint); }
+    .glyph-chevron.open { transform: rotate(90deg); }
+    .glyph-check { color: var(--accent); }
+    .glyph-x { color: var(--err); }
     /* Les actions d'entête (+ new) n'apparaissent que section DÉPLIÉE : repliée,
        le bouton n'a pas de sens (on ne voit pas la liste sur laquelle il agit). */
     details.sb-fold:not([open]) > summary.sb-label button { display: none; }

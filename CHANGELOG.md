@@ -20,6 +20,8 @@
   bas de la barre latérale, au-dessus du bouton Reset (position mémorisée supprimée).
 - Outils « dangereux » de la barre latérale : le « ! » texte devient un triangle d'alerte
   SVG aligné à droite, même trait que le rail d'icônes.
+- Les glyphes texte du fil (carets ▸ ▾ des entrées/sorties et des sous-agents, ✓ ✕ d'état,
+  caret des sections repliables) deviennent des SVG au même trait que les icônes.
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
