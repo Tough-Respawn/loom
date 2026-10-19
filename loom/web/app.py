@@ -605,12 +605,19 @@ def create_app(
     # Veille des mises à jour llama.cpp (bandeau, jamais d'installation). Seulement
     # avec une vraie config : les tests construisent l'app sans chemins de config.
     S.llama_update = None
+    # Journal du serveur modèle (llama-server via llama-swap) suivi en fond : le fil
+    # l'affiche pendant un chargement. Même garde que la veille.
+    S.upstream_log = None
     if config_defaults_path and config_local_path:
         from loom.web.routes.misc import llama_update_loop
 
         threading.Thread(
             target=llama_update_loop, args=(S,), daemon=True, name="loom-llama-update"
         ).start()
+        if getattr(S.client, "local_server_root", None) is not None:
+            from loom.runtime.upstream_log import UpstreamLogTail
+
+            S.upstream_log = UpstreamLogTail(S.client.local_server_root()).start()
 
     # Exposer l'état partagé permet aux tests d'inspecter directement ses invariants.
     app.S = S

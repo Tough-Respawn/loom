@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from __future__ import annotations
 import re
 import subprocess
 import sys
+
 from flask import Response, render_template, request
 
 from loom.web.routes.helpers import _ctx
 from loom.web.routes.skills import _index_context
-
 
 # ---- Routes : socle (index, statiques, toggles) ---------------------------------------
 
@@ -60,6 +59,20 @@ def llama_update_loop(S, first_delay_s: float = 30.0, period_s: float = 3600.0) 
 
 
 def _register_misc_routes(app, S):
+    @app.get("/server/log")
+    def server_log():
+        # Lignes du serveur modèle depuis `since` (numéro de ligne) : le fil les montre
+        # dans un bloc « terminal » pendant un chargement. Sans suivi : vide, seq 0.
+        tail = getattr(S, "upstream_log", None)
+        if tail is None:
+            return {"seq": 0, "lines": []}
+        try:
+            since = int(request.args.get("since", "0"))
+        except ValueError:
+            since = 0
+        seq, lines = tail.since(since)
+        return {"seq": seq, "lines": lines[-400:]}
+
     @app.get("/llama/update")
     def llama_update_state():
         # Lecture seule du dernier résultat de la veille : aucun appel réseau ici.

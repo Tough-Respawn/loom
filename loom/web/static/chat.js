@@ -33,6 +33,37 @@ export async function sendChat(sid, text, images, options = {}) {
   const tools = {}; // callId -> item id
   let thinkId = null;
   let asstId = null;
+  // Bloc « terminal » du démarrage/chargement du serveur modèle : les notices du
+  // backend y vont, et le journal du serveur (llama-server) y est sondé jusqu'au
+  // premier signe du modèle (texte, réflexion, appel d'outil) ou la fin du flux.
+  let termId = null, termSeq = 0, termTimer = null;
+  const termAppend = (lines) => {
+    const it = get(termId);
+    if (it && lines.length) patch(termId, { lines: [...it.lines, ...lines].slice(-400) });
+  };
+  const pollTerm = async () => {
+    if (!termId || !get(termId)?.active) return;
+    try {
+      const d = await (await fetch("/server/log?since=" + termSeq)).json();
+      termAppend(d.lines || []);
+      if (typeof d.seq === "number") termSeq = d.seq;
+    } catch (e) { /* loom.web injoignable : le prochain tour réessaie */ }
+    if (get(termId)?.active) termTimer = setTimeout(pollTerm, 1200);
+  };
+  const closeTerm = () => {
+    if (!termId) return;
+    clearTimeout(termTimer);
+    const id = termId;
+    termId = null;
+    // Dernier relevé : les lignes émises juste avant le premier token.
+    fetch("/server/log?since=" + termSeq)
+      .then((r) => r.json())
+      .then((d) => {
+        const it = get(id);
+        if (it) patch(id, { lines: [...it.lines, ...(d.lines || [])].slice(-400), active: false });
+      })
+      .catch(() => patch(id, { active: false }));
+  };
   let lastSent = 0,
     lastRecv = 0,
     lastTokS = null; // derniers compteurs envoyé/reçu/débit (pour figer à la fin)
@@ -61,6 +92,7 @@ export async function sendChat(sid, text, images, options = {}) {
     if (evt.type === "note" && t.abort === ac) t.stopAt = null;
     if (evt.type === "text" || evt.type === "reasoning" || evt.type === "tool_args")
       sawToken = true;
+    if (termId && (sawToken || evt.type === "tool_call" || evt.type === "error")) closeTerm();
     // La reprise du flux efface tout label forcé, sauf si `status` le pilote.
     if (
       evt.type === "text" ||
@@ -258,7 +290,14 @@ export async function sendChat(sid, text, images, options = {}) {
         push({ kind: "perm", callId: evt.id, name: evt.name, summary: evt.summary });
         break;
       case "notice":
-        push({ kind: "notice", text: evt.text });
+        if (evt.terminal) {
+          if (!termId) {
+            termId = push({ kind: "terminal", lines: [], active: true }).id;
+            termSeq = evt.seq || 0;
+            pollTerm();
+          }
+          termAppend(["[loom] " + evt.text]);
+        } else push({ kind: "notice", text: evt.text });
         break;
       case "workspace":
         // Mémoriser le workspace par onglet et n'afficher que celui qui est actif.
@@ -374,6 +413,7 @@ export async function sendChat(sid, text, images, options = {}) {
     }
   } finally {
     clearInterval(gaTimer);
+    closeTerm();
     // Resonder l'état machine en fin de flux pour corriger les états transitoires.
     scheduleMachineRefresh();
     setActivityFor(sid, null);

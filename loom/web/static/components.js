@@ -13,6 +13,23 @@ export function Step({ icon, kind, cls, children }) {
   </div>`;
 }
 
+export function TerminalBlock({ it }) {
+  // Ce que voit le terminal pendant le démarrage/chargement du serveur modèle :
+  // notices Loom + journal llama-server, défilé en bas à chaque ligne.
+  const ref = useRef(null);
+  const lines = it.lines || [];
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [lines.length]);
+  return html`<div class=${"term-block" + (it.active ? " active" : "")}>
+    <div class="tool-head">
+      <span class="tool-name">serveur modèle</span>
+      <span class="tool-status">${it.active ? "…" : "✓"}</span>
+    </div>
+    <pre class="term-log" ref=${ref}>${lines.join("\n")}</pre>
+  </div>`;
+}
+
 export function Think({ it }) {
   if (!it.text) return null;
   return html`<details class=${"think" + (it.active ? " active" : "")} open=${it.active}>
@@ -483,6 +500,8 @@ export function Item({ it, userIndex, sid }) {
       return html`<div class="phase-sep">&#9658; ${it.name}${it.detail ? " — " + it.detail : ""}</div>`;
     case "notice":
       return html`<div class="notice-line">${it.text}</div>`;
+    case "terminal":
+      return html`<${Step} icon="terminal" kind="tool" cls=${it.active ? "step-pending" : ""}><${TerminalBlock} it=${it} /><//>`;
     case "harness":
       // 3e voix : le garde-fou Loom (ni toi ni le modèle). Identité visuelle propre.
       return html`<${Step} icon="shield" kind="harness"><div class="harness-line"><span class="harness-tag">Loom${it.hkind ? html` <span class="harness-kind">· ${it.hkind}</span>` : ""}</span><span class="harness-text">${it.text}</span></div><//>`;

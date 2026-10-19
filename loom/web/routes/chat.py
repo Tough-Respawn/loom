@@ -91,6 +91,14 @@ CHAT_COMMANDS = [
 _HANDOFF_MAX_CHARS = 100_000
 
 
+def _term_notice(S, text: str):
+    """Notice du démarrage/chargement du serveur modèle : le fil la range dans un bloc
+    « terminal » et y sonde ensuite le journal llama-server (GET /server/log) à partir
+    de `seq`, le numéro de ligne courant du suivi (upstream_log)."""
+    tail = getattr(S, "upstream_log", None)
+    return _sse("notice", text=text, terminal=True, seq=tail.seq if tail else 0)
+
+
 def _handoff_provenance(raw: str, source) -> list[dict[str, str]]:
     """Valide la chaîne reçue puis ajoute la source directe, vérifiée côté serveur.
 
@@ -584,9 +592,8 @@ def _register_chat_routes(app, S):
             if conv.model and conv.model not in S.remote_model_ids:
                 _reachable, _running_txt = S.client.running_local(timeout=2.0)
                 if not _reachable:
-                    yield _sse(
-                        "notice",
-                        text="serveur modèle éteint — démarrage de la stack en cours…",
+                    yield _term_notice(
+                        S, "serveur modèle éteint : démarrage de la stack en cours…"
                     )
                     _t_srv = time.monotonic()
                     S.server_manager.start()
@@ -603,19 +610,17 @@ def _register_chat_routes(app, S):
                                 etape="demarrage_serveur",
                                 s=round(time.monotonic() - _t_srv, 1),
                             )
-                            yield _sse("notice", text="serveur modèle démarré.")
+                            yield _term_notice(S, "serveur modèle démarré.")
                             break
                         if not S.server_manager.owns_running():
                             break  # process mort : inutile d'attendre le garde-fou
                         if time.monotonic() - _last_notice >= 15.0:
                             _last_notice = time.monotonic()
-                            yield _sse(
-                                "notice",
-                                text=(
-                                    "chargement du modèle en cours… "
-                                    f"({int(time.monotonic() - _t_srv)} s — un gros "
-                                    "modèle peut prendre plusieurs minutes)"
-                                ),
+                            yield _term_notice(
+                                S,
+                                "chargement du modèle en cours… "
+                                f"({int(time.monotonic() - _t_srv)} s, un gros "
+                                "modèle peut prendre plusieurs minutes)",
                             )
                     if not _reachable and not cancel_event.is_set():
                         if S.server_manager.owns_running():
@@ -642,11 +647,11 @@ def _register_chat_routes(app, S):
                                     else ", journal du serveur modèle injoignable)."
                                 )
                             )
-                        yield _sse("notice", text=_txt)
+                        yield _term_notice(S, _txt)
                 if _reachable and conv.model not in _running_txt:
-                    yield _sse(
-                        "notice",
-                        text="chargement du modèle en mémoire — la première réponse met "
+                    yield _term_notice(
+                        S,
+                        "chargement du modèle en mémoire : la première réponse met "
                         "plus de temps à démarrer…",
                     )
 
