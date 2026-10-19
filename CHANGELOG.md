@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-10-19 : texte en sans-serif, mono réservé au code et aux commandes
+
+- L'interface passe en sans-serif système (Segoe UI, Inter, system-ui ; aucune fonte
+  téléchargée, offline intact) à 13,5 px pour le texte, les titres et la réflexion. Le
+  mono (`--mono` : Cascadia Code, SF Mono, Consolas) reste pour le code et les blocs
+  `pre`, le nom et les entrées/sorties des outils, le chemin du dossier de travail, le
+  compteur de tokens et le moniteur système.
+
 ## 2026-10-19 : rail d'icônes dans le fil (réflexion, outil, agent, Loom, réponse)
 
 - Chaque bloc du fil porte une pastille-icône à gauche, reliée par un filet, à la
