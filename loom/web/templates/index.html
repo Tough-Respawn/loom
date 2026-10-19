@@ -460,7 +460,13 @@
     #tools-panel .skill:hover { background: var(--bg-hover); }
     .skill input { accent-color: var(--accent); width: 13px; height: 13px; }
     .skill.tool-danger { border-color: #3a3020; }
-    .skill.tool-danger::after { content: '!'; font-size: 9px; color: var(--warn); }
+    /* Marqueur « modifie le système » : triangle d'alerte SVG (masque), même trait que le
+       rail d'icônes, à droite de la ligne. */
+    .skill.tool-danger::after {
+      content: ''; flex: none; width: 11px; height: 11px; margin-left: auto; background: var(--warn); opacity: .85;
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4l9 16H3z'/%3E%3Cpath d='M12 10v4'/%3E%3Cpath d='M12 17v.01'/%3E%3C/svg%3E") center / contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4l9 16H3z'/%3E%3Cpath d='M12 10v4'/%3E%3Cpath d='M12 17v.01'/%3E%3C/svg%3E") center / contain no-repeat;
+    }
     #thinking-toggle {
       display: flex; align-items: center; gap: 6px; font-size: 12px;
       color: var(--text-dim); cursor: pointer; padding: 4px 0;
