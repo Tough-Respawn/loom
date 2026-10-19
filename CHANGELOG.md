@@ -14,6 +14,8 @@
   passent en gris texte, un échec en rouge ressort à nouveau.
 - Réflexion repliée : ses premières lignes restent lisibles en italique sous un fondu,
   clic pour tout lire ; pendant la génération le texte défile en entier.
+- Titres markdown des réponses : trois tailles distinctes (h1 1,3 em, h2 1,15, h3 1,05) et
+  marges nettes ; chaque réponse porte le nom du modèle en libellé discret au-dessus.
 
 ## 2026-10-19 : un toast signale la fin d'une recalibration ou d'un téléchargement
 
