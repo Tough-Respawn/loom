@@ -558,8 +558,8 @@ window.addEventListener("keydown", (e) => {
     // Bloc home ordonné par type (texte, image, vidéo) : couleurs contiguës.
     const rank = { home: 0, image: 1, video: 2, remote: 0 };
     const groups = [
-      ["home", (m) => !m.remote],
-      ["distant · api", (m) => m.remote],
+      ["sur cette machine", (m) => !m.remote],
+      ["distant (API)", (m) => m.remote],
     ];
     sel.innerHTML = groups
       .map(([label, keep]) => {

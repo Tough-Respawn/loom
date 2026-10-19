@@ -1,5 +1,5 @@
-{# Sélecteur en DEUX blocs : « machine » (texte + image + vidéo — tout tourne ici) et
-   « distant · api ». La couleur par TYPE reste (classe opt-<type>, CSS #model-select) ;
+{# Sélecteur en DEUX blocs : « sur cette machine » (texte + image + vidéo — tout tourne
+   ici) et « distant (API) ». La couleur par TYPE reste (classe opt-<type>, CSS #model-select) ;
    le select FERMÉ est teinté selon le type choisi (paintModelSelect, app.js). Même
    regroupement côté JS : rebuildModelSelect reconstruit à chaud — garder EN PHASE. #}
 {% set texts = [] %}{% set images = [] %}{% set videos = [] %}{% set remotes = [] %}
@@ -13,7 +13,7 @@
 {% set machine = texts + images + videos %}
 <select id="model-select" name="model" hx-post="/model" hx-target="#model-select"
         hx-swap="outerHTML">
-  {% for label, items in (("home", machine), ("distant · api", remotes)) %}
+  {% for label, items in (("sur cette machine", machine), ("distant (API)", remotes)) %}
     {% if items %}
     <optgroup label="{{ label }}">
       {% for mid, cls in items %}
