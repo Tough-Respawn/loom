@@ -17,7 +17,8 @@ def S(monkeypatch):
     def fake_render(S, conv, workspace=None, scratch=None):
         state.renders += 1
         return (
-            f"MEM:{state.memory}|GOAL:{conv.goal}|WS:{workspace}|SCR:{scratch}",
+            f"MEM:{state.memory}|BASE:{conv.system_prompt}|GOAL:{conv.goal}"
+            f"|WS:{workspace}|SCR:{scratch}",
             False,
         )
 
@@ -53,6 +54,30 @@ def test_bac_a_sable_cree_et_annonce(S, tmp_path):
     assert str(scratch) in section
     assert "uv run --with" in section and "check_page" in section
     assert "ModuleNotFoundError" in section
+
+
+def test_mise_a_jour_du_harnais_refige_et_rafraichit_le_prompt_de_base(S, monkeypatch):
+    """Une session ouverte avant une mise à jour de Loom reçoit le nouveau gabarit au
+    tour suivant (vécu : règle « uv run --with » invisible dans une session figée)."""
+    S.session_store = NS(default_system_prompt="base v2 (gabarit livré)")
+    conv = _conv()
+    first, _ = sp._build_system_prompt(S, conv, workspace="C:/a")
+    assert conv.frozen_prompt["build"] == sp._prompt_build()
+    # Même harnais : rien ne bouge, même avec un gabarit par défaut différent.
+    assert sp._build_system_prompt(S, conv, workspace="C:/a")[0] == first
+    assert conv.system_prompt == "base"
+    # Harnais mis à jour (empreinte différente) : refige + prompt de base rafraîchi.
+    monkeypatch.setattr(sp, "_prompt_build", lambda: "nouveau1")
+    text, _ = sp._build_system_prompt(S, conv, workspace="C:/a")
+    assert text != first and conv.system_prompt == "base v2 (gabarit livré)"
+    assert conv.frozen_prompt["build"] == "nouveau1" and S.state.renders == 2
+    # Un instantané d'avant cette version (sans `build`) n'est pas refigé pour autant.
+    conv2 = _conv()
+    sp._build_system_prompt(S, conv2, workspace="C:/a")
+    conv2.frozen_prompt.pop("build")
+    assert S.state.renders == 3
+    sp._build_system_prompt(S, conv2, workspace="C:/a")
+    assert S.state.renders == 3 and conv2.system_prompt == "base"
 
 
 def test_choix_explicite_refige(S):

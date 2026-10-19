@@ -53,9 +53,21 @@ def _scratch_text(scratch: str) -> str:
     )
 
 
+def _prompt_build() -> str:
+    """Empreinte du HARNAIS lui-même : gabarits de prompt livrés avec Loom et consigne
+    du bac à sable. Une mise à jour de Loom qui change l'un d'eux doit atteindre les
+    sessions existantes (vécu 2026-10-19 : la règle « bibliothèque manquante → uv run
+    --with » livrée, le modèle d'une session ouverte ne l'a jamais vue, prompt figé)."""
+    from loom.prompts import CHAT_SYSTEM
+
+    raw = CHAT_SYSTEM + CHAT_SYSTEM_STRONG + _scratch_text("@")
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:8]
+
+
 def _explicit_key(S, conv) -> str:
-    """Empreinte des choix EXPLICITES de l'utilisateur. Seuls eux refigent le prompt ;
-    mémoire, skills appris, loom.md et dossier auto-adopté ne le réécrivent jamais."""
+    """Empreinte des choix EXPLICITES de l'utilisateur et de la version du harnais.
+    Seuls eux refigent le prompt ; mémoire, skills appris, loom.md et dossier
+    auto-adopté ne le réécrivent jamais."""
     strong = bool(
         conv.model
         and conv.model in S.remote_model_ids
@@ -69,6 +81,7 @@ def _explicit_key(S, conv) -> str:
             conv.goal,
             sorted(conv.disabled_skills),
             sorted(conv.skill_overrides.items()),
+            _prompt_build(),
         ],
         ensure_ascii=False,
     )
@@ -77,11 +90,22 @@ def _explicit_key(S, conv) -> str:
 
 def _build_system_prompt(S, conv, workspace=None, scratch=None):
     """System prompt FIGÉ pour la session : rendu une fois, puis réutilisé tel quel
-    (append-only, préfixe KV stable). Rerendu seulement si un choix explicite change
-    (modèle, prompt de base, objectif, skills de la session). `scratch` : bac à sable de
-    la session (créé ici, annoncé dans le prompt). Retourne (texte, strong)."""
-    key = _explicit_key(S, conv)
+    (append-only, préfixe KV stable). Rerendu si un choix explicite change (modèle,
+    prompt de base, objectif, skills de la session) ou si le harnais a été mis à jour
+    (gabarits de prompt) : dans ce cas le prompt de base de la session, instantané pris à
+    sa création, est rafraîchi depuis le gabarit courant. `scratch` : bac à sable de la
+    session (créé ici, annoncé dans le prompt). Retourne (texte, strong)."""
     frozen = conv.frozen_prompt
+    build = _prompt_build()
+    if frozen and frozen.get("build") not in (None, build):
+        # Mise à jour du harnais : la session reprend le gabarit livré (aucune édition par
+        # session n'existe, l'instantané ne portait que la stabilité du cache).
+        default = getattr(
+            getattr(S, "session_store", None), "default_system_prompt", ""
+        )
+        if default:
+            conv.system_prompt = default
+    key = _explicit_key(S, conv)
     if frozen and frozen.get("key") == key and frozen.get("text"):
         return frozen["text"], bool(frozen.get("strong"))
     _ws = workspace if workspace is not None else _session(S).workspace
@@ -94,10 +118,22 @@ def _build_system_prompt(S, conv, workspace=None, scratch=None):
     )
     log_event(
         "prompt.fige",
-        raison="premier" if not frozen else "choix_explicite",
+        raison=(
+            "premier"
+            if not frozen
+            else "maj_harnais"
+            if frozen.get("build") != build
+            else "choix_explicite"
+        ),
         chars=len(text),
     )
-    conv.frozen_prompt = {"key": key, "text": text, "strong": strong, "workspace": _ws}
+    conv.frozen_prompt = {
+        "key": key,
+        "text": text,
+        "strong": strong,
+        "workspace": _ws,
+        "build": build,
+    }
     return text, strong
 
 
