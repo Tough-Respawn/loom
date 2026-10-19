@@ -23,10 +23,37 @@ export const _escHtml = (s) =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
+// Formules composées de façon SYNCHRONE (MathJax.tex2svg) et mises en cache par source :
+// pendant un flux, chaque jeton re-rend le markdown, et un typeset asynchrone serait
+// effacé par le rendu suivant. Avec le cache, une formule déjà vue ressort composée à
+// chaque rendu, dès que son délimiteur de fin est arrivé. MathJax pas encore chargé →
+// TeX échappé, composé plus tard par enhance()/_typesetAll (comportement d'origine).
+const _mathCache = new Map();
+
+function _mathHtml(src) {
+  const MJ = window.MathJax;
+  if (!MJ || typeof MJ.tex2svg !== "function") return _escHtml(src);
+  const hit = _mathCache.get(src);
+  if (hit !== undefined) return hit;
+  const display = src.startsWith("$$");
+  const tex = display ? src.slice(2, -2) : src.slice(1, -1);
+  let out;
+  try {
+    out = MJ.tex2svg(tex, { display }).outerHTML;
+    // Cache de glyphes partagé et feuille de style : à resynchroniser après un tex2svg.
+    MJ.startup?.document?.updateDocument?.();
+  } catch (e) {
+    out = _escHtml(src);
+  }
+  if (_mathCache.size > 2000) _mathCache.clear();
+  _mathCache.set(src, out);
+  return out;
+}
+
 export const md = (raw) => {
   const { text, maths } = _protectMath(raw || "");
   const out = DOMPurify.sanitize(marked.parse(text));
-  return out.replace(/@@MATH(\d+)@@/g, (_, i) => _escHtml(maths[+i] || ""));
+  return out.replace(/@@MATH(\d+)@@/g, (_, i) => _mathHtml(maths[+i] || ""));
 };
 
 export const INIT = JSON.parse(
