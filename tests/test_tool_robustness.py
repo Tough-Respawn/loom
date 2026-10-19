@@ -21,7 +21,7 @@ from loom.tools.todo import make_manage_todos
 
 
 def test_run_shell_ferme_stdin_pour_rester_non_interactif(monkeypatch, tmp_path):
-    import loom.tools.shell as shell
+    from loom.tools import shell
 
     seen = {}
 
@@ -47,7 +47,7 @@ def test_operateurs_powershell_cites_ne_sont_pas_des_chainages():
     from loom.tools.shell import _has_unquoted_ps_chain_operator
 
     assert not _has_unquoted_ps_chain_operator(
-        'node -e "const x = value || \'fallback\'; console.log(x)"'
+        "node -e \"const x = value || 'fallback'; console.log(x)\""
     )
     assert not _has_unquoted_ps_chain_operator("Write-Output 'a && b'")
     assert _has_unquoted_ps_chain_operator("Write-Output a || Write-Output b")
@@ -63,7 +63,9 @@ def test_run_shell_masque_les_secrets_dotenv_avant_de_rendre_la_sortie(tmp_path)
         encoding="utf-8",
     )
 
-    out = _redact_shell_output(f"BASIC_AUTH_SET=oui{secret}\nPUBLIC_FLAG=true", tmp_path)
+    out = _redact_shell_output(
+        f"BASIC_AUTH_SET=oui{secret}\nPUBLIC_FLAG=true", tmp_path
+    )
 
     assert secret not in out
     assert "BASIC_AUTH_SET=<redacted>" in out
@@ -76,8 +78,6 @@ def test_run_shell_masque_une_affectation_sensible_inconnue(tmp_path):
     out = _redact_shell_output("API_TOKEN=valeur-inconnue\nRESULT=ok", tmp_path)
 
     assert out == "API_TOKEN=<redacted>\nRESULT=ok"
-
-
 
 
 def test_array_json_string_parsee():
@@ -99,8 +99,6 @@ def test_string_recoit_liste_jointe():
     sch = {"properties": {"cmd": {"type": "string"}}, "required": []}
     out = validate_and_coerce("t", sch, {"cmd": ["git", "status"]})
     assert out == {"cmd": "git status"}
-
-
 
 
 @pytest.mark.parametrize(
@@ -144,8 +142,6 @@ def test_coerce_enum_top_level_via_schema():
     assert validate_and_coerce("remember", sch, {"kind": "USER"})["kind"] == "profile"
 
 
-
-
 class _Conv:
     def __init__(self):
         self.todos = []
@@ -173,8 +169,6 @@ def test_todo_statut_vraiment_invalide_rejete():
     todo = make_manage_todos(_Conv())
     with pytest.raises(ToolError):
         todo.run({"todos": [{"content": "x", "status": "zzz"}]})
-
-
 
 
 @pytest.mark.parametrize(
@@ -209,8 +203,6 @@ def test_calc_virgule_message_actionnable():
     assert "POINT décimal" in str(e.value)
 
 
-
-
 def test_edit_file_utf16():
     d = Path(tempfile.mkdtemp())
     f = d / "ps.txt"
@@ -219,8 +211,6 @@ def test_edit_file_utf16():
     out = ef.run({"path": "ps.txt", "old_string": "bonjour", "new_string": "salut"})
     assert "modifié" in out
     assert "salut monde" in f.read_text(encoding="utf-16")
-
-
 
 
 def test_read_file_offset_limit_alias():
@@ -233,8 +223,6 @@ def test_read_file_offset_limit_alias():
     assert "L1\n" not in out  # ne repart PAS du début
 
 
-
-
 def test_resolve_expanduser():
     root = Path(tempfile.gettempdir())
     got = _resolve_in_root(root, "~/sous/fichier.txt")
@@ -242,12 +230,30 @@ def test_resolve_expanduser():
     assert got == (Path.home() / "sous" / "fichier.txt").resolve()
 
 
+def test_chemin_unix_absolu_refuse_sous_windows(tmp_path, monkeypatch):
+    """Sous Windows, `/var/x` joint au dossier de travail tombe à la racine du lecteur
+    (C:\\var\\x) : refus explicite avec le bon geste (vécu : SVG perdus dans C:\\var)."""
+    import os
+
+    from loom.tools.base import ToolError
+
+    monkeypatch.setattr(os, "name", "nt")
+    with pytest.raises(ToolError, match="chemin unix absolu"):
+        _resolve_in_root(tmp_path, "/var/sessions/abc/scratch/x.svg")
+    with pytest.raises(ToolError):
+        _resolve_in_root(tmp_path, "\\var\\x")
+    # Un chemin UNC reste accepté ; un relatif aussi.
+    assert (
+        _resolve_in_root(tmp_path, "sous/x.txt")
+        == (tmp_path / "sous" / "x.txt").resolve()
+    )
+    assert _resolve_in_root(tmp_path, "//serveur/partage/x").parts[0].startswith("\\\\")
+
+
 def test_resolve_strip_guillemets():
     root = Path(tempfile.gettempdir())
     got = _resolve_in_root(root, '"C:/Users/x.txt"')
     assert '"' not in str(got)
-
-
 
 
 @pytest.mark.parametrize(
@@ -264,10 +270,8 @@ def test_looks_like_host(target, is_host):
     assert bool(_looks_like_host(target)) is is_host
 
 
-
-
 def test_fetch_url_domaine_nu_et_schema(monkeypatch):
-    import loom.tools.web as web
+    from loom.tools import web
 
     seen = {}
     # Pas de DNS réel dans un test (réseau de l'hôte = variable, ex. DNS64).
@@ -284,8 +288,6 @@ def test_fetch_url_domaine_nu_et_schema(monkeypatch):
     assert seen["url"] == "https://example.com"
     with pytest.raises(ToolError):
         fu.run({"url": "ftp://x"})
-
-
 
 
 def test_find_files_recursif_par_defaut():
@@ -317,13 +319,11 @@ def test_edit_file_prefixe_numero_ligne_detecte():
     assert "N→" in str(e.value) or "préfixe" in str(e.value)  # pointe le piège N→
 
 
-
-
 def test_fetch_url_remonte_statut_http_et_url_origine(monkeypatch):
     # Un 403 doit conserver le statut et l'URL lisible d'origine.
     import httpx
 
-    import loom.tools.web as web
+    from loom.tools import web
 
     def fake_get(
         url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None
@@ -346,7 +346,7 @@ def test_fetch_page_web_search_garde_le_repli_snippet(monkeypatch):
     # Une page de résultat en 403 ne doit pas casser toute la recherche.
     import httpx
 
-    import loom.tools.web as web
+    from loom.tools import web
 
     def fake_get(
         url, params=None, headers=None, timeout=None, pin_ip=None, impersonate=None
@@ -364,7 +364,7 @@ def test_curl_alias_powershell_hint(monkeypatch):
     # Simuler PowerShell 5.1 où curl est un alias et échoue au binding.
     from types import SimpleNamespace
 
-    import loom.tools.shell as shell
+    from loom.tools import shell
     from loom.tools.shell import _unix_ism_hint
 
     monkeypatch.setattr(
@@ -382,7 +382,7 @@ def test_unix_ism_hint_stderr_francais(monkeypatch):
     # Le diagnostic doit reconnaître aussi le message Windows français.
     from types import SimpleNamespace
 
-    import loom.tools.shell as shell
+    from loom.tools import shell
     from loom.tools.shell import _unix_ism_hint
 
     monkeypatch.setattr(
@@ -400,18 +400,16 @@ def test_use_skill_nom_d_outil_redirige():
     # Distinguer une confusion outil/skill d'un skill inconnu.
     from loom.tools.skills import make_use_skill
 
-    us = make_use_skill(lambda: [])
+    us = make_use_skill(list)
     with pytest.raises(ToolError) as e:
         us.run({"name": "dispatch_agent"})
     msg = str(e.value).lower()
     assert "outil" in msg and "dispatch_agent" in msg
 
 
-
-
 def test_fetch_url_params_objet_encode(monkeypatch):
     # L'outil doit encoder lui-même les paramètres structurés.
-    import loom.tools.web as web
+    from loom.tools import web
 
     seen = {}
     # Pas de DNS réel dans un test (réseau de l'hôte = variable, ex. DNS64).
@@ -433,8 +431,6 @@ def test_fetch_url_params_objet_encode(monkeypatch):
     assert seen["url"].startswith("https://www.bienici.com/realEstateAds.json?")
     assert "filters=%7B%22size%22" in seen["url"]  # JSON compact url-encodé
     assert "page=1" in seen["url"]
-
-
 
 
 def test_check_page_accepte_steps(monkeypatch):
@@ -482,8 +478,6 @@ def test_check_interactive_retire_du_catalogue():
 
     spec = br.make_check_page(".")
     assert "steps" in spec.parameters["properties"]
-
-
 
 
 def test_plugins_hors_du_set_par_defaut():

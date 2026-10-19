@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-10-19 : chemin du bac à sable en barres obliques, chemins unix absolus refusés
+
+- Session b64dda17d7e9 : Bonsai a bien utilisé le bac à sable, mais a réécrit son chemin
+  (donné avec des antislashs) en `/var/sessions/<id>/scratch/` ; sous Windows pathlib ne
+  tient pas ce chemin pour absolu et le joint au lecteur : les SVG sont partis dans
+  `C:\var\…`. Le prompt donne désormais le bac à sable en barres obliques, comme le
+  dossier de travail.
+- Les outils fichiers refusent sous Windows un chemin unix absolu (`/var/x`, `\var\x`,
+  hors UNC) avec le geste attendu (chemin complet `C:/…` ou relatif) au lieu d'écrire au
+  mauvais endroit.
+
 ## 2026-10-19 : une session neuve prend le modèle affiché par le sélecteur
 
 - « + new » créait la session avec le dernier modèle choisi (`var/last_model`), qui

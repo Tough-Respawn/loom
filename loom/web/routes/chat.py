@@ -45,7 +45,11 @@ from loom.web.routes.helpers import (
     _totals,
 )
 from loom.web.routes.maintenance import _post_turn_maintenance
-from loom.web.routes.system_prompt import _build_system_prompt, _workspace_note
+from loom.web.routes.system_prompt import (
+    _build_system_prompt,
+    _scratch_dir,
+    _workspace_note,
+)
 
 # Source de vérité de la palette; garder ce catalogue aligné avec les handlers.
 CHAT_COMMANDS = [
@@ -339,7 +343,7 @@ def _register_chat_routes(app, S):
                 S,
                 conv,
                 workspace=sess.workspace,
-                scratch=str(S.session_store.session_dir(sess.id) / "scratch"),
+                scratch=_scratch_dir(S, sess.id),
             )
             _ws_note = _workspace_note(S, conv, sess.workspace)
             content = _build_user_content(

@@ -33,6 +33,13 @@ def _workspace_text(S, ws: str) -> str:
     return f"{text}\n\n{_pm_blk}" if _pm_blk else text
 
 
+def _scratch_dir(S, sid: str) -> str:
+    """Chemin du bac à sable d'une session, en barres obliques comme le dossier de travail :
+    avec des antislashs, un petit modèle a réécrit `C:\\...\\var\\sessions\\<id>\\scratch`
+    en `/var/sessions/<id>/scratch` (fichiers partis dans C:\\var, vécu 2026-10-19)."""
+    return str(S.session_store.session_dir(sid) / "scratch").replace("\\", "/")
+
+
 def _scratch_text(scratch: str) -> str:
     """Consigne du bac à sable de la session : dossier jetable pour les essais, et
     environnement Python éphémère (uv) quand une bibliothèque manque — le modèle
