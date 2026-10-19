@@ -399,21 +399,15 @@
     .skdr-actions button:hover { background: var(--bg-hover); color: var(--text); }
     .skdr-actions button.primary { background: var(--accent-dim); color: #fff; border-color: transparent; }
     .skdr-actions button.primary:hover { filter: brightness(1.12); }
-    /* --- moniteur système live (CPU/RAM/GPU), coin haut-droit, modèle LOCAL ---
-       Descendu sous la barre du haut (compteur tokens) et déplaçable à la souris
-       (drag = toute la boîte, position mémorisée — cf. app.js). --- */
+    /* --- moniteur système live (CPU/RAM/GPU), modèle LOCAL : docké en bas de la barre
+       latérale, au-dessus du bouton Reset — il ne recouvre jamais le fil. --- */
     #sysmon {
-      position: fixed; top: 56px; right: 12px; z-index: 30; width: 194px;
-      background: rgba(17, 20, 27, .82); backdrop-filter: blur(9px);
-      -webkit-backdrop-filter: blur(9px);
-      border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px 8px;
-      display: flex; flex-direction: column; gap: 6px;
-      box-shadow: 0 6px 22px rgba(0, 0, 0, .38);
+      margin: 0 0 10px; background: var(--bg-elev);
+      border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px 7px;
+      display: flex; flex-direction: column; gap: 5px;
       font-size: 10.5px; color: var(--text-dim); font-family: var(--mono);
-      animation: sm-in .18s ease;
-      cursor: grab; touch-action: none; user-select: none;
+      animation: sm-in .18s ease; user-select: none;
     }
-    #sysmon.sm-drag { cursor: grabbing; }
     #sysmon[hidden] { display: none; }
     @keyframes sm-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
     .sm-head {
@@ -1333,6 +1327,37 @@
         </div>
       </details>
       <div class="sb-section" style="margin-top:auto; padding-bottom:12px;">
+        <!-- Moniteur système docké ici (modèle LOCAL) : il ne recouvre jamais le fil. -->
+        <div id="sysmon" hidden aria-label="Moniteur système">
+          <div class="sm-head"><span id="sm-gpu-name">GPU</span></div>
+          <div class="sm-row">
+            <span class="sm-label">CPU</span>
+            <canvas class="sm-spark" id="sm-cpu-spark" width="96" height="22"></canvas>
+            <span class="sm-val" id="sm-cpu-val">–</span>
+          </div>
+          <div class="sm-row">
+            <span class="sm-label">GPU</span>
+            <canvas class="sm-spark" id="sm-gpu-spark" width="96" height="22"></canvas>
+            <span class="sm-val" id="sm-gpu-val">–</span>
+          </div>
+          <div class="sm-bar-row">
+            <span class="sm-label">RAM</span>
+            <div class="sm-bar"><div class="sm-bar-fill" id="sm-ram-fill"></div></div>
+            <span class="sm-val" id="sm-ram-val">–</span>
+          </div>
+          <div class="sm-bar-row">
+            <span class="sm-label">VRAM</span>
+            <div class="sm-bar"><div class="sm-bar-fill sm-vram" id="sm-vram-fill"></div></div>
+            <span class="sm-val" id="sm-vram-val">–</span>
+          </div>
+          <div class="sm-bar-row" id="sm-dl-row" hidden>
+            <span class="sm-label">DDL</span>
+            <div class="sm-bar"><div class="sm-bar-fill sm-dl" id="sm-dl-fill"></div></div>
+            <span class="sm-val" id="sm-dl-val">–</span>
+          </div>
+          <div class="sm-foot" id="sm-dl-name" hidden></div>
+          <div class="sm-foot"><span id="sm-temp"></span><span id="sm-power"></span></div>
+        </div>
         <button class="reset" id="reset-btn" type="button">Reset conversation</button>
       </div>
     </div>
@@ -1580,36 +1605,6 @@
     </section>
   </template>
 
-  <div id="sysmon" hidden aria-label="Moniteur système">
-    <div class="sm-head"><span id="sm-gpu-name">GPU</span></div>
-    <div class="sm-row">
-      <span class="sm-label">CPU</span>
-      <canvas class="sm-spark" id="sm-cpu-spark" width="96" height="22"></canvas>
-      <span class="sm-val" id="sm-cpu-val">–</span>
-    </div>
-    <div class="sm-row">
-      <span class="sm-label">GPU</span>
-      <canvas class="sm-spark" id="sm-gpu-spark" width="96" height="22"></canvas>
-      <span class="sm-val" id="sm-gpu-val">–</span>
-    </div>
-    <div class="sm-bar-row">
-      <span class="sm-label">RAM</span>
-      <div class="sm-bar"><div class="sm-bar-fill" id="sm-ram-fill"></div></div>
-      <span class="sm-val" id="sm-ram-val">–</span>
-    </div>
-    <div class="sm-bar-row">
-      <span class="sm-label">VRAM</span>
-      <div class="sm-bar"><div class="sm-bar-fill sm-vram" id="sm-vram-fill"></div></div>
-      <span class="sm-val" id="sm-vram-val">–</span>
-    </div>
-    <div class="sm-bar-row" id="sm-dl-row" hidden>
-      <span class="sm-label">DDL</span>
-      <div class="sm-bar"><div class="sm-bar-fill sm-dl" id="sm-dl-fill"></div></div>
-      <span class="sm-val" id="sm-dl-val">–</span>
-    </div>
-    <div class="sm-foot" id="sm-dl-name" hidden></div>
-    <div class="sm-foot"><span id="sm-temp"></span><span id="sm-power"></span></div>
-  </div>
 
   <div id="skill-scrim" hidden></div>
   <aside id="skill-drawer" hidden aria-label="Éditeur de skill">

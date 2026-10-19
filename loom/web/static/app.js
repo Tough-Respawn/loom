@@ -4,7 +4,7 @@ import { initKbdCheatsheet } from "./kbd.js";
 import { initWizardPanel } from "./model-add.js";
 import { _phRaf, loomWorkdir, set_CMDS, set__phRaf, set_loomWorkdir, set_machineUnloaded, set_skGenBusy } from "./shared.js";
 import { addImages, clampRatio, createPane, renderLayout, savePanesLayout, updatePlaceholders } from "./panes.js";
-import { SM_POS_KEY, _multiSel, _typesetAll, clearMultiSel, closeDrawer, closeSkillDrawer, closeTabMenu, compactBtn, doDeleteSkill, drawer, drawerClose, drawerScrim, fmtTok, localOnlyCb, newSessionTab, openConfirmPop, openDeleteConfirm, openDrawer, openSkillCreator, openSkillEditor, paintModelSelect, pickFolderBtn, postForm, postSkillsToggle, reflectWorkdir, resetBtn, saveSkill, scheduleMachineRefresh, sessionNew, setMetrics, setSkillDrawerMode, settingsBtn, showToast, sidebarEl, sidebarToggle, singleView, skBody, skCurrent, skDraft, skDrawer, skGenDesc, skMode, skNameInput, skScrim, skStatus, smPlace, splitWith, syncSkillsMaster, thinkingCb, toggleMultiSel, updateUsageMeter, workdirChip } from "./panels.js";
+import { _multiSel, _typesetAll, clearMultiSel, closeDrawer, closeSkillDrawer, closeTabMenu, compactBtn, doDeleteSkill, drawer, drawerClose, drawerScrim, fmtTok, localOnlyCb, newSessionTab, openConfirmPop, openDeleteConfirm, openDrawer, openSkillCreator, openSkillEditor, paintModelSelect, pickFolderBtn, postForm, postSkillsToggle, reflectWorkdir, resetBtn, saveSkill, scheduleMachineRefresh, sessionNew, setMetrics, setSkillDrawerMode, settingsBtn, showToast, sidebarEl, sidebarToggle, singleView, skBody, skCurrent, skDraft, skDrawer, skGenDesc, skMode, skNameInput, skScrim, skStatus, splitWith, syncSkillsMaster, thinkingCb, toggleMultiSel, updateUsageMeter, workdirChip } from "./panels.js";
 import { activeTab, focusedPane, renderPane, scheduleRenderFor, state, tab } from "./state.js";
 import { _hydrateTimeline, _replayTimeline, _userTexts, ensureTab, focusPane, openTab, renderTabs, setPaneSid } from "./tabs.js";
 import { INIT } from "./render.js";
@@ -534,32 +534,6 @@ document
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && skDrawer && !skDrawer.hidden) closeSkillDrawer();
 });
-
-(function () {
-  const el = document.getElementById("sysmon");
-  if (!el) return;
-  let grab = null; // décalage curseur -> coin de la boîte pendant le drag
-  el.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
-    const r = el.getBoundingClientRect();
-    grab = { x: e.clientX - r.left, y: e.clientY - r.top };
-    el.classList.add("sm-drag");
-    el.setPointerCapture(e.pointerId);
-  });
-  el.addEventListener("pointermove", (e) => {
-    if (!grab) return;
-    smPlace(el, e.clientX - grab.x, e.clientY - grab.y);
-  });
-  const drop = () => {
-    if (!grab) return;
-    grab = null;
-    el.classList.remove("sm-drag");
-    const r = el.getBoundingClientRect();
-    localStorage.setItem(SM_POS_KEY, JSON.stringify({ l: r.left, t: r.top }));
-  };
-  el.addEventListener("pointerup", drop);
-  el.addEventListener("lostpointercapture", drop);
-})();
 
 (function () {
   const rmList = document.getElementById("rm-list");
