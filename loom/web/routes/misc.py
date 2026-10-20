@@ -111,7 +111,16 @@ def _register_misc_routes(app, S):
             return Response("session invalide", status=404)
         if PurePosixPath(name).suffix.lower() not in ARTIFACT_EXTS:
             return Response("type non servi", status=404)
-        return send_from_directory(S.session_store.root / sid / "scratch", name)
+        resp = send_from_directory(S.session_store.root / sid / "scratch", name)
+        # Le modèle écrit ces fichiers, et il ingère des contenus web : un SVG peut porter
+        # un <script>. Dans <img> il est inerte ; ouvert en haut de page il s'exécuterait
+        # sur l'origine de Loom. CSP « sandbox, aucune source » : rien ne s'exécute, aucun
+        # accès à l'origine, et <img> n'est pas concerné (pas un document).
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+        )
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
 
     @app.get("/genimg/<name>")
     def genimg(name: str):

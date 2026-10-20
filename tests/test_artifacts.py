@@ -44,6 +44,15 @@ def test_route_scratch_sert_les_images_seulement(web):
     (scratch / "a.py").write_text("secret", encoding="utf-8")
     r = web.get(f"/session/{sid}/scratch/a.png")
     assert r.status_code == 200 and r.data.startswith(b"\x89PNG")
+    # Un SVG écrit par le modèle ne doit jamais s'exécuter sur l'origine de Loom.
+    (scratch / "s.svg").write_text(
+        "<svg><script>fetch('/reset')</script></svg>", encoding="utf-8"
+    )
+    r = web.get(f"/session/{sid}/scratch/s.svg")
+    assert r.status_code == 200
+    assert "sandbox" in r.headers["Content-Security-Policy"]
+    assert "default-src 'none'" in r.headers["Content-Security-Policy"]
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
     assert web.get(f"/session/{sid}/scratch/a.py").status_code == 404
     assert web.get(f"/session/{sid}/scratch/absente.png").status_code == 404
     assert web.get("/session/../scratch/a.png").status_code == 404
