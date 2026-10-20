@@ -15,6 +15,9 @@
   n'est pas une vraie image (du code nommé `.png`, vécu session dc23325088d6) s'affiche
   comme tel. L'utilisateur n'a plus à croire le modèle sur parole quand il « décrit » une
   image qu'il n'a pas regardée.
+- Ces fichiers sont servis sous une CSP « sandbox, aucune source » et `nosniff` : un SVG
+  écrit par le modèle (qui ingère des contenus web) ne peut rien exécuter sur l'origine
+  de Loom s'il est ouvert en haut de page ; l'affichage dans le fil (`<img>`) est inchangé.
 
 ## 2026-10-20 : le prompt dit « pas de /tmp, même dans tes scripts » et « regarde l'image »
 
