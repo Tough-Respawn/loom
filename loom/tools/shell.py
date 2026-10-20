@@ -154,7 +154,7 @@ def _workspace_secret_values(root: Path) -> set[str]:
             key, value = stripped.split("=", 1)
             if not _SENSITIVE_NAME.search(key):
                 continue
-            value = value.strip().strip('"\'')
+            value = value.strip().strip("\"'")
             if len(value) >= 4:
                 values.add(value)
     return values
@@ -326,13 +326,17 @@ def make_run_shell(
             return f"erreur: exit {proc.returncode} — {head}{hint}\n{body}"
         return body
 
+    syntax = (
+        "PowerShell syntax, never unix-isms (ls|wc, grep, dir /b)"
+        if detect().shell_family == "powershell"
+        else "unix syntax, never PowerShell cmdlets"
+    )
     return ToolSpec(
         name="run_shell",
         description=(
             f"Runs a shell command ({detect().shell_label}) in the workspace and "
-            "returns the exit code, stdout and stderr. Write for THAT shell only — "
-            "on Windows that means PowerShell syntax, never unix-isms (ls|wc, grep, "
-            "dir /b). To START-CHECK-STOP a web server (Next.js/Vite/Flask), use "
+            f"returns the exit code, stdout and stderr. Write for THAT shell only: "
+            f"{syntax}. To START-CHECK-STOP a web server (Next.js/Vite/Flask), use "
             "serve_and_check. The command must TERMINATE (no GUI or server loop: "
             "killed at the timeout). Destructive commands are refused."
         ),

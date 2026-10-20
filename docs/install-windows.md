@@ -9,6 +9,13 @@ uv run python -m loom.web      # l'UI démarre le serveur modèle toute seule
 ```
 
 (`serve.py` lancé sur machine vierge enchaîne aussi tout seul sur l'installeur.)
+
+**Shell de l'agent** : installe [Git for Windows](https://git-scm.com/download/win).
+`run_shell` exécute alors ses commandes dans Git Bash (`Git\bin\bash.exe`, trouvé à
+côté de `git`) : les modèles écrivent du bash bien plus sûrement que du PowerShell, et
+une commande y démarre en ~80 ms contre ~300. Sans Git for Windows, Loom retombe sur
+PowerShell. `LOOM_SHELL=powershell` force PowerShell même si Git Bash est présent. Le
+`bash` de `System32` (lanceur WSL) n'est jamais utilisé.
 `loom-setup` détecte la machine (GPU/VRAM/RAM), télécharge la dernière release
 stable de llama.cpp (build CUDA si NVIDIA, sinon Vulkan/CPU) dans
 `var/runtime/llama/<tag>/`, écrit `[server] bin` dans `config/local.toml`,

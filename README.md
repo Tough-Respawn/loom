@@ -71,7 +71,7 @@ moment.** Pas de pipeline déterministe, pas de rail de réflexion, pas de mode 
   - **Notes et mémoire** : `write_note`, `read_note`, `remember`, `recall`.
   - **Modifier / créer** : `write_file`, `append_file`, `edit_file`
     (remplacement exact-unique), `format_code` (ruff Python / prettier web).
-  - **Exécuter** : `run_shell` (PowerShell/bash, garde-fou deny-list, tue l'arbre au timeout).
+  - **Exécuter** : `run_shell` (bash partout, via Git Bash sous Windows avec repli PowerShell ; garde-fou deny-list, tue l'arbre au timeout).
     `monitor` suit une commande de fond et injecte ses événements dans la conversation.
   - **Web** : `web_search`, `fetch_url`. Une recherche ou une lecture qui échoue (réseau,
     moteurs bloqués, page de blocage) est signalée comme un échec avec sa cause, jamais

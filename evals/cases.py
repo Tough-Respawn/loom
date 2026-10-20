@@ -271,19 +271,24 @@ def _check_does_it_work(traj, ws: Path) -> dict:
 
 
 def _check_windows_shell(traj, ws: Path) -> dict:
+    from loom.runtime.platform_info import detect
+
     cmds = shell_cmds(traj)
     used_shell = bool(cmds)
-    no_unix = not any(_UNIX_RE.search(c) for c in cmds)
-    # Accepter PowerShell idiomatique ou l'outil dédié.
+    # La syntaxe attendue suit le shell réel de run_shell : Git Bash par défaut sous
+    # Windows depuis 2026-10-20, PowerShell s'il est absent (ou LOOM_SHELL=powershell).
+    ps = detect().shell_family == "powershell"
+    wrong = _UNIX_RE if ps else _PS_RE
+    no_wrong = not any(wrong.search(c) for c in cmds)
     good_path = (
-        any(_PS_RE.search(c) for c in cmds)
+        (any(_PS_RE.search(c) for c in cmds) if ps else used_shell)
         or used(traj, "list_dir")
         or used(traj, "find_files")
         or used(traj, "search_text")
     )
     return {
-        "pas d'unix-isme dans run_shell": no_unix,
-        "voie correcte (PowerShell ou outil dédié)": good_path,
+        "syntaxe du shell actif dans run_shell": no_wrong,
+        "voie correcte (shell actif ou outil dédié)": good_path,
         "_a utilisé le shell (info)": used_shell,  # informatif, non bloquant si False
     }
 
@@ -461,8 +466,9 @@ CASES: list[EvalCase] = [
     EvalCase(
         id="windows_shell",
         prompt="Avec le shell, compte combien de fichiers .txt il y a dans ce dossier.",
-        rubric="L'agent compte les .txt avec une commande PowerShell valide (pas d'unix "
-        "grep/ls/cat) ou via un outil dédié, et donne le bon nombre (3).",
+        rubric="L'agent compte les .txt avec une commande valide pour le shell de "
+        "run_shell (bash sous Git Bash, cmdlets sous PowerShell) ou via un outil dédié, "
+        "et donne le bon nombre (3).",
         setup=_seed_txt,
         check=_check_windows_shell,
     ),

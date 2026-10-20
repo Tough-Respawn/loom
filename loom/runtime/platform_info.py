@@ -7,6 +7,7 @@ endroit décide -> le modèle n'est jamais orienté vers les mauvaises conventio
 
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import sys
@@ -21,16 +22,43 @@ _PS_UTF8 = (
     "$OutputEncoding=[System.Text.Encoding]::UTF8; "
 )
 
+# Git Bash : `python3` n'existe pas sous Windows (l'alias du Microsoft Store répond
+# « Python est introuvable ») et les modèles l'écrivent par réflexe Linux.
+_PY3_ALIAS = 'python3() { python "$@"; }; '
+# Même piège d'accents que _PS_UTF8 : les exe natifs (cmd, ipconfig…) écrivent dans la
+# page OEM de la console (cp850) ; on la passe en UTF-8, comme le fait le préfixe PS.
+_BASH_UTF8 = "chcp.com 65001 >/dev/null 2>&1; "
+
+
+def _git_bash() -> str:
+    """bash.exe de Git for Windows, ou ''. Jamais `shutil.which("bash")` : sous Windows
+    il renvoie System32\\bash.exe, le lanceur WSL (autre système de fichiers, autre
+    Python, sans les outils de la machine)."""
+    candidates = []
+    git = shutil.which("git")
+    if git:
+        # Git\cmd\git.exe ou Git\mingw64\bin\git.exe -> Git\bin\bash.exe
+        candidates += [p / "bin" / "bash.exe" for p in Path(git).resolve().parents[:3]]
+    for env, sub in (
+        ("ProgramFiles", "Git"),
+        ("ProgramW6432", "Git"),
+        ("LOCALAPPDATA", "Programs/Git"),
+    ):
+        if os.environ.get(env):
+            candidates.append(Path(os.environ[env]) / sub / "bin" / "bash.exe")
+    return next((str(c) for c in candidates if c.is_file()), "")
+
 
 @dataclass(frozen=True)
 class PlatformInfo:
     key: str  # "windows" | "macos" | "linux"
     label: str  # ex. "Windows 11", "macOS 14.5 (Apple Silicon)", "Ubuntu 24.04 LTS"
-    shell_kind: str  # "pwsh" | "powershell" | "bash"
+    shell_kind: str  # "pwsh" | "powershell" | "bash" | "git-bash"
     shell_family: str  # "powershell" | "posix"
     is_windows: bool
     is_macos: bool
     is_linux: bool
+    shell_path: str = ""  # git-bash : chemin de bash.exe
 
     @property
     def shell_label(self) -> str:
@@ -38,10 +66,15 @@ class PlatformInfo:
             "pwsh": "PowerShell 7 (pwsh)",
             "powershell": "PowerShell",
             "bash": "bash",
+            "git-bash": "bash (Git Bash)",
         }[self.shell_kind]
 
     def shell_argv(self, command: str) -> list[str]:
         """argv pour exécuter `command` dans le shell natif du système."""
+        if self.shell_kind == "git-bash":
+            # -c et pas -lc : le lanceur Git\bin\bash.exe pose déjà le PATH unix, et un
+            # shell de login coûte ~600 ms par commande (mesuré 2026-10-20 : 60 contre 650).
+            return [self.shell_path, "-c", _BASH_UTF8 + _PY3_ALIAS + command]
         if self.shell_family == "powershell":
             exe = "pwsh" if self.shell_kind == "pwsh" else "powershell"
             # Loom lit la sortie en UTF-8, mais PowerShell (et les exe natifs qu'il
@@ -70,6 +103,16 @@ class PlatformInfo:
                 "run_shell par commande. `python3` n'existe pas : `python`. `/tmp` n'existe "
                 "pas non plus, y compris DANS tes scripts (`open('/tmp/x')`, `save('/tmp/x')`) "
                 ": écris tes sorties dans le bac à sable de la session."
+            )
+        elif self.shell_kind == "git-bash":
+            conv = (
+                "run_shell exécute du **bash (Git Bash)** : commandes unix (`ls`, `grep`, "
+                "`cat`, `head`, `find`, `&&`, `||`, `2>/dev/null`…) et programmes Windows "
+                "(`python`, `uv`, `git`, `node`). PAS de cmdlets PowerShell. Chemins : écris "
+                "`C:/Users/...` (lecteur et barres obliques), compris par le shell, les autres "
+                "outils et tes scripts ; `/c/Users/...` ne marche que dans le shell. `cmd /c` "
+                "s'écrit `cmd //c`. Python est celui de Windows : dans tes scripts, `/tmp` "
+                "devient `C:\\tmp` ; écris tes sorties dans le bac à sable de la session."
             )
         else:
             conv = (
@@ -116,6 +159,25 @@ def detect() -> PlatformInfo:
     """Profil du système courant (mis en cache : l'OS ne change pas en cours d'exécution)."""
     p = sys.platform
     if p.startswith("win"):
+        # Git Bash par défaut : les modèles écrivent du bash bien plus sûrement que du
+        # PowerShell (session dc23325088d6 : 13 échecs sur 17 commandes, dont 9 réflexes
+        # bash refusés par PowerShell 5.1). LOOM_SHELL=powershell force l'ancien shell.
+        bash = (
+            ""
+            if os.environ.get("LOOM_SHELL", "").lower() == "powershell"
+            else _git_bash()
+        )
+        if bash:
+            return PlatformInfo(
+                key="windows",
+                label=_windows_label(),
+                shell_kind="git-bash",
+                shell_family="posix",
+                is_windows=True,
+                is_macos=False,
+                is_linux=False,
+                shell_path=bash,
+            )
         return PlatformInfo(
             key="windows",
             label=_windows_label(),
