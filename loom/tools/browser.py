@@ -30,7 +30,7 @@ from loom.permissions import _is_hard_denied
 from loom.runtime.platform_info import detect
 from loom.tools._net import categorize_ip
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
-from loom.tools.shell import _kill_tree, _shell_argv
+from loom.tools.shell import _child_env, _kill_tree, _shell_argv
 from loom.tools.trust import untrusted
 
 # Les serveurs restent disponibles entre vérifications; atexit et TTL évitent les orphelins.
@@ -274,7 +274,7 @@ def _render_page(
                         f"sélecteur(s) invalide(s) ignoré(s) : {', '.join(bad)}"
                     )
             browser.close()
-    except Exception as exc:  # noqa: BLE001 - navigateur absent / page injoignable
+    except Exception as exc:
         msg = str(exc)
         if "Executable doesn't exist" in msg or "playwright install" in msg:
             raise ToolError(_INSTALL_HINT) from exc
@@ -568,6 +568,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                     stdin=subprocess.DEVNULL,
                     stdout=logf,
                     stderr=subprocess.STDOUT,
+                    env=_child_env(),
                     **popen_kwargs,
                 )
             except OSError as exc:

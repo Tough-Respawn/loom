@@ -74,8 +74,7 @@ def _scratch_text(scratch: str) -> str:
         '<paquet>` (plusieurs : `add a b` ; version : `add "matplotlib==3.9"`), puis '
         f"exécute tes scripts avec `uv --directory {scratch} run python <script.py>` : "
         "l'environnement du bac à sable sert, les dépendances ajoutées y restent pour toute "
-        "la session, rien à activer. Ces commandes marchent depuis n'importe quel dossier ; "
-        "un avertissement `VIRTUAL_ENV ... does not match` est normal, ignore-le. "
+        "la session, rien à activer. Ces commandes marchent depuis n'importe quel dossier. "
         "Pour un essai unique sans garder le paquet : `uv run --with <paquet> python "
         "<script.py>`. La première installation demande le réseau.\n"
         "Figure, schéma, graphique demandé : écris un SVG ou une page HTML dans le bac à "

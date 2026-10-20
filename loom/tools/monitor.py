@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import atexit
 import json
-import os
 import queue
 import subprocess
 import threading
@@ -17,7 +16,7 @@ from pathlib import Path
 from loom.permissions import _is_hard_denied
 from loom.runtime.platform_info import detect
 from loom.tools.base import ToolError, ToolSpec
-from loom.tools.shell import _kill_tree, _shell_argv
+from loom.tools.shell import _child_env, _kill_tree, _shell_argv
 from loom.tools.trust import untrusted
 
 _BATCH_GAP_S = 0.2
@@ -189,7 +188,7 @@ class MonitorHub:
         popen_kwargs: dict = {}
         if not detect().is_windows:
             popen_kwargs["start_new_session"] = True
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        env = _child_env()
         try:
             stderr_fh = log_path.open("w", encoding="utf-8")
             proc = subprocess.Popen(
