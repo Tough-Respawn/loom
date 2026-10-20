@@ -56,7 +56,11 @@ def _scratch_text(scratch: str) -> str:
         "met en cache seul ; la première fois demande le réseau.\n"
         "Figure, schéma, graphique demandé : écris un SVG ou une page HTML dans le bac à "
         "sable et vérifie-la avec check_page, ou produis un PNG (`uv run --with "
-        "matplotlib`) et relis-le avec read_image ; donne ensuite le chemin du fichier."
+        "matplotlib`) et relis-le avec read_image ; donne ensuite le chemin du fichier. "
+        "Une image que tu produis n'est vérifiée QUE par read_image (ou check_page pour "
+        "un SVG/HTML) : ne décris jamais le contenu d'une image que tu n'as pas regardée, "
+        "une taille de fichier ou un `Image.open` ne prouvent rien. Les sorties de tes "
+        "scripts (save, open en écriture) vont dans ce même bac à sable, jamais dans /tmp."
     )
 
 
@@ -67,7 +71,13 @@ def _prompt_build() -> str:
     --with » livrée, le modèle d'une session ouverte ne l'a jamais vue, prompt figé)."""
     from loom.prompts import CHAT_SYSTEM
 
-    raw = CHAT_SYSTEM + CHAT_SYSTEM_STRONG + _scratch_text("@")
+    # Le bloc Système (conventions OS) compte aussi : il est livré avec Loom.
+    raw = (
+        CHAT_SYSTEM
+        + CHAT_SYSTEM_STRONG
+        + _scratch_text("@")
+        + platform_detect().prompt_block()
+    )
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:8]
 
 

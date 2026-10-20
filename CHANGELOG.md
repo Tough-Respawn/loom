@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-10-20 : le prompt dit « pas de /tmp, même dans tes scripts » et « regarde l'image »
+
+- Session dc23325088d6 (Bonsai, fractale de Mandelbrot) : le réflexe `uv run --with pillow`
+  a marché, le script est allé dans le bac à sable… mais il sauvait l'image dans `/tmp/`
+  (donc `C:\tmp`), et le modèle a décrit une « légende visible » sur une image qu'il n'a
+  jamais regardée (en réalité une bande brune sur fond noir, bug d'indexation). Le bloc
+  Système dit désormais : pas de `&&`, pas de `python3`, pas de `/tmp` y compris dans les
+  scripts ; la section bac à sable dit qu'une image produite n'est vérifiée que par
+  read_image ou check_page, jamais par une taille de fichier. Le bloc Système entre dans
+  l'empreinte du harnais (refige des sessions ouvertes).
+
 ## 2026-10-19 : fenêtre d'application liée, fermer l'une ferme l'autre
 
 - `python -m loom.web --app` (ou `[chat] app_window = true`) : loom.web ouvre lui-même
