@@ -65,7 +65,11 @@ class PlatformInfo:
                 f"run_shell exécute du **{self.shell_label}**. N'écris JAMAIS d'unix "
                 "(`grep`, `ls`, `cat`, `find`, `wc`, `2>/dev/null`, `rm -rf`…) : ils "
                 "n'existent pas ici — utilise les cmdlets (`Get-ChildItem`, `Select-String`, "
-                "`Get-Content`, `Measure-Object`, `Remove-Item`). Variables `$env:VAR`."
+                "`Get-Content`, `Measure-Object`, `Remove-Item`). Variables `$env:VAR`. "
+                "Pas de `&&` ni `||` (PowerShell 5.1) : `;` entre les commandes, ou un appel "
+                "run_shell par commande. `python3` n'existe pas : `python`. `/tmp` n'existe "
+                "pas non plus, y compris DANS tes scripts (`open('/tmp/x')`, `save('/tmp/x')`) "
+                ": écris tes sorties dans le bac à sable de la session."
             )
         else:
             conv = (
