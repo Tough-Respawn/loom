@@ -92,6 +92,37 @@ def _shell_argv(command: str) -> list[str]:
     return detect().shell_argv(command)
 
 
+def _child_env() -> dict:
+    """Environnement des commandes du modèle : celui de Loom, SANS son venv. Hérité, il
+    faisait de `python`/`pip` ceux de Loom (un `pip install` aurait pollué Loom) et uv
+    avertissait à chaque commande (« VIRTUAL_ENV ... does not match », vécu 2026-10-20,
+    session 8ff2be6f7e1b). UTF-8 forcé : pas de mojibake sous Windows localisé."""
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    env.pop("VIRTUAL_ENV_PROMPT", None)
+    venv = env.pop("VIRTUAL_ENV", None)
+    if venv:
+        own = {os.path.normcase(os.path.join(venv, d)) for d in ("Scripts", "bin")}
+        env["PATH"] = os.pathsep.join(
+            p
+            for p in env.get("PATH", "").split(os.pathsep)
+            if os.path.normcase(p.rstrip("\\/")) not in own
+        )
+    return env
+
+
+_ERROR_LINE = re.compile(r"^[\w.]*(Error|Exception)\b")
+
+
+def _error_head(text: str) -> str:
+    """La ligne qui dit l'erreur : la dernière `XxxError: ...` (un traceback Python finit
+    par elle), sinon la première ligne qui n'est pas un avertissement (uv, pip)."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    hit = next((ln for ln in reversed(lines) if _ERROR_LINE.match(ln)), None)
+    if hit is None:
+        hit = next((ln for ln in lines if not ln.lower().startswith("warning")), None)
+    return (hit or (lines[0] if lines else "commande échouée"))[:200]
+
+
 def _has_unquoted_ps_chain_operator(command: str) -> bool:
     """Détecte ``&&``/``||`` seulement dans la syntaxe PowerShell elle-même.
 
@@ -244,8 +275,7 @@ def make_run_shell(
         popen_kwargs: dict = {}
         if not detect().is_windows:
             popen_kwargs["start_new_session"] = True
-        # Forcer UTF-8 évite le mojibake des scripts Python sous Windows localisé.
-        _env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        _env = _child_env()
         try:
             proc = subprocess.Popen(
                 _shell_argv(command),
@@ -319,9 +349,7 @@ def make_run_shell(
         body = _truncate(body, max_output)
         # Le préfixe d'erreur pilote le statut; le vrai diagnostic doit rester en tête.
         if proc.returncode != 0:
-            head = (stderr or stdout or "").strip().split("\n")[0][
-                :200
-            ] or "commande échouée"
+            head = _error_head(stderr or stdout or "")
             hint = _unix_ism_hint(command, stderr)
             return f"erreur: exit {proc.returncode} — {head}{hint}\n{body}"
         return body

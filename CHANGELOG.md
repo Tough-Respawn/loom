@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-20 : les commandes du modèle n'héritent plus du venv de Loom
+
+- `run_shell`, `monitor` et `serve_and_check` retirent `VIRTUAL_ENV` et le dossier
+  `Scripts` (ou `bin`) du venv de Loom du PATH de leurs commandes. Hérité, ce venv
+  faisait de `python` et `pip` ceux de Loom (un `pip install` du modèle aurait modifié
+  Loom), et uv avertissait à chaque commande (« VIRTUAL_ENV ... does not match »,
+  session 8ff2be6f7e1b).
+- La ligne d'erreur résumée (`erreur: exit N — ...`, ligne OUT de la carte) donne la
+  vraie erreur : la dernière ligne `XxxError: ...` d'un traceback, sinon la première
+  ligne qui n'est pas un avertissement. Avant, elle montrait l'avertissement d'uv ou
+  « Traceback (most recent call last): ».
+
 ## 2026-10-20 : sous Windows, run_shell passe par Git Bash
 
 - Les modèles écrivent du bash par réflexe. Dans la session dc23325088d6 (Bonsai 2 9B),
