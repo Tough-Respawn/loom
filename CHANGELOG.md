@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-10-20 : le bac à sable est un projet uv, environnement Python propre à la session
+
+- Loom crée `var/sessions/<id>/scratch/pyproject.toml` (projet nu, sans build) avec le bac
+  à sable. Le modèle ajoute ce qui lui manque avec `uv --directory <scratch> add <paquet>`
+  et exécute avec `uv --directory <scratch> run python <script>` : les dépendances restent
+  dans le `.venv` du bac à sable pour toute la session (une seule installation, pas de
+  résolution à chaque script), rien sur la machine, tout part avec la session.
+  `uv run --with` reste cité pour un essai unique. Le fichier n'est jamais écrasé au
+  refigeage du prompt. Le prompt change, donc toute session ouverte est refigée.
+
 ## 2026-10-20 : les images produites dans le bac à sable s'affichent dans le fil
 
 - Après chaque résultat d'outil, le bac à sable de la session est balayé : toute image

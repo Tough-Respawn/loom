@@ -48,10 +48,19 @@ def test_bac_a_sable_cree_et_annonce(S, tmp_path):
     conv = _conv()
     text, _ = sp._build_system_prompt(S, conv, workspace="C:/a", scratch=str(scratch))
     assert scratch.is_dir() and str(scratch) in text
+    # Projet uv nu : `uv add` y installe dans un .venv propre à la session.
+    pyproject = scratch / "pyproject.toml"
+    assert 'name = "loom-scratch"' in pyproject.read_text(encoding="utf-8")
+    # Jamais écrasé : les dépendances ajoutées par le modèle survivent au refigeage.
+    pyproject.write_text("dependencies = ['pillow']", encoding="utf-8")
+    sp._scratch_init(str(scratch))
+    assert pyproject.read_text(encoding="utf-8") == "dependencies = ['pillow']"
     assert "SCR:None" in sp._build_system_prompt(S, _conv(), workspace="C:/a")[0]
-    # Le texte réel dit le chemin, l'environnement jetable uv et la voie « figure ».
+    # Le texte réel dit le chemin, le projet uv (add puis run) et la voie « figure ».
     section = sp._scratch_text(str(scratch))
     assert str(scratch) in section
+    assert f"uv --directory {scratch} add" in section
+    assert f"uv --directory {scratch} run python" in section
     assert "uv run --with" in section and "check_page" in section
     assert "ModuleNotFoundError" in section
 
