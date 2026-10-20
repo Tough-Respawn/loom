@@ -139,6 +139,12 @@ export async function sendChat(sid, text, images, options = {}) {
         if (asstId) { patch(asstId, { done: true }); asstId = null; }
         push({ kind: "harness", hkind: evt.kind, text: evt.text });
         break;
+      case "artifact":
+        // Image produite dans le bac à sable : montrée telle quelle, à sa position.
+        if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
+        if (asstId) { patch(asstId, { done: true }); asstId = null; }
+        push({ kind: "artifact", name: evt.name, url: evt.url, size: evt.size });
+        break;
       case "monitor_event":
         if (thinkId) { patch(thinkId, { active: false }); thinkId = null; }
         if (asstId) { patch(asstId, { done: true }); asstId = null; }

@@ -1174,6 +1174,14 @@
     .term-block .tool-name { font-family: var(--mono); font-weight: 600; font-size: 12px; color: var(--accent); }
     .term-block .tool-status { margin-left: auto; font-size: 11px; color: var(--accent); opacity: .8; }
     .term-log { margin: 4px 0 2px; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--text-dim); }
+    /* Image produite dans le bac à sable, montrée dans le fil. */
+    .artifact { max-width: 100%; font-size: 12px; color: var(--text-dim); background: var(--bg-panel); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 5px 10px 8px; }
+    .artifact .tool-name { font-family: var(--mono); font-weight: 600; font-size: 12px; color: var(--accent); }
+    .artifact-meta { color: var(--text-faint); font-size: 11px; }
+    .artifact-open { margin-left: auto; font-size: 11px; color: var(--text-dim); text-decoration: none; border: 1px solid var(--border); border-radius: 4px; padding: 1px 7px; }
+    .artifact-open:hover { color: var(--text); border-color: var(--text-faint); }
+    .artifact img { display: block; margin-top: 6px; max-width: 100%; max-height: 460px; border-radius: 6px; background: var(--bg-elev); }
+    .artifact-broken { margin-top: 6px; color: var(--warn); font-size: 12px; }
     .tool-io { margin-top: 4px; }
     .tool-io-row { display: flex; align-items: center; gap: 8px; }
     .tool-io-row:hover .io-line { color: var(--text); }

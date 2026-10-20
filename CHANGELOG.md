@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-10-20 : les images produites dans le bac à sable s'affichent dans le fil
+
+- Après chaque résultat d'outil, le bac à sable de la session est balayé : toute image
+  (png, jpg, gif, webp, svg) nouvelle ou modifiée depuis le début du tour devient un bloc
+  « image » dans le fil, à sa position, persisté et rejoué au rechargement
+  (`/session/<id>/scratch/<nom>`, images seulement, jamais un script). Un fichier qui
+  n'est pas une vraie image (du code nommé `.png`, vécu session dc23325088d6) s'affiche
+  comme tel. L'utilisateur n'a plus à croire le modèle sur parole quand il « décrit » une
+  image qu'il n'a pas regardée.
+
 ## 2026-10-20 : le prompt dit « pas de /tmp, même dans tes scripts » et « regarde l'image »
 
 - Session dc23325088d6 (Bonsai, fractale de Mandelbrot) : le réflexe `uv run --with pillow`

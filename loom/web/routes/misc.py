@@ -96,6 +96,23 @@ def _register_misc_routes(app, S):
             return Response("session invalide", status=404)
         return send_from_directory(S.session_store.root / sid / "generated", name)
 
+    @app.get("/session/<sid>/scratch/<path:name>")
+    def session_scratch_file(sid: str, name: str):
+        # Images du bac à sable d'une session (cf. loom.web.artifacts) : sid validé
+        # strictement, nom borné à l'arborescence par send_from_directory, seules les
+        # extensions image sont servies (jamais un script ou un fichier de données).
+        from pathlib import PurePosixPath
+
+        from flask import send_from_directory
+
+        from loom.web.artifacts import ARTIFACT_EXTS
+
+        if not re.fullmatch(r"[0-9a-f]{12}", sid):
+            return Response("session invalide", status=404)
+        if PurePosixPath(name).suffix.lower() not in ARTIFACT_EXTS:
+            return Response("type non servi", status=404)
+        return send_from_directory(S.session_store.root / sid / "scratch", name)
+
     @app.get("/genimg/<name>")
     def genimg(name: str):
         # LEGACY : messages d'avant 2026-07-09, servis depuis var/generated.

@@ -39,6 +39,23 @@ export function TerminalBlock({ it }) {
   </div>`;
 }
 
+export function ArtifactCard({ it }) {
+  // Image écrite dans le bac à sable pendant le tour : affichée telle quelle. Un fichier
+  // qui n'est pas une vraie image (du code nommé .png) s'affiche cassé, et on le dit.
+  const [broken, setBroken] = useState(false);
+  const size = it.size != null ? (it.size >= 1024 ? Math.round(it.size / 1024) + " Ko" : it.size + " o") : "";
+  return html`<div class="artifact">
+    <div class="tool-head">
+      <span class="tool-name">${it.name}</span>
+      <span class="artifact-meta">${size}</span>
+      <a class="artifact-open" href=${it.url} target="_blank" rel="noopener noreferrer">ouvrir</a>
+    </div>
+    ${broken
+      ? html`<div class="artifact-broken">Ce fichier n'est pas une image lisible (contenu invalide pour son extension).</div>`
+      : html`<img src=${it.url} alt=${it.name} loading="lazy" onError=${() => setBroken(true)} />`}
+  </div>`;
+}
+
 export function Think({ it }) {
   // Repliée : les premières lignes en italique sous un fondu ; clic pour tout lire.
   // En cours de génération : texte entier, comme avant.
@@ -525,6 +542,8 @@ export function Item({ it, userIndex, sid }) {
       return html`<div class="phase-sep">&#9658; ${it.name}${it.detail ? " — " + it.detail : ""}</div>`;
     case "notice":
       return html`<div class="notice-line">${it.text}</div>`;
+    case "artifact":
+      return html`<${Step} icon="image" kind="tool"><${ArtifactCard} it=${it} /><//>`;
     case "terminal":
       return html`<${Step} icon="terminal" kind="tool" cls=${it.active ? "step-pending" : ""}><${TerminalBlock} it=${it} /><//>`;
     case "harness":
