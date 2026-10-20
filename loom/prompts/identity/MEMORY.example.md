@@ -1,3 +1,3 @@
 - <Constante d'environnement durable, ex. "Le workspace racine est <racine-des-projets>">.
-- <Règle transverse vraie partout, ex. "Sous Windows, le shell est PowerShell : pas d'unix (grep/ls/cat) — Get-ChildItem, Select-String">.
+- <Règle transverse vraie partout, ex. "Sous Windows, les chemins s'écrivent C:/Users/... (barres obliques) : le shell, les outils et les scripts les comprennent tous">.
 - Le projet-spécifique (conventions d'un repo donné) vit dans la mémoire ÉPISODIQUE (recall), jamais ici : MEMORY est global, injecté à chaque tour quel que soit le projet.

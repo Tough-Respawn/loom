@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-10-20 : sous Windows, run_shell passe par Git Bash
+
+- Les modèles écrivent du bash par réflexe. Dans la session dc23325088d6 (Bonsai 2 9B),
+  13 commandes sur 17 ont échoué, dont 9 sur un réflexe bash refusé par PowerShell 5.1
+  (`&&`, `head`, `ls -la`, `python3`). `run_shell`, `monitor` et `serve_and_check`
+  exécutent désormais leurs commandes dans le `bash.exe` de Git for Windows, trouvé à
+  côté de `git` (jamais le `bash` de System32, qui est WSL). Mesuré : ~80 ms par
+  commande contre ~300 avec PowerShell.
+- `bash -c` et pas `-lc` (le login coûtait ~600 ms). Préfixe `chcp 65001` pour les
+  accents des exe natifs, et `python3` renvoie vers `python`. Le bloc « Système » du
+  prompt décrit Git Bash (chemins `C:/...`, `cmd //c`, `/tmp` faux dans les scripts
+  Python). Les sessions ouvertes sont refigées.
+- Repli PowerShell sans Git for Windows. `LOOM_SHELL=powershell` force l'ancien shell.
+  L'éval `windows_shell` note la syntaxe du shell réellement actif.
+
 ## 2026-10-20 : le bac à sable est un projet uv, environnement Python propre à la session
 
 - Loom crée `var/sessions/<id>/scratch/pyproject.toml` (projet nu, sans build) avec le bac

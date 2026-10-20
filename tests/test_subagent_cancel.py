@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import threading
 
-from loom.runtime.platform_info import detect
 from loom.tools.agent import CANCELLATIONS, SubAgentRunner, make_dispatch_agent
 from loom.tools.base import ToolRegistry, ToolSpec
 from loom.tools.shell import make_run_shell
@@ -21,6 +20,18 @@ from loom.tools.workflow import make_run_workflow
 from .fakes import make_client, turn_text, turn_tools
 from .test_dispatch_routing import FakeRegistry
 from .test_mcp_client import _pid_alive
+
+
+def _long_cmd(pid_file) -> str:
+    """Commande longue qui écrit le PID WINDOWS (ou POSIX) de son shell puis dort."""
+    from loom.runtime.platform_info import detect
+
+    p = detect()
+    if p.shell_family == "powershell":
+        return f'$PID | Out-File -Encoding ascii "{pid_file}"; Start-Sleep -Seconds 60'
+    if p.is_windows:  # Git Bash : $$ est un pid MSYS, le pid Windows est dans /proc
+        return f'cat /proc/$$/winpid > "{pid_file.as_posix()}"; sleep 60'
+    return f'echo $$ > "{pid_file}"; sleep 60'
 
 
 class _MultiTurnClient:
@@ -127,10 +138,7 @@ def test_shell_long_interrompu_sans_orphelin(tmp_path):
     ev = threading.Event()
     spec = make_run_shell(str(tmp_path), timeout=60, cancel_event=ev)
     pid_file = tmp_path / "p.txt"
-    if detect().is_windows:
-        cmd = f'$PID | Out-File -Encoding ascii "{pid_file}"; Start-Sleep -Seconds 60'
-    else:
-        cmd = f'echo $$ > "{pid_file}"; sleep 60'
+    cmd = _long_cmd(pid_file)
     result: dict = {}
 
     def _work():
@@ -335,10 +343,7 @@ def test_cancel_global_debloque_un_run_shell_actif(tmp_path):
     import json as _json
 
     pid_file = tmp_path / "p.txt"
-    if detect().is_windows:
-        cmd = f'$PID | Out-File -Encoding ascii "{pid_file}"; Start-Sleep -Seconds 60'
-    else:
-        cmd = f'echo $$ > "{pid_file}"; sleep 60'
+    cmd = _long_cmd(pid_file)
 
     def build_sub(cancel_event=None):
         return ToolRegistry(
