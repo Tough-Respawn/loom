@@ -40,23 +40,48 @@ def _scratch_dir(S, sid: str) -> str:
     return str(S.session_store.session_dir(sid) / "scratch").replace("\\", "/")
 
 
+_SCRATCH_PYPROJECT = (
+    '[project]\nname = "loom-scratch"\nversion = "0"\nrequires-python = ">=3.11"\n'
+    "dependencies = []\n"
+)
+
+
+def _scratch_init(scratch: str) -> None:
+    """Crée le bac à sable et en fait un projet uv nu (`pyproject.toml` sans build) :
+    `uv add` y installe dans un `.venv` propre à la session, `uv run` l'utilise. Rien
+    n'est écrasé si le fichier existe (dépendances déjà ajoutées par le modèle)."""
+    from pathlib import Path
+
+    root = Path(scratch)
+    root.mkdir(parents=True, exist_ok=True)
+    pyproject = root / "pyproject.toml"
+    if not pyproject.exists():
+        pyproject.write_text(_SCRATCH_PYPROJECT, encoding="utf-8")
+
+
 def _scratch_text(scratch: str) -> str:
     """Consigne du bac à sable de la session : dossier jetable pour les essais, et
-    environnement Python éphémère (uv) quand une bibliothèque manque — le modèle
-    n'installe rien sur la machine et n'abandonne pas « faute de matplotlib »."""
+    environnement Python propre à la session (projet uv) quand une bibliothèque manque —
+    le modèle n'installe rien sur la machine et n'abandonne pas « faute de matplotlib »."""
     return (
         f"`{scratch}` est le bac à sable de CETTE session (scratchpad), supprimé avec "
         "elle. Tout ce qui n'est pas un livrable demandé va là : scripts d'essai, fichiers "
         "temporaires, sorties intermédiaires, images que tu produis pour les montrer. "
         "Jamais dans le dossier de travail sans qu'on te l'ait demandé.\n"
-        "Bibliothèque Python manquante (ModuleNotFoundError) : n'installe rien sur la "
-        "machine et n'abandonne pas. Exécute dans un environnement jetable : "
-        "`uv run --with <paquet> python <script.py>` (plusieurs paquets : `--with a "
-        '--with b` ; version précise : `--with "matplotlib==3.9"`). uv le crée et le '
-        "met en cache seul ; la première fois demande le réseau.\n"
+        "C'est aussi un projet Python (uv) avec son propre environnement, vide au départ. "
+        "Bibliothèque manquante (ModuleNotFoundError) : n'installe rien sur la machine et "
+        f"n'abandonne pas. Ajoute-la au projet, une fois : `uv --directory {scratch} add "
+        '<paquet>` (plusieurs : `add a b` ; version : `add "matplotlib==3.9"`), puis '
+        f"exécute tes scripts avec `uv --directory {scratch} run python <script.py>` : "
+        "l'environnement du bac à sable sert, les dépendances ajoutées y restent pour toute "
+        "la session, rien à activer. Ces commandes marchent depuis n'importe quel dossier ; "
+        "un avertissement `VIRTUAL_ENV ... does not match` est normal, ignore-le. "
+        "Pour un essai unique sans garder le paquet : `uv run --with <paquet> python "
+        "<script.py>`. La première installation demande le réseau.\n"
         "Figure, schéma, graphique demandé : écris un SVG ou une page HTML dans le bac à "
-        "sable et vérifie-la avec check_page, ou produis un PNG (`uv run --with "
-        "matplotlib`) et relis-le avec read_image ; donne ensuite le chemin du fichier. "
+        "sable et vérifie-la avec check_page, ou produis un PNG (`uv --directory "
+        f"{scratch} add matplotlib` puis `uv --directory {scratch} run python "
+        "<script.py>`) et relis-le avec read_image ; donne ensuite le chemin du fichier. "
         "Une image que tu produis n'est vérifiée QUE par read_image (ou check_page pour "
         "un SVG/HTML) : ne décris jamais le contenu d'une image que tu n'as pas regardée, "
         "une taille de fichier ou un `Image.open` ne prouvent rien. Les sorties de tes "
@@ -111,7 +136,7 @@ def _build_system_prompt(S, conv, workspace=None, scratch=None):
     prompt de base, objectif, skills de la session) ou si le harnais a été mis à jour
     (gabarits de prompt) : dans ce cas le prompt de base de la session, instantané pris à
     sa création, est rafraîchi depuis le gabarit courant. `scratch` : bac à sable de la
-    session (créé ici, annoncé dans le prompt). Retourne (texte, strong)."""
+    session (créé ici, projet uv inclus, annoncé dans le prompt). Retourne (texte, strong)."""
     frozen = conv.frozen_prompt
     build = _prompt_build()
     if frozen and frozen.get("build") not in (None, build):
@@ -127,9 +152,7 @@ def _build_system_prompt(S, conv, workspace=None, scratch=None):
         return frozen["text"], bool(frozen.get("strong"))
     _ws = workspace if workspace is not None else _session(S).workspace
     if scratch:
-        from pathlib import Path
-
-        Path(scratch).mkdir(parents=True, exist_ok=True)
+        _scratch_init(scratch)
     text, strong = _render_system_prompt(
         S, conv, workspace=_ws, **({"scratch": scratch} if scratch else {})
     )
