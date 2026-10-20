@@ -181,6 +181,11 @@ export function _replayTimeline(t, events) {
         asst = null;
         add({ kind: "harness", hkind: d.kind, text: d.text });
         break;
+      case "artifact":
+        think = null;
+        asst = null;
+        add({ kind: "artifact", name: d.name, url: d.url, size: d.size });
+        break;
       case "monitor_event":
         think = null;
         asst = null;

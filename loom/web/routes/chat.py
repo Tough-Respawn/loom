@@ -25,6 +25,7 @@ from loom.web.app import (
     _should_adopt,
     _sse,
 )
+from loom.web.artifacts import new_artifacts
 from loom.web.routes.commands import _handle_goal_command, _handle_init_command
 from loom.web.routes.helpers import (
     _abort_warm,
@@ -666,6 +667,13 @@ def _register_chat_routes(app, S):
 
             actions: list[str] = []  # trace compacte des outils (anti-amnésie)
 
+            # Images produites dans le bac à sable pendant CE tour : annoncées au fil
+            # après chaque résultat d'outil (cf. loom.web.artifacts).
+
+            _scratch = _scratch_dir(S, sess.id)
+            _art_seen: set = set()
+            _turn_started = time.time()
+
             saved = False
             # Sauvegarder aux étapes marquantes limite les pertes lors d'une interruption.
             # `a0` : premières actions du segment de réponse courant (une reprise sur note
@@ -682,6 +690,7 @@ def _register_chat_routes(app, S):
                 "notice",
                 "parallel",
                 "user",  # note en vol injectée : à sa vraie position au rechargement
+                "artifact",  # image produite dans le bac à sable : rejouable
                 "harness",  # intervention du garde-fou Loom (3e voix) : rejouable
                 "monitor_event",  # stdout asynchrone à sa vraie position
                 # ST-02 : identité + chronologie des sous-agents, corrélées par
@@ -986,6 +995,12 @@ def _register_chat_routes(app, S):
                                 actions.append(line)
 
                             yield _tl("tool_result", **payload)
+
+                            # Une image vient-elle d'apparaître dans le bac à sable ?
+                            for _art in new_artifacts(
+                                _scratch, _turn_started, _art_seen, sess.id
+                            ):
+                                yield _tl("artifact", **_art)
 
                             _persist()  # checkpoint contexte (event-driven) : l'outil vient de finir
 

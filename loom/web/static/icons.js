@@ -33,6 +33,8 @@ export const STEP_ICONS = {
   shield: wrap('<path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/>'),
   // réponse du modèle : bulle
   chat: wrap('<path d="M4 5h16v10H9l-5 4z"/>'),
+  // image produite : cadre + soleil + montagne
+  image: wrap('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.6"/><path d="M21 16l-5-5-9 9"/>'),
   // erreur : triangle
   alert: wrap('<path d="M12 4l9 16H3z"/><path d="M12 10v4"/><path d="M12 17v.01"/>'),
 };
