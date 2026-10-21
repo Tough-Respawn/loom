@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-10-21 : session privée, rien ne sort de Loom (couche applicative)
+
+- Avant, la case « Session privée » ne gardait que les sous-agents sur le modèle de la
+  session : recherche web, lecture d'URL, vidéo, MCP et modèles distants restaient
+  utilisables malgré l'infobulle « rien ne part vers une API distante ».
+- **Modèles** : une session privée n'utilise qu'un modèle local. Cocher la case avec un
+  modèle distant est refusé, choisir un distant dans une session privée aussi (sélecteur
+  remis en place, toast), et un tour privé sur un modèle distant répond 409. Décocher la
+  case une fois l'historique écrit est refusé : une session privée le reste.
+- **Point de sortie unique** (`loom/agent/egress.py`) : le tour privé pose une variable
+  de contexte, et le client des modèles refuse alors toute route distante, quel que soit
+  l'appelant (tour, titre, réflexion, synthèse de mémoire, raffineur d'image,
+  métadonnées de contexte). Les tâches différées (maintenance, titre) héritent de ce
+  contexte même si l'utilisateur change de conversation.
+- **Appels automatiques** : réflexion coupée (elle écrit dans la mémoire et les skills
+  partagés), synthèse de `recall` coupée (rendu brut), raffineur d'image distant sauté.
+  Sans vision, `read_image` refuse explicitement, sans repli vers un autre modèle.
+- **Mémoire** : `remember` indisponible (la mémoire partagée est relue par toutes les
+  sessions) ; `recall` en lecture ; `write_note` pour la session.
+- **Outils** : `web_search`, `fetch_url`, `watch_video`, `add_marketplace`,
+  `install_plugin` et tous les outils MCP retirés. `run_shell`, `monitor` et
+  `serve_and_check` tournent avec un proxy mort et `UV_OFFLINE`. `check_page` refuse
+  toute page hors de la machine, et son navigateur ne charge rien d'internet.
+- **Limites** (voir `docs/session-privee.md`) : cette protection est applicative. Le
+  proxy mort n'est pas un pare-feu (sockets bruts, ssh, `Invoke-WebRequest` de
+  PowerShell 5.1 l'ignorent). L'isolation imposée par l'OS est l'étape suivante.
+
 ## 2026-10-20 : les commandes du modèle n'héritent plus du venv de Loom
 
 - `run_shell`, `monitor` et `serve_and_check` retirent `VIRTUAL_ENV` et le dossier

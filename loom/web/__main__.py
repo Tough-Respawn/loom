@@ -153,7 +153,8 @@ def build_app(cfg):
             sub_max_tokens=cfg.chat.max_tokens,
             sub_compact_after_tokens=_sub_compact,
             dispatch_models=_chain,
-            dispatch_local_only=_priv,
+            # Session privée : rien ne sort (sous-agents locaux, outils réseau coupés).
+            private=_priv,
             dispatch_model_roles=_roles,
             sub_compact_for=_compact_for,
             permission=permission,

@@ -297,9 +297,23 @@ if (localOnlyCb) {
     if (activeTab()) activeTab().localOnly = localOnlyCb.checked;
     const fd = new FormData();
     fd.append("local_only", localOnlyCb.checked ? "1" : "0");
-    fetch("/local_only", { method: "POST", body: fd });
+    fetch("/local_only", { method: "POST", body: fd }).then(async (r) => {
+      if (r.ok) return;
+      // Refus serveur (modèle distant, ou session privée avec historique) : la case
+      // revient à son état réel et la raison s'affiche.
+      localOnlyCb.checked = !localOnlyCb.checked;
+      if (activeTab()) activeTab().localOnly = localOnlyCb.checked;
+      showToast((await r.text()) || "Changement refusé.");
+    });
   });
 }
+
+// Message posé par le serveur dans l'en-tête HX-Trigger (ex. modèle distant refusé
+// dans une session privée) : affiché tel quel.
+document.body.addEventListener("loomToast", (e) => {
+  const msg = e.detail && (e.detail.value || e.detail);
+  if (typeof msg === "string") showToast(msg);
+});
 
 if (resetBtn) {
   resetBtn.addEventListener("click", async () => {

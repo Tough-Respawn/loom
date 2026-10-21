@@ -5,7 +5,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from flask import render_template, request
+from flask import Response, render_template, request
 
 from loom.runtime import model_install, model_store
 from loom.runtime.comfy import ComfyError
@@ -717,6 +717,29 @@ def _register_model_routes(app, S):
         conv, save = _ctx(S)
 
         model = request.form.get("model", "")
+
+        if getattr(conv, "local_only", False) and model in S.remote_model_ids:
+            # Session privée : son historique ne part jamais vers une API distante. On
+            # renvoie le sélecteur inchangé (HTMX le remet en place) et on explique.
+            resp = Response(
+                render_template(
+                    "_models.html",
+                    models=S.models,
+                    current_model=conv.model,
+                    remote_model_ids=S.remote_model_ids,
+                    image_model_ids=S.image_model_ids,
+                    video_model_ids=S.video_model_ids,
+                    model_descriptions=S.model_descriptions,
+                )
+            )
+            resp.headers["HX-Trigger"] = json.dumps(
+                {
+                    "loomToast": f"Session privée : « {model} » est distant, il ne "
+                    "peut pas servir cette session. Ouvre une nouvelle session pour "
+                    "l'utiliser."
+                }
+            )
+            return resp
 
         conv.set_model(model)
 

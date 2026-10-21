@@ -1363,7 +1363,7 @@
         <label id="thinking-toggle" title="Réflexion préalable">
           <input type="checkbox" id="thinking-cb" {% if thinking %}checked{% endif %}> Réflexion</label>
         <label id="local-only-toggle"
-          title="Session privée : rien ne part vers une API distante — les sous-agents restent sur le modèle de la session (chaîne de routage ignorée)">
+          title="Session privée : rien ne sort de la machine. Sous-agents sur le modèle de la session ; recherche web, lecture d'URL, vidéo, plugins et MCP coupés ; commandes et navigateur limités à la machine. Le modèle de la session doit être local.">
           <input type="checkbox" id="local-only-cb" {% if local_only %}checked{% endif %}> Session privée (local)</label>
       </div>
       <details class="sb-section sb-fold">

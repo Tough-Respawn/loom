@@ -177,6 +177,7 @@ class MonitorHub:
         *,
         timeout_s: int = 300,
         persistent: bool = False,
+        offline: bool = False,
     ) -> _RunningMonitor:
         if not session_id:
             raise ToolError("session absente : impossible de rattacher le monitor")
@@ -188,7 +189,7 @@ class MonitorHub:
         popen_kwargs: dict = {}
         if not detect().is_windows:
             popen_kwargs["start_new_session"] = True
-        env = _child_env()
+        env = _child_env(offline)
         try:
             stderr_fh = log_path.open("w", encoding="utf-8")
             proc = subprocess.Popen(
@@ -284,8 +285,11 @@ class MonitorHub:
         return events
 
 
-def make_monitor(hub: MonitorHub, session_id: str, workspace_dir: str) -> ToolSpec:
-    """Outil start/list/stop lié au hub de la session courante."""
+def make_monitor(
+    hub: MonitorHub, session_id: str, workspace_dir: str, offline: bool = False
+) -> ToolSpec:
+    """Outil start/list/stop lié au hub de la session courante. `offline` : session
+    privée, réseau hors machine coupé pour la commande surveillée."""
 
     def run(args: dict) -> str:
         action = args.get("action")
@@ -315,6 +319,7 @@ def make_monitor(hub: MonitorHub, session_id: str, workspace_dir: str) -> ToolSp
             workspace_dir,
             timeout_s=timeout_s,
             persistent=persistent,
+            offline=offline,
         )
         duration = "durée de la session" if persistent else f"{timeout_s}s max"
         return (

@@ -36,6 +36,25 @@ _SUBAGENT_TOOLS = [
     t["name"] for t in AVAILABLE_TOOLS if t["name"] not in _SUBAGENT_EXCLUDED
 ]
 
+# Session privée : outils dont le rôle même est d'aller chercher ou d'envoyer hors de la
+# machine. Ils sont retirés ; les outils mixtes (shell, navigateur) restent, réseau coupé.
+NETWORK_TOOLS = (
+    "web_search",
+    "fetch_url",
+    "watch_video",
+    "add_marketplace",
+    "install_plugin",
+)
+PRIVATE_TOOL_MSG = (
+    "session privée : cet outil enverrait des données hors de la machine, il est coupé. "
+    "Travaille avec ce qui est déjà sur la machine, ou dis à l'utilisateur ce qui manque."
+)
+PRIVATE_MEMORY_MSG = (
+    "session privée : la mémoire partagée est en lecture seule (recall reste permis), "
+    "rien de cette session n'y est écrit. Pour retenir quelque chose dans cette session, "
+    "utilise write_note."
+)
+
 
 def build_registry(
     workspace_dir: str,
@@ -66,8 +85,13 @@ def build_registry(
     monitor_hub=None,
     mcp_hub=None,
     cancel_event=None,
+    private: bool = False,
 ) -> ToolRegistry:
     """Construit le registre selon la liste d'outils activés (config).
+
+    `private` (session privée) : rien ne sort de la machine. Les NETWORK_TOOLS et les
+    outils MCP sont retirés (indisponibles avec PRIVATE_TOOL_MSG), le shell et le
+    navigateur gardent la machine mais perdent le réseau extérieur, les sous-agents aussi.
 
     `client`/`model` : requis pour dispatch_agent (lance une sous-boucle tool-use).
     `permission` : politique relayée à la sous-boucle (même sécurité qu'au principal).
@@ -86,6 +110,10 @@ def build_registry(
     from loom.tools.search import make_find_files, make_list_dir, make_search_text
     from loom.tools.shell import make_run_shell
 
+    blocked = [n for n in NETWORK_TOOLS if n in enabled] if private else []
+    blocked_memory = False
+    if private:
+        enabled = [n for n in enabled if n not in NETWORK_TOOLS]
     specs: list[ToolSpec] = []
     if "find_files" in enabled:
         specs.append(make_find_files(workspace_dir))
@@ -140,7 +168,10 @@ def build_registry(
     if "run_shell" in enabled:
         specs.append(
             make_run_shell(
-                workspace_dir, timeout=shell_timeout, cancel_event=cancel_event
+                workspace_dir,
+                timeout=shell_timeout,
+                cancel_event=cancel_event,
+                offline=private,
             )
         )
     if "monitor" in enabled and monitor_hub is not None and conversation is not None:
@@ -151,16 +182,17 @@ def build_registry(
                 monitor_hub,
                 session_id=getattr(conversation, "runtime_session_id", ""),
                 workspace_dir=workspace_dir,
+                offline=private,
             )
         )
     if "check_page" in enabled:
         from loom.tools.browser import make_check_page
 
-        specs.append(make_check_page(workspace_dir))
+        specs.append(make_check_page(workspace_dir, offline=private))
     if "serve_and_check" in enabled:
         from loom.tools.browser import make_serve_and_check
 
-        specs.append(make_serve_and_check(workspace_dir))
+        specs.append(make_serve_and_check(workspace_dir, offline=private))
     if "web_search" in enabled or "fetch_url" in enabled:
         from loom.tools.web import WebSearchConfig, make_fetch_url, make_web_search
 
@@ -191,12 +223,19 @@ def build_registry(
             specs.append(
                 make_recall(
                     memory.provider,
-                    summarize=getattr(memory, "summarize", None),
+                    # Session privée : pas de synthèse (son modèle est configuré à part,
+                    # possiblement distant) ; les souvenirs sont rendus bruts.
+                    summarize=None if private else getattr(memory, "summarize", None),
                     threshold=getattr(memory, "threshold", 5),
                 )
             )
         if "remember" in enabled:
-            specs.append(make_remember(memory.provider, memory.paths))
+            if private:
+                # La mémoire partagée est relue par toutes les sessions, distantes
+                # comprises : une session privée n'y écrit rien.
+                blocked_memory = True
+            else:
+                specs.append(make_remember(memory.provider, memory.paths))
     if (
         "dispatch_agent" in enabled or "run_workflow" in enabled
     ) and client is not None:
@@ -221,6 +260,7 @@ def build_registry(
                 deferred_tools=deferred_tools,
                 mcp_hub=mcp_hub,
                 cancel_event=cancel_event,
+                private=private,
             )
 
         # Dispatch et workflows partagent routage, cache et politique de permission.
@@ -233,7 +273,7 @@ def build_registry(
             permission=permission,
             compact_after_tokens=sub_compact_after_tokens,
             model_chain=dispatch_models,
-            local_only=dispatch_local_only,
+            local_only=dispatch_local_only or private,
             compact_for=sub_compact_for,
             model_roles=dispatch_model_roles,
             # ST-03 : le ciblage (session_id, agent_id) d'une annulation.
@@ -298,7 +338,11 @@ def build_registry(
     mcp_unavailable: dict[str, str] = {}
     if mcp_hub is not None:
         mcp_specs, mcp_unavailable, mcp_warnings = mcp_hub.build_specs()
-        specs.extend(mcp_specs)
+        if private:
+            # Un serveur MCP peut parler à n'importe quel service distant : tous coupés.
+            blocked += [s.name for s in mcp_specs]
+        else:
+            specs.extend(mcp_specs)
         if mcp_warnings:
             from loom.agent.debuglog import log_event
 
@@ -348,4 +392,8 @@ def build_registry(
         registry.mark_unavailable("read_image", VISION_UNAVAILABLE)
     for name, reason in mcp_unavailable.items():
         registry.mark_unavailable(name, reason)
+    for name in blocked:
+        registry.mark_unavailable(name, PRIVATE_TOOL_MSG)
+    if blocked_memory:
+        registry.mark_unavailable("remember", PRIVATE_MEMORY_MSG)
     return registry
