@@ -28,15 +28,34 @@ def main() -> None:
         _serve(build_e2e_app(Path(tmp)), 18090, stack)
 
         console_errors: list[str] = []
+        external: list[str] = []
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
                 page = browser.new_page(viewport={"width": 1440, "height": 900})
                 page.on(
                     "console",
-                    lambda msg: console_errors.append(msg.text)
-                    if msg.type == "error"
-                    else None,
+                    lambda msg: (
+                        console_errors.append(msg.text) if msg.type == "error" else None
+                    ),
+                )
+
+                # Une requête hors de Loom est une fuite si elle est PARTIE : réponse
+                # reçue, ou échec réseau. Un refus CSP (failure « csp ») n'émet rien.
+                def _out(url: str) -> bool:
+                    return not url.startswith(("http://127.0.0.1", "data:", "blob:"))
+
+                page.on(
+                    "response",
+                    lambda r: external.append(r.url) if _out(r.url) else None,
+                )
+                page.on(
+                    "requestfailed",
+                    lambda r: (
+                        external.append(f"{r.url} ({r.failure})")
+                        if _out(r.url) and r.failure != "csp"
+                        else None
+                    ),
                 )
                 response = page.goto(
                     "http://127.0.0.1:18090/",
@@ -44,9 +63,7 @@ def main() -> None:
                     timeout=20_000,
                 )
                 assert response is not None and response.status == 200
-                page.locator(".pane textarea").wait_for(
-                    state="visible", timeout=10_000
-                )
+                page.locator(".pane textarea").wait_for(state="visible", timeout=10_000)
 
                 # Le module clavier et sa modale sont chargés dans un vrai navigateur.
                 page.locator("#kbd-help").click()
@@ -59,10 +76,23 @@ def main() -> None:
                 answer = page.locator(".pane .msg.assistant").last
                 expect(answer).to_contain_text("Réponse du stub", timeout=15_000)
                 assert not console_errors, f"erreurs console: {console_errors}"
+
+                # Exfiltration par image Markdown : rendue, mais jamais chargée.
+                page.locator(".pane textarea").fill("E2E-EXFIL")
+                page.locator(".pane .send-btn").click()
+                img = page.locator(".pane .msg.assistant img[src*='example.com']").last
+                img.wait_for(state="attached", timeout=15_000)
+                page.wait_for_timeout(1500)
+                assert not external, f"requêtes hors de Loom : {external}"
+                blocked = [e for e in console_errors if "Content Security Policy" in e]
+                assert blocked, f"aucun refus CSP observé : {console_errors}"
             finally:
                 browser.close()
 
-    print("E2E UI VERT: HTTP 200, raccourcis, chat SSE, rendu, zéro erreur console")
+    print(
+        "E2E UI VERT: HTTP 200, raccourcis, chat SSE, rendu, zéro erreur console, "
+        "image externe bloquée par la CSP"
+    )
 
 
 if __name__ == "__main__":

