@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import tempfile
 import threading
 from contextlib import ExitStack
@@ -12,6 +13,11 @@ from werkzeug.serving import make_server
 
 from tests.e2e.launch_loom_e2e import build_e2e_app
 from tests.e2e.stub_openai import app as stub_app
+
+# PNG 1×1 valide, pour l'aperçu d'une image jointe.
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
 
 
 def _serve(app, port: int, stack: ExitStack) -> None:
@@ -75,7 +81,27 @@ def main() -> None:
                 page.locator(".pane .send-btn").click()
                 answer = page.locator(".pane .msg.assistant").last
                 expect(answer).to_contain_text("Réponse du stub", timeout=15_000)
+
+                # Sous CSP, les fonctions locales restent intactes : formule MathJax,
+                # aperçu d'une image jointe (blob:), console de configuration.
+                page.locator(".pane textarea").fill("E2E-MATH")
+                page.locator(".pane .send-btn").click()
+                page.locator(".pane .msg.assistant svg").last.wait_for(timeout=15_000)
+                page.locator(".pane input[type=file]").set_input_files(
+                    files=[{"name": "p.png", "mimeType": "image/png", "buffer": _PNG}]
+                )
+                thumb = page.locator(".pane img[src^='blob:']").first
+                thumb.wait_for(timeout=5_000)
+                assert thumb.evaluate("i => i.complete && i.naturalWidth > 0")
                 assert not console_errors, f"erreurs console: {console_errors}"
+                # Le banc n'a pas de fichiers de config : GET /config répond 500
+                # (« chemins de config indisponibles »), hors sujet ici. On vérifie que
+                # la console s'ouvre et que ses onglets se rendent.
+                page.locator("#gear-btn").click()
+                page.locator("#cfg-open").click()
+                expect(page.locator("#config-modal")).to_contain_text("Modèles locaux")
+                page.keyboard.press("Escape")
+                console_errors.clear()
 
                 # Exfiltration par image Markdown : rendue, mais jamais chargée.
                 page.locator(".pane textarea").fill("E2E-EXFIL")
@@ -90,8 +116,8 @@ def main() -> None:
                 browser.close()
 
     print(
-        "E2E UI VERT: HTTP 200, raccourcis, chat SSE, rendu, zéro erreur console, "
-        "image externe bloquée par la CSP"
+        "E2E UI VERT: HTTP 200, raccourcis, chat SSE, rendu, MathJax, aperçu d'image, "
+        "console de configuration, zéro erreur console, image externe bloquée par la CSP"
     )
 
 

