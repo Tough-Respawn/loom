@@ -291,3 +291,52 @@ def test_image_sans_vision_desactivee_explicitement(tmp_path):
         str(tmp_path), 10_000, ["read_image"], active_is_vision=False, private=True
     )
     assert reg.run("read_image", {"path": "x.png"}) == f"erreur: {VISION_UNAVAILABLE}"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://evil.com\@127.0.0.1/",  # Python lit 127.0.0.1, Chromium evil.com
+        "http://127.0.0.1@evil.com/",
+        "http://u@127.0.0.1/",
+        "http://%31%32%37.0.0.1/",
+        "https://example.com/",
+        "http://192.168.1.254/",
+    ],
+)
+def test_url_ambigue_ou_distante_refusee(url):
+    from loom.tools.browser import _offline_check
+
+    with pytest.raises(ToolError):
+        _offline_check(url)
+
+
+def test_page_locale_ne_fait_rien_sortir(tmp_path):
+    """Navigateur réel : fetch, image externe et WebRTC (UDP vers un STUN public, qui
+    contourne le proxy) ne sortent pas en session privée."""
+    pw = pytest.importorskip("playwright.sync_api")
+    from pathlib import Path
+
+    with pw.sync_playwright() as p:
+        if not Path(p.chromium.executable_path).exists():
+            pytest.skip("Chromium non installé")
+    page = tmp_path / "fuite.html"
+    page.write_text(
+        """<html><body><p id=r>attente</p>
+<img src="https://example.com/x.png" onerror="window.IMG='BLOQUEE'">
+<script>
+const out = {};
+fetch('https://example.com/').then(() => out.f = 'OK').catch(() => out.f = 'BLOQUE');
+const types = [];
+const pc = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+pc.createDataChannel('x');
+pc.onicecandidate = e => { if (e.candidate) types.push(e.candidate.type); };
+pc.createOffer().then(o => pc.setLocalDescription(o));
+setTimeout(() => { document.getElementById('r').textContent =
+  'FETCH=' + out.f + ' IMG=' + window.IMG + ' WEBRTC=' + (types.join(',') || 'aucun');
+}, 1100);
+</script></body></html>""",
+        encoding="utf-8",
+    )
+    rep = make_check_page(str(tmp_path), offline=True).run({"url": str(page)})
+    assert "FETCH=BLOQUE IMG=BLOQUEE WEBRTC=aucun" in rep

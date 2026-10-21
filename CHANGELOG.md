@@ -27,8 +27,12 @@
   sessions) ; `recall` en lecture ; `write_note` pour la session.
 - **Outils** : `web_search`, `fetch_url`, `watch_video`, `add_marketplace`,
   `install_plugin` et tous les outils MCP retirés. `run_shell`, `monitor` et
-  `serve_and_check` tournent avec un proxy mort et `UV_OFFLINE`. `check_page` refuse
-  toute page hors de la machine, et son navigateur ne charge rien d'internet.
+  `serve_and_check` tournent avec un proxy mort et `UV_OFFLINE` (consigne respectée par
+  les outils courants, pas une isolation). `check_page` n'accepte que des URL
+  strictement locales (antislash, identifiants et hôtes encodés refusés : `urlparse` et
+  Chromium les lisent différemment) ; son Chromium a un proxy mort, WebRTC limité au
+  proxy (sinon l'UDP vers un STUN public sort), la prélecture DNS coupée, et chaque
+  requête est vérifiée sur l'URL normalisée par Chromium.
 - **Limites** (voir `docs/session-privee.md`) : cette protection est applicative. Le
   proxy mort n'est pas un pare-feu (sockets bruts, ssh, `Invoke-WebRequest` de
   PowerShell 5.1 l'ignorent). L'isolation imposée par l'OS est l'étape suivante.

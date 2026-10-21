@@ -234,6 +234,7 @@ def _render_page(
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, **_launch_kwargs(offline))
             page = browser.new_page()
+            _guard_page(page, offline)
             page.set_default_timeout(5000)  # borne les lectures (pas de hang 30s)
             page.on("console", lambda m: console.append((m.type, m.text)))
             page.on("pageerror", lambda e: page_errors.append(str(e)))
@@ -344,19 +345,56 @@ PRIVATE_URL_MSG = (
 )
 
 
+def _is_local_url(url: str) -> bool:
+    """Vrai si `url` (http/https) vise la machine. Volontairement plus strict que le
+    navigateur : `urlparse` et WHATWG divergent sur les antislashs, les identifiants et
+    les hôtes encodés (`http://evil.com\\@127.0.0.1/` : hôte 127.0.0.1 pour Python,
+    evil.com pour Chromium). Tout ce qui est ambigu est donc refusé."""
+    if "\\" in url:
+        return False
+    p = urlparse(url)
+    if "@" in p.netloc or "%" in p.netloc:
+        return False
+    return (p.hostname or "").lower() in _LOOPBACK
+
+
 def _offline_check(url: str) -> None:
     """Session privée : refuse toute page hors de la machine (internet ET réseau local)."""
-    if url.lower().startswith(("http://", "https://")):
-        if (urlparse(url).hostname or "").lower() not in _LOOPBACK:
-            raise ToolError(PRIVATE_URL_MSG)
+    if url.lower().startswith(("http://", "https://")) and not _is_local_url(url):
+        raise ToolError(PRIVATE_URL_MSG)
 
 
 def _launch_kwargs(offline: bool) -> dict:
     """Session privée : proxy mort pour Chromium, aucune ressource d'une page locale
-    (CDN, polices, traceurs) ne part sur internet ; la machine reste joignable."""
+    (CDN, polices, traceurs) ne part sur internet ; la machine reste joignable. WebRTC
+    contourne le proxy en UDP : forcé à n'utiliser que le proxy (mort), et la
+    prélecture DNS est coupée (une requête DNS porte déjà un nom vers l'extérieur)."""
     if not offline:
         return {}
-    return {"proxy": {"server": _DEAD_PROXY, "bypass": "localhost,127.0.0.1,[::1]"}}
+    return {
+        "proxy": {"server": _DEAD_PROXY, "bypass": "localhost,127.0.0.1,[::1]"},
+        "args": [
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--dns-prefetch-disable",
+        ],
+    }
+
+
+def _guard_page(page, offline: bool) -> None:
+    """Session privée : chaque requête de la page est vérifiée sur l'URL que Chromium a
+    déjà normalisée ; tout ce qui n'est pas la machine est interrompu avant l'envoi
+    (troisième couche, après le contrôle d'URL et le proxy mort)."""
+    if not offline:
+        return
+
+    def _route(route):
+        url = route.request.url
+        if url.startswith(("file:", "data:", "blob:", "about:")) or _is_local_url(url):
+            route.continue_()
+        else:
+            route.abort("blockedbyclient")
+
+    page.route("**/*", _route)
 
 
 def make_check_page(workspace_dir: str, offline: bool = False) -> ToolSpec:
@@ -839,6 +877,7 @@ def run_interactive(
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, **_launch_kwargs(offline))
             page = browser.new_page()
+            _guard_page(page, offline)
             page.on("console", lambda m: console.append((m.type, m.text)))
             page.on("pageerror", lambda e: page_errors.append(str(e)))
             page.goto(url, wait_until="load", timeout=15000)

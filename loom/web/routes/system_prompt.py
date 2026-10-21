@@ -90,10 +90,11 @@ def _scratch_text(scratch: str) -> str:
 
 PRIVATE_TEXT = (
     "Rien ne doit sortir de cette machine. Les outils web, vidéo, plugins et MCP sont "
-    "coupés ; tes commandes (run_shell) et le navigateur de check_page n'atteignent que "
-    "la machine elle-même (`uv add`, pip, curl, git vers internet échoueront). Travaille "
-    "avec ce qui est déjà installé et sur le disque. S'il manque quelque chose (paquet, "
-    "page web, document en ligne), dis-le à l'utilisateur au lieu de chercher un détour. "
+    "coupés. N'essaie jamais d'atteindre internet depuis tes commandes (run_shell) ou "
+    "check_page : `uv add`, pip, curl, git vers internet échoueront, et contourner ce "
+    "blocage trahirait la demande de l'utilisateur. Travaille avec ce qui est déjà "
+    "installé et sur le disque. S'il manque quelque chose (paquet, page web, document "
+    "en ligne), dis-le à l'utilisateur au lieu de chercher un détour. "
     "La mémoire partagée est en lecture seule (recall oui, remember non) : pour retenir "
     "quelque chose dans cette session, utilise write_note."
 )
