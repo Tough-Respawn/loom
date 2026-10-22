@@ -30,7 +30,7 @@ from loom.permissions import _is_hard_denied
 from loom.runtime.platform_info import detect
 from loom.tools._net import categorize_ip
 from loom.tools.base import ToolError, ToolSpec, _resolve_in_root
-from loom.tools.shell import _child_env, _kill_tree, _shell_argv
+from loom.tools.shell import _DEAD_PROXY, _child_env, _kill_tree, _shell_argv
 from loom.tools.trust import untrusted
 
 # Les serveurs restent disponibles entre vérifications; atexit et TTL évitent les orphelins.
@@ -209,7 +209,10 @@ def _browser_url(root: Path, target: str) -> str:
 
 
 def _render_page(
-    url: str, wait_selector: str | None, count_selectors: list[str]
+    url: str,
+    wait_selector: str | None,
+    count_selectors: list[str],
+    offline: bool = False,
 ) -> str:
     """Charge `url` dans Chromium headless, EXECUTE son JS et renvoie un rapport TEXTE :
     erreurs console, comptes d'éléments, extrait visible, diagnostic de localisation. Ne
@@ -229,8 +232,9 @@ def _render_page(
     note = ""  # diagnostic de localisation (timeout, lecture interrompue, echec)
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(headless=True, **_launch_kwargs(offline))
             page = browser.new_page()
+            _guard_page(page, offline)
             page.set_default_timeout(5000)  # borne les lectures (pas de hang 30s)
             page.on("console", lambda m: console.append((m.type, m.text)))
             page.on("pageerror", lambda e: page_errors.append(str(e)))
@@ -301,10 +305,12 @@ def _render_page(
     return "\n".join(lines)
 
 
-def _interactive_report(workspace_dir: str, target: str, steps: list) -> str:
+def _interactive_report(
+    workspace_dir: str, target: str, steps: list, offline: bool = False
+) -> str:
     """Joue `steps` sur la page et formate le rapport (chemin interactif de check_page,
     ex-check_interactive fusionné le 2026-07-15)."""
-    res = run_interactive(workspace_dir, target, steps)
+    res = run_interactive(workspace_dir, target, steps, offline=offline)
     lines = [f"page : {res['url']}"]
     if res.get("error"):
         lines.append(f"erreur: {res['error']}")
@@ -332,9 +338,69 @@ def _interactive_report(workspace_dir: str, target: str, steps: list) -> str:
     return untrusted("\n".join(lines), f"page {res['url']}")
 
 
-def make_check_page(workspace_dir: str) -> ToolSpec:
+_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+PRIVATE_URL_MSG = (
+    "session privée : rien ne sort de la machine. Seuls un fichier local ou un serveur "
+    "sur cette machine (localhost, 127.0.0.1) peuvent être ouverts."
+)
+
+
+def _is_local_url(url: str) -> bool:
+    """Vrai si `url` (http/https) vise la machine. Volontairement plus strict que le
+    navigateur : `urlparse` et WHATWG divergent sur les antislashs, les identifiants et
+    les hôtes encodés (`http://evil.com\\@127.0.0.1/` : hôte 127.0.0.1 pour Python,
+    evil.com pour Chromium). Tout ce qui est ambigu est donc refusé."""
+    if "\\" in url:
+        return False
+    p = urlparse(url)
+    if "@" in p.netloc or "%" in p.netloc:
+        return False
+    return (p.hostname or "").lower() in _LOOPBACK
+
+
+def _offline_check(url: str) -> None:
+    """Session privée : refuse toute page hors de la machine (internet ET réseau local)."""
+    if url.lower().startswith(("http://", "https://")) and not _is_local_url(url):
+        raise ToolError(PRIVATE_URL_MSG)
+
+
+def _launch_kwargs(offline: bool) -> dict:
+    """Session privée : proxy mort pour Chromium, aucune ressource d'une page locale
+    (CDN, polices, traceurs) ne part sur internet ; la machine reste joignable. WebRTC
+    contourne le proxy en UDP : forcé à n'utiliser que le proxy (mort), et la
+    prélecture DNS est coupée (une requête DNS porte déjà un nom vers l'extérieur)."""
+    if not offline:
+        return {}
+    return {
+        "proxy": {"server": _DEAD_PROXY, "bypass": "localhost,127.0.0.1,[::1]"},
+        "args": [
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--dns-prefetch-disable",
+        ],
+    }
+
+
+def _guard_page(page, offline: bool) -> None:
+    """Session privée : chaque requête de la page est vérifiée sur l'URL que Chromium a
+    déjà normalisée ; tout ce qui n'est pas la machine est interrompu avant l'envoi
+    (troisième couche, après le contrôle d'URL et le proxy mort)."""
+    if not offline:
+        return
+
+    def _route(route):
+        url = route.request.url
+        if url.startswith(("file:", "data:", "blob:", "about:")) or _is_local_url(url):
+            route.continue_()
+        else:
+            route.abort("blockedbyclient")
+
+    page.route("**/*", _route)
+
+
+def make_check_page(workspace_dir: str, offline: bool = False) -> ToolSpec:
     """Outil check_page borne au workspace pour les chemins relatifs (absolus acceptes).
-    Avec `steps`, joue aussi une sequence d'actions + post-conditions (ex-check_interactive)."""
+    Avec `steps`, joue aussi une sequence d'actions + post-conditions (ex-check_interactive).
+    `offline` : session privée, pages de la machine seulement."""
     root = Path(workspace_dir)
 
     def run(args: dict) -> str:
@@ -349,9 +415,11 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
                 raise ToolError(
                     "'steps' doit être une liste d'actions {op, selector, expect}"
                 )
-            return _interactive_report(workspace_dir, target, steps)
+            return _interactive_report(workspace_dir, target, steps, offline)
         # La validation autorise le local utile et borne les fichiers aux formats web.
         url = _browser_url(root, target)
+        if offline:
+            _offline_check(url)
         wait_selector = (args.get("wait_selector") or "").strip() or None
         count_selectors = [
             s.strip()
@@ -359,7 +427,8 @@ def make_check_page(workspace_dir: str) -> ToolSpec:
             if s.strip()
         ]
         return untrusted(
-            _render_page(url, wait_selector, count_selectors), f"page {url}"
+            _render_page(url, wait_selector, count_selectors, offline=offline),
+            f"page {url}",
         )
 
     return ToolSpec(
@@ -472,7 +541,7 @@ def _wait_for_port(proc: subprocess.Popen, host: str, port: int, timeout: int) -
     return False
 
 
-def make_serve_and_check(workspace_dir: str) -> ToolSpec:
+def make_serve_and_check(workspace_dir: str, offline: bool = False) -> ToolSpec:
     """Outil serve_and_check : démarre un serveur en arrière-plan, attend son port, charge
     la page (comme check_page), PUIS tue tout l'arbre de process. run_shell ne peut pas
     garder un serveur vivant (il le tue au timeout) et check_page seul n'a rien a viser tant
@@ -508,6 +577,8 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
         reason = _browser_http_blocked(url)
         if reason:
             raise ToolError(f"url refusee : {reason}")
+        if offline:
+            _offline_check(url)
         parsed = urlparse(url)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -533,7 +604,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
         # Réutiliser un serveur suivi évite un second binding sur le même port.
         existing = _find_server_by_url(url)
         if existing:
-            report = _render_page(url, wait_selector, count_selectors)
+            report = _render_page(url, wait_selector, count_selectors, offline=offline)
             return untrusted(
                 f"serveur deja actif (id={existing}) sur {url} - verification :\n{report}"
                 f"\n\n{_alive_hint(existing)}",
@@ -568,7 +639,7 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
                     stdin=subprocess.DEVNULL,
                     stdout=logf,
                     stderr=subprocess.STDOUT,
-                    env=_child_env(),
+                    env=_child_env(offline),
                     **popen_kwargs,
                 )
             except OSError as exc:
@@ -576,7 +647,9 @@ def make_serve_and_check(workspace_dir: str) -> ToolSpec:
 
             ready = _wait_for_port(proc, host, port, ready_timeout)
             if ready:
-                report = _render_page(url, wait_selector, count_selectors)
+                report = _render_page(
+                    url, wait_selector, count_selectors, offline=offline
+                )
                 # Transférer la propriété au registre pour les vérifications suivantes.
                 sid = _register_server(proc, url, logpath, logf)
                 handed_off = True
@@ -766,7 +839,9 @@ def _run_step(page, step: dict) -> dict:
     return res
 
 
-def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
+def run_interactive(
+    workspace_dir: str, target: str, steps: list[dict], offline: bool = False
+) -> dict:
     """Charge une page, JOUE `steps` (clics/saisie reels) et evalue une post-condition DOM
     apres chaque action. Renvoie un dict STRUCTURE lu par le harnais (jamais par le modele) :
     {url, ok, console_errors, steps:[{op,selector,ok,observed}], error}. `ok` global = 0 erreur
@@ -774,6 +849,8 @@ def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
     root = Path(workspace_dir)
     try:
         url = _browser_url(root, target)
+        if offline:
+            _offline_check(url)
     except ToolError as exc:
         return {
             "url": target,
@@ -798,8 +875,9 @@ def run_interactive(workspace_dir: str, target: str, steps: list[dict]) -> dict:
     results: list[dict] = []
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(headless=True, **_launch_kwargs(offline))
             page = browser.new_page()
+            _guard_page(page, offline)
             page.on("console", lambda m: console.append((m.type, m.text)))
             page.on("pageerror", lambda e: page_errors.append(str(e)))
             page.goto(url, wait_until="load", timeout=15000)

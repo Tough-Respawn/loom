@@ -88,6 +88,18 @@ def _scratch_text(scratch: str) -> str:
     )
 
 
+PRIVATE_TEXT = (
+    "Rien ne doit sortir de cette machine. Les outils web, vidéo, plugins et MCP sont "
+    "coupés. N'essaie jamais d'atteindre internet depuis tes commandes (run_shell) ou "
+    "check_page : `uv add`, pip, curl, git vers internet échoueront, et contourner ce "
+    "blocage trahirait la demande de l'utilisateur. Travaille avec ce qui est déjà "
+    "installé et sur le disque. S'il manque quelque chose (paquet, page web, document "
+    "en ligne), dis-le à l'utilisateur au lieu de chercher un détour. "
+    "La mémoire partagée est en lecture seule (recall oui, remember non) : pour retenir "
+    "quelque chose dans cette session, utilise write_note."
+)
+
+
 def _prompt_build() -> str:
     """Empreinte du HARNAIS lui-même : gabarits de prompt livrés avec Loom et consigne
     du bac à sable. Une mise à jour de Loom qui change l'un d'eux doit atteindre les
@@ -100,6 +112,7 @@ def _prompt_build() -> str:
         CHAT_SYSTEM
         + CHAT_SYSTEM_STRONG
         + _scratch_text("@")
+        + PRIVATE_TEXT
         + platform_detect().prompt_block()
     )
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:8]
@@ -123,6 +136,7 @@ def _explicit_key(S, conv) -> str:
             sorted(conv.disabled_skills),
             sorted(conv.skill_overrides.items()),
             _prompt_build(),
+            bool(getattr(conv, "local_only", False)),
         ],
         ensure_ascii=False,
     )
@@ -306,6 +320,9 @@ def _render_system_prompt(S, conv, workspace=None, scratch=None):
 
     if scratch:
         system_prompt += "\n\n# Bac à sable de la session\n" + _scratch_text(scratch)
+
+    if getattr(conv, "local_only", False):
+        system_prompt += "\n\n# Session privée\n" + PRIVATE_TEXT
 
     # L'objectif guide la vérification sans ajouter un juge externe contradictoire.
     if conv.goal:

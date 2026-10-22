@@ -179,8 +179,24 @@ def _register_misc_routes(app, S):
         # Session PRIVÉE : coupe tout routage distant des sous-agents (chaîne
         # dispatch_models ignorée). Décision humaine par session, persistée.
         conv, save = _ctx(S)
+        want = request.form.get("local_only") == "1"
 
-        conv.set_local_only(request.form.get("local_only") == "1")
+        if want and conv.model in S.remote_model_ids:
+            return Response(
+                f"Session privée impossible : le modèle « {conv.model} » est distant. "
+                "Choisis d'abord un modèle local.",
+                status=409,
+            )
+        if not want and conv.local_only and conv.messages:
+            # Une session privée le reste : décocher enverrait silencieusement son
+            # historique au prochain modèle distant choisi.
+            return Response(
+                "Une session privée le reste : son historique ne doit jamais partir "
+                "vers une API distante. Ouvre une nouvelle session pour un modèle distant.",
+                status=409,
+            )
+
+        conv.set_local_only(want)
 
         save()
 

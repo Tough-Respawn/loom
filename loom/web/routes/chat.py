@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 import shutil
@@ -13,6 +14,7 @@ from flask import Response, request
 
 from loom.agent import context
 from loom.agent.client import _message_chars, log_event, set_debug_log_path
+from loom.agent.egress import PRIVATE, PrivateEgressError
 from loom.prompts import IMAGE_REFINE_SYSTEM
 from loom.runtime.comfy import ComfyError
 from loom.runtime.models_profile import load_profile
@@ -276,6 +278,18 @@ def _register_chat_routes(app, S):
         if conv.model and conv.model not in S.models:
             conv.set_model(S.models[0] if S.models else "")
 
+        # Session privée : rien ne part vers une API distante, pas même ce tour. Les
+        # routes /model et /local_only l'empêchent déjà ; ce refus couvre le reste
+        # (session ancienne, modèle retiré puis remplacé, appel direct de l'API).
+        private = bool(getattr(conv, "local_only", False))
+        if private and conv.model in S.remote_model_ids:
+            chat_lock.release()
+            return Response(
+                f"Session privée : le modèle « {conv.model} » est distant, rien ne doit "
+                "sortir de la machine. Choisis un modèle local.",
+                status=409,
+            )
+
         def save():
             return S.session_store.save(sess)
 
@@ -386,6 +400,7 @@ def _register_chat_routes(app, S):
 
             def generate_image():
                 S.stay_awake.acquire()
+                _private_tok = PRIVATE.set(private)
                 _img_held = False
                 _sess = sess
 
@@ -422,7 +437,13 @@ def _register_chat_routes(app, S):
                             break
                     # Le refiner est best-effort et doit être déchargé avant la diffusion.
                     prompt, refined = msg_text, False
-                    if _im.refiner and _im.refiner in S.models:
+                    # Session privée : un raffineur distant est sauté, le prompt part tel
+                    # quel vers le moteur image local.
+                    if (
+                        _im.refiner
+                        and _im.refiner in S.models
+                        and not (private and _im.refiner in S.remote_model_ids)
+                    ):
                         yield _sse(
                             "status", label=f"affinage du prompt ({_im.refiner})…"
                         )
@@ -542,6 +563,7 @@ def _register_chat_routes(app, S):
                         S.local_gen_lock.release()
                     chat_lock.release()
                     S.stay_awake.release()
+                    PRIVATE.reset(_private_tok)
                     yield _sse("status", label="")
 
             return Response(generate_image(), mimetype="text/event-stream")
@@ -549,6 +571,9 @@ def _register_chat_routes(app, S):
         def generate():
             # Empêcher la veille système pendant le tour, sans bloquer l'extinction de l'écran.
             S.stay_awake.acquire()
+            # Session privée : le client des modèles refusera toute route distante
+            # pendant tout le tour (point de sortie unique, loom.agent.egress).
+            _private_tok = PRIVATE.set(private)
             S.confirm_local.ev = cancel_event
             # Le verrou global concerne seulement le serveur local à slot unique.
             _local_held = False
@@ -1140,10 +1165,13 @@ def _register_chat_routes(app, S):
                 # maintenance, sous le verrou local : plus avant `done` (2026-09-30).
 
                 # Déporter la maintenance évite de retarder `done` et protège le cache du fil.
+                # Session privée : la réflexion écrit dans la mémoire et les skills
+                # PARTAGÉS (relus par les autres sessions, distantes comprises) : jamais.
                 _do_reflect = (
                     S.settings["reflect_enabled"]
                     and S.reflect_stores is not None
                     and saved
+                    and not private
                     and len(actions) >= S.settings["reflect_min_actions"]
                 )
 
@@ -1156,9 +1184,13 @@ def _register_chat_routes(app, S):
                     if (_needs_model_title and saved and _title_local)
                     else None
                 )
+                # Les tâches différées gardent le contexte du tour (session privée
+                # comprise), même si l'utilisateur change de conversation entre-temps :
+                # un fil Python neuf n'hérite PAS des variables de contexte.
                 threading.Thread(
-                    target=_post_turn_maintenance,
+                    target=contextvars.copy_context().run,
                     args=(
+                        _post_turn_maintenance,
                         S,
                         sess,
                         conv.to_messages(),
@@ -1173,8 +1205,15 @@ def _register_chat_routes(app, S):
                 ).start()
                 if _needs_model_title and saved and not _title_local:
                     threading.Thread(
-                        target=_title_in_background,
-                        args=(S, sess, conv.model, title_message, sess.title),
+                        target=contextvars.copy_context().run,
+                        args=(
+                            _title_in_background,
+                            S,
+                            sess,
+                            conv.model,
+                            title_message,
+                            sess.title,
+                        ),
                         daemon=True,
                         name="loom-title",
                     ).start()
@@ -1197,11 +1236,17 @@ def _register_chat_routes(app, S):
 
                 raise
 
+            except PrivateEgressError as exc:
+                # Le verrou de sortie a joué : on le dit tel quel, sans pile d'appels.
+                log_event("prive.sortie_refusee", level="WARN", msg=str(exc))
+                yield _sse("error", message=str(exc))
+
             except Exception:  # noqa: BLE001 - on remonte l'erreur au client SSE
                 traceback.print_exc()
                 yield _sse("error", message="erreur interne")
 
             finally:
+                PRIVATE.reset(_private_tok)
                 S.last_activity[0] = time.time()  # marque l'activité pour le keep-warm
 
                 S.active_streams.pop(
