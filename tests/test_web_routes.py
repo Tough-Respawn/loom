@@ -412,3 +412,25 @@ def test_journal_telechargeable_contient_preuves_completes(web_sess):
     assert "attachment" in result.headers["Content-Disposition"]
     assert "https://example.test" in result.text and "FIN" in result.text
     assert web_sess.get("/session/unknown/journal").status_code == 404
+
+
+def test_pages_ne_chargent_rien_hors_de_loom(web):
+    """CSP des pages : une image Markdown vers un site externe (adresse porteuse d'un
+    secret) ne doit jamais être chargée par le navigateur. Les images du bac à sable
+    gardent leur CSP plus stricte (sandbox)."""
+    csp = web.get("/").headers["Content-Security-Policy"]
+    for directive in (
+        "default-src 'self'",
+        "img-src 'self' data: blob:",
+        "connect-src 'self'",
+        "font-src 'self' data:",
+        "object-src 'none'",
+    ):
+        assert directive in csp
+    assert "*" not in csp and "http" not in csp
+    sid = web.get("/sessions").get_json()["active"]
+    S = web.application.S
+    (S.session_store.root / sid / "scratch").mkdir(parents=True, exist_ok=True)
+    (S.session_store.root / sid / "scratch" / "a.png").write_bytes(b"\x89PNG")
+    scratch_csp = web.get(f"/session/{sid}/scratch/a.png").headers["Content-Security-Policy"]
+    assert "sandbox" in scratch_csp

