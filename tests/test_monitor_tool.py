@@ -44,7 +44,9 @@ def test_rate_limit_stops_a_chatty_monitor(tmp_path, monkeypatch):
     mon = _running(tmp_path)
     mon.event_times = deque([mon.started_at] * 30)
     killed = []
-    monkeypatch.setattr("loom.tools.monitor._kill_tree", lambda proc: killed.append(proc))
+    monkeypatch.setattr(
+        "loom.tools.monitor._kill_tree", lambda proc: killed.append(proc)
+    )
 
     assert hub._emit_batch(mon, ["encore"]) is False
     assert killed == [mon.proc]
@@ -79,6 +81,6 @@ def test_monitor_tool_start_list_stop_contract(tmp_path):
         }
     )
     assert "id=abc" in started
-    assert calls[0][-1] == {"timeout_s": 12, "persistent": False}
+    assert calls[0][-1] == {"timeout_s": 12, "persistent": False, "offline": False}
     assert '"running": true' in tool.run({"action": "list"})
     assert "arrêté" in tool.run({"action": "stop", "monitor_id": "abc"})

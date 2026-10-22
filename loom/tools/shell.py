@@ -92,12 +92,33 @@ def _shell_argv(command: str) -> list[str]:
     return detect().shell_argv(command)
 
 
-def _child_env() -> dict:
+# Session privée : proxy mort (port discard, personne n'écoute) pour tout ce qui n'est pas
+# la machine elle-même. curl, uv, pip, git https, npm, requests/urllib et Node (avec
+# NODE_USE_ENV_PROXY) le respectent : leurs requêtes échouent au lieu de sortir.
+# ponytail: pas un pare-feu (sockets bruts, ssh, Invoke-WebRequest de PowerShell 5.1
+# l'ignorent) ; un vrai blocage passerait par une règle de pare-feu par processus.
+_DEAD_PROXY = "http://127.0.0.1:9"
+_OFFLINE_ENV = {
+    "HTTP_PROXY": _DEAD_PROXY,
+    "HTTPS_PROXY": _DEAD_PROXY,
+    "ALL_PROXY": _DEAD_PROXY,
+    "NO_PROXY": "localhost,127.0.0.1,::1",
+    "NODE_USE_ENV_PROXY": "1",
+    "UV_OFFLINE": "1",
+}
+
+
+def _child_env(offline: bool = False) -> dict:
     """Environnement des commandes du modèle : celui de Loom, SANS son venv. Hérité, il
     faisait de `python`/`pip` ceux de Loom (un `pip install` aurait pollué Loom) et uv
     avertissait à chaque commande (« VIRTUAL_ENV ... does not match », vécu 2026-10-20,
-    session 8ff2be6f7e1b). UTF-8 forcé : pas de mojibake sous Windows localisé."""
+    session 8ff2be6f7e1b). UTF-8 forcé : pas de mojibake sous Windows localisé.
+    `offline` (session privée) : le réseau hors machine est coupé par un proxy mort."""
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    if offline:
+        env.update(_OFFLINE_ENV)
+        if os.name != "nt":  # sous Windows les noms de variables ignorent la casse
+            env.update({k.lower(): v for k, v in _OFFLINE_ENV.items() if "PROXY" in k})
     env.pop("VIRTUAL_ENV_PROMPT", None)
     venv = env.pop("VIRTUAL_ENV", None)
     if venv:
@@ -237,6 +258,7 @@ def make_run_shell(
     timeout: int = 180,
     max_output: int = 8000,
     cancel_event=None,
+    offline: bool = False,
 ) -> ToolSpec:
     """Outil run_shell borné au workspace, deny-list dure, timeout (tue l'arbre) et troncature.
 
@@ -275,7 +297,7 @@ def make_run_shell(
         popen_kwargs: dict = {}
         if not detect().is_windows:
             popen_kwargs["start_new_session"] = True
-        _env = _child_env()
+        _env = _child_env(offline)
         try:
             proc = subprocess.Popen(
                 _shell_argv(command),

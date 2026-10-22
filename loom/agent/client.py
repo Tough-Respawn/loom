@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
 
+from loom.agent.calltrace import traced_create
 from loom.agent.compaction import (
     _SUMMARY_MARKER,
     _SUMMARY_SYSTEM,
@@ -17,8 +18,8 @@ from loom.agent.compaction import (
     _flatten_for_summary,
     _force_fit,
     _inject_notes,
-    _microcompact_tools,
     _message_chars,
+    _microcompact_tools,
 )
 from loom.agent.debuglog import _debug, _debug_messages, log_event, tools_fingerprint
 from loom.agent.debuglog import context_fingerprint as context_fingerprint
@@ -40,7 +41,6 @@ from loom.agent.streaming import (
     build_create_kwargs,
 )
 from loom.agent.streaming import _turn_timing_fields as _turn_timing_fields
-from loom.agent.calltrace import traced_create
 from loom.agent.toolrun import (
     _allowed_without_asking,
     _run_tools_parallel,
@@ -154,6 +154,10 @@ class LoomClient:
         distant (présent dans routes) part vers son endpoint, SANS les extra_body llama.cpp ;
         sinon l'endpoint local avec les extras natifs."""
         if model and model in self._routes:
+            # Session privée : aucune route distante, d'où qu'elle soit demandée.
+            from loom.agent.egress import check_remote_allowed
+
+            check_remote_allowed(model)
             r = self._routes[model]
             return r["client"], r["model"], r["enable_thinking_param"]
         self._preflight_local(model)
@@ -374,6 +378,10 @@ class LoomClient:
             return None
         if model in self._ctx_cache:
             return self._ctx_cache[model]
+        from loom.agent.egress import PRIVATE
+
+        if PRIVATE.get():  # session privée : pas même une question de métadonnées
+            return None
         import json as _json
         import urllib.error
         import urllib.request

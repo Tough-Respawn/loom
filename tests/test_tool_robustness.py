@@ -438,7 +438,7 @@ def test_check_page_accepte_steps(monkeypatch):
 
     seen = {}
 
-    def fake_interactive(ws, target, steps):
+    def fake_interactive(ws, target, steps, offline=False):
         seen["steps"] = steps
         return {
             "url": target,
@@ -461,7 +461,7 @@ def test_check_page_accepte_steps(monkeypatch):
 def test_check_page_sans_steps_comportement_actuel(monkeypatch):
     import loom.tools.browser as br
 
-    monkeypatch.setattr(br, "_render_page", lambda *a: "console : 0 erreur(s)")
+    monkeypatch.setattr(br, "_render_page", lambda *a, **k: "console : 0 erreur(s)")
     d = Path(tempfile.mkdtemp())
     (d / "p.html").write_text("<html></html>", encoding="utf-8")
     cp = br.make_check_page(str(d))
