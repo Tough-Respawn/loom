@@ -5,12 +5,19 @@ Statut : proposition (2026-10-21). La couche applicative est décrite dans
 
 ## Promesse
 
-En session privée, **Loom et le modèle local n'atteignent jamais internet**, et aucune
-donnée de la session (prompts, fichiers, résultats d'outils) ne quitte la machine. La
-garantie doit venir de l'OS, pas de la coopération du code ou des programmes lancés.
+En session privée, **rien ne quitte la machine où Loom est installé** (Loom, ses
+modèles, sa configuration) : ni internet, ni le reste du réseau local. Aucune donnée de
+la session (prompts, fichiers, résultats d'outils) ne sort. La garantie doit venir de
+l'OS, pas de la coopération du code ou des programmes lancés.
 
-Décision ouverte : réseau local autorisé ou non. Autoriser la box laisse un canal DNS
-(la box relaie les requêtes vers internet). Recommandation : aucun réseau hors machine.
+**Périmètre, déduit de la configuration, sans réglage utilisateur** : la machine, plus
+les serveurs de modèles locaux que la configuration de Loom déclare (s'ils tournent sur
+une autre machine, ils font partie de l'installation). Tout autre hôte, du LAN comme
+d'internet, est hors périmètre : une machine du LAN peut retransmettre ce qu'elle reçoit.
+
+**DNS** : aucun dans la cage. Un résolveur (celui de la box notamment) relaie les noms
+vers internet, et le DNS sur HTTPS passe par internet. Loom résout lui-même, au
+démarrage et hors de la cage, l'adresse de ses serveurs de modèles déclarés.
 
 ## Menaces couvertes
 
@@ -30,6 +37,14 @@ Le service privé est un processus à part, sous une identité que l'OS confine.
 connecté ne reçoit jamais de données privées : un bug de routage ne peut donc pas les
 envoyer dehors. Les échanges entre processus passent par un protocole limité (pas de
 commande du type « télécharge cette URL », qui contournerait la cage).
+
+**Relais sur la machine** : l'API web de Loom n'a aujourd'hui aucune authentification
+(seul un garde CSRF basé sur un en-tête de navigateur) ; un programme de la session
+pourrait la solliciter pour joindre une API distante. Une clé ne suffit pas seule (un
+processus de même identité peut la lire : fichiers, environnement, mémoire) : la
+séparation des identités est la vraie barrière, la clé un renfort. Tout code du modèle
+s'exécute hors du processus de Loom (`run_workflow` faisait `exec()` dans Loom : coupé
+en session privée par #138).
 
 ## Interface commune
 
@@ -60,8 +75,13 @@ démarrage du service privé :
 
 ## Étapes
 
-1. Prototype Windows minimal (élévation admin, étape séparée) : Python, Git Bash,
-   sous-processus et modèle local fonctionnent ; internet coupé en IPv4, IPv6, UDP, DNS.
+1. Prototype Windows minimal (élévation admin, étape séparée, chaque action montrée
+   avant d'être lancée). À démontrer : Python, Git Bash, sous-processus et modèle local
+   fonctionnent ; internet ET réseau local coupés en IPv4, IPv6, UDP et DNS ; identités
+   séparées (le processus confiné ne lit ni la clé, ni la mémoire, ni les fichiers du
+   service connecté) ; relais sur la machine bloqués (l'API de Loom, et tout service
+   local ; le filtrage du trafic vers 127.0.0.1 par une règle ordinaire est à tester,
+   WFP sait le faire mais rien n'est supposé).
 2. Interface `spawn` fixée sur les contraintes vérifiées.
 3. Extraction du service privé.
 4. Implémentations Linux et macOS.
