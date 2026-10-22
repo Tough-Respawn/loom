@@ -29,7 +29,9 @@ Case « Session privée (local) » dans la barre latérale. But : aucune donnée
 - **Les fichiers** écrits par la session dans un dossier synchronisé (OneDrive, Dropbox…)
   partent avec ce service : hors du périmètre de la session privée.
 
-## Étape suivante
+## Isolation par l'OS : pas prévue pour l'instant
 
-Isolation imposée par l'OS (prototype Windows avec élévation administrateur, puis
-service privé isolé et cages Linux/macOS), décrite dans un document d'architecture à part.
+Décision du 2026-10-22 (KISS) : la limite restante suppose qu'un programme soit écrit
+exprès pour ignorer le proxy. Une cage imposée par l'OS (droits administrateur, compte
+dédié, travail par OS) n'est lancée que si ce cas devient réel. Son plan est dans
+[architecture-session-privee.md](architecture-session-privee.md).

