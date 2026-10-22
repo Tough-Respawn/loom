@@ -1,7 +1,8 @@
 # Architecture : session privée isolée par l'OS
 
-Statut : proposition (2026-10-21). La couche applicative est décrite dans
-[session-privee.md](session-privee.md) ; ce document vise l'étape suivante.
+Statut : plan dormant (décision KISS du 2026-10-22). La couche applicative, livrée, est
+décrite dans [session-privee.md](session-privee.md). Ce plan n'est lancé que si une
+garantie imposée par l'OS devient nécessaire (programme écrit pour ignorer le proxy).
 
 ## Promesse
 
