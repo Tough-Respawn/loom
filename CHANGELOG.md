@@ -26,7 +26,8 @@
 - **Mémoire** : `remember` indisponible (la mémoire partagée est relue par toutes les
   sessions) ; `recall` en lecture ; `write_note` pour la session.
 - **Outils** : `web_search`, `fetch_url`, `watch_video`, `add_marketplace`,
-  `install_plugin` et tous les outils MCP retirés. `run_shell`, `monitor` et
+  `install_plugin` et tous les outils MCP retirés. `run_workflow` aussi : il exécute le
+  script du modèle dans le processus de Loom (`exec()`), hors de toute protection réseau. `run_shell`, `monitor` et
   `serve_and_check` tournent avec un proxy mort et `UV_OFFLINE` (consigne respectée par
   les outils courants, pas une isolation). `check_page` n'accepte que des URL
   strictement locales (antislash, identifiants et hôtes encodés refusés : `urlparse` et

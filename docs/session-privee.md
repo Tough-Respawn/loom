@@ -13,6 +13,7 @@ Case « Session privée (local) » dans la barre latérale. But : aucune donnée
 | Client des modèles | point de sortie unique (`loom/agent/egress.py`) : toute route distante lève `PrivateEgressError` pendant un tour privé, tâches différées comprises |
 | Mémoire partagée | lecture seule (`recall`), aucune écriture (`remember` indisponible, réflexion coupée) ; `write_note` pour la session |
 | Outils réseau | `web_search`, `fetch_url`, `watch_video`, `add_marketplace`, `install_plugin`, MCP : retirés, avec un message explicite |
+| Code exécuté dans Loom | `run_workflow` (exec() du script dans le processus de Loom) : retiré |
 | Commandes (`run_shell`, `monitor`, `serve_and_check`) | proxy mort (`127.0.0.1:9`) et `UV_OFFLINE` : bloque curl, uv, pip, git, Python, Node ; **consigne, pas une isolation** (voir limites) |
 | `check_page` | URL strictement locales (antislash, identifiants, hôtes encodés refusés) ; Chromium : proxy mort, WebRTC limité au proxy, prélecture DNS coupée, chaque requête vérifiée sur l'URL normalisée et interrompue si elle n'est pas locale |
 | Pages de Loom | CSP : aucune ressource externe (images Markdown comprises) |

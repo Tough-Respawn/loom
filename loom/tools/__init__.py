@@ -54,6 +54,16 @@ PRIVATE_MEMORY_MSG = (
     "rien de cette session n'y est écrit. Pour retenir quelque chose dans cette session, "
     "utilise write_note."
 )
+# Session privée : outils qui exécutent du code du modèle DANS le processus de Loom
+# (run_workflow : exec() du script, loom/workflow/runtime.py). Aucune cage ne s'y
+# applique (le proxy mort ne vaut que pour les processus enfants) et le script lit la
+# mémoire de Loom : coupés tant que le service privé n'est pas isolé par l'OS.
+IN_PROCESS_TOOLS = ("run_workflow",)
+PRIVATE_INPROC_MSG = (
+    "session privée : run_workflow exécute son script dans le processus de Loom, hors "
+    "de toute protection réseau ; il est coupé. Pour paralléliser, utilise "
+    "dispatch_agent."
+)
 
 
 def build_registry(
@@ -111,9 +121,12 @@ def build_registry(
     from loom.tools.shell import make_run_shell
 
     blocked = [n for n in NETWORK_TOOLS if n in enabled] if private else []
+    blocked_inproc = [n for n in IN_PROCESS_TOOLS if n in enabled] if private else []
     blocked_memory = False
     if private:
-        enabled = [n for n in enabled if n not in NETWORK_TOOLS]
+        enabled = [
+            n for n in enabled if n not in NETWORK_TOOLS and n not in IN_PROCESS_TOOLS
+        ]
     specs: list[ToolSpec] = []
     if "find_files" in enabled:
         specs.append(make_find_files(workspace_dir))
@@ -394,6 +407,8 @@ def build_registry(
         registry.mark_unavailable(name, reason)
     for name in blocked:
         registry.mark_unavailable(name, PRIVATE_TOOL_MSG)
+    for name in blocked_inproc:
+        registry.mark_unavailable(name, PRIVATE_INPROC_MSG)
     if blocked_memory:
         registry.mark_unavailable("remember", PRIVATE_MEMORY_MSG)
     return registry

@@ -340,3 +340,20 @@ setTimeout(() => { document.getElementById('r').textContent =
     )
     rep = make_check_page(str(tmp_path), offline=True).run({"url": str(page)})
     assert "FETCH=BLOQUE IMG=BLOQUEE WEBRTC=aucun" in rep
+
+
+def test_run_workflow_coupe_en_session_privee(tmp_path):
+    """run_workflow fait exec() du script DANS le processus de Loom : aucune cage ne s'y
+    applique (un script pourrait ouvrir une connexion directement). Coupé en privé."""
+    from loom.tools import PRIVATE_INPROC_MSG
+
+    from .fakes import make_client, turn_text
+
+    client, _ = make_client([turn_text("ok")])
+    enabled = ["run_workflow", "dispatch_agent"]
+    priv = build_registry(str(tmp_path), 10_000, enabled, client=client, model="m", private=True)
+    assert "run_workflow" not in priv
+    assert priv.run("run_workflow", {"path": "w.py"}) == f"erreur: {PRIVATE_INPROC_MSG}"
+    assert "dispatch_agent" in priv  # les sous-agents restent (outils filtrés, locaux)
+    pub = build_registry(str(tmp_path), 10_000, enabled, client=client, model="m")
+    assert "run_workflow" in pub
